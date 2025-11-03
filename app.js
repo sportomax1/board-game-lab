@@ -508,8 +508,8 @@ document.getElementById('fetchBtn').addEventListener('click', async () => {
     timingInfo.textContent = `Start: ${startTime.toLocaleTimeString()}`;
     document.getElementById('results').innerHTML = 'Loading...';
     try {
-        const apiBase = 'https://boardgamegeek.com/xmlapi2/collection?stats=1&username=sportomax';
-        const response = await fetch(apiBase);
+        // Use authenticated BGG API proxy
+        const response = await fetch('/api/bgg-helper?endpoint=collection&stats=1&username=sportomax');
         const xmlText = await response.text();
         const parser = new DOMParser();
         const xmlDoc = parser.parseFromString(xmlText, 'application/xml');
