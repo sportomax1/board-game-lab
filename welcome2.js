@@ -198,7 +198,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             // Get values from popup
                             const username = prepUsername || 'sportomax';
                             const ownParam = (typeof window.prepOwnOnly === 'undefined' || window.prepOwnOnly) ? '&own=1' : '';
-                            const collectionUrl = `https://boardgamegeek.com/xmlapi2/collection?stats=1&username=${encodeURIComponent(username)}${ownParam}`;
+                            const collectionEndpoint = `collection?stats=1&username=${encodeURIComponent(username)}${ownParam}`;
+                            const collectionUrl = `/api/bgg-helper?endpoint=${encodeURIComponent(collectionEndpoint)}`;
                             console.log('PREP: Fetching collection API:', collectionUrl);
                             // API 1: Fetch user collection
                             const resp = await fetch(collectionUrl);
@@ -267,7 +268,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             const batchStartTime = Date.now();
                             for (const batch of batches) {
                                 const ids = batch.join(',');
-                                const thingUrl = `https://boardgamegeek.com/xmlapi2/thing?id=${ids}&stats=1`;
+                                const thingEndpoint = `thing?id=${ids}&stats=1`;
+                                const thingUrl = `/api/bgg-helper?endpoint=${encodeURIComponent(thingEndpoint)}`;
                                 console.log('PREP: Fetching thing API:', thingUrl);
                                 try {
                                     const resp = await fetch(thingUrl);
