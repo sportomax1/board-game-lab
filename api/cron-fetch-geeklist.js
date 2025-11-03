@@ -12,12 +12,6 @@ const GEEKLIST_URL = `https://boardgamegeek.com/xmlapi/geeklist/${GEEKLIST_ID}?c
 const OUTPUT_FILE = path.join(process.cwd(), 'vfm25bgg.xml');
 
 module.exports = async (req, res) => {
-  // Verify cron secret from environment variable
-  const cronSecret = process.env.CRON_SECRET;
-  if (!cronSecret || req.query.secret !== cronSecret) {
-    return res.status(401).json({ error: 'Unauthorized' });
-  }
-
   try {
     console.log(`[${new Date().toISOString()}] Starting geeklist fetch...`);
 
