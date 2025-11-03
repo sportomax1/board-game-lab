@@ -828,8 +828,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 // Use username and own filter from PREP popup
                 const username = prepUsername || 'sportomax';
                 const ownParam = (typeof window.prepOwnOnly === 'undefined' || window.prepOwnOnly) ? '&own=1' : '';
-                // API 1: Fetch user collection
-                const resp = await fetch(`https://boardgamegeek.com/xmlapi2/collection?stats=1&username=${encodeURIComponent(username)}${ownParam}`);
+                // API 1: Fetch user collection via centralized BGG helper
+                const resp = await fetch(`/api/bgg-helper?endpoint=collection&stats=1&username=${encodeURIComponent(username)}${ownParam}`);
                 if (!resp.ok) throw new Error('API error');
                 const xml = await resp.text();
                 const parser = new window.DOMParser();
@@ -905,7 +905,8 @@ document.addEventListener('DOMContentLoaded', function() {
                 for (const batch of batches) {
                     const ids = batch.join(',');
                     try {
-                        const resp = await fetch(`https://boardgamegeek.com/xmlapi2/thing?id=${ids}&stats=1`);
+                        // Use centralized BGG helper for thing API calls
+                        const resp = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
                         if (!resp.ok) throw new Error('Thing API error');
                         const xml = await resp.text();
                         const parser = new window.DOMParser();
