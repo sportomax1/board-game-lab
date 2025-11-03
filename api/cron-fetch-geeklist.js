@@ -11,7 +11,7 @@ const GEEKLIST_ID = '363504';
 const GEEKLIST_URL = `https://boardgamegeek.com/xmlapi/geeklist/${GEEKLIST_ID}?comments=1`;
 const OUTPUT_FILE = path.join(process.cwd(), 'vfm25bgg.xml');
 
-module.exports = async function handler(req, res) {
+module.exports = async (req, res) => {
   // Verify cron secret from environment variable
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || req.query.secret !== cronSecret) {
@@ -112,4 +112,4 @@ module.exports = async function handler(req, res) {
       timestamp: new Date().toISOString()
     });
   }
-}
+};
