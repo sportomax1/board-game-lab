@@ -198,8 +198,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             // Get values from popup
                             const username = prepUsername || 'sportomax';
                             const ownParam = (typeof window.prepOwnOnly === 'undefined' || window.prepOwnOnly) ? '&own=1' : '';
-                            const collectionEndpoint = `collection?stats=1&username=${encodeURIComponent(username)}${ownParam}`;
-                            const collectionUrl = `/api/bgg-helper?endpoint=${encodeURIComponent(collectionEndpoint)}`;
+                            // Use proper query parameter format for authenticated proxy
+                            const collectionUrl = `/api/bgg-helper?endpoint=collection&stats=1&username=${encodeURIComponent(username)}${ownParam}`;
                             console.log('PREP: Fetching collection API:', collectionUrl);
                             // API 1: Fetch user collection
                             const resp = await fetch(collectionUrl);
@@ -268,8 +268,8 @@ document.addEventListener('DOMContentLoaded', function() {
                             const batchStartTime = Date.now();
                             for (const batch of batches) {
                                 const ids = batch.join(',');
-                                const thingEndpoint = `thing?id=${ids}&stats=1`;
-                                const thingUrl = `/api/bgg-helper?endpoint=${encodeURIComponent(thingEndpoint)}`;
+                                // Use proper query parameter format for authenticated proxy
+                                const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`;
                                 console.log('PREP: Fetching thing API:', thingUrl);
                                 try {
                                     const resp = await fetch(thingUrl);
