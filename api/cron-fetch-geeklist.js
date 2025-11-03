@@ -1,19 +1,17 @@
-import { exec } from 'child_process';
-import { promisify } from 'util';
-import fs from 'fs/promises';
-import path from 'path';
-import { fileURLToPath } from 'url';
+const { exec } = require('child_process');
+const { promisify } = require('util');
+const fs = require('fs/promises');
+const path = require('path');
 
 const execAsync = promisify(exec);
-const __dirname = path.dirname(fileURLToPath(import.meta.url));
 
 const MAX_RETRIES = 5;
 const RETRY_DELAY = 32000; // 32 seconds
 const GEEKLIST_ID = '363504';
 const GEEKLIST_URL = `https://boardgamegeek.com/xmlapi/geeklist/${GEEKLIST_ID}?comments=1`;
-const OUTPUT_FILE = path.join(__dirname, '..', 'vfm25bgg.xml');
+const OUTPUT_FILE = path.join(process.cwd(), 'vfm25bgg.xml');
 
-export default async function handler(req, res) {
+module.exports = async function handler(req, res) {
   // Verify cron secret from environment variable
   const cronSecret = process.env.CRON_SECRET;
   if (!cronSecret || req.query.secret !== cronSecret) {
@@ -75,22 +73,22 @@ export default async function handler(req, res) {
 
     try {
       // Configure git
-      await execAsync('git config user.name "github-actions[bot]"', { cwd: path.join(__dirname, '..') });
-      await execAsync('git config user.email "github-actions[bot]@users.noreply.github.com"', { cwd: path.join(__dirname, '..') });
+      await execAsync('git config user.name "github-actions[bot]"', { cwd: process.cwd() });
+      await execAsync('git config user.email "github-actions[bot]@users.noreply.github.com"', { cwd: process.cwd() });
 
       // Add file
-      await execAsync('git add vfm25bgg.xml', { cwd: path.join(__dirname, '..') });
+      await execAsync('git add vfm25bgg.xml', { cwd: process.cwd() });
 
       // Commit (allow failure if nothing changed)
       try {
-        await execAsync('git commit -m "Update VFM geeklist"', { cwd: path.join(__dirname, '..') });
+        await execAsync('git commit -m "Update VFM geeklist"', { cwd: process.cwd() });
         console.log(`[${new Date().toISOString()}] Commit created`);
       } catch (commitError) {
         console.log(`[${new Date().toISOString()}] No changes to commit (or commit failed)`, commitError.message);
       }
 
       // Push to GitHub
-      const pushResult = await execAsync('git push', { cwd: path.join(__dirname, '..') });
+      const pushResult = await execAsync('git push', { cwd: process.cwd() });
       console.log(`[${new Date().toISOString()}] Push successful`);
 
       return res.status(200).json({
