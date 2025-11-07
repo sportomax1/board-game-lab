@@ -81,6 +81,17 @@
 
         <!-- Matchup View -->
         <div id="view-matchup" class="max-w-md mx-auto px-4 py-6">
+            <!-- User Info -->
+            <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 mb-4 flex items-center justify-between">
+                <div>
+                    <div class="text-xs text-blue-600 font-medium">BGG Username</div>
+                    <div class="text-sm font-bold text-blue-900" id="usernameDisplay"></div>
+                </div>
+                <button onclick="changeUsername()" class="text-xs bg-white px-3 py-1 rounded border border-blue-300 text-blue-600 hover:bg-blue-50">
+                    Change
+                </button>
+            </div>
+
             <!-- Settings -->
             <div class="bg-white rounded-lg shadow p-4 mb-4">
                 <label class="block text-sm font-medium text-gray-700 mb-2">Collection Filter</label>
@@ -249,32 +260,35 @@
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
         import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, Timestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 
-        // Firebase Configuration (will be loaded from GitHub secrets via API endpoint)
+        // Firebase Configuration (loaded from Vercel environment variables via API endpoint)
         let db;
+        let bggUsername = '';
         
         // Initialize Firebase
         async function initFirebase() {
             try {
-                // Try to load Firebase config from API endpoint
+                // Load Firebase config from API endpoint (Vercel env vars, NOT exposed in code)
                 const response = await fetch('/api/firebase-config');
+                
+                if (!response.ok) {
+                    throw new Error('Failed to load Firebase config. Please set up Vercel environment variables.');
+                }
+                
                 const firebaseConfig = await response.json();
+                
+                // Validate config has required fields
+                if (!firebaseConfig.projectId || !firebaseConfig.apiKey) {
+                    throw new Error('Invalid Firebase configuration. Check Vercel environment variables.');
+                }
                 
                 const app = initializeApp(firebaseConfig);
                 db = getFirestore(app);
-                console.log('Firebase initialized successfully');
+                console.log('✅ Firebase initialized successfully');
+                return true;
             } catch (error) {
-                console.error('Firebase init error:', error);
-                // Fallback: Try to use environment variables directly (for local dev)
-                const firebaseConfig = {
-                    apiKey: "YOUR_API_KEY", // Replace with your config or use Vercel env
-                    authDomain: "YOUR_AUTH_DOMAIN",
-                    projectId: "YOUR_PROJECT_ID",
-                    storageBucket: "YOUR_STORAGE_BUCKET",
-                    messagingSenderId: "YOUR_MESSAGING_SENDER_ID",
-                    appId: "YOUR_APP_ID"
-                };
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
+                console.error('❌ Firebase initialization failed:', error.message);
+                alert('Firebase setup required. Please follow MATCHUP_SETUP.md to configure Vercel environment variables.');
+                return false;
             }
         }
 
@@ -285,9 +299,39 @@
         let touchCurrentX = 0;
         let editingMatchupId = null;
 
+        // Change username
+        window.changeUsername = () => {
+            const newUsername = prompt('Enter your BGG username:', bggUsername);
+            if (newUsername && newUsername !== bggUsername) {
+                bggUsername = newUsername;
+                localStorage.setItem('bgg_username', bggUsername);
+                document.getElementById('usernameDisplay').textContent = bggUsername;
+            }
+        };
+
         // Initialize
         window.addEventListener('DOMContentLoaded', async () => {
-            await initFirebase();
+            // Get BGG username first
+            const savedUsername = localStorage.getItem('bgg_username');
+            bggUsername = prompt('Enter your BGG username:', savedUsername || '');
+            
+            if (!bggUsername) {
+                alert('BGG username is required to use this app');
+                return;
+            }
+            
+            localStorage.setItem('bgg_username', bggUsername);
+            
+            // Initialize Firebase
+            const firebaseReady = await initFirebase();
+            
+            if (!firebaseReady) {
+                return; // Stop if Firebase setup failed
+            }
+            
+            // Display username
+            document.getElementById('usernameDisplay').textContent = bggUsername;
+            
             document.getElementById('loading').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
             setupSwipeListeners();
@@ -317,8 +361,11 @@
 
         // Load games from BGG collection
         window.loadGames = async () => {
-            const username = prompt('Enter your BGG username:');
-            if (!username) return;
+            if (!bggUsername) {
+                bggUsername = prompt('Enter your BGG username:');
+                if (!bggUsername) return;
+                localStorage.setItem('bgg_username', bggUsername);
+            }
 
             document.getElementById('loading').classList.remove('hidden');
             
@@ -327,7 +374,7 @@
             
             try {
                 const params = new URLSearchParams({
-                    username,
+                    username: bggUsername,
                     stats: 1,
                     ...Object.fromEntries(filters.map(f => [f, 1]))
                 });

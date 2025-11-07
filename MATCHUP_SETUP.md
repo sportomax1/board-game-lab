@@ -1,7 +1,14 @@
 # Game Matchup Tracker - Firebase Setup Guide
 
 ## Overview
-This guide will help you set up Firebase Firestore for the Game Matchup Tracker app. The app stores matchup results in a Firestore database and uses GitHub secrets to configure Firebase (no Vercel secrets needed).
+This guide will help you set up Firebase Firestore for the Game Matchup Tracker app. The app stores matchup results in a Firestore database and uses **Vercel environment variables** to securely configure Firebase.
+
+⚠️ **IMPORTANT**: Firebase credentials are NEVER stored in your code or GitHub. They are:
+- Stored as Vercel Environment Variables (accessible only to your Vercel deployment)
+- Served via `/api/firebase-config.js` serverless function at runtime
+- Never exposed in HTML, JavaScript, or any committed files
+
+✅ **Security**: All 6 Firebase values are loaded from Vercel environment variables and injected at runtime. No secrets in code!
 
 ## Step 1: Create Firebase Project
 
@@ -70,15 +77,17 @@ const firebaseConfig = {
 };
 ```
 
-## Step 5: Add Secrets to GitHub
+## Step 5: Configure Vercel Environment Variables (REQUIRED)
 
-1. Go to your GitHub repository
-2. Click **Settings** → **Secrets and variables** → **Actions**
-3. Click **New repository secret**
-4. Add the following 6 secrets:
+**This is the ONLY place where Firebase credentials are stored.** They are never in your code or GitHub.
 
-| Secret Name | Value | Example |
-|-------------|-------|---------|
+1. Go to [Vercel Dashboard](https://vercel.com/dashboard)
+2. Select your project
+3. Click **Settings** → **Environment Variables**
+4. Add the following 6 variables:
+
+| Variable Name | Value | Example |
+|---------------|-------|---------|
 | `FIREBASE_API_KEY` | Your API key | `AIzaSyC...` |
 | `FIREBASE_AUTH_DOMAIN` | Auth domain | `myproject.firebaseapp.com` |
 | `FIREBASE_PROJECT_ID` | Project ID | `myproject-12345` |
@@ -86,26 +95,21 @@ const firebaseConfig = {
 | `FIREBASE_MESSAGING_SENDER_ID` | Sender ID | `123456789012` |
 | `FIREBASE_APP_ID` | App ID | `1:123:web:abc123` |
 
-## Step 6: Configure Vercel Environment Variables
-
-Since we're using a Vercel serverless function (`/api/firebase-config.js`) to serve the Firebase config, we need to add the same 6 environment variables to Vercel:
-
-1. Go to [Vercel Dashboard](https://vercel.com/dashboard)
-2. Select your project
-3. Click **Settings** → **Environment Variables**
-4. Add the following 6 variables (same as GitHub secrets):
-
-| Variable Name | Value |
-|---------------|-------|
-| `FIREBASE_API_KEY` | Your API key |
-| `FIREBASE_AUTH_DOMAIN` | Auth domain |
-| `FIREBASE_PROJECT_ID` | Project ID |
-| `FIREBASE_STORAGE_BUCKET` | Storage bucket |
-| `FIREBASE_MESSAGING_SENDER_ID` | Sender ID |
-| `FIREBASE_APP_ID` | App ID |
-
 5. Make sure to select **Production**, **Preview**, and **Development** for each variable
 6. Click **Save**
+
+⚠️ **DO NOT add these to `.env` files or commit them to GitHub!** They should only exist in Vercel.
+
+## Step 6: (Optional) Add GitHub Secrets for Reference
+
+GitHub secrets are **NOT used** by the matchup app, but you can add them for documentation purposes:
+
+1. Go to your GitHub repository
+2. Click **Settings** → **Secrets and variables** → **Actions**
+3. Click **New repository secret**
+4. Add the same 6 values (optional - for reference only)
+
+**Note**: The app reads Firebase config from Vercel environment variables via the `/api/firebase-config.js` endpoint, not from GitHub secrets.
 
 ## Step 7: Redeploy to Vercel
 
