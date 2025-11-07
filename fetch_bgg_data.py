@@ -1,53 +1,53 @@
-name: Scheduled BGG API Fetch
+import requests
+import os
+import sys
 
-on:
-  # SCHEDULE: Runs every 30 minutes (at :00 and :30 past the hour)
-  schedule:
-    - cron: '*/30 * * * *'
-  # MANUAL TRIGGER: Allows you to run it anytime from the GitHub Actions tab
-  workflow_dispatch:
+# The V1 API URL for the Geeklist as requested
+BGG_API_URL = "https://boardgamegeek.com/xmlapi/geeklist/363504?comments=1" 
+OUTPUT_FILENAME = "mydata.xml"
 
-# **CRITICAL FIX:** Grants the workflow token permission to commit files back to the repo
-permissions:
-  contents: write
-
-jobs:
-  fetch_and_commit:
-    runs-on: ubuntu-latest
+def fetch_and_save_data():
+    """Fetches data using Bearer token authentication and saves the XML response."""
     
-    steps:
-      - name: 1. Checkout repository code
-        uses: actions/checkout@v4
-        # fetch-depth: 0 is necessary to allow committing back to the repo later
-        with:
-          fetch-depth: 0 
-          
-      - name: 2. Set up Python
-        uses: actions/setup-python@v5
-        with:
-          python-version: '3.x'
+    # 1. SECURELY retrieve the token from the environment variable
+    secret_token = os.environ.get("API_TOKEN") 
 
-      - name: 3. Install Python dependencies
-        run: pip install requests
+    if not secret_token:
+        print("Error: API_TOKEN environment variable not set. Aborting.")
+        sys.exit(1)
+
+    print(f"Attempting to fetch data from: {BGG_API_URL}")
+    
+    try:
+        # 2. Construct the required Bearer Authorization Header
+        headers = {
+            "User-Agent": "Scheduled BGG Data Fetcher (GitHub Actions)",
+            "Authorization": f"Bearer {secret_token}" 
+        }
         
-      - name: 4. Run the API fetch script (with SECRET)
-        # Pass the GitHub Secret into the script's environment
-        env:
-          # API_TOKEN is the key used by the Python script (os.environ.get("API_TOKEN"))
-          API_TOKEN: ${{ secrets.BGG_API_TOKEN }} 
-        run: python fetch_bgg_data.py
+        # 3. Make the authenticated GET request
+        response = requests.get(BGG_API_URL, headers=headers, timeout=30)
         
-      - name: 5. Commit and Push changes
-        # Use the standard Git commands to commit the updated mydata.xml file
-        run: |
-          git config user.name 'github-actions[bot]'
-          git config user.email 'github-actions[bot]@users.noreply.github.com'
-          
-          # Stage the file for commit
-          git add mydata.xml
-          
-          # Commit the changes. '|| exit 0' prevents failure if no changes occurred.
-          git commit -m "Automated BGG data update: $(date)" || exit 0 
-          
-          # Push the changes back to the main branch
-          git push
+        # Raises HTTPError for 4xx/5xx responses (e.g., 401 Unauthorized)
+        response.raise_for_status() 
+
+        if not response.content:
+            print("Error: API response was empty.")
+            sys.exit(1)
+
+        # 4. Write the raw XML content to the output file
+        with open(OUTPUT_FILENAME, "wb") as f:
+            f.write(response.content)
+
+        print(f"Success! Data saved to {OUTPUT_FILENAME}")
+        
+    except requests.exceptions.HTTPError as errh:
+        print(f"HTTP Error occurred (check token/authentication): {errh}")
+        print(f"Response details: {response.text[:200]}...")
+        sys.exit(1)
+    except requests.exceptions.RequestException as err:
+        print(f"An unexpected error occurred: {err}")
+        sys.exit(1)
+
+if __name__ == "__main__":
+    fetch_and_save_data()
