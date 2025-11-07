@@ -1,52 +1,77 @@
 import requests
 import os
 import sys
+import time
 
-# The V1 API URL for the Geeklist as requested
+# --- Configuration ---
 BGG_API_URL = "https://boardgamegeek.com/xmlapi/geeklist/363504?comments=1" 
 OUTPUT_FILENAME = "mydata.xml"
+MAX_RETRIES = 3
+RETRY_DELAY_SECONDS = 5 # Wait time between retries
 
 def fetch_and_save_data():
-    """Fetches data using Bearer token authentication and saves the XML response."""
-    
-    # 1. SECURELY retrieve the token from the environment variable
+    """
+    Fetches data from the BGG API with retries and saves the XML 
+    response only upon full success.
+    """
     secret_token = os.environ.get("API_TOKEN") 
 
     if not secret_token:
         print("Error: API_TOKEN environment variable not set. Aborting.")
         sys.exit(1)
 
-    print(f"Attempting to fetch data from: {BGG_API_URL}")
+    headers = {
+        "User-Agent": "Scheduled BGG Data Fetcher (GitHub Actions)",
+        "Authorization": f"Bearer {secret_token}" 
+    }
     
-    try:
-        # 2. Construct the required Bearer Authorization Header
-        headers = {
-            "User-Agent": "Scheduled BGG Data Fetcher (GitHub Actions)",
-            "Authorization": f"Bearer {secret_token}" 
-        }
+    successful_response = None
+    
+    for attempt in range(MAX_RETRIES):
+        print(f"Attempting to fetch data (Attempt {attempt + 1} of {MAX_RETRIES}) from: {BGG_API_URL}")
         
-        # 3. Make the authenticated GET request
-        response = requests.get(BGG_API_URL, headers=headers, timeout=30)
-        
-        # Raises HTTPError for 4xx/5xx responses (e.g., 401 Unauthorized)
-        response.raise_for_status() 
+        try:
+            # Note: We are not explicitly changing the default requests library timeout,
+            # but we are handling any connection/request exceptions as a failure.
+            response = requests.get(BGG_API_URL, headers=headers)
+            
+            # Check for success (200-299 status codes)
+            if response.status_code == 200:
+                successful_response = response
+                print("API call successful!")
+                break # Exit the retry loop on success
+            
+            # Handle client/server errors (e.g., 401, 404, 500)
+            else:
+                print(f"Non-success status code received: {response.status_code}")
+                # We won't retry on critical errors like 401 (Unauthorized) or 404 (Not Found)
+                if response.status_code in [401, 403, 404]:
+                    print("Critical HTTP error (401/403/404). Aborting retries.")
+                    raise requests.exceptions.HTTPError(response.status_code)
 
-        if not response.content:
-            print("Error: API response was empty.")
+        except requests.exceptions.RequestException as e:
+            print(f"Request failed: {e}")
+        
+        # If we failed and are not on the last attempt, wait and retry
+        if attempt < MAX_RETRIES - 1:
+            print(f"Waiting {RETRY_DELAY_SECONDS} seconds before next retry...")
+            time.sleep(RETRY_DELAY_SECONDS)
+        
+        # If all retries fail, the loop finishes here.
+    
+    # --- Data Integrity Check and Write ---
+    if successful_response and successful_response.content:
+        # Only write the file if we have a successful response object AND content
+        try:
+            with open(OUTPUT_FILENAME, "wb") as f:
+                f.write(successful_response.content)
+            print(f"SUCCESS: Data successfully saved to {OUTPUT_FILENAME}")
+        except IOError as e:
+            print(f"Error writing file {OUTPUT_FILENAME}: {e}")
             sys.exit(1)
-
-        # 4. Write the raw XML content to the output file
-        with open(OUTPUT_FILENAME, "wb") as f:
-            f.write(response.content)
-
-        print(f"Success! Data saved to {OUTPUT_FILENAME}")
-        
-    except requests.exceptions.HTTPError as errh:
-        print(f"HTTP Error occurred (check token/authentication): {errh}")
-        print(f"Response details: {response.text[:200]}...")
-        sys.exit(1)
-    except requests.exceptions.RequestException as err:
-        print(f"An unexpected error occurred: {err}")
+    else:
+        # If no successful_response was obtained after all retries
+        print("FAILURE: Could not retrieve data after all retries. File not written.")
         sys.exit(1)
 
 if __name__ == "__main__":
