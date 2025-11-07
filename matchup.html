@@ -114,6 +114,14 @@
 
             <!-- Settings -->
             <div class="bg-white rounded-lg shadow p-4 mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">Matchup Mode</label>
+                <select id="matchupMode" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
+                    <option value="all">All Games (Standard)</option>
+                    <option value="used-only">Previously Matched Games Only</option>
+                    <option value="new-only">New Games Only (Never Matched)</option>
+                    <option value="hybrid">Hybrid (Mix Used & New)</option>
+                </select>
+                
                 <label class="block text-sm font-medium text-gray-700 mb-2">Collection Filter</label>
                 <div class="grid grid-cols-2 gap-2 mb-3">
                     <label class="flex items-center">
@@ -140,6 +148,19 @@
                 <button onclick="loadGames()" class="w-full bg-blue-600 text-white py-2 rounded-lg font-medium">
                     Load Games
                 </button>
+            </div>
+
+            <!-- Session Stats -->
+            <div id="sessionStats" class="bg-purple-50 border border-purple-200 rounded-lg p-3 mb-4 hidden">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <div class="text-xs text-purple-600 font-medium">This Session</div>
+                        <div class="text-lg font-bold text-purple-900" id="sessionCount">0</div>
+                    </div>
+                    <button onclick="resetSession()" class="text-xs bg-white px-3 py-1 rounded border border-purple-300 text-purple-600 hover:bg-purple-50">
+                        Reset
+                    </button>
+                </div>
             </div>
 
             <!-- Matchup Stats -->
@@ -197,6 +218,13 @@
                 <div class="mt-4 bg-white rounded-lg shadow p-4">
                     <label class="block text-sm font-medium text-gray-700 mb-2">Notes (optional)</label>
                     <textarea id="matchupNotes" rows="2" class="w-full border rounded-lg px-3 py-2 text-sm" placeholder="Add any notes about this matchup..."></textarea>
+                </div>
+                
+                <!-- Matchup Actions -->
+                <div class="mt-4 flex gap-2">
+                    <button onclick="skipMatchup()" class="flex-1 bg-gray-200 text-gray-700 py-2 rounded-lg font-medium">
+                        Skip ⏭️
+                    </button>
                 </div>
             </div>
 
@@ -310,6 +338,35 @@
         </div>
     </div>
 
+    <!-- Game History Modal -->
+    <div id="gameHistoryModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg max-w-md w-full p-6 max-h-[90vh] overflow-y-auto">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold" id="gameHistoryTitle"></h3>
+                <button onclick="closeGameHistoryModal()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+            </div>
+            <div id="gameHistoryContent" class="space-y-3">
+                <!-- Populated by JavaScript -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Continue Session Modal -->
+    <div id="continueModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg max-w-md w-full p-6">
+            <h3 class="text-lg font-bold mb-4">⚡ Session Checkpoint</h3>
+            <p class="text-gray-700 mb-6">You've completed <span id="checkpointCount" class="font-bold text-blue-600"></span> matchups this session! Would you like to continue?</p>
+            <div class="flex gap-3">
+                <button onclick="endSession()" class="flex-1 py-2 border rounded-lg">
+                    End Session
+                </button>
+                <button onclick="continueSession()" class="flex-1 py-2 bg-blue-600 text-white rounded-lg font-medium">
+                    Continue
+                </button>
+            </div>
+        </div>
+    </div>
+
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
@@ -355,6 +412,9 @@
         let editingMatchupId = null;
         let isProcessingSelection = false; // Prevent double-tap/swipe
         let allMatchups = []; // Cache for standings
+        let sessionMatchupCount = 0; // Track matchups this session
+        let usedGameIds = new Set(); // Track which games have been used
+        let matchupMode = 'all'; // all, used-only, new-only, hybrid
 
         // Unlock app with password
         window.unlockApp = async () => {
@@ -482,6 +542,7 @@
             
             const filters = Array.from(document.querySelectorAll('.collection-filter:checked')).map(cb => cb.value);
             const excludeExpansions = document.getElementById('excludeExpansions').checked;
+            matchupMode = document.getElementById('matchupMode').value;
             
             try {
                 const params = {
@@ -494,7 +555,7 @@
                 const parser = new DOMParser();
                 const xml = parser.parseFromString(text, 'text/xml');
                 
-                games = Array.from(xml.querySelectorAll('item')).map(item => ({
+                let allGames = Array.from(xml.querySelectorAll('item')).map(item => ({
                     id: item.getAttribute('objectid'),
                     name: item.querySelector('name').textContent,
                     year: item.querySelector('yearpublished')?.textContent || 'N/A',
@@ -504,7 +565,29 @@
                 }));
                 
                 if (excludeExpansions) {
-                    games = games.filter(g => !g.isExpansion);
+                    allGames = allGames.filter(g => !g.isExpansion);
+                }
+                
+                // Load matchup history to determine used games
+                await loadMatchupHistory();
+                
+                // Filter based on matchup mode
+                if (matchupMode === 'used-only') {
+                    games = allGames.filter(g => usedGameIds.has(g.id));
+                } else if (matchupMode === 'new-only') {
+                    games = allGames.filter(g => !usedGameIds.has(g.id));
+                } else if (matchupMode === 'hybrid') {
+                    const usedGames = allGames.filter(g => usedGameIds.has(g.id));
+                    const newGames = allGames.filter(g => !usedGameIds.has(g.id));
+                    // Mix: alternate between used and new
+                    games = [];
+                    const maxLen = Math.max(usedGames.length, newGames.length);
+                    for (let i = 0; i < maxLen; i++) {
+                        if (i < usedGames.length) games.push(usedGames[i]);
+                        if (i < newGames.length) games.push(newGames[i]);
+                    }
+                } else {
+                    games = allGames; // 'all' mode
                 }
                 
                 // Shuffle games
@@ -513,6 +596,7 @@
                 document.getElementById('totalGames').textContent = games.length;
                 document.getElementById('matchupStats').classList.remove('hidden');
                 document.getElementById('instructions').classList.remove('hidden');
+                document.getElementById('sessionStats').classList.remove('hidden');
                 
                 nextPair();
             } catch (error) {
@@ -521,6 +605,23 @@
                 document.getElementById('loading').classList.add('hidden');
             }
         };
+
+        // Load matchup history and populate usedGameIds
+        async function loadMatchupHistory() {
+            try {
+                const q = query(collection(db, 'matchups'));
+                const snapshot = await getDocs(q);
+                
+                usedGameIds.clear();
+                snapshot.forEach(doc => {
+                    const data = doc.data();
+                    usedGameIds.add(data.winnerId);
+                    usedGameIds.add(data.loserId);
+                });
+            } catch (error) {
+                console.error('Error loading matchup history:', error);
+            }
+        }
 
         // Show next pair
         function nextPair() {
@@ -580,21 +681,75 @@
                     timestamp: Timestamp.now()
                 });
                 
+                // Update session count
+                sessionMatchupCount++;
+                document.getElementById('sessionCount').textContent = sessionMatchupCount;
+                
                 // Update today's count
                 const today = new Date().toDateString();
                 const todayKey = `matchups_${today}`;
                 const todayCount = parseInt(localStorage.getItem(todayKey) || '0') + 1;
                 localStorage.setItem(todayKey, todayCount);
                 document.getElementById('matchupsToday').textContent = todayCount;
+                
+                // Check if we need to show continue prompt (every 10 matchups)
+                if (sessionMatchupCount % 10 === 0) {
+                    setTimeout(() => {
+                        showContinuePrompt();
+                    }, 600);
+                } else {
+                    // Show next pair after animation
+                    setTimeout(() => {
+                        nextPair();
+                        isProcessingSelection = false;
+                    }, 500);
+                }
             } catch (error) {
                 console.error('Error saving matchup:', error);
+                isProcessingSelection = false;
+            }
+        };
+
+        // Skip matchup
+        window.skipMatchup = () => {
+            if (isProcessingSelection) return;
+            
+            // Put both games back in the pool
+            if (currentPair) {
+                games.unshift(currentPair.right);
+                games.unshift(currentPair.left);
             }
             
-            // Show next pair after animation
-            setTimeout(() => {
-                nextPair();
-                isProcessingSelection = false;
-            }, 500);
+            nextPair();
+        };
+
+        // Reset session counter
+        window.resetSession = () => {
+            if (confirm('Reset session counter?')) {
+                sessionMatchupCount = 0;
+                document.getElementById('sessionCount').textContent = '0';
+            }
+        };
+
+        // Show continue prompt
+        function showContinuePrompt() {
+            document.getElementById('checkpointCount').textContent = sessionMatchupCount;
+            document.getElementById('continueModal').classList.remove('hidden');
+        }
+
+        // Continue session
+        window.continueSession = () => {
+            document.getElementById('continueModal').classList.add('hidden');
+            nextPair();
+            isProcessingSelection = false;
+        };
+
+        // End session
+        window.endSession = () => {
+            document.getElementById('continueModal').classList.add('hidden');
+            document.getElementById('matchupCard').classList.add('hidden');
+            document.getElementById('noGames').classList.remove('hidden');
+            isProcessingSelection = false;
         };
 
         // Setup swipe listeners
@@ -711,15 +866,53 @@
             // Render standings
             const list = document.getElementById('standingsList');
             list.innerHTML = standings.map((game, idx) => `
-                <div class="flex items-center gap-3 p-2 border-b">
+                <div class="flex items-center gap-3 p-2 border-b cursor-pointer hover:bg-gray-50" onclick="showGameHistory('${game.id}', '${game.name.replace(/'/g, "\\'")}')">
                     <div class="text-lg font-bold text-gray-400 w-8">${idx + 1}</div>
                     <img src="${game.image}" alt="${game.name}" class="w-10 h-10 rounded object-contain bg-gray-100">
                     <div class="flex-1">
                         <div class="font-bold text-sm">${game.name}</div>
                         <div class="text-xs text-gray-600">${game.wins}W - ${game.losses}L (${(game.winPct * 100).toFixed(0)}%)</div>
                     </div>
+                    <div class="text-xs text-blue-600">View →</div>
                 </div>
             `).join('');
+        };
+
+        // Show game history
+        window.showGameHistory = (gameId, gameName) => {
+            const gameMatchups = allMatchups.filter(m => 
+                m.winnerId === gameId || m.loserId === gameId
+            );
+            
+            document.getElementById('gameHistoryTitle').textContent = gameName;
+            
+            const content = document.getElementById('gameHistoryContent');
+            content.innerHTML = gameMatchups.map(m => {
+                const isWinner = m.winnerId === gameId;
+                return `
+                    <div class="bg-${isWinner ? 'green' : 'red'}-50 border border-${isWinner ? 'green' : 'red'}-200 rounded-lg p-3">
+                        <div class="flex items-center gap-2 mb-2">
+                            <div class="text-lg">${isWinner ? '✅' : '❌'}</div>
+                            <div class="flex-1">
+                                <div class="text-sm font-bold">${isWinner ? 'Won' : 'Lost'} vs ${isWinner ? m.loserName : m.winnerName}</div>
+                                <div class="text-xs text-gray-600">${m.timestamp.toDate().toLocaleDateString()}</div>
+                            </div>
+                        </div>
+                        ${m.notes ? `<div class="text-xs text-gray-700">${m.notes}</div>` : ''}
+                        <div class="mt-2 flex gap-2">
+                            <button onclick="event.stopPropagation(); deleteMatchup('${m.id}')" class="text-xs py-1 px-2 rounded bg-red-100 text-red-600">
+                                Delete
+                            </button>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+            
+            document.getElementById('gameHistoryModal').classList.remove('hidden');
+        };
+
+        window.closeGameHistoryModal = () => {
+            document.getElementById('gameHistoryModal').classList.add('hidden');
         };
 
         // Render matchup list
@@ -888,7 +1081,16 @@
             
             try {
                 await deleteDoc(doc(db, 'matchups', id));
-                loadDashboard();
+                
+                // Reload dashboard if we're on it
+                if (!document.getElementById('view-dashboard').classList.contains('hidden')) {
+                    await loadDashboard();
+                }
+                
+                // Close any open modals
+                closeGameHistoryModal();
+                
+                alert('Matchup deleted successfully');
             } catch (error) {
                 console.error('Error deleting matchup:', error);
                 alert('Error deleting matchup');
