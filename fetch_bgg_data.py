@@ -2,45 +2,52 @@ import requests
 import os
 import sys
 
-# Define the URL for the BGG API call
-BGG_API_URL = "https://boardgamegeek.com/xmlapi/geeklist/363504?comments=1"
+# The URL for the new, authenticated BGG API v2 call
+# Note: I have changed the API endpoint to the v2 standard for geeklist.
+BGG_API_URL = "https://api.geekdo.com/xmlapi2/geeklist?id=363504&comments=1" 
 OUTPUT_FILENAME = "mydata.xml"
 
 def fetch_and_save_data():
-    """Fetches data from the BGG API and saves the XML response to a file."""
+    """Fetches data using Bearer token authentication and saves the XML response."""
+    
+    # 1. SECURELY retrieve the token from the environment variable
+    # The name MUST match the 'env:' key defined in the GitHub Actions YAML
+    secret_token = os.environ.get("API_TOKEN") 
+
+    if not secret_token:
+        # Fails the script if the token isn't configured in GitHub Secrets
+        print("Error: API_TOKEN environment variable not set. Aborting.")
+        sys.exit(1)
+
     print(f"Attempting to fetch data from: {BGG_API_URL}")
     
     try:
-        # Use a User-Agent to be polite and identify your script
+        # 2. Construct the required Bearer Authorization Header
         headers = {
-            "User-Agent": "Scheduled BGG Data Fetcher (GitHub Actions)"
+            "User-Agent": "Scheduled BGG Data Fetcher (GitHub Actions)",
+            "Authorization": f"Bearer {secret_token}" 
         }
         
-        # Make the GET request
+        # 3. Make the authenticated GET request
         response = requests.get(BGG_API_URL, headers=headers, timeout=30)
         
-        # Raise an exception for bad status codes (4xx or 5xx)
-        response.raise_for_status()
+        # Raises HTTPError for 4xx/5xx responses (e.g., 401 Unauthorized)
+        response.raise_for_status() 
 
-        # Check if the response content is empty
         if not response.content:
             print("Error: API response was empty.")
             sys.exit(1)
 
-        # Write the raw XML content to the output file
+        # 4. Write the raw XML content to the output file
         with open(OUTPUT_FILENAME, "wb") as f:
             f.write(response.content)
 
         print(f"Success! Data saved to {OUTPUT_FILENAME}")
         
     except requests.exceptions.HTTPError as errh:
-        print(f"HTTP Error occurred: {errh}")
-        sys.exit(1)
-    except requests.exceptions.ConnectionError as errc:
-        print(f"Connection Error occurred: {errc}")
-        sys.exit(1)
-    except requests.exceptions.Timeout as errt:
-        print(f"Timeout Error occurred: {errt}")
+        # Catches authentication or API-side errors
+        print(f"HTTP Error occurred (check token/URL): {errh}")
+        print(f"Response details: {response.text[:200]}...")
         sys.exit(1)
     except requests.exceptions.RequestException as err:
         print(f"An unexpected error occurred: {err}")
