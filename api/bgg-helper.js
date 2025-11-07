@@ -1,5 +1,14 @@
 // api/bgg-helper.js - Centralized BGG API helper with authentication
 
+// Load environment variables from .env file for local development
+if (process.env.NODE_ENV !== 'production') {
+    try {
+        require('dotenv').config();
+    } catch (e) {
+        console.warn('dotenv not available, using system environment variables');
+    }
+}
+
 module.exports = async (req, res) => {
     console.log('--- START: BGG Helper Function Invoked ---');
     
