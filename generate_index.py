@@ -51,9 +51,12 @@ def get_git_commit_time(file_path):
 
 def generate_html_index(output_file='index.html'):
     """
-    Scans for all HTML files, sorts them by their Git commit date (newest first),
-    and generates an index file with client-side sorting and search controls.
+    Scans for all files (excluding certain directories), sorts them by their Git commit date,
+    and generates an index file with file type filtering, client-side sorting and search controls.
     """
+    
+    # Directories to exclude from scanning
+    EXCLUDE_DIRS = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api'}
     
     # --- Start of HTML content ---
     html_content = f"""<!DOCTYPE html>
@@ -86,16 +89,61 @@ def generate_html_index(output_file='index.html'):
             font-size: 16px;
         }}
         /* --- End Search Bar Styles --- */
+        
+        /* --- File Type Filter Styles --- */
+        .filter-controls {{
+            margin-bottom: 20px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+        }}
+        .filter-btn {{
+            padding: 8px 16px;
+            font-size: 13px;
+            border: 2px solid #ddd;
+            background-color: #fff;
+            border-radius: 20px;
+            cursor: pointer;
+            transition: all 0.2s;
+            font-weight: 500;
+        }}
+        .filter-btn:hover {{
+            background-color: #f0f0f0;
+        }}
+        .filter-btn.active {{
+            background-color: #0366d6;
+            color: white;
+            border-color: #0366d6;
+        }}
+        .file-type-badge {{
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-left: 8px;
+        }}
+        .badge-html {{ background-color: #e34c26; color: white; }}
+        .badge-xml {{ background-color: #ff6600; color: white; }}
+        .badge-py {{ background-color: #3776ab; color: white; }}
+        .badge-js {{ background-color: #f7df1e; color: black; }}
+        .badge-json {{ background-color: #000; color: white; }}
+        .badge-yml {{ background-color: #cb171e; color: white; }}
+        .badge-md {{ background-color: #083fa1; color: white; }}
+        .badge-txt {{ background-color: #888; color: white; }}
+        .badge-other {{ background-color: #6c757d; color: white; }}
+        /* --- End File Type Filter Styles --- */
 
         /* --- Sorting Button Styles --- */
         .sort-controls {{
             margin-bottom: 20px;
-            display: flex; /* Ensure buttons wrap nicely on mobile */
+            display: flex;
             flex-wrap: wrap;
             gap: 10px;
         }}
         .sort-btn {{
-            flex-grow: 1; /* Allow buttons to expand */
+            flex-grow: 1;
             padding: 8px 12px;
             font-size: 14px;
             border: 1px solid #ccc;
@@ -164,10 +212,23 @@ def generate_html_index(output_file='index.html'):
 <body>
     <div class="container">
         <h1>Available Applications</h1>
-        <p>Click an application name to open it.</p>
+        <p>Click a file name to open it. Filter by file type below.</p>
+        
+        <!-- File Type Filters -->
+        <div class="filter-controls">
+            <button class="filter-btn active" data-filter="all">All Files</button>
+            <button class="filter-btn" data-filter=".html">HTML</button>
+            <button class="filter-btn" data-filter=".xml">XML</button>
+            <button class="filter-btn" data-filter=".py">Python</button>
+            <button class="filter-btn" data-filter=".js">JavaScript</button>
+            <button class="filter-btn" data-filter=".json">JSON</button>
+            <button class="filter-btn" data-filter=".yml">YML</button>
+            <button class="filter-btn" data-filter=".md">Markdown</button>
+            <button class="filter-btn" data-filter=".txt">Text</button>
+        </div>
         
         <!-- Search Bar -->
-        <input type="text" id="searchInput" placeholder="Search applications by name or file path..." class="search-input">
+        <input type="text" id="searchInput" placeholder="Search files by name or path..." class="search-input">
         
         <!-- Sorting Controls -->
         <div class="sort-controls">
@@ -179,10 +240,20 @@ def generate_html_index(output_file='index.html'):
         <div id="app-list">
 """
     
-    # 1. Find all HTML files
-    all_files = glob.glob('**/*.html', recursive=True)
+    # 1. Find all files (excluding certain directories and the output file)
+    all_files = []
+    for root, dirs, files in os.walk('.'):
+        # Remove excluded directories from the search
+        dirs[:] = [d for d in dirs if d not in EXCLUDE_DIRS]
+        
+        for file in files:
+            file_path = os.path.join(root, file)
+            # Skip the output file itself
+            if file == output_file:
+                continue
+            all_files.append(file_path)
     
-    # 2. Get stats and filter out the output file
+    # 2. Get stats
     file_stats = []
     now_utc = datetime.now(timezone.utc)
     
@@ -191,8 +262,6 @@ def generate_html_index(output_file='index.html'):
     
     for file_path_str in all_files:
         path_obj = Path(file_path_str)
-        if path_obj.name == output_file:
-            continue
             
         # *** USING GIT COMMIT TIME ***
         mtime_epoch = get_git_commit_time(file_path_str)
@@ -200,6 +269,11 @@ def generate_html_index(output_file='index.html'):
 
         mod_time_dt_utc = datetime.fromtimestamp(mtime_epoch, timezone.utc)
         app_name_label = path_obj.stem.replace('-', ' ').replace('_', ' ').title()
+        
+        # Get file extension
+        file_ext = path_obj.suffix.lower()
+        if not file_ext:
+            file_ext = '.txt'  # Default for files without extension
 
         # Calculate time for MTN display
         mod_time_mtn = mod_time_dt_utc + MTN_OFFSET
@@ -208,27 +282,46 @@ def generate_html_index(output_file='index.html'):
         file_stats.append({
             'path': path_obj.as_posix(),
             'mtime': mtime_epoch,
-            'mod_time_str_mtn': mod_time_mtn_str, # Use MTN time string for display
+            'mod_time_str_mtn': mod_time_mtn_str,
             'time_since': format_time_since(now_utc - mod_time_dt_utc),
-            'app_name_lower': app_name_label.lower()
+            'app_name_lower': app_name_label.lower(),
+            'extension': file_ext
         })
 
-    # 3. Sort the list by modification time (mtime), descending (This is the default)
+    # 3. Sort the list by modification time (mtime), descending
     sorted_files = sorted(file_stats, key=lambda x: x['mtime'], reverse=True)
+    
+    # Helper function to get badge class
+    def get_badge_class(ext):
+        badge_map = {
+            '.html': 'html',
+            '.xml': 'xml',
+            '.py': 'py',
+            '.js': 'js',
+            '.json': 'json',
+            '.yml': 'yml',
+            '.yaml': 'yml',
+            '.md': 'md',
+            '.txt': 'txt'
+        }
+        return badge_map.get(ext, 'other')
 
     # 4. Generate HTML for each file
     if not sorted_files:
-        html_content += '<p>No other HTML files found.</p>'
+        html_content += '<p>No files found.</p>'
     else:
         for file_data in sorted_files:
             file_path = file_data['path']
             app_name_label = file_data['app_name_lower'].title()
+            file_ext = file_data['extension']
+            badge_class = get_badge_class(file_ext)
             
-            # Add data- attributes for JavaScript sorting
+            # Add data- attributes for JavaScript sorting and filtering
             html_content += f"""
-            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['app_name_lower']}">
+            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['app_name_lower']}" data-extension="{file_ext}">
                 <a href="{file_path}" class="app-name-header" role="button">
                     {app_name_label}
+                    <span class="file-type-badge badge-{badge_class}">{file_ext[1:]}</span>
                 </a>
                 <div class="file-info">
                     <p><strong>File Name:</strong> {file_path}</p>
@@ -240,7 +333,7 @@ def generate_html_index(output_file='index.html'):
     # End of the app list
     html_content += "        </div> <!-- /#app-list -->\n"
     
-    # --- JavaScript for Sorting and Filtering (Unchanged) ---
+    # --- JavaScript for Sorting, Filtering, and File Type Filter ---
     html_content += """
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -248,62 +341,85 @@ def generate_html_index(output_file='index.html'):
             const btnSortName = document.getElementById('sortByName');
             const appListContainer = document.getElementById('app-list');
             const searchInput = document.getElementById('searchInput');
+            const filterButtons = document.querySelectorAll('.filter-btn');
+            
+            let currentFilter = 'all';
 
             function sortItems(criteria) {
-                // Get all app entries from the container
                 const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
                 
                 let sortedItems;
 
                 if (criteria === 'name') {
-                    // Sort by data-name attribute (A-Z)
                     sortedItems = items.sort((a, b) => {
                         return a.dataset.name.localeCompare(b.dataset.name);
                     });
-                    // Update button active state
                     btnSortName.classList.add('active');
                     btnSortUpdate.classList.remove('active');
-                } else { // Default to 'update'
-                    // Sort by data-mtime attribute (Newest first)
+                } else {
                     sortedItems = items.sort((a, b) => {
-                        // b - a for descending order (newest first)
                         return b.dataset.mtime - a.dataset.mtime;
                     });
-                    // Update button active state
                     btnSortUpdate.classList.add('active');
                     btnSortName.classList.remove('active');
                 }
 
-                // Re-append sorted items to the container
                 sortedItems.forEach(item => {
                     appListContainer.appendChild(item);
                 });
             }
-
-            function filterItems() {
-                const filter = searchInput.value.toLowerCase();
+            
+            function applyFilters() {
+                const searchTerm = searchInput.value.toLowerCase();
                 const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
                 
                 items.forEach(item => {
-                    // Check if the app name (data-name) or file info contains the filter text
                     const appName = item.dataset.name;
-                    const fileInfo = item.querySelector('.file-info').textContent; 
+                    const fileInfo = item.querySelector('.file-info').textContent;
+                    const extension = item.dataset.extension;
                     
-                    if (appName.includes(filter) || fileInfo.toLowerCase().includes(filter)) {
+                    // Check if item matches search term
+                    const matchesSearch = !searchTerm || appName.includes(searchTerm) || fileInfo.toLowerCase().includes(searchTerm);
+                    
+                    // Check if item matches file type filter
+                    const matchesFilter = currentFilter === 'all' || extension === currentFilter;
+                    
+                    // Show item only if it matches both filters
+                    if (matchesSearch && matchesFilter) {
                         item.style.display = 'block';
                     } else {
                         item.style.display = 'none';
                     }
                 });
             }
-
+            
+            function setFileTypeFilter(filter) {
+                currentFilter = filter;
+                
+                // Update active state of filter buttons
+                filterButtons.forEach(btn => {
+                    if (btn.dataset.filter === filter) {
+                        btn.classList.add('active');
+                    } else {
+                        btn.classList.remove('active');
+                    }
+                });
+                
+                applyFilters();
+            }
 
             // Add event listeners
             btnSortUpdate.addEventListener('click', () => sortItems('update'));
             btnSortName.addEventListener('click', () => sortItems('name'));
-            searchInput.addEventListener('keyup', filterItems);
+            searchInput.addEventListener('keyup', applyFilters);
+            
+            filterButtons.forEach(btn => {
+                btn.addEventListener('click', () => {
+                    setFileTypeFilter(btn.dataset.filter);
+                });
+            });
 
-            // Initial filter/sort call
+            // Initial setup
             sortItems('update'); 
         });
     </script>
