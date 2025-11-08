@@ -125,14 +125,14 @@
             <div class="bg-white rounded-lg shadow p-4 mb-4">
                 <label class="block text-sm font-medium text-gray-700 mb-2">Game Mode</label>
                 <select id="gameMode" onchange="toggleTournamentSettings()" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
-                    <option value="standard">Standard Matchups</option>
+                    <option value="standard" selected>Standard Matchups</option>
                     <option value="bracket">Bracket Tournament</option>
                     <option value="roundrobin">Round Robin Tournament</option>
                 </select>
 
                 <!-- Tournament Settings (hidden by default) -->
                 <div id="tournamentSettings" class="hidden mb-3 p-3 bg-gray-50 rounded">
-                    <label class="block text-xs font-medium text-gray-700 mb-2">Field Size (Bracket only)</label>
+                    <label class="block text-xs font-medium text-gray-700 mb-2">Field Size</label>
                     <select id="bracketSize" class="w-full border rounded-lg px-2 py-1 mb-2 text-sm">
                         <option value="4">4 games</option>
                         <option value="8" selected>8 games</option>
@@ -140,20 +140,20 @@
                         <option value="32">32 games</option>
                     </select>
                     
-                    <label class="block text-xs font-medium text-gray-700 mb-2 mt-2">Round Robin: Games per pairing</label>
+                    <label class="block text-xs font-medium text-gray-700 mb-2 mt-2">Games per Pairing</label>
                     <select id="roundRobinCount" class="w-full border rounded-lg px-2 py-1 mb-2 text-sm">
                         <option value="1" selected>Each game plays once</option>
                         <option value="2">Each game plays twice (home/away)</option>
                         <option value="3">Each game plays 3 times</option>
                     </select>
                     
-                    <p class="text-xs text-gray-600 italic mt-2">Bracket: top N games by standings. Round Robin: all loaded games.</p>
+                    <p class="text-xs text-gray-600 italic mt-2">Bracket & Round Robin: uses Field Size to limit number of games in tournament.</p>
                 </div>
 
                 <label class="block text-sm font-medium text-gray-700 mb-2">Matchup Mode</label>
                 <select id="matchupMode" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
-                    <option value="all">All Games (Standard)</option>
-                    <option value="used-only" selected>Previously Matched Games Only</option>
+                    <option value="all" selected>All Games (Standard)</option>
+                    <option value="used-only">Previously Matched Games Only</option>
                     <option value="new-only">New Games Only (Never Matched)</option>
                     <option value="hybrid">Hybrid (Mix Used & New)</option>
                 </select>
@@ -193,6 +193,10 @@
                 <label class="flex items-center mb-3">
                     <input type="checkbox" id="excludeExpansions" checked class="mr-2">
                     <span class="text-sm">Exclude Expansions</span>
+                </label>
+                <label class="flex items-center mb-3">
+                    <input type="checkbox" id="playedRequired" checked class="mr-2">
+                    <span class="text-sm">Played Required (1+ appearance)</span>
                 </label>
                 <button onclick="loadGames()" class="w-full bg-blue-600 text-white py-2 rounded-lg font-medium">
                     Load Games
@@ -785,6 +789,7 @@
             
             const filters = Array.from(document.querySelectorAll('.collection-filter:checked')).map(cb => cb.value);
             const excludeExpansions = document.getElementById('excludeExpansions').checked;
+            const playedRequired = document.getElementById('playedRequired').checked;
             matchupMode = document.getElementById('matchupMode').value;
             
             try {
@@ -840,6 +845,11 @@
                     }
                 } else {
                     games = allGames; // 'all' mode
+                }
+                
+                // Filter based on playedRequired toggle
+                if (playedRequired) {
+                    games = games.filter(g => usedGameIds.has(g.id));
                 }
                 
                 // Shuffle games
@@ -1239,10 +1249,14 @@
 
         // Initialize round robin tournament
         function initializeRoundRobin(availableGames) {
+            const fieldSize = parseInt(document.getElementById('bracketSize').value);
             const roundRobinCount = parseInt(document.getElementById('roundRobinCount').value);
             
+            // Limit games to field size
+            const selectedGames = availableGames.slice(0, fieldSize);
+            
             roundRobinState = {
-                allGames: availableGames,
+                allGames: selectedGames,
                 totalRounds: roundRobinCount,
                 currentRound: 1,
                 completedPairings: new Set()
@@ -1306,12 +1320,15 @@
             
             bracketState.winners.push(winnerId);
             
-            // Check if round is complete
-            if (bracketState.winners.length === Math.ceil(bracketState.roundGames.length / 2)) {
+            // Check if round is complete - we need exact number of matchups to be won
+            // Each match produces one winner, so if we have N games, we need N/2 matches won
+            const expectedWinnersThisRound = Math.floor(bracketState.roundGames.length / 2);
+            if (bracketState.winners.length === expectedWinnersThisRound) {
                 // Advance to next round
                 bracketState.round++;
                 bracketState.roundGames = bracketState.winners;
                 bracketState.winners = [];
+                pairingIndex = 0; // Reset pairing index for new round
                 generateBracketPairings();
             }
         }
@@ -1328,6 +1345,7 @@
                 if (roundRobinState.currentRound < roundRobinState.totalRounds) {
                     // Start next round
                     roundRobinState.currentRound++;
+                    pairingIndex = 0; // Reset pairing index for new round
                     generateRoundRobinPairings();
                 } else {
                     // Tournament complete
@@ -2245,23 +2263,38 @@
             );
             
             list.innerHTML = filtered.map(m => `
-                <div class="bg-white rounded-lg shadow p-4 matchup-result cursor-pointer" onclick="showRawData('${m.id}')">
-                    <div class="flex items-center gap-3 mb-2">
-                        <img src="${m.winnerImage}" alt="${m.winnerName}" class="w-12 h-12 rounded object-contain bg-gray-100">
-                        <div class="flex-1">
-                            <div class="font-bold text-sm">${m.winnerName}</div>
-                            <div class="text-xs text-gray-500">defeated ${m.loserName}</div>
+                <div class="bg-white rounded-lg shadow p-3 matchup-result cursor-pointer" onclick="showRawData('${m.id}')">
+                    <div class="flex items-center justify-between gap-2 mb-2">
+                        <!-- Winner (Left) -->
+                        <div class="flex items-center gap-1 flex-1">
+                            <img src="${m.winnerImage}" alt="${m.winnerName}" class="w-10 h-10 rounded object-contain bg-gray-100">
+                            <div class="min-w-0">
+                                <div class="font-bold text-xs leading-tight truncate">${m.winnerName}</div>
+                                <div class="text-xs text-green-600 font-semibold">Won</div>
+                            </div>
                         </div>
-                        <div class="text-xs text-gray-400">
-                            ${m.timestamp.toDate().toLocaleDateString()}
+                        
+                        <!-- Date (Middle) -->
+                        <div class="text-center text-xs px-2">
+                            <div class="text-gray-700 font-medium">${m.timestamp.toDate().toLocaleDateString()}</div>
+                            <div class="text-gray-500 text-xs">${m.timestamp.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}</div>
+                        </div>
+                        
+                        <!-- Loser (Right) -->
+                        <div class="flex items-center gap-1 flex-1 justify-end">
+                            <div class="min-w-0 text-right">
+                                <div class="font-bold text-xs leading-tight truncate">${m.loserName}</div>
+                                <div class="text-xs text-red-600 font-semibold">Lost</div>
+                            </div>
+                            <img src="${m.loserImage}" alt="${m.loserName}" class="w-10 h-10 rounded object-contain bg-gray-100">
                         </div>
                     </div>
-                    ${m.notes ? `<div class="text-xs text-gray-600 mb-2">${m.notes}</div>` : ''}
-                    <div class="flex gap-2" onclick="event.stopPropagation()">
-                        <button onclick="editMatchup('${m.id}')" class="flex-1 text-xs py-1 px-3 rounded bg-blue-50 text-blue-600">
+                    ${m.notes ? `<div class="text-xs text-gray-600 mt-2 px-2 italic border-t pt-2">"${m.notes}"</div>` : ''}
+                    <div class="flex gap-2 mt-2" onclick="event.stopPropagation()">
+                        <button onclick="editMatchup('${m.id}')" class="flex-1 text-xs py-1 px-2 rounded bg-blue-50 text-blue-600">
                             Edit
                         </button>
-                        <button onclick="deleteMatchup('${m.id}')" class="flex-1 text-xs py-1 px-3 rounded bg-red-50 text-red-600">
+                        <button onclick="deleteMatchup('${m.id}')" class="flex-1 text-xs py-1 px-2 rounded bg-red-50 text-red-600">
                             Delete
                         </button>
                     </div>
