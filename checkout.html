@@ -187,6 +187,21 @@
                     Logout
                 </button>
             </div>
+
+            <div class="bg-white rounded-lg shadow p-4 mb-4">
+                <h3 class="font-bold text-gray-900 mb-3">Bulk Import</h3>
+                <p class="text-xs text-gray-600 mb-3">Paste JSON array or CSV with game data</p>
+                <textarea id="bulkImportData" class="w-full border rounded-lg px-3 py-2 text-sm font-mono" rows="8" placeholder='[{"gameName":"Catan","checkoutDate":"2025-01-15"}] or&#10;gameName,checkoutDate&#10;Catan,2025-01-15'></textarea>
+                <div class="flex gap-2 mt-3">
+                    <button onclick="bulkImportJSON()" class="flex-1 py-2 px-3 bg-green-600 text-white rounded-lg text-sm font-medium">
+                        Import JSON
+                    </button>
+                    <button onclick="bulkImportCSV()" class="flex-1 py-2 px-3 bg-blue-600 text-white rounded-lg text-sm font-medium">
+                        Import CSV
+                    </button>
+                </div>
+                <p id="importStatus" class="text-xs mt-2 text-gray-600"></p>
+            </div>
         </div>
     </div>
 
@@ -570,6 +585,135 @@
             if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('app_password_hint');
                 location.reload();
+            }
+        };
+
+        // Bulk import from JSON
+        window.bulkImportJSON = async () => {
+            const data = document.getElementById('bulkImportData').value.trim();
+            if (!data) {
+                alert('Please paste JSON data');
+                return;
+            }
+
+            try {
+                const records = JSON.parse(data);
+                if (!Array.isArray(records)) {
+                    alert('JSON must be an array of objects');
+                    return;
+                }
+
+                let imported = 0;
+                for (const record of records) {
+                    if (!record.gameName) {
+                        console.warn('Skipping record without gameName:', record);
+                        continue;
+                    }
+
+                    // Parse date if it's a string
+                    let checkoutDate = record.checkoutDate;
+                    if (typeof checkoutDate === 'string') {
+                        checkoutDate = Timestamp.fromDate(new Date(checkoutDate));
+                    } else if (checkoutDate instanceof Date) {
+                        checkoutDate = Timestamp.fromDate(checkoutDate);
+                    } else {
+                        checkoutDate = Timestamp.now();
+                    }
+
+                    try {
+                        await addDoc(collection(db, 'checkouts'), {
+                            gameName: record.gameName,
+                            gameImage: record.gameImage || 'https://via.placeholder.com/100?text=No+Image',
+                            gameId: record.gameId || '',
+                            checkoutDate: checkoutDate,
+                            username: bggUsername
+                        });
+                        imported++;
+                    } catch (error) {
+                        console.error('Error importing record:', record, error);
+                    }
+                }
+
+                document.getElementById('importStatus').textContent = `✅ Imported ${imported}/${records.length} records`;
+                document.getElementById('bulkImportData').value = '';
+                
+                // Reload after short delay
+                setTimeout(async () => {
+                    await loadCheckouts();
+                    renderHistoryList();
+                }, 500);
+
+            } catch (error) {
+                alert('Invalid JSON format: ' + error.message);
+            }
+        };
+
+        // Bulk import from CSV
+        window.bulkImportCSV = async () => {
+            const data = document.getElementById('bulkImportData').value.trim();
+            if (!data) {
+                alert('Please paste CSV data');
+                return;
+            }
+
+            try {
+                const lines = data.split('\n').filter(l => l.trim());
+                const headers = lines[0].split(',').map(h => h.trim().toLowerCase());
+                
+                if (!headers.includes('gamename')) {
+                    alert('CSV must have "gameName" column');
+                    return;
+                }
+
+                const gameNameIndex = headers.indexOf('gamename');
+                const dateIndex = headers.indexOf('checkoutdate');
+                const imageIndex = headers.indexOf('gameimage');
+                const gameIdIndex = headers.indexOf('gameid');
+
+                let imported = 0;
+                for (let i = 1; i < lines.length; i++) {
+                    const parts = lines[i].split(',').map(p => p.trim());
+                    const gameName = parts[gameNameIndex];
+                    
+                    if (!gameName) {
+                        console.warn('Skipping row without gameName:', lines[i]);
+                        continue;
+                    }
+
+                    let checkoutDate = Timestamp.now();
+                    if (dateIndex >= 0 && parts[dateIndex]) {
+                        try {
+                            checkoutDate = Timestamp.fromDate(new Date(parts[dateIndex]));
+                        } catch (e) {
+                            // Keep current timestamp if date is invalid
+                        }
+                    }
+
+                    try {
+                        await addDoc(collection(db, 'checkouts'), {
+                            gameName: gameName,
+                            gameImage: (imageIndex >= 0 ? parts[imageIndex] : '') || 'https://via.placeholder.com/100?text=No+Image',
+                            gameId: (gameIdIndex >= 0 ? parts[gameIdIndex] : '') || '',
+                            checkoutDate: checkoutDate,
+                            username: bggUsername
+                        });
+                        imported++;
+                    } catch (error) {
+                        console.error('Error importing row:', lines[i], error);
+                    }
+                }
+
+                document.getElementById('importStatus').textContent = `✅ Imported ${imported}/${lines.length - 1} records`;
+                document.getElementById('bulkImportData').value = '';
+                
+                // Reload after short delay
+                setTimeout(async () => {
+                    await loadCheckouts();
+                    renderHistoryList();
+                }, 500);
+
+            } catch (error) {
+                alert('Error parsing CSV: ' + error.message);
             }
         };
     </script>
