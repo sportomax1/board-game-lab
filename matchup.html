@@ -1197,15 +1197,17 @@
         function initializeBracket(availableGames) {
             const fieldSize = parseInt(document.getElementById('bracketSize').value);
             
-            // Randomize games and take top N (field is random but fixed for this tournament)
+            // Randomize games and take field size (field is random but FIXED for entire tournament)
             let shuffledGames = [...availableGames].sort(() => Math.random() - 0.5);
             const bracketGames = shuffledGames.slice(0, fieldSize);
             
+            console.log(`[BRACKET] Starting bracket with ${bracketGames.length} games:`, bracketGames.map(g => g.name));
+            
             bracketState = {
-                initialGames: bracketGames, // Store initial bracket - stays fixed
+                allGames: bracketGames,      // Complete fixed field - NEVER changes
                 round: 1,
-                roundGames: bracketGames,
-                winners: []
+                currentRound: [...bracketGames], // Current round participants
+                winners: []                  // Winners from current round
             };
             
             generateBracketPairings();
@@ -1214,21 +1216,32 @@
 
         // Generate bracket pairings for current round
         function generateBracketPairings() {
-            if (!bracketState || bracketState.roundGames.length < 2) {
-                // Tournament complete
+            if (!bracketState) return;
+            
+            console.log(`[BRACKET] Round ${bracketState.round}: ${bracketState.currentRound.length} games`, bracketState.currentRound.map(g => g.name));
+            
+            if (bracketState.currentRound.length < 2) {
+                // Tournament complete - we have a winner
                 showTournamentResults();
                 return;
             }
             
+            // Pair up games in current round
             tournamentPairings = [];
-            for (let i = 0; i < bracketState.roundGames.length; i += 2) {
-                if (i + 1 < bracketState.roundGames.length) {
+            for (let i = 0; i < bracketState.currentRound.length; i += 2) {
+                if (i + 1 < bracketState.currentRound.length) {
                     tournamentPairings.push({
-                        left: bracketState.roundGames[i],
-                        right: bracketState.roundGames[i + 1]
+                        left: bracketState.currentRound[i],
+                        right: bracketState.currentRound[i + 1]
                     });
+                } else {
+                    // Odd number - this game gets a bye to next round
+                    console.log(`[BRACKET] ${bracketState.currentRound[i].name} gets a bye`);
+                    bracketState.winners.push(bracketState.currentRound[i]);
                 }
             }
+            
+            console.log(`[BRACKET] Generated ${tournamentPairings.length} pairings for round ${bracketState.round}`);
             pairingIndex = 0;
         }
 
@@ -1314,21 +1327,31 @@
         function recordBracketWinner(winnerId) {
             if (!bracketState) return;
             
-            // Find the full game object
-            const winnerGame = bracketState.roundGames.find(g => g.id === winnerId);
-            if (!winnerGame) return;
+            // Find the full game object from currentRound
+            const winnerGame = bracketState.currentRound.find(g => g.id === winnerId);
+            if (!winnerGame) {
+                console.error('[BRACKET] Winner not found in currentRound!', winnerId);
+                return;
+            }
             
+            console.log(`[BRACKET] Winner: ${winnerGame.name}`);
             bracketState.winners.push(winnerGame);
             
-            // Check if round is complete - we need exact number of matchups to be won
-            // Each match produces one winner, so if we have N games, we need N/2 matches won
-            const expectedWinnersThisRound = Math.floor(bracketState.roundGames.length / 2);
-            if (bracketState.winners.length === expectedWinnersThisRound) {
-                // Advance to next round
+            // Check if round is complete
+            // Expected winners = number of pairings (not counting byes which were already added)
+            const expectedWinners = tournamentPairings.length;
+            
+            console.log(`[BRACKET] Winners so far: ${bracketState.winners.length}/${expectedWinners + (bracketState.currentRound.length % 2)}`);
+            
+            if (bracketState.winners.length >= Math.ceil(bracketState.currentRound.length / 2)) {
+                // Round complete - advance to next round
+                console.log(`[BRACKET] Round ${bracketState.round} complete! Winners:`, bracketState.winners.map(g => g.name));
+                
                 bracketState.round++;
-                bracketState.roundGames = bracketState.winners;
-                bracketState.winners = [];
-                pairingIndex = 0; // Reset pairing index for new round
+                bracketState.currentRound = [...bracketState.winners]; // Winners become next round's participants
+                bracketState.winners = []; // Clear winners for next round
+                pairingIndex = 0;
+                
                 generateBracketPairings();
             }
         }
@@ -1367,9 +1390,10 @@
             let completedPairings = pairingIndex;
             
             if (gameMode === 'bracket' && bracketState) {
-                const gamesPerRound = Math.ceil(bracketState.roundGames.length / 2);
-                progressText = `Bracket Round ${bracketState.round}: Match ${pairingIndex + 1} of ${gamesPerRound}`;
-                totalPairings = gamesPerRound;
+                const totalMatches = tournamentPairings.length;
+                const totalInRound = Math.ceil(bracketState.currentRound.length / 2);
+                progressText = `Bracket Round ${bracketState.round} (${bracketState.currentRound.length} games): Match ${pairingIndex + 1} of ${totalMatches}`;
+                totalPairings = totalMatches;
                 completedPairings = pairingIndex;
             } else if (gameMode === 'roundrobin' && roundRobinState) {
                 progressText = `Round Robin Round ${roundRobinState.currentRound}/${roundRobinState.totalRounds}: Pairing ${pairingIndex + 1} of ${tournamentPairings.length}`;
