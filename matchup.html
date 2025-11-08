@@ -139,13 +139,21 @@
                         <option value="16">16 games</option>
                         <option value="32">32 games</option>
                     </select>
-                    <p class="text-xs text-gray-600 italic">Round Robin will use all loaded games</p>
+                    
+                    <label class="block text-xs font-medium text-gray-700 mb-2 mt-2">Round Robin: Games per pairing</label>
+                    <select id="roundRobinCount" class="w-full border rounded-lg px-2 py-1 mb-2 text-sm">
+                        <option value="1" selected>Each game plays once</option>
+                        <option value="2">Each game plays twice (home/away)</option>
+                        <option value="3">Each game plays 3 times</option>
+                    </select>
+                    
+                    <p class="text-xs text-gray-600 italic mt-2">Bracket: top N games by standings. Round Robin: all loaded games.</p>
                 </div>
 
                 <label class="block text-sm font-medium text-gray-700 mb-2">Matchup Mode</label>
                 <select id="matchupMode" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
                     <option value="all">All Games (Standard)</option>
-                    <option value="used-only">Previously Matched Games Only</option>
+                    <option value="used-only" selected>Previously Matched Games Only</option>
                     <option value="new-only">New Games Only (Never Matched)</option>
                     <option value="hybrid">Hybrid (Mix Used & New)</option>
                 </select>
@@ -597,6 +605,14 @@
         let currentView = 'matchup'; // Track current view
         let currentDashboardTab = 'matchups'; // Track current dashboard tab
 
+        // Tournament state
+        let gameMode = 'standard'; // standard, bracket, roundrobin
+        let bracketState = null; // Bracket tournament data
+        let roundRobinState = null; // Round robin tournament data
+        let tournamentActive = false;
+        let tournamentPairings = []; // Queue of pairings to play
+        let pairingIndex = 0; // Current pairing progress
+
         // Unlock app with password
         window.unlockApp = async () => {
             const password = document.getElementById('appPassword').value;
@@ -844,6 +860,12 @@
                 // Update live appearances
                 updateLiveAppearances();
                 
+                // Initialize tournament if mode is not standard
+                gameMode = document.getElementById('gameMode').value;
+                if (gameMode !== 'standard') {
+                    initializeTournament(games);
+                }
+                
                 nextPair();
             } catch (error) {
                 alert('Error loading collection: ' + error.message);
@@ -922,6 +944,16 @@
 
         // Show next pair
         function nextPair() {
+            // Check tournament pairings first
+            if (tournamentActive) {
+                const tournamentPair = getNextTournamentPairing();
+                if (tournamentPair) {
+                    currentPair = { left: tournamentPair.left, right: tournamentPair.right };
+                    renderMatchupCard();
+                    return;
+                }
+            }
+            
             if (games.length < 2) {
                 document.getElementById('matchupCard').classList.add('hidden');
                 document.getElementById('noGames').classList.remove('hidden');
@@ -947,6 +979,14 @@
             }
             
             currentPair = { left, right };
+            renderMatchupCard();
+        }
+        
+        // Render matchup card
+        function renderMatchupCard() {
+            if (!currentPair) return;
+            
+            const { left, right } = currentPair;
             
             document.getElementById('leftImage').src = left.image;
             document.getElementById('leftName').textContent = left.name;
@@ -1129,6 +1169,245 @@
             }
         };
 
+        // Initialize tournament based on mode
+        function initializeTournament(availableGames) {
+            const mode = document.getElementById('gameMode').value;
+            
+            if (mode === 'bracket') {
+                initializeBracket(availableGames);
+            } else if (mode === 'roundrobin') {
+                initializeRoundRobin(availableGames);
+            }
+            
+            updateTournamentProgress();
+        }
+
+        // Initialize bracket tournament
+        function initializeBracket(availableGames) {
+            const fieldSize = parseInt(document.getElementById('bracketSize').value);
+            
+            // Sort games by ELO/standings and take top N
+            let sortedGames = [...availableGames];
+            sortedGames.sort((a, b) => {
+                const statsA = getGameStats(a.id);
+                const statsB = getGameStats(b.id);
+                return statsB.wins - statsA.wins; // Higher wins = better seeding
+            });
+            
+            const bracketGames = sortedGames.slice(0, fieldSize);
+            
+            bracketState = {
+                initialGames: bracketGames,
+                round: 1,
+                roundGames: bracketGames,
+                winners: []
+            };
+            
+            generateBracketPairings();
+            tournamentActive = true;
+        }
+
+        // Generate bracket pairings for current round
+        function generateBracketPairings() {
+            if (!bracketState || bracketState.roundGames.length < 2) {
+                // Tournament complete
+                showTournamentResults();
+                return;
+            }
+            
+            tournamentPairings = [];
+            for (let i = 0; i < bracketState.roundGames.length; i += 2) {
+                if (i + 1 < bracketState.roundGames.length) {
+                    tournamentPairings.push({
+                        left: bracketState.roundGames[i],
+                        right: bracketState.roundGames[i + 1]
+                    });
+                }
+            }
+            pairingIndex = 0;
+        }
+
+        // Get game stats for seeding
+        function getGameStats(gameId) {
+            const stats = { wins: 0, losses: 0 };
+            allMatchups.forEach(m => {
+                if (m.winnerId === gameId) stats.wins++;
+                if (m.loserId === gameId) stats.losses++;
+            });
+            return stats;
+        }
+
+        // Initialize round robin tournament
+        function initializeRoundRobin(availableGames) {
+            const roundRobinCount = parseInt(document.getElementById('roundRobinCount').value);
+            
+            roundRobinState = {
+                allGames: availableGames,
+                totalRounds: roundRobinCount,
+                currentRound: 1,
+                completedPairings: new Set()
+            };
+            
+            generateRoundRobinPairings();
+            tournamentActive = true;
+        }
+
+        // Generate all pairings for round robin
+        function generateRoundRobinPairings() {
+            if (!roundRobinState) return;
+            
+            tournamentPairings = [];
+            const { allGames, totalRounds, currentRound } = roundRobinState;
+            
+            // Generate all unique pairings for current round
+            for (let i = 0; i < allGames.length; i++) {
+                for (let j = i + 1; j < allGames.length; j++) {
+                    const pairKey = `${i}-${j}-round${currentRound}`;
+                    if (!roundRobinState.completedPairings.has(pairKey)) {
+                        tournamentPairings.push({
+                            left: allGames[i],
+                            right: allGames[j],
+                            pairKey: pairKey
+                        });
+                    }
+                }
+            }
+            
+            pairingIndex = 0;
+        }
+
+        // Get next tournament pairing
+        function getNextTournamentPairing() {
+            if (!tournamentActive || tournamentPairings.length === 0) return null;
+            if (pairingIndex >= tournamentPairings.length) return null;
+            
+            return tournamentPairings[pairingIndex];
+        }
+
+        // Record tournament result
+        function recordTournamentResult(winnerId, loserId) {
+            if (!tournamentActive) return;
+            
+            const gameMode = document.getElementById('gameMode').value;
+            
+            if (gameMode === 'bracket') {
+                recordBracketWinner(winnerId);
+            } else if (gameMode === 'roundrobin') {
+                recordRoundRobinResult();
+            }
+            
+            pairingIndex++;
+            updateTournamentProgress();
+        }
+
+        // Record bracket round winner
+        function recordBracketWinner(winnerId) {
+            if (!bracketState) return;
+            
+            bracketState.winners.push(winnerId);
+            
+            // Check if round is complete
+            if (bracketState.winners.length === Math.ceil(bracketState.roundGames.length / 2)) {
+                // Advance to next round
+                bracketState.round++;
+                bracketState.roundGames = bracketState.winners;
+                bracketState.winners = [];
+                generateBracketPairings();
+            }
+        }
+
+        // Record round robin result
+        function recordRoundRobinResult() {
+            if (!roundRobinState || pairingIndex >= tournamentPairings.length) return;
+            
+            const pairing = tournamentPairings[pairingIndex];
+            roundRobinState.completedPairings.add(pairing.pairKey);
+            
+            // Check if all pairings complete
+            if (pairingIndex + 1 >= tournamentPairings.length) {
+                if (roundRobinState.currentRound < roundRobinState.totalRounds) {
+                    // Start next round
+                    roundRobinState.currentRound++;
+                    generateRoundRobinPairings();
+                } else {
+                    // Tournament complete
+                    showTournamentResults();
+                }
+            }
+        }
+
+        // Update tournament progress display
+        function updateTournamentProgress() {
+            if (!tournamentActive) {
+                document.getElementById('tournamentProgress').classList.add('hidden');
+                return;
+            }
+            
+            const gameMode = document.getElementById('gameMode').value;
+            let progressText = '';
+            let totalPairings = tournamentPairings.length;
+            let completedPairings = pairingIndex;
+            
+            if (gameMode === 'bracket' && bracketState) {
+                const gamesPerRound = Math.ceil(bracketState.roundGames.length / 2);
+                progressText = `Bracket Round ${bracketState.round}: Match ${pairingIndex + 1} of ${gamesPerRound}`;
+                totalPairings = gamesPerRound;
+                completedPairings = pairingIndex;
+            } else if (gameMode === 'roundrobin' && roundRobinState) {
+                progressText = `Round Robin Round ${roundRobinState.currentRound}/${roundRobinState.totalRounds}: Pairing ${pairingIndex + 1} of ${tournamentPairings.length}`;
+                totalPairings = tournamentPairings.length;
+                completedPairings = pairingIndex;
+            }
+            
+            if (progressText) {
+                const progressDiv = document.getElementById('tournamentProgress') || createTournamentProgressDiv();
+                progressDiv.innerHTML = `
+                    <div class="bg-blue-100 border border-blue-300 rounded-lg p-3 mb-3">
+                        <div class="text-sm font-bold text-blue-900 mb-2">${progressText}</div>
+                        <div class="w-full bg-blue-200 rounded-full h-2">
+                            <div class="bg-blue-600 h-2 rounded-full" style="width: ${totalPairings > 0 ? (completedPairings / totalPairings * 100) : 0}%"></div>
+                        </div>
+                    </div>
+                `;
+                progressDiv.classList.remove('hidden');
+            }
+        }
+
+        // Create tournament progress div if needed
+        function createTournamentProgressDiv() {
+            const progressDiv = document.createElement('div');
+            progressDiv.id = 'tournamentProgress';
+            const matchupCard = document.getElementById('matchupCard');
+            if (matchupCard && matchupCard.parentNode) {
+                matchupCard.parentNode.insertBefore(progressDiv, matchupCard);
+            }
+            return progressDiv;
+        }
+
+        // Show tournament results
+        function showTournamentResults() {
+            tournamentActive = false;
+            const gameMode = document.getElementById('gameMode').value;
+            let resultText = '';
+            
+            if (gameMode === 'bracket' && bracketState) {
+                resultText = `🏆 Bracket Champion: ${bracketState.roundGames[0]?.name || 'Unknown'}`;
+            } else if (gameMode === 'roundrobin') {
+                resultText = '✅ Round Robin Tournament Complete!';
+            }
+            
+            if (resultText) {
+                alert(resultText);
+            }
+            
+            // Reset to standard mode
+            document.getElementById('gameMode').value = 'standard';
+            gameMode = 'standard';
+            toggleTournamentSettings();
+            pairingIndex = 0;
+            tournamentPairings = [];
+        }
+
         // Check and show achievements
         function checkAchievements() {
             const totalMatchups = allMatchups.length + 1; // +1 for just-saved matchup
@@ -1225,6 +1504,11 @@
                     loserName: loser.name,
                     timestamp: Timestamp.now()
                 });
+                
+                // Record tournament result if in tournament mode
+                if (tournamentActive) {
+                    recordTournamentResult(winner.id, loser.id);
+                }
                 
                 // Update live appearances
                 updateLiveAppearances();
@@ -1912,23 +2196,35 @@
             content.innerHTML = gameMatchups.map(m => {
                 const isWinner = m.winnerId === gameId;
                 return `
-                    <div class="bg-${isWinner ? 'green' : 'red'}-50 border border-${isWinner ? 'green' : 'red'}-200 rounded-lg p-3">
-                        <div class="flex items-center gap-2 mb-2">
-                            <div class="text-lg">${isWinner ? '✅' : '❌'}</div>
-                            <div class="flex-1">
-                                <div class="text-sm font-bold">${isWinner ? 'Won' : 'Lost'} vs ${isWinner ? m.loserName : m.winnerName}</div>
-                                <div class="text-xs text-gray-600">${m.timestamp.toDate().toLocaleDateString()}</div>
+                    <div class="bg-white rounded-lg shadow-sm border-l-4 border-l-${isWinner ? 'green' : 'red'}-500 p-3">
+                        <div class="flex items-center justify-between gap-2 mb-2">
+                            <div class="flex-1 text-center">
+                                <div class="text-xs font-bold text-gray-600 mb-1">WINNER</div>
+                                <div class="flex items-center justify-center gap-2">
+                                    <img src="${isWinner ? m.winnerImage : m.loserImage}" alt="" class="w-8 h-8 rounded object-contain bg-gray-100">
+                                    <div class="text-sm font-bold">${isWinner ? m.winnerName : m.loserName}</div>
+                                </div>
+                            </div>
+                            <div class="text-xl font-bold text-gray-400">vs</div>
+                            <div class="flex-1 text-center">
+                                <div class="text-xs font-bold text-gray-600 mb-1">LOSER</div>
+                                <div class="flex items-center justify-center gap-2">
+                                    <img src="${isWinner ? m.loserImage : m.winnerImage}" alt="" class="w-8 h-8 rounded object-contain bg-gray-100">
+                                    <div class="text-sm font-bold">${isWinner ? m.loserName : m.winnerName}</div>
+                                </div>
                             </div>
                         </div>
-                        ${m.notes ? `<div class="text-xs text-gray-700">${m.notes}</div>` : ''}
-                        <div class="mt-2 flex gap-2">
-                            <button onclick="event.stopPropagation(); deleteMatchup('${m.id}')" class="text-xs py-1 px-2 rounded bg-red-100 text-red-600">
-                                Delete
-                            </button>
+                        <div class="text-xs text-center text-gray-600 border-t pt-2">
+                            📅 ${m.timestamp.toDate().toLocaleDateString()} at ${m.timestamp.toDate().toLocaleTimeString([], {hour: '2-digit', minute:'2-digit'})}
                         </div>
+                        ${m.notes ? `<div class="text-xs text-gray-700 mt-2 italic">"${m.notes}"</div>` : ''}
+                        <button onclick="event.stopPropagation(); deleteMatchup('${m.id}')" class="w-full text-xs py-1.5 mt-2 rounded bg-red-100 text-red-600 hover:bg-red-200 font-medium">
+                            Delete
+                        </button>
                     </div>
                 `;
             }).join('');
+            
             
             document.getElementById('gameHistoryModal').classList.remove('hidden');
         };
