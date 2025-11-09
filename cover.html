@@ -1,0 +1,542 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGG Collection Grid</title>
+    <style>
+        body { 
+            margin: 0; 
+            padding: 0; 
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; 
+            background: #f7f7fa; 
+            color: #222; 
+        }
+        .container { 
+            max-width: 600px; 
+            margin: 0 auto; 
+            padding: 2em 1em; 
+        }
+        h1 { 
+            font-size: 1.7em; 
+            margin-bottom: 1em; 
+            text-align: center; 
+        }
+        
+        .form-container { 
+            background: #fff; 
+            border-radius: 12px; 
+            box-shadow: 0 2px 12px #0001; 
+            padding: 1.5em; 
+            margin-bottom: 1.5em; 
+        }
+        .form-group { 
+            margin-bottom: 1em; 
+        }
+        .form-label { 
+            display: block; 
+            font-weight: 600; 
+            margin-bottom: 0.5em; 
+            color: #333; 
+        }
+        .form-input { 
+            width: 100%; 
+            padding: 0.8em; 
+            border: 1px solid #ccc; 
+            border-radius: 8px; 
+            font-size: 1em; 
+            box-sizing: border-box; 
+        }
+        .form-input:focus { 
+            outline: none; 
+            border-color: #1976d2; 
+            box-shadow: 0 0 5px rgba(25, 118, 210, 0.3); 
+        }
+        
+        .button-group {
+            display: flex;
+            gap: 0.5em;
+        }
+        .submit-btn { 
+            flex: 1;
+            background: #1976d2; 
+            color: #fff; 
+            border: none; 
+            border-radius: 8px; 
+            padding: 1em; 
+            font-size: 1em; 
+            font-weight: 600; 
+            cursor: pointer; 
+        }
+        .submit-btn:hover { 
+            background: #1565c0; 
+        }
+        .submit-btn:disabled { 
+            background: #ccc; 
+            cursor: not-allowed; 
+        }
+        .print-btn {
+            flex: 1;
+            background: #4caf50;
+            color: #fff;
+            border: none;
+            border-radius: 8px;
+            padding: 1em;
+            font-size: 1em;
+            font-weight: 600;
+            cursor: pointer;
+        }
+        .print-btn:hover {
+            background: #45a049;
+        }
+        .print-btn:disabled {
+            background: #ccc;
+            cursor: not-allowed;
+        }
+        
+        .loading { 
+            text-align: center; 
+            color: #888; 
+            font-size: 1.1em; 
+            margin: 2em 0; 
+        }
+        .stats { 
+            background: #e3f2fd; 
+            border-radius: 8px; 
+            padding: 1em; 
+            margin-bottom: 1em; 
+            font-size: 0.95em; 
+        }
+        .error { 
+            background: #ffebee; 
+            color: #c62828; 
+            border-radius: 8px; 
+            padding: 1em; 
+            margin: 1em 0; 
+        }
+
+        /* Preview grid */
+        .preview-container {
+            background: #fff;
+            border-radius: 12px;
+            box-shadow: 0 2px 12px #0001;
+            padding: 1em;
+            margin-top: 1em;
+        }
+        .preview-grid {
+            display: grid;
+            grid-template-columns: repeat(auto-fill, minmax(60px, 1fr));
+            gap: 4px;
+            margin-top: 1em;
+        }
+        .preview-tile {
+            aspect-ratio: 1;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            overflow: hidden;
+            background: #f5f5f5;
+            position: relative;
+        }
+        .preview-tile img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+        .preview-rank {
+            position: absolute;
+            top: 2px;
+            left: 2px;
+            background: rgba(0,0,0,0.8);
+            color: white;
+            font-size: 9px;
+            padding: 1px 3px;
+            border-radius: 2px;
+            font-weight: bold;
+        }
+    </style>
+</head>
+<body>
+    <div class="container">
+        <h1>🎲 BGG Collection Grid</h1>
+        
+        <div class="form-container">
+            <div class="form-group">
+                <label class="form-label" for="username">BGG Username:</label>
+                <input type="text" id="username" class="form-input" value="sportomax" placeholder="Enter BGG username">
+            </div>
+            
+            <div class="form-group">
+                <label class="form-label" for="sortOrder">Sort Order:</label>
+                <select id="sortOrder" class="form-input">
+                    <option value="alpha" selected>Alphabetical (A-Z)</option>
+                    <option value="year">Year Published</option>
+                    <option value="rating">Rating (Bayes Average)</option>
+                    <option value="rank">BGG Rank</option>
+                    <option value="playtime">Playing Time</option>
+                </select>
+            </div>
+            
+            <div class="button-group">
+                <button id="loadBtn" class="submit-btn">Load Collection</button>
+                <button id="printBtn" class="print-btn" disabled>📄 Print View</button>
+            </div>
+        </div>
+        
+        <div id="results"></div>
+    </div>
+
+    <script>
+        let collectionGames = [];
+
+        // Fetch collection
+        async function fetchBGGCollection(username) {
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1&stats=1`);
+                if (!response.ok) {
+                    if (response.status === 202) {
+                        await new Promise(resolve => setTimeout(resolve, 3000));
+                        return await fetchBGGCollection(username);
+                    }
+                    throw new Error(`HTTP ${response.status}`);
+                }
+                
+                const xml = await response.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(xml, 'text/xml');
+                
+                const items = Array.from(doc.querySelectorAll('item'));
+                const games = [];
+                
+                items.forEach(item => {
+                    const objectId = item.getAttribute('objectid');
+                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    const thumbnail = item.querySelector('thumbnail')?.textContent || '';
+                    const year = parseInt(item.querySelector('yearpublished')?.textContent) || 0;
+                    
+                    const stats = item.querySelector('stats');
+                    let minPlayers = 0;
+                    let maxPlayers = 0;
+                    let playingTime = 0;
+                    let bayesAverage = 0;
+                    let bggRank = 999999;
+                    
+                    if (stats) {
+                        minPlayers = parseInt(stats.getAttribute('minplayers')) || 0;
+                        maxPlayers = parseInt(stats.getAttribute('maxplayers')) || 0;
+                        playingTime = parseInt(stats.getAttribute('playingtime')) || 0;
+                        
+                        const rating = stats.querySelector('rating');
+                        if (rating) {
+                            const bayes = rating.querySelector('bayesaverage');
+                            if (bayes) {
+                                bayesAverage = parseFloat(bayes.getAttribute('value')) || 0;
+                            }
+                            
+                            const ranks = rating.querySelectorAll('rank');
+                            for (const rank of ranks) {
+                                if (rank.getAttribute('name') === 'boardgame') {
+                                    const rankValue = rank.getAttribute('value');
+                                    if (rankValue && rankValue !== 'Not Ranked') {
+                                        bggRank = parseInt(rankValue);
+                                    }
+                                    break;
+                                }
+                            }
+                        }
+                    }
+                    
+                    games.push({
+                        objectId,
+                        name,
+                        thumbnail,
+                        year,
+                        minPlayers,
+                        maxPlayers,
+                        playingTime,
+                        bayesAverage,
+                        bggRank
+                    });
+                });
+                
+                return games;
+            } catch (error) {
+                console.error('Error fetching collection:', error);
+                throw error;
+            }
+        }
+
+        // Sort games
+        function sortGames(games, sortOrder) {
+            const sorted = [...games];
+            
+            switch(sortOrder) {
+                case 'alpha':
+                    sorted.sort((a, b) => a.name.localeCompare(b.name));
+                    break;
+                case 'year':
+                    sorted.sort((a, b) => b.year - a.year || a.name.localeCompare(b.name));
+                    break;
+                case 'rating':
+                    sorted.sort((a, b) => b.bayesAverage - a.bayesAverage || a.name.localeCompare(b.name));
+                    break;
+                case 'rank':
+                    sorted.sort((a, b) => a.bggRank - b.bggRank || a.name.localeCompare(b.name));
+                    break;
+                case 'playtime':
+                    sorted.sort((a, b) => b.playingTime - a.playingTime || a.name.localeCompare(b.name));
+                    break;
+            }
+            
+            return sorted;
+        }
+
+        // Display preview
+        function displayPreview(games, sortOrder) {
+            const resultsDiv = document.getElementById('results');
+            const sortedGames = sortGames(games, sortOrder);
+            collectionGames = sortedGames;
+            
+            document.getElementById('printBtn').disabled = false;
+            
+            let html = `
+                <div class="stats">
+                    <strong>Collection loaded:</strong> ${games.length} games<br>
+                    <strong>Sort order:</strong> ${document.getElementById('sortOrder').selectedOptions[0].text}
+                </div>
+                <div class="preview-container">
+                    <strong>Preview (first 100 games):</strong>
+                    <div class="preview-grid">
+            `;
+            
+            sortedGames.slice(0, 100).forEach((game, index) => {
+                html += `
+                    <div class="preview-tile" title="${game.name}">
+                        <div class="preview-rank">${index + 1}</div>
+                        <img src="${game.thumbnail}" alt="${game.name}" onerror="this.style.display='none'">
+                    </div>
+                `;
+            });
+            
+            html += `
+                    </div>
+                </div>
+            `;
+            
+            resultsDiv.innerHTML = html;
+        }
+
+        // Create print view
+        function createPrintView() {
+            if (!collectionGames || collectionGames.length === 0) {
+                alert('No games loaded. Please load your collection first.');
+                return;
+            }
+            
+            const username = document.getElementById('username').value;
+            const sortOrder = document.getElementById('sortOrder').value;
+            const sortLabel = document.getElementById('sortOrder').selectedOptions[0].text;
+            
+            const printData = {
+                username: username,
+                sortOrder: sortOrder,
+                sortLabel: sortLabel,
+                games: collectionGames.map(g => ({
+                    name: g.name,
+                    thumbnail: g.thumbnail,
+                    year: g.year,
+                    bayesAverage: g.bayesAverage,
+                    bggRank: g.bggRank
+                })),
+                timestamp: Date.now()
+            };
+            
+            const encoded = btoa(JSON.stringify(printData));
+            const printUrl = 'data:text/html;base64,' + btoa(`<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGG Collection - Print View</title>
+    <style>
+        @page { 
+            size: letter portrait; 
+            margin: 0.5in;
+        }
+        
+        body { 
+            margin: 0; 
+            font-family: Arial, sans-serif; 
+            background: white;
+            -webkit-print-color-adjust: exact;
+            print-color-adjust: exact;
+        }
+        
+        .header { 
+            text-align: center; 
+            margin-bottom: 0.25in; 
+            font-size: 14px; 
+            font-weight: bold; 
+            color: #333;
+        }
+        
+        .grid-container {
+            width: 7.5in;
+            margin: 0 auto;
+        }
+        
+        .grid { 
+            display: grid; 
+            grid-template-columns: repeat(10, 1fr); 
+            gap: 2px;
+            width: 100%;
+        }
+        
+        .tile { 
+            position: relative; 
+            border: 1px solid #ddd; 
+            background: #f9f9f9; 
+            overflow: hidden;
+            aspect-ratio: 1;
+        }
+        
+        .tile img { 
+            width: 100%; 
+            height: 100%; 
+            object-fit: contain; 
+            display: block;
+            background: #f5f5f5;
+        }
+        
+        .rank { 
+            position: absolute; 
+            top: 1px; 
+            left: 1px; 
+            background: rgba(0,0,0,0.8); 
+            color: white; 
+            font-size: 7px; 
+            padding: 1px 2px; 
+            border-radius: 2px; 
+            font-weight: bold; 
+            z-index: 10;
+        }
+        
+        .footer {
+            position: fixed;
+            bottom: 0.25in;
+            right: 0.5in;
+            font-size: 9px;
+            color: #666;
+        }
+        
+        @media print {
+            body { 
+                background: white !important; 
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+        }
+    </style>
+</head>
+<body>
+    <div class="header" id="header"></div>
+    <div class="grid-container">
+        <div class="grid" id="grid"></div>
+    </div>
+    <div class="footer" id="footer"></div>
+
+    <script>
+        const data = ${JSON.stringify(printData)};
+        
+        // Set header
+        document.getElementById('header').textContent = 
+            'BGG Collection: ' + data.username + ' (' + data.games.length + ' games) - Sorted: ' + data.sortLabel;
+        
+        // Set footer
+        const now = new Date();
+        document.getElementById('footer').textContent = 
+            now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
+        
+        // Build grid
+        const grid = document.getElementById('grid');
+        data.games.forEach((game, index) => {
+            const tile = document.createElement('div');
+            tile.className = 'tile';
+            
+            const rank = document.createElement('div');
+            rank.className = 'rank';
+            rank.textContent = index + 1;
+            tile.appendChild(rank);
+            
+            if (game.thumbnail) {
+                const img = document.createElement('img');
+                img.src = game.thumbnail;
+                img.alt = game.name;
+                img.onerror = function() { this.style.display = 'none'; };
+                tile.appendChild(img);
+            }
+            
+            grid.appendChild(tile);
+        });
+        
+        // Auto-print
+        setTimeout(() => window.print(), 500);
+    </script>
+</body>
+</html>`);
+            
+            window.open(printUrl, '_blank');
+        }
+
+        // Load collection
+        async function handleLoad() {
+            const username = document.getElementById('username').value.trim();
+            const sortOrder = document.getElementById('sortOrder').value;
+            const loadBtn = document.getElementById('loadBtn');
+            const resultsDiv = document.getElementById('results');
+            
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+            
+            loadBtn.disabled = true;
+            loadBtn.textContent = 'Loading...';
+            
+            try {
+                resultsDiv.innerHTML = '<div class="loading">Fetching BGG collection...</div>';
+                const games = await fetchBGGCollection(username);
+                
+                if (games.length === 0) {
+                    resultsDiv.innerHTML = '<div class="error">No games found in collection or collection is private.</div>';
+                    return;
+                }
+                
+                displayPreview(games, sortOrder);
+                
+            } catch (error) {
+                console.error('Error:', error);
+                resultsDiv.innerHTML = `<div class="error">Error: ${error.message}</div>`;
+            } finally {
+                loadBtn.disabled = false;
+                loadBtn.textContent = 'Load Collection';
+            }
+        }
+
+        // Event listeners
+        document.getElementById('loadBtn').addEventListener('click', handleLoad);
+        document.getElementById('printBtn').addEventListener('click', createPrintView);
+        document.getElementById('sortOrder').addEventListener('change', () => {
+            if (collectionGames.length > 0) {
+                displayPreview(collectionGames, document.getElementById('sortOrder').value);
+            }
+        });
+        
+        // Enter key support
+        document.addEventListener('keypress', (e) => {
+            if (e.key === 'Enter' && document.activeElement.id === 'username') {
+                handleLoad();
+            }
+        });
+    </script>
+</body>
+</html>
