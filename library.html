@@ -149,14 +149,27 @@
                 const response = await fetch(filename);
                 
                 if (!response.ok) {
-                    console.warn(`[LIBRARY] ${filename} not found (404), skipping...`);
+                    console.warn(`[LIBRARY] ${filename} not found (404), trying fallback...`);
+                    
+                    // Try fallback: private_all.xml for any convention
+                    if (source !== 'sportomax') {
+                        console.log(`[LIBRARY] Trying fallback private_all.xml...`);
+                        return await fetchXML('private_all.xml', source + '_fallback');
+                    }
                     return null;
                 }
                 
                 const text = await response.text();
                 
                 if (!text || text.trim().length === 0) {
-                    console.warn(`[LIBRARY] ${filename} is empty, skipping...`);
+                    console.warn(`[LIBRARY] ${filename} is empty, trying fallback...`);
+                    
+                    // Try fallback for empty files
+                    if (source !== 'sportomax') {
+                        console.log(`[LIBRARY] Trying fallback private_all.xml...`);
+                        return await fetchXML('private_all.xml', source + '_fallback');
+                    }
+                    
                     return null;
                 }
                 
@@ -168,7 +181,34 @@
                 
                 return xml;
             } catch (error) {
-                console.warn(`[LIBRARY] Error loading ${filename}:`, error.message, '- skipping');
+                console.warn(`[LIBRARY] Error loading ${filename}:`, error.message);
+                
+                // Try fallback if error
+                if (source !== 'sportomax' && !source.includes('fallback')) {
+                    console.log(`[LIBRARY] Trying fallback private_all.xml...`);
+                    return await fetchXML('private_all.xml', source + '_fallback');
+                }
+                
+                return null;
+            }
+        }
+
+        // Fetch collection from BGG API
+        async function fetchFromBGGAPI() {
+            try {
+                const response = await fetch('/api/bgg-helper?username=sportomax&endpoint=collection');
+                if (!response.ok) return null;
+                
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const items = xml.querySelectorAll('item');
+                console.log(`[LIBRARY] ✅ BGG API loaded: ${items.length} games`);
+                
+                return xml;
+            } catch (error) {
+                console.warn('[LIBRARY] BGG API fetch failed:', error.message);
                 return null;
             }
         }
@@ -270,21 +310,34 @@
             
             const name = item.querySelector('name')?.textContent || 'Unknown Game';
             const yearPublished = item.querySelector('yearpublished')?.textContent || 'N/A';
-            const image = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
+            let image = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
             
-            // Stats
-            const stats = item.querySelector('stats');
+            // Also try to find image in imageurl (for fallback XML)
+            if (!image) {
+                image = item.querySelector('imageurl')?.textContent || '';
+            }
+            
+            // Stats - handle both formats
+            let stats = item.querySelector('stats');
+            if (!stats && item.querySelector('statistics')) {
+                stats = item.querySelector('statistics');
+            }
+            
             const rating = stats?.querySelector('rating');
-            const average = rating?.querySelector('average')?.getAttribute('value') || '0';
-            const rank = rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || 'Unranked';
+            const average = rating?.querySelector('average')?.getAttribute('value') 
+                || rating?.textContent 
+                || '0';
+            const rank = rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') 
+                || item.getAttribute('rank') 
+                || 'Unranked';
             
-            // Players
-            const minPlayers = stats?.getAttribute('minplayers') || '?';
-            const maxPlayers = stats?.getAttribute('maxplayers') || '?';
+            // Players - handle attribute names
+            let minPlayers = stats?.getAttribute('minplayers') || item.getAttribute('min_players') || '?';
+            let maxPlayers = stats?.getAttribute('maxplayers') || item.getAttribute('max_players') || '?';
             
             // Desire score (only from sportomax)
             let desireScore = 0;
-            if (source === 'sportomax') {
+            if (source === 'sportomax' || source === 'sportomax_fallback') {
                 const status = item.querySelector('status');
                 const wanttoplay = status?.getAttribute('wanttoplay') === '1' ? 1 : 0;
                 const wishlist = status?.getAttribute('wishlist') === '1' ? 1 : 0;
@@ -309,7 +362,7 @@
                 maxPlayers: parseInt(maxPlayers) || 0,
                 desireScore,
                 locations: [], // Will be populated for convention games
-                inSportomax: source === 'sportomax'
+                inSportomax: source === 'sportomax' || source === 'sportomax_fallback'
             };
         }
 
@@ -327,18 +380,20 @@
                     return false;
                 }
 
-                // Convention filter
+                // Convention filter (only filter if not 'all')
                 if (convention !== 'all') {
                     if (convention === 'sportomax') {
+                        // Show only if in sportomax collection
                         if (!game.inSportomax) return false;
                     } else {
+                        // Show only if has this convention location tag
                         if (!game.locations.some(loc => loc.location === convention)) {
                             return false;
                         }
                     }
                 }
 
-                // Player count filter
+                // Player count filter (only filter if not 'all')
                 if (playerCount !== 'all') {
                     const count = parseInt(playerCount);
                     if (count === 6) {
@@ -355,7 +410,7 @@
                 return true;
             });
 
-            console.log(`[LIBRARY] ✅ Filtered to ${filteredGames.length} games`);
+            console.log(`[LIBRARY] ✅ Filtered to ${filteredGames.length} games (sorted by desire)`);
             document.getElementById('showingGames').textContent = filteredGames.length;
             
             // Reset display
