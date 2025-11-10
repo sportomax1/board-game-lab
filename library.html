@@ -126,6 +126,8 @@
         let filteredGames = [];
         let displayedCount = 0;
         const BATCH_SIZE = 20; // Load 20 games at a time
+        let thumbnailCache = {};
+        let pendingThumbnails = new Set();
 
         // Load all XML files
         async function loadLibraries() {
@@ -465,6 +467,9 @@
             
             // Load first batch
             loadMoreGames();
+            
+            // Load thumbnails after a short delay to let DOM render
+            setTimeout(() => loadVisibleThumbnails(), 100);
         }
 
         // Load more games (scroll loading)
@@ -490,6 +495,7 @@
         function createGameCard(game) {
             const card = document.createElement('div');
             card.className = 'game-card bg-white rounded-lg shadow p-3 flex gap-3';
+            card.dataset.objectid = game.id;
             
             // Desire score badge color
             let badgeColor = 'bg-gray-400';
@@ -505,8 +511,9 @@
                 <!-- Image -->
                 <div class="flex-shrink-0">
                     <img 
-                        src="${game.image || 'https://via.placeholder.com/80x80?text=No+Image'}" 
+                        src="https://via.placeholder.com/80x80?text=Loading" 
                         alt="${game.name}"
+                        data-objectid="${game.id}"
                         class="w-20 h-20 object-cover rounded"
                         onerror="this.src='https://via.placeholder.com/80x80?text=No+Image'"
                     />
@@ -515,7 +522,15 @@
                 <!-- Info -->
                 <div class="flex-1 min-w-0">
                     <div class="flex items-start justify-between gap-2">
-                        <h3 class="font-bold text-sm leading-tight mb-1">${game.name} ${locationTags}</h3>
+                        <h3 class="font-bold text-sm leading-tight mb-1">
+                            <a href="https://boardgamegeek.com/boardgame/${game.id}" 
+                               target="_blank" 
+                               rel="noopener noreferrer"
+                               class="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer">
+                                ${game.name}
+                            </a>
+                            ${locationTags}
+                        </h3>
                         ${game.desireScore > 0 ? `<span class="${badgeColor} text-white text-xs font-bold px-2 py-1 rounded flex-shrink-0">${game.desireScore}</span>` : ''}
                     </div>
                     
@@ -535,9 +550,74 @@
             return card;
         }
 
-        // Infinite scroll handler
+        // Load visible thumbnails in batches of 20
+        function loadVisibleThumbnails() {
+            const cards = document.querySelectorAll('.game-card');
+            const objectIds = [];
+            
+            cards.forEach(card => {
+                const rect = card.getBoundingClientRect();
+                const isVisible = rect.top < window.innerHeight + 500 && rect.bottom > -500;
+                
+                if (isVisible) {
+                    const objectId = card.dataset.objectid;
+                    if (objectId && !thumbnailCache[objectId] && !pendingThumbnails.has(objectId)) {
+                        objectIds.push(objectId);
+                        pendingThumbnails.add(objectId);
+                    }
+                }
+            });
+            
+            if (objectIds.length > 0) {
+                // Batch into groups of 20
+                for (let i = 0; i < objectIds.length; i += 20) {
+                    const batch = objectIds.slice(i, i + 20);
+                    fetchThumbnails(batch);
+                }
+            }
+        }
+
+        // Fetch thumbnails from BGG API
+        async function fetchThumbnails(objectIds) {
+            try {
+                const idsParam = objectIds.join(',');
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&type=boardgame`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const items = xml.querySelectorAll('item');
+                items.forEach(item => {
+                    const id = item.getAttribute('id');
+                    const thumbnail = item.querySelector('thumbnail')?.textContent;
+                    if (thumbnail) {
+                        thumbnailCache[id] = thumbnail;
+                        updateThumbnail(id, thumbnail);
+                    }
+                    pendingThumbnails.delete(id);
+                });
+                
+            } catch (error) {
+                console.warn('[LIBRARY] Error fetching thumbnails:', error);
+                objectIds.forEach(id => pendingThumbnails.delete(id));
+            }
+        }
+
+        // Update thumbnail image elements
+        function updateThumbnail(objectId, thumbnailUrl) {
+            const imgs = document.querySelectorAll(`img[data-objectid="${objectId}"]`);
+            imgs.forEach(img => {
+                img.src = thumbnailUrl;
+            });
+        }
+
+        // Infinite scroll handler with thumbnail loading
         let isLoading = false;
         window.addEventListener('scroll', () => {
+            // Load thumbnails for visible cards
+            loadVisibleThumbnails();
+            
+            // Load more games if near bottom
             if (isLoading || displayedCount >= filteredGames.length) return;
             
             const scrollPosition = window.innerHeight + window.scrollY;
@@ -549,6 +629,7 @@
                 
                 setTimeout(() => {
                     loadMoreGames();
+                    loadVisibleThumbnails(); // Load thumbnails for newly added games
                     document.getElementById('loadingMore').classList.add('hidden');
                     isLoading = false;
                 }, 300);
