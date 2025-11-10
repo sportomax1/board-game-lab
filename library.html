@@ -242,16 +242,14 @@
                 console.log(`[LIBRARY] Processing ${dtwItems.length} games from DTW...`);
                 let dtwAdded = 0;
                 dtwItems.forEach(item => {
-                    // Try both attribute and element access
-                    let id = item.getAttribute('objectid');
-                    if (!id) {
-                        id = item.querySelector('objectid')?.textContent;
-                    }
+                    // DTW: use objectid attribute (BGG API format)
+                    const id = item.getAttribute('objectid');
                     
                     if (id) {
                         if (gamesMap.has(id)) {
                             const existing = gamesMap.get(id);
                             existing.locations.push({ location: 'dtw', emoji: '🎲' });
+                            console.log(`[LIBRARY] DTW: ${existing.name} - added location tag`);
                         } else {
                             const game = parseGame(item, 'dtw');
                             if (game) {
@@ -260,17 +258,13 @@
                                 dtwAdded++;
                             }
                         }
-                    } else {
-                        if (dtwAdded === 0) {
-                            console.warn('[LIBRARY] DTW: First item has no ID - structure issue?');
-                        }
                     }
                 });
                 console.log(`[LIBRARY] ✅ DTW: ${dtwAdded} new games, ${dtwItems.length - dtwAdded} already in map`);
                 console.log(`[LIBRARY] Total games in map: ${gamesMap.size}`);
             }
 
-            // Process DTE and BGG (use bgg_id)
+            // Process DTE and BGG (use bgg_id elements)
             [
                 { xml: dteXML, location: 'dte', emoji: '🚢', name: 'DTE' },
                 { xml: bggXML, location: 'bgg', emoji: '⭐', name: 'BGG' }
@@ -280,21 +274,27 @@
                     return;
                 }
                 
-                const items = xml.querySelectorAll('item');
+                const items = xml.querySelectorAll('game');
                 console.log(`[LIBRARY] Processing ${items.length} games from ${name}...`);
                 let added = 0;
                 
                 items.forEach(item => {
-                    const id = item.getAttribute('bgg_id') || item.getAttribute('objectid');
+                    // DTE/BGG: use bgg_id element
+                    const idElement = item.querySelector('bgg_id');
+                    const id = idElement?.textContent;
+                    
                     if (id) {
                         if (gamesMap.has(id)) {
-                            gamesMap.get(id).locations.push({ location, emoji });
+                            const existing = gamesMap.get(id);
+                            existing.locations.push({ location, emoji });
+                            console.log(`[LIBRARY] ${name}: ${existing.name} (ID: ${id}) - added location tag`);
                         } else {
                             const game = parseGame(item, location, true); // true = uses bgg_id
                             if (game) {
                                 game.locations.push({ location, emoji });
                                 gamesMap.set(id, game);
                                 added++;
+                                console.log(`[LIBRARY] ${name}: NEW GAME - ${game.name} (ID: ${id}, desire: ${game.desireScore}, rating: ${game.rating})`);
                             }
                         }
                     }
@@ -314,7 +314,13 @@
             
             console.log(`[LIBRARY] 🎉 Total unique games: ${allGames.length}`);
             console.log(`[LIBRARY] Games with desire > 0: ${allGames.filter(g => g.desireScore > 0).length}`);
-            console.log(`[LIBRARY] Top 5 games by desire:`, allGames.slice(0, 5).map(g => `${g.name} (desire=${g.desireScore}, rating=${g.rating})`));
+            
+            // Show TOP 10 games with full details and location tags
+            console.log(`[LIBRARY] TOP 10 GAMES (sorted by desire DESC, then rating DESC):`);
+            allGames.slice(0, 10).forEach((game, idx) => {
+                const locations = game.locations.map(l => `${l.emoji}${l.location}`).join(' ');
+                console.log(`[LIBRARY] #${idx + 1}: "${game.name}" | ID:${game.id} | Desire:${game.desireScore} | Rating:${game.rating} | ${locations || '(no locations)'}`);
+            });;
             
             document.getElementById('totalGames').textContent = allGames.length;
             
@@ -323,86 +329,89 @@
 
         // Parse individual game from XML item
         function parseGame(item, source, usesBggId = false) {
-            // Try attribute first, then element
-            let id = item.getAttribute('objectid') || item.querySelector('objectid')?.textContent;
+            let id;
             
             if (usesBggId) {
-                id = item.getAttribute('bgg_id') || item.querySelector('bgg_id')?.textContent || id;
+                // BGG/DTE: look for <bgg_id> element
+                const bggIdElement = item.querySelector('bgg_id');
+                id = bggIdElement?.textContent;
+            } else {
+                // Sportomax/DTW: use objectid attribute
+                id = item.getAttribute('objectid');
             }
             
             if (!id) {
-                console.warn(`[LIBRARY] Game missing ID in ${source}, skipping`);
+                console.warn(`[LIBRARY] Game missing ID in ${source} (usesBggId=${usesBggId}), skipping`);
                 return null;
             }
             
-            // Name - try attribute first, then objectname element, then name element
-            let name = item.getAttribute('name') 
-                || item.querySelector('objectname')?.textContent 
-                || item.querySelector('name')?.textContent 
-                || 'Unknown Game';
-            
-            // Year published
-            const yearPublished = item.querySelector('yearpublished')?.textContent || 
-                                 item.getAttribute('year') || 
-                                 'N/A';
-            
-            // Image - try thumbnail, image, imageurl
-            let image = item.querySelector('thumbnail')?.textContent || 
-                       item.querySelector('image')?.textContent || 
-                       item.querySelector('imageurl')?.textContent || 
-                       '';
-            
-            // Rating - try from rating element with attributes or text content
-            let rating = item.querySelector('rating');
-            let average = rating?.querySelector('average')?.getAttribute('value') 
-                || rating?.textContent 
-                || item.querySelector('average')?.textContent 
-                || item.getAttribute('average')
-                || '0';
-            
-            let rank = item.querySelector('rank')?.getAttribute('value')
-                || item.querySelector('rank[name="boardgame"]')?.getAttribute('value')
-                || item.getAttribute('rank')
-                || item.querySelector('rank')?.textContent 
-                || 'Unranked';
-            
-            // Convert rank to number if it's actually Unranked or Not Ranked
-            if (rank === 'Not Ranked' || rank === 'Unranked' || rank === '0') {
-                rank = 'Unranked';
+            // Name - depends on XML format
+            let name;
+            if (usesBggId) {
+                // BGG/DTE format: <name> element
+                name = item.querySelector('name')?.textContent || 'Unknown Game';
+            } else {
+                // Sportomax/DTW format: <name> element with sortindex
+                name = item.querySelector('name')?.textContent || 'Unknown Game';
             }
             
-            // Players - handle multiple formats
-            let minPlayers = item.getAttribute('minplayers') 
-                || item.getAttribute('min_players')
-                || item.querySelector('minplayers')?.textContent 
-                || item.querySelector('min_players')?.textContent 
-                || '?';
+            // Year published
+            const yearPublished = item.querySelector('yearpublished')?.textContent || 'N/A';
             
-            let maxPlayers = item.getAttribute('maxplayers') 
-                || item.getAttribute('max_players')
-                || item.querySelector('maxplayers')?.textContent 
-                || item.querySelector('max_players')?.textContent 
-                || '?';
+            // Image/thumbnail - handle both formats
+            let image = item.querySelector('thumbnail')?.textContent || '';
             
-            // Desire score (only from sportomax or fallback)
+            // Rating - handle both formats
+            let average;
+            if (usesBggId) {
+                // BGG/DTE: might not have rating, handle gracefully
+                average = '0';
+            } else {
+                // Sportomax/DTW: has stats/rating
+                const ratingElement = item.querySelector('rating');
+                average = ratingElement?.querySelector('average')?.getAttribute('value') 
+                    || ratingElement?.textContent 
+                    || item.querySelector('average')?.textContent 
+                    || '0';
+            }
+            
+            // Rank - handle both formats
+            let rank = 'Unranked';
+            if (!usesBggId) {
+                const rankElement = item.querySelector('rating')?.querySelector('ranks')?.querySelector('rank');
+                rank = rankElement?.getAttribute('value') 
+                    || rankElement?.textContent 
+                    || 'Unranked';
+                if (rank === 'Not Ranked' || rank === 'Unranked' || rank === '0') {
+                    rank = 'Unranked';
+                }
+            }
+            
+            // Players - handle both formats
+            let minPlayers = '?', maxPlayers = '?';
+            if (!usesBggId) {
+                // Sportomax/DTW: in stats
+                const statsElement = item.querySelector('stats');
+                minPlayers = statsElement?.getAttribute('minplayers') || '?';
+                maxPlayers = statsElement?.getAttribute('maxplayers') || '?';
+            } else {
+                // BGG/DTE: direct attributes
+                minPlayers = item.querySelector('min_players')?.textContent || '?';
+                maxPlayers = item.querySelector('max_players')?.textContent || '?';
+            }
+            
+            // Desire score (only from sportomax/dtw - they have wanttoplay/wishlist)
             let desireScore = 0;
             if (source === 'sportomax' || source === 'sportomax_fallback' || source === 'dtw' || source === 'dtw_fallback') {
-                // These sources have wanttoplay and wishlist attributes/elements
-                const wanttoplay = item.getAttribute('wanttoplay') === '1' 
-                    || item.querySelector('wanttoplay')?.textContent === '1' ? 1 : 0;
-                const wishlist = item.getAttribute('wishlist') === '1' 
-                    || item.querySelector('wishlist')?.textContent === '1' ? 1 : 0;
-                let wishlistpriority = item.getAttribute('wishlistpriority') 
-                    || item.querySelector('wishlistpriority')?.textContent 
-                    || 0;
+                // These sources have status element with wanttoplay/wishlist attributes
+                const statusElement = item.querySelector('status');
+                const wanttoplay = statusElement?.getAttribute('wanttoplay') === '1' ? 1 : 0;
+                const wishlist = statusElement?.getAttribute('wishlist') === '1' ? 1 : 0;
+                let wishlistpriority = statusElement?.getAttribute('wishlistpriority') || '0';
                 wishlistpriority = parseInt(wishlistpriority) || 0;
                 
                 // Formula: (wanttoplay ? 5 : 0) + (wishlist ? 6-priority : 0)
                 desireScore = (wanttoplay ? 5 : 0) + (wishlist ? (6 - wishlistpriority) : 0);
-                
-                if (desireScore > 0) {
-                    console.log(`[LIBRARY] ${name}: desire=${desireScore} (wtp=${wanttoplay}, wl=${wishlist}, pri=${wishlistpriority})`);
-                }
             }
             
             return {
@@ -411,11 +420,11 @@
                 yearPublished,
                 image,
                 rating: parseFloat(average).toFixed(2),
-                rank: rank,
+                rank,
                 minPlayers: parseInt(minPlayers) || 0,
                 maxPlayers: parseInt(maxPlayers) || 0,
                 desireScore,
-                locations: [], // Will be populated for convention games
+                locations: [],
                 inSportomax: source === 'sportomax' || source === 'sportomax_fallback' || source === 'dtw' || source === 'dtw_fallback'
             };
         }
