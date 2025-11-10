@@ -15,14 +15,69 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Fetch BGG collection XML
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: '3.x'
+
+      - name: Install Python dependencies
+        run: pip install requests
+
+      - name: Fetch DTW collection XML with Python
         run: |
-          curl -L "https://boardgamegeek.com/xmlapi2/collection?username=DTWLibrary&stats=1" -o library_dtw.xml
+          python3 << 'EOF'
+          import requests
+          import sys
+          from time import sleep
+          
+          url = "https://boardgamegeek.com/xmlapi2/collection?username=DTWLibrary&stats=1"
+          
+          print(f"[DTW] Fetching from: {url}")
+          
+          try:
+              headers = {
+                  'User-Agent': 'GitHub Actions Bot / DTW collection fetcher'
+              }
+              
+              response = requests.get(url, headers=headers, timeout=30)
+              print(f"[DTW] Response status: {response.status_code}")
+              print(f"[DTW] Response size: {len(response.text)} bytes")
+              
+              if response.status_code == 202:
+                  print("[DTW] Collection is being prepared (202 Accepted), waiting...")
+                  sleep(5)
+                  response = requests.get(url, headers=headers, timeout=30)
+                  print(f"[DTW] Retry response status: {response.status_code}")
+              
+              if response.status_code == 200:
+                  with open('library_dtw.xml', 'w', encoding='utf-8') as f:
+                      f.write(response.text)
+                  print(f"[DTW] ✅ Successfully saved library_dtw.xml ({len(response.text)} bytes)")
+              else:
+                  print(f"[DTW] ❌ Failed with status {response.status_code}")
+                  print(f"[DTW] Response: {response.text[:500]}")
+                  sys.exit(1)
+          except Exception as e:
+              print(f"[DTW] ❌ Error: {str(e)}")
+              sys.exit(1)
+          EOF
+
+      - name: Verify file was created
+        run: |
+          if [ -f library_dtw.xml ]; then
+            SIZE=$(wc -c < library_dtw.xml)
+            LINES=$(wc -l < library_dtw.xml)
+            echo "[DTW] ✅ File exists: $SIZE bytes, $LINES lines"
+            head -20 library_dtw.xml
+          else
+            echo "[DTW] ❌ File was not created!"
+            exit 1
+          fi
 
       - name: Commit and push results
         run: |
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git add library_dtw.xml
-          git commit -m "Update DTW collection" || echo "No changes to commit"
+          git commit -m "[AUTO] Update DTW collection - $(date +'%Y-%m-%d %H:%M:%S UTC')" || echo "No changes to commit"
           git push
