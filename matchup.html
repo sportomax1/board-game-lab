@@ -129,13 +129,7 @@
                         <option value="32">32 teams</option>
                     </select>
                     
-                    <label id="roundRobinLabel" class="block text-xs font-medium text-gray-700 mb-2 mt-2 hidden">Rounds</label>
-                    <select id="roundRobinCount" class="w-full border rounded-lg px-2 py-1 mb-2 text-sm hidden">
-                        <option value="1" selected>1 round (each team plays once)</option>
-                        <option value="2">2 rounds (home and away)</option>
-                    </select>
-                    
-                    <p class="text-xs text-gray-600 italic mt-2">Bracket: March Madness style tournament. Round Robin: all teams play each other.</p>
+                    <p class="text-xs text-gray-600 italic mt-2">Bracket: March Madness style tournament. Round Robin: all teams play each other once.</p>
                 </div>
 
                 <label class="block text-sm font-medium text-gray-700 mb-2">Matchup Mode</label>
@@ -1243,22 +1237,11 @@
         window.toggleTournamentSettings = () => {
             const gameMode = document.getElementById('gameMode').value;
             const tournamentSettings = document.getElementById('tournamentSettings');
-            const roundRobinLabel = document.getElementById('roundRobinLabel');
-            const roundRobinCount = document.getElementById('roundRobinCount');
             
             if (gameMode === 'standard') {
                 tournamentSettings.classList.add('hidden');
             } else {
                 tournamentSettings.classList.remove('hidden');
-                
-                // Show Round Robin options only for round robin mode
-                if (gameMode === 'roundrobin') {
-                    roundRobinLabel.classList.remove('hidden');
-                    roundRobinCount.classList.remove('hidden');
-                } else {
-                    roundRobinLabel.classList.add('hidden');
-                    roundRobinCount.classList.add('hidden');
-                }
             }
         };
 
@@ -1416,17 +1399,20 @@
         // Initialize round robin tournament
         function initializeRoundRobin(availableGames) {
             const fieldSize = parseInt(document.getElementById('bracketSize').value);
-            const roundRobinCount = parseInt(document.getElementById('roundRobinCount').value);
             
             // Randomize games and take field size (field is random but fixed for this tournament)
             const shuffledGames = [...availableGames].sort(() => Math.random() - 0.5);
             const selectedGames = shuffledGames.slice(0, fieldSize);
             
+            console.log(`[ROUND ROBIN] Starting with ${selectedGames.length} games (single round)`);
+            console.log(`[ROUND ROBIN] Games: ${selectedGames.map(g => g.name).join(', ')}`);
+            
             roundRobinState = {
                 allGames: selectedGames, // Fixed set of games for entire round robin
-                totalRounds: roundRobinCount,
+                totalRounds: 1, // Always single round
                 currentRound: 1,
-                completedPairings: new Set()
+                completedPairings: new Set(),
+                results: [] // Track results for this round robin only
             };
             
             generateRoundRobinPairings();
@@ -1475,6 +1461,21 @@
                 recordBracketWinner(winnerId);
                 // Don't increment pairingIndex - recordBracketWinner handles it
             } else if (gameMode === 'roundrobin') {
+                // Store result for THIS round robin
+                if (roundRobinState) {
+                    const winner = roundRobinState.allGames.find(g => g.id === winnerId);
+                    const loser = roundRobinState.allGames.find(g => g.id === loserId);
+                    
+                    roundRobinState.results.push({
+                        winnerId: winnerId,
+                        winnerName: winner?.name || 'Unknown',
+                        loserId: loserId,
+                        loserName: loser?.name || 'Unknown'
+                    });
+                    
+                    console.log(`[ROUND ROBIN] Recorded result: ${winner?.name} beat ${loser?.name} (Total: ${roundRobinState.results.length})`);
+                }
+                
                 recordRoundRobinResult();
                 pairingIndex++;
             } else {
@@ -1711,19 +1712,27 @@
                     resultText = 'Bracket Tournament Complete';
                 }
             } else if (gameMode === 'roundrobin' && roundRobinState) {
-                // Calculate standings for round robin
+                // Calculate standings for THIS round robin only
                 const standings = {};
                 
-                // Initialize all games
-                allMatchups.forEach(m => {
-                    if (!standings[m.winnerId]) standings[m.winnerId] = { name: m.winnerName, wins: 0, losses: 0 };
-                    if (!standings[m.loserId]) standings[m.loserId] = { name: m.loserName, wins: 0, losses: 0 };
+                // Only use results from this round robin (stored in roundRobinState.results)
+                const roundRobinResults = roundRobinState.results || [];
+                
+                console.log(`[ROUND ROBIN] Calculating results for ${roundRobinResults.length} matchups in this tournament`);
+                
+                // Initialize all games from the tournament
+                roundRobinState.allGames.forEach(game => {
+                    standings[game.id] = { name: game.name, wins: 0, losses: 0 };
                 });
                 
-                // Count wins/losses
-                allMatchups.forEach(m => {
-                    standings[m.winnerId].wins++;
-                    standings[m.loserId].losses++;
+                // Count wins/losses from THIS round robin only
+                roundRobinResults.forEach(result => {
+                    if (standings[result.winnerId]) {
+                        standings[result.winnerId].wins++;
+                    }
+                    if (standings[result.loserId]) {
+                        standings[result.loserId].losses++;
+                    }
                 });
                 
                 // Sort by wins desc
@@ -1738,6 +1747,7 @@
                 
                 sorted.forEach((game, idx) => {
                     const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '  ';
+                    const totalGames = game.wins + game.losses;
                     resultHTML += `
                         <div class="text-sm text-green-800 bg-white rounded px-2 py-1 flex justify-between">
                             <span>${medal} #${idx + 1} ${game.name}</span>
@@ -1749,7 +1759,7 @@
                 resultHTML += `
                         </div>
                         <div class="text-xs text-green-700 mt-3 text-center">
-                            Rounds: ${roundRobinState.totalRounds} | Total Matchups: ${allMatchups.length}
+                            Total Matchups: ${roundRobinResults.length}
                         </div>
                     </div>
                 `;
