@@ -188,23 +188,54 @@
     <script>
         let collectionGames = [];
 
-        // Fetch collection
+        // Helper function for BGG API calls via authenticated proxy
+        async function fetchBGG(endpoint, params = {}, retries = 5) {
+            const queryParams = new URLSearchParams(params).toString();
+            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
+            
+            try {
+                const response = await fetch(fullUrl);
+
+                // Handle BGG 202 retry logic
+                if (response.status === 202 && retries > 0) {
+                    console.log(`[BGG] 202 Accepted - retrying (${retries} left)...`);
+                    await new Promise(resolve => setTimeout(resolve, 3000));
+                    return fetchBGG(endpoint, params, retries - 1);
+                }
+
+                if (!response.ok) {
+                    throw new Error(`BGG API error: ${response.status} ${response.statusText}`);
+                }
+
+                return await response.text();
+            } catch (error) {
+                console.error('BGG fetch error:', error);
+                throw error;
+            }
+        }
+
+        // Fetch collection using BGG collection v2 API
         async function fetchBGGCollection(username) {
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1&stats=1`);
-                if (!response.ok) {
-                    if (response.status === 202) {
-                        await new Promise(resolve => setTimeout(resolve, 3000));
-                        return await fetchBGGCollection(username);
-                    }
-                    throw new Error(`HTTP ${response.status}`);
-                }
+                console.log(`[COVER] Fetching collection for ${username}...`);
                 
-                const xml = await response.text();
+                const xml = await fetchBGG('collection', {
+                    username: username,
+                    own: '1',
+                    stats: '1'
+                });
+                
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(xml, 'text/xml');
                 
+                // Check for XML parse errors
+                if (doc.documentElement.nodeName === 'parsererror') {
+                    throw new Error('Failed to parse BGG response');
+                }
+                
                 const items = Array.from(doc.querySelectorAll('item'));
+                console.log(`[COVER] Found ${items.length} items in collection`);
+                
                 const games = [];
                 
                 items.forEach(item => {
@@ -212,6 +243,12 @@
                     const name = item.querySelector('name')?.textContent || 'Unknown';
                     const thumbnail = item.querySelector('thumbnail')?.textContent || '';
                     const year = parseInt(item.querySelector('yearpublished')?.textContent) || 0;
+                    
+                    // Skip items without thumbnails
+                    if (!thumbnail) {
+                        console.log(`[COVER] Skipping ${name} (no thumbnail)`);
+                        return;
+                    }
                     
                     const stats = item.querySelector('stats');
                     let minPlayers = 0;
@@ -258,6 +295,7 @@
                     });
                 });
                 
+                console.log(`[COVER] Parsed ${games.length} games with thumbnails`);
                 return games;
             } catch (error) {
                 console.error('Error fetching collection:', error);
@@ -300,11 +338,11 @@
             
             let html = `
                 <div class="stats">
-                    <strong>Collection loaded:</strong> ${games.length} games<br>
+                    <strong>✓ Collection loaded:</strong> ${games.length} games<br>
                     <strong>Sort order:</strong> ${document.getElementById('sortOrder').selectedOptions[0].text}
                 </div>
                 <div class="preview-container">
-                    <strong>Preview (first 100 games):</strong>
+                    <strong>Preview Grid (first 100 games):</strong>
                     <div class="preview-grid">
             `;
             
@@ -312,12 +350,15 @@
                 html += `
                     <div class="preview-tile" title="${game.name}">
                         <div class="preview-rank">${index + 1}</div>
-                        <img src="${game.thumbnail}" alt="${game.name}" onerror="this.style.display='none'">
+                        <img src="${game.thumbnail}" alt="${game.name}" onerror="this.style.display='none'" loading="lazy">
                     </div>
                 `;
             });
             
             html += `
+                    </div>
+                    <div style="margin-top: 1em; font-size: 0.9em; color: #666;">
+                        Showing ${Math.min(100, sortedGames.length)} of ${sortedGames.length} games
                     </div>
                 </div>
             `;
@@ -336,27 +377,15 @@
             const sortOrder = document.getElementById('sortOrder').value;
             const sortLabel = document.getElementById('sortOrder').selectedOptions[0].text;
             
-            const printData = {
-                username: username,
-                sortOrder: sortOrder,
-                sortLabel: sortLabel,
-                games: collectionGames.map(g => ({
-                    name: g.name,
-                    thumbnail: g.thumbnail,
-                    year: g.year,
-                    bayesAverage: g.bayesAverage,
-                    bggRank: g.bggRank
-                })),
-                timestamp: Date.now()
-            };
+            console.log(`[COVER] Creating print view for ${collectionGames.length} games...`);
             
-            const encoded = btoa(JSON.stringify(printData));
-            const printUrl = 'data:text/html;base64,' + btoa(`<!DOCTYPE html>
+            // Build HTML content directly
+            let printHtml = `<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>BGG Collection - Print View</title>
+    <title>BGG Collection - ${username}</title>
     <style>
         @page { 
             size: letter portrait; 
@@ -374,7 +403,7 @@
         .header { 
             text-align: center; 
             margin-bottom: 0.25in; 
-            font-size: 14px; 
+            font-size: 12px; 
             font-weight: bold; 
             color: #333;
         }
@@ -424,7 +453,7 @@
             position: fixed;
             bottom: 0.25in;
             right: 0.5in;
-            font-size: 9px;
+            font-size: 8px;
             color: #666;
         }
         
@@ -438,27 +467,21 @@
     </style>
 </head>
 <body>
-    <div class="header" id="header"></div>
+    <div class="header">BGG Collection: <strong>${username}</strong> (${collectionGames.length} games) - Sorted by: ${sortLabel}</div>
     <div class="grid-container">
         <div class="grid" id="grid"></div>
     </div>
     <div class="footer" id="footer"></div>
 
     <script>
-        const data = ${JSON.stringify(printData)};
-        
-        // Set header
-        document.getElementById('header').textContent = 
-            'BGG Collection: ' + data.username + ' (' + data.games.length + ' games) - Sorted: ' + data.sortLabel;
-        
-        // Set footer
-        const now = new Date();
-        document.getElementById('footer').textContent = 
-            now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
-        
         // Build grid
         const grid = document.getElementById('grid');
-        data.games.forEach((game, index) => {
+        const games = ${JSON.stringify(collectionGames.map(g => ({
+            name: g.name,
+            thumbnail: g.thumbnail
+        })))};
+        
+        games.forEach((game, index) => {
             const tile = document.createElement('div');
             tile.className = 'tile';
             
@@ -478,13 +501,21 @@
             grid.appendChild(tile);
         });
         
-        // Auto-print
-        setTimeout(() => window.print(), 500);
+        // Set footer with current date/time
+        const now = new Date();
+        document.getElementById('footer').textContent = 
+            now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
+        
+        // Auto-print after images load
+        setTimeout(() => window.print(), 1000);
     </script>
 </body>
-</html>`);
+</html>`;
             
-            window.open(printUrl, '_blank');
+            // Open print view in new window
+            const printWindow = window.open();
+            printWindow.document.write(printHtml);
+            printWindow.document.close();
         }
 
         // Load collection
