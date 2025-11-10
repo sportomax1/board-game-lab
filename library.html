@@ -1,0 +1,374 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Library - All Collections</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .game-card {
+            transition: all 0.2s;
+        }
+        .game-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 12px rgba(0,0,0,0.15);
+        }
+        .location-tag {
+            display: inline-block;
+            font-size: 1.2rem;
+            margin-left: 0.25rem;
+        }
+        #loadingSpinner {
+            border: 3px solid #f3f3f3;
+            border-top: 3px solid #3498db;
+            border-radius: 50%;
+            width: 40px;
+            height: 40px;
+            animation: spin 1s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
+</head>
+<body class="bg-gray-100">
+    <!-- Header -->
+    <div class="bg-blue-600 text-white p-4 shadow-lg sticky top-0 z-10">
+        <div class="container mx-auto">
+            <h1 class="text-2xl font-bold mb-2">🎲 Game Library</h1>
+            <p class="text-sm opacity-90">All collections sorted by desire to play</p>
+        </div>
+    </div>
+
+    <!-- Filters -->
+    <div class="container mx-auto p-4">
+        <div class="bg-white rounded-lg shadow p-4 mb-4">
+            <!-- Search -->
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Search Games</label>
+                <input 
+                    type="text" 
+                    id="searchInput" 
+                    placeholder="Type game name..."
+                    class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+            </div>
+
+            <!-- Convention Filter -->
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Convention</label>
+                <select id="conventionFilter" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    <option value="all">All Collections</option>
+                    <option value="bgg">⭐ BGG (Dallas)</option>
+                    <option value="dte">🚢 DTE (Cruise)</option>
+                    <option value="dtw">🎲 DTW (Vegas)</option>
+                    <option value="sportomax">📚 My Collection Only</option>
+                </select>
+            </div>
+
+            <!-- Player Count Filter -->
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Player Count</label>
+                <select id="playerFilter" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    <option value="all">Any Player Count</option>
+                    <option value="1">Solo (1 player)</option>
+                    <option value="2">2 players</option>
+                    <option value="3">3 players</option>
+                    <option value="4">4 players</option>
+                    <option value="5">5 players</option>
+                    <option value="6">6+ players</option>
+                </select>
+            </div>
+
+            <!-- Stats -->
+            <div class="flex justify-between text-xs text-gray-600 pt-2 border-t">
+                <span>Total Games: <span id="totalGames" class="font-bold">0</span></span>
+                <span>Showing: <span id="showingGames" class="font-bold">0</span></span>
+            </div>
+        </div>
+
+        <!-- Game List -->
+        <div id="gameList" class="space-y-3">
+            <!-- Populated by JavaScript -->
+        </div>
+
+        <!-- Loading Spinner -->
+        <div id="loadingMore" class="hidden text-center py-4">
+            <div id="loadingSpinner" class="mx-auto"></div>
+            <p class="text-sm text-gray-600 mt-2">Loading more games...</p>
+        </div>
+
+        <!-- End Message -->
+        <div id="endMessage" class="hidden text-center py-4 text-sm text-gray-500">
+            No more games to load
+        </div>
+    </div>
+
+    <script>
+        let allGames = [];
+        let filteredGames = [];
+        let displayedCount = 0;
+        const BATCH_SIZE = 20; // Load 20 games at a time
+
+        // Load all XML files
+        async function loadLibraries() {
+            try {
+                const [sportomax, bgg, dte, dtw] = await Promise.all([
+                    fetchXML('library_sportomax.xml'),
+                    fetchXML('library_bgg.xml'),
+                    fetchXML('library_dte.xml'),
+                    fetchXML('library_dtw.xml')
+                ]);
+
+                console.log('All libraries loaded');
+                processLibraries(sportomax, bgg, dte, dtw);
+            } catch (error) {
+                console.error('Error loading libraries:', error);
+                alert('Failed to load game libraries. Please refresh the page.');
+            }
+        }
+
+        // Fetch XML file
+        async function fetchXML(filename) {
+            const response = await fetch(filename);
+            const text = await response.text();
+            const parser = new DOMParser();
+            return parser.parseFromString(text, 'text/xml');
+        }
+
+        // Process all libraries and create unified game list
+        function processLibraries(sportomaxXML, bggXML, dteXML, dtwXML) {
+            const gamesMap = new Map();
+
+            // Process sportomax collection (primary source for desire scores)
+            const sportomaxItems = sportomaxXML.querySelectorAll('item');
+            sportomaxItems.forEach(item => {
+                const game = parseGame(item, 'sportomax');
+                gamesMap.set(game.id, game);
+            });
+
+            // Process other collections and mark locations
+            [
+                { xml: bggXML, location: 'bgg', emoji: '⭐' },
+                { xml: dteXML, location: 'dte', emoji: '🚢' },
+                { xml: dtwXML, location: 'dtw', emoji: '🎲' }
+            ].forEach(({ xml, location, emoji }) => {
+                const items = xml.querySelectorAll('item');
+                items.forEach(item => {
+                    const id = item.getAttribute('objectid');
+                    if (gamesMap.has(id)) {
+                        // Game already in collection, add location
+                        gamesMap.get(id).locations.push({ location, emoji });
+                    } else {
+                        // New game not in sportomax
+                        const game = parseGame(item, location);
+                        game.locations.push({ location, emoji });
+                        gamesMap.set(id, game);
+                    }
+                });
+            });
+
+            // Convert map to array and sort by desire
+            allGames = Array.from(gamesMap.values()).sort((a, b) => b.desireScore - a.desireScore);
+            
+            console.log(`Loaded ${allGames.length} unique games`);
+            document.getElementById('totalGames').textContent = allGames.length;
+            
+            applyFilters();
+        }
+
+        // Parse individual game from XML item
+        function parseGame(item, source) {
+            const id = item.getAttribute('objectid');
+            const name = item.querySelector('name')?.textContent || 'Unknown Game';
+            const yearPublished = item.querySelector('yearpublished')?.textContent || 'N/A';
+            const image = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
+            
+            // Stats
+            const stats = item.querySelector('stats');
+            const rating = stats?.querySelector('rating');
+            const average = rating?.querySelector('average')?.getAttribute('value') || '0';
+            const rank = rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || 'Unranked';
+            
+            // Players
+            const minPlayers = stats?.getAttribute('minplayers') || '?';
+            const maxPlayers = stats?.getAttribute('maxplayers') || '?';
+            
+            // Desire score (only from sportomax)
+            let desireScore = 0;
+            if (source === 'sportomax') {
+                const status = item.querySelector('status');
+                const wanttoplay = status?.getAttribute('wanttoplay') === '1' ? 1 : 0;
+                const wishlist = status?.getAttribute('wishlist') === '1' ? 1 : 0;
+                const wishlistpriority = parseInt(status?.getAttribute('wishlistpriority')) || 0;
+                
+                // Formula: (wanttoplay ? 5 : 0) + (wishlist ? 6-priority : 0)
+                desireScore = (wanttoplay ? 5 : 0) + (wishlist ? (6 - wishlistpriority) : 0);
+            }
+            
+            return {
+                id,
+                name,
+                yearPublished,
+                image,
+                rating: parseFloat(average).toFixed(2),
+                rank: rank === 'Not Ranked' ? 'Unranked' : rank,
+                minPlayers: parseInt(minPlayers) || 0,
+                maxPlayers: parseInt(maxPlayers) || 0,
+                desireScore,
+                locations: source === 'sportomax' ? [] : [], // Will be populated for convention games
+                inSportomax: source === 'sportomax'
+            };
+        }
+
+        // Apply filters
+        function applyFilters() {
+            const searchTerm = document.getElementById('searchInput').value.toLowerCase();
+            const convention = document.getElementById('conventionFilter').value;
+            const playerCount = document.getElementById('playerFilter').value;
+
+            filteredGames = allGames.filter(game => {
+                // Search filter
+                if (searchTerm && !game.name.toLowerCase().includes(searchTerm)) {
+                    return false;
+                }
+
+                // Convention filter
+                if (convention !== 'all') {
+                    if (convention === 'sportomax') {
+                        if (!game.inSportomax) return false;
+                    } else {
+                        if (!game.locations.some(loc => loc.location === convention)) {
+                            return false;
+                        }
+                    }
+                }
+
+                // Player count filter
+                if (playerCount !== 'all') {
+                    const count = parseInt(playerCount);
+                    if (count === 6) {
+                        // 6+ players
+                        if (game.maxPlayers < 6) return false;
+                    } else {
+                        // Specific player count must be within range
+                        if (game.minPlayers > count || game.maxPlayers < count) {
+                            return false;
+                        }
+                    }
+                }
+
+                return true;
+            });
+
+            console.log(`Filtered to ${filteredGames.length} games`);
+            document.getElementById('showingGames').textContent = filteredGames.length;
+            
+            // Reset display
+            displayedCount = 0;
+            document.getElementById('gameList').innerHTML = '';
+            document.getElementById('endMessage').classList.add('hidden');
+            
+            // Load first batch
+            loadMoreGames();
+        }
+
+        // Load more games (scroll loading)
+        function loadMoreGames() {
+            const gameList = document.getElementById('gameList');
+            const endIndex = Math.min(displayedCount + BATCH_SIZE, filteredGames.length);
+            
+            for (let i = displayedCount; i < endIndex; i++) {
+                const game = filteredGames[i];
+                const card = createGameCard(game);
+                gameList.appendChild(card);
+            }
+            
+            displayedCount = endIndex;
+            
+            // Show/hide end message
+            if (displayedCount >= filteredGames.length) {
+                document.getElementById('endMessage').classList.remove('hidden');
+            }
+        }
+
+        // Create game card element
+        function createGameCard(game) {
+            const card = document.createElement('div');
+            card.className = 'game-card bg-white rounded-lg shadow p-3 flex gap-3';
+            
+            // Desire score badge color
+            let badgeColor = 'bg-gray-400';
+            if (game.desireScore >= 8) badgeColor = 'bg-green-500';
+            else if (game.desireScore >= 5) badgeColor = 'bg-blue-500';
+            else if (game.desireScore >= 3) badgeColor = 'bg-yellow-500';
+            
+            const locationTags = game.locations.map(loc => 
+                `<span class="location-tag" title="${loc.location.toUpperCase()}">${loc.emoji}</span>`
+            ).join('');
+            
+            card.innerHTML = `
+                <!-- Image -->
+                <div class="flex-shrink-0">
+                    <img 
+                        src="${game.image || 'https://via.placeholder.com/80x80?text=No+Image'}" 
+                        alt="${game.name}"
+                        class="w-20 h-20 object-cover rounded"
+                        onerror="this.src='https://via.placeholder.com/80x80?text=No+Image'"
+                    />
+                </div>
+                
+                <!-- Info -->
+                <div class="flex-1 min-w-0">
+                    <div class="flex items-start justify-between gap-2">
+                        <h3 class="font-bold text-sm leading-tight mb-1">${game.name} ${locationTags}</h3>
+                        ${game.desireScore > 0 ? `<span class="${badgeColor} text-white text-xs font-bold px-2 py-1 rounded flex-shrink-0">${game.desireScore}</span>` : ''}
+                    </div>
+                    
+                    <div class="text-xs text-gray-600 space-y-0.5">
+                        <div class="flex gap-3">
+                            <span>⭐ ${game.rating}</span>
+                            <span>🏆 ${game.rank}</span>
+                        </div>
+                        <div class="flex gap-3">
+                            <span>👥 ${game.minPlayers}-${game.maxPlayers}</span>
+                            <span>📅 ${game.yearPublished}</span>
+                        </div>
+                    </div>
+                </div>
+            `;
+            
+            return card;
+        }
+
+        // Infinite scroll handler
+        let isLoading = false;
+        window.addEventListener('scroll', () => {
+            if (isLoading || displayedCount >= filteredGames.length) return;
+            
+            const scrollPosition = window.innerHeight + window.scrollY;
+            const threshold = document.documentElement.scrollHeight - 500;
+            
+            if (scrollPosition >= threshold) {
+                isLoading = true;
+                document.getElementById('loadingMore').classList.remove('hidden');
+                
+                setTimeout(() => {
+                    loadMoreGames();
+                    document.getElementById('loadingMore').classList.add('hidden');
+                    isLoading = false;
+                }, 300);
+            }
+        });
+
+        // Event listeners for filters
+        document.getElementById('searchInput').addEventListener('input', applyFilters);
+        document.getElementById('conventionFilter').addEventListener('change', applyFilters);
+        document.getElementById('playerFilter').addEventListener('change', applyFilters);
+
+        // Initialize
+        loadLibraries();
+    </script>
+</body>
+</html>
