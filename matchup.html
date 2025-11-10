@@ -1324,23 +1324,38 @@
             console.log(`[BRACKET] Starting March Madness style bracket with ${bracketGames.length} games (${totalRounds} rounds)`);
             console.log(`[BRACKET] Games: ${bracketGames.map(g => g.name).join(', ')}`);
             
-            // Initialize bracket state with all brackets structure
+            // Initialize bracket state
             bracketState = {
-                allGames: bracketGames,           // LOCKED - exactly N games, never changes
-                totalRounds: totalRounds,         // How many rounds to declare a winner
+                allGames: bracketGames,           // LOCKED - exactly N games for entire tournament
+                totalRounds: totalRounds,         // How many rounds to declare a winner (log2 of field size)
                 currentRound: 1,                  // What round are we on?
-                roundsData: {},                   // Store each round's results
-                champions: null                   // Final winner
+                roundsData: {},                   // Store results: { 1: {matchups: [{left, right, winner}, ...], complete: false}, ... }
+                champion: null                    // Final winner
             };
             
-            // Initialize round 1 pairings
+            // Initialize Round 1: pair all games sequentially (game 1 vs 2, 3 vs 4, etc)
+            const round1Matchups = [];
+            for (let i = 0; i < bracketGames.length; i += 2) {
+                round1Matchups.push({
+                    left: bracketGames[i],
+                    right: bracketGames[i + 1],
+                    winner: null
+                });
+            }
+            
             bracketState.roundsData[1] = {
-                games: [...bracketGames],         // Games playing in round 1
-                winners: []                       // Winners that advance to round 2
+                matchups: round1Matchups,
+                complete: false
             };
             
-            generateBracketPairings();
+            // Create tournament pairings from round 1 matchups
+            tournamentPairings = round1Matchups.map(m => ({ left: m.left, right: m.right }));
+            pairingIndex = 0;
+            
+            console.log(`[BRACKET] Created ${tournamentPairings.length} matchups for Round 1`);
+            
             tournamentActive = true;
+            updateTournamentProgress();
         }
 
         // Generate bracket pairings for current round
@@ -1348,43 +1363,24 @@
             if (!bracketState) return;
             
             const round = bracketState.currentRound;
-            const gamesThisRound = bracketState.roundsData[round].games;
+            const currentRoundData = bracketState.roundsData[round];
             
-            console.log(`[BRACKET] Round ${round}: ${gamesThisRound.length} games competing`);
-            
-            if (gamesThisRound.length < 2) {
-                // Tournament complete - we have a champion!
-                const champion = gamesThisRound[0];
-                console.log(`[BRACKET] ✅ CHAMPION: ${champion.name}`);
-                bracketState.champions = champion;
-                showTournamentResults();
+            if (!currentRoundData) {
+                console.error(`[BRACKET] Round ${round} data not found!`);
                 return;
             }
             
-            // Pair games sequentially for this round
-            tournamentPairings = [];
-            for (let i = 0; i < gamesThisRound.length; i += 2) {
-                if (i + 1 < gamesThisRound.length) {
-                    // Standard pairing
-                    tournamentPairings.push({
-                        left: gamesThisRound[i],
-                        right: gamesThisRound[i + 1]
-                    });
-                    console.log(`[BRACKET] Pairing: ${gamesThisRound[i].name} vs ${gamesThisRound[i + 1].name}`);
-                }
-                // Note: odd games should not happen in valid brackets (4,8,16,32 are all powers of 2)
-            }
+            const matchups = currentRoundData.matchups;
+            console.log(`[BRACKET] Round ${round}: ${matchups.length} matchups`);
             
-            console.log(`[BRACKET] Generated ${tournamentPairings.length} matchups for round ${round}`);
+            // Create tournament pairings from matchups
+            tournamentPairings = matchups.map(m => ({ 
+                left: m.left, 
+                right: m.right 
+            }));
+            
             pairingIndex = 0;
-            
-            // Initialize next round's games array
-            if (round < bracketState.totalRounds) {
-                bracketState.roundsData[round + 1] = {
-                    games: [],    // Will be filled with winners
-                    winners: []
-                };
-            }
+            console.log(`[BRACKET] Generated ${tournamentPairings.length} pairings for Round ${round}`);
         }
 
         // Get game stats for seeding
@@ -1472,37 +1468,68 @@
             const round = bracketState.currentRound;
             const currentRoundData = bracketState.roundsData[round];
             
-            // Find the winner game object
-            const winnerGame = currentRoundData.games.find(g => g.id === winnerId);
-            if (!winnerGame) {
-                console.error(`[BRACKET] Winner ${winnerId} not found in round ${round} games!`);
+            if (!currentRoundData) {
+                console.error(`[BRACKET] Round ${round} data not found!`);
                 return;
             }
             
-            console.log(`[BRACKET] R${round} Winner: ${winnerGame.name}`);
-            currentRoundData.winners.push(winnerGame);
+            // Find the matchup this winner belongs to
+            const matchupIndex = tournamentPairings.findIndex(p => 
+                p.left.id === winnerId || p.right.id === winnerId
+            );
             
-            // Check if all matchups for this round are complete
-            const totalMatchups = currentRoundData.games.length / 2;
-            const completedMatchups = currentRoundData.winners.length;
+            if (matchupIndex === -1) {
+                console.error(`[BRACKET] Winner ${winnerId} not found in current pairings!`);
+                return;
+            }
             
-            console.log(`[BRACKET] R${round}: ${completedMatchups}/${totalMatchups} matchups complete`);
+            // Record winner in this matchup
+            const matchup = currentRoundData.matchups[matchupIndex];
+            const winnerGame = matchup.left.id === winnerId ? matchup.left : matchup.right;
             
-            if (completedMatchups >= totalMatchups) {
-                // Round complete - advance to next round
-                console.log(`[BRACKET] Round ${round} complete! Winners: ${currentRoundData.winners.map(g => g.name).join(', ')}`);
+            matchup.winner = winnerGame;
+            console.log(`[BRACKET] R${round} Matchup ${matchupIndex + 1}: ${winnerGame.name} wins!`);
+            
+            // Check if all matchups in this round are complete
+            const allComplete = currentRoundData.matchups.every(m => m.winner !== null);
+            
+            if (allComplete) {
+                console.log(`[BRACKET] Round ${round} complete!`);
+                currentRoundData.complete = true;
                 
-                if (round < bracketState.totalRounds) {
-                    // Move to next round
-                    bracketState.currentRound++;
-                    bracketState.roundsData[bracketState.currentRound].games = [...currentRoundData.winners];
-                    pairingIndex = 0;
-                    generateBracketPairings();
-                } else {
+                if (round === bracketState.totalRounds) {
                     // This was the final round - we have a champion!
-                    console.log(`[BRACKET] ✅ TOURNAMENT COMPLETE`);
-                    generateBracketPairings();
+                    const champion = currentRoundData.matchups[0].winner;
+                    console.log(`[BRACKET] 🏆 TOURNAMENT CHAMPION: ${champion.name}`);
+                    bracketState.champion = champion;
+                    showTournamentResults();
+                    return;
                 }
+                
+                // Advance to next round
+                const nextRound = round + 1;
+                console.log(`[BRACKET] Advancing ${currentRoundData.matchups.length} winners to Round ${nextRound}`);
+                
+                // Get winners and pair them for next round
+                const winners = currentRoundData.matchups.map(m => m.winner);
+                const nextRoundMatchups = [];
+                
+                for (let i = 0; i < winners.length; i += 2) {
+                    nextRoundMatchups.push({
+                        left: winners[i],
+                        right: winners[i + 1],
+                        winner: null
+                    });
+                }
+                
+                bracketState.roundsData[nextRound] = {
+                    matchups: nextRoundMatchups,
+                    complete: false
+                };
+                
+                bracketState.currentRound = nextRound;
+                pairingIndex = 0;
+                generateBracketPairings();
             }
             
             // Update bracket visualization
@@ -1523,25 +1550,24 @@
                 const roundData = bracketState.roundsData[r];
                 if (!roundData) continue;
                 
-                const roundName = r === bracketState.totalRounds ? '🏆 Championship' : `Round ${r}`;
-                const remaining = roundData.games.length - roundData.winners.length;
+                const roundName = r === bracketState.totalRounds ? '🏆 CHAMPIONSHIP' : `Round ${r}`;
+                const complete = roundData.complete ? '✓' : '○';
                 
-                html += `<div class="border-l-4 border-blue-400 pl-3">`;
-                html += `<div class="font-bold text-sm mb-1">${roundName}</div>`;
+                html += `<div class="border-l-4 ${roundData.complete ? 'border-green-400' : 'border-blue-400'} pl-3">`;
+                html += `<div class="font-bold text-sm mb-1">${complete} ${roundName} (${roundData.matchups.length} matchups)</div>`;
                 
-                for (let i = 0; i < roundData.games.length; i += 2) {
-                    const left = roundData.games[i];
-                    const right = roundData.games[i + 1];
-                    const leftWon = roundData.winners.findIndex(w => w.id === left.id) >= 0;
-                    const rightWon = roundData.winners.findIndex(w => w.id === right.id) >= 0;
+                roundData.matchups.forEach((matchup, idx) => {
+                    const leftWon = matchup.winner?.id === matchup.left.id;
+                    const rightWon = matchup.winner?.id === matchup.right.id;
                     
                     html += `<div class="text-xs mb-2 bg-gray-50 p-2 rounded">`;
-                    html += `<div class="${leftWon ? 'font-bold text-green-700' : 'text-gray-600'}">▸ ${left.name}</div>`;
-                    if (right) {
-                        html += `<div class="${rightWon ? 'font-bold text-green-700' : 'text-gray-600'}">▸ ${right.name}</div>`;
-                    }
+                    html += `<div class="${leftWon ? 'font-bold text-green-700' : 'text-gray-600'}">` +
+                            `${leftWon ? '✓' : '○'} ${matchup.left.name}</div>`;
+                    html += `<div class="text-gray-400 text-center">vs</div>`;
+                    html += `<div class="${rightWon ? 'font-bold text-green-700' : 'text-gray-600'}">` +
+                            `${rightWon ? '✓' : '○'} ${matchup.right.name}</div>`;
                     html += `</div>`;
-                }
+                });
                 html += `</div>`;
             }
             
@@ -1597,11 +1623,12 @@
                 const roundNumber = bracketState.currentRound;
                 const roundData = bracketState.roundsData[roundNumber];
                 if (roundData) {
-                    const totalMatches = tournamentPairings.length;
-                    const gamesCount = Object.keys(roundData.games).length;  // games is an object, not array
-                    progressText = `Bracket Round ${roundNumber} (${gamesCount} games): Match ${pairingIndex + 1} of ${totalMatches}`;
-                    totalPairings = totalMatches;
-                    completedPairings = pairingIndex;
+                    const matchups = roundData.matchups;
+                    const completed = matchups.filter(m => m.winner !== null).length;
+                    const roundName = roundNumber === bracketState.totalRounds ? 'Championship' : `Round ${roundNumber}`;
+                    progressText = `Bracket ${roundName}: Match ${pairingIndex + 1} of ${matchups.length} (${completed}/${matchups.length} complete)`;
+                    totalPairings = matchups.length;
+                    completedPairings = completed;
                 }
             } else if (gameMode === 'roundrobin' && roundRobinState) {
                 progressText = `Round Robin Round ${roundRobinState.currentRound}/${roundRobinState.totalRounds}: Pairing ${pairingIndex + 1} of ${tournamentPairings.length}`;
@@ -1639,26 +1666,83 @@
             tournamentActive = false;
             const gameMode = document.getElementById('gameMode').value;
             let resultText = '';
+            let resultHTML = '';
             
             if (gameMode === 'bracket' && bracketState) {
-                const champion = bracketState.champions;
+                const champion = bracketState.champion;
                 if (champion) {
-                    resultText = `🏆 BRACKET CHAMPION 🏆<br>${champion.name}`;
-                    alert(resultText.replace('<br>', '\n'));
+                    resultText = `🏆 BRACKET CHAMPION 🏆\n${champion.name}`;
+                    resultHTML = `
+                        <div class="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-4 text-center">
+                            <div class="text-3xl mb-2">🏆</div>
+                            <div class="text-2xl font-bold text-yellow-900 mb-2">CHAMPION!</div>
+                            <div class="text-xl font-bold text-yellow-800">${champion.name}</div>
+                            <div class="text-sm text-yellow-700 mt-3">Tournament Complete!</div>
+                        </div>
+                    `;
+                    alert(resultText);
                 } else {
                     resultText = 'Bracket Tournament Complete';
                 }
-            } else if (gameMode === 'roundrobin') {
+            } else if (gameMode === 'roundrobin' && roundRobinState) {
+                // Calculate standings for round robin
+                const standings = {};
+                
+                // Initialize all games
+                allMatchups.forEach(m => {
+                    if (!standings[m.winnerId]) standings[m.winnerId] = { name: m.winnerName, wins: 0, losses: 0 };
+                    if (!standings[m.loserId]) standings[m.loserId] = { name: m.loserName, wins: 0, losses: 0 };
+                });
+                
+                // Count wins/losses
+                allMatchups.forEach(m => {
+                    standings[m.winnerId].wins++;
+                    standings[m.loserId].losses++;
+                });
+                
+                // Sort by wins desc
+                const sorted = Object.values(standings).sort((a, b) => b.wins - a.wins);
+                
+                resultHTML = `
+                    <div class="bg-green-50 border-2 border-green-400 rounded-lg p-4">
+                        <div class="text-2xl font-bold text-green-900 mb-3 text-center">🎉 ROUND ROBIN COMPLETE!</div>
+                        <div class="text-sm font-bold text-green-800 mb-2">Final Standings</div>
+                        <div class="space-y-1">
+                `;
+                
+                sorted.forEach((game, idx) => {
+                    const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '  ';
+                    resultHTML += `
+                        <div class="text-sm text-green-800 bg-white rounded px-2 py-1 flex justify-between">
+                            <span>${medal} #${idx + 1} ${game.name}</span>
+                            <span class="font-bold">${game.wins}W - ${game.losses}L</span>
+                        </div>
+                    `;
+                });
+                
+                resultHTML += `
+                        </div>
+                        <div class="text-xs text-green-700 mt-3 text-center">
+                            Rounds: ${roundRobinState.totalRounds} | Total Matchups: ${allMatchups.length}
+                        </div>
+                    </div>
+                `;
+                
                 resultText = '✅ Round Robin Tournament Complete!';
             }
             
-            if (resultText) {
+            // Show results modal or alert
+            if (resultHTML) {
+                const resultsDiv = document.getElementById('results') || document.getElementById('matchupCard')?.parentElement;
+                if (resultsDiv) {
+                    resultsDiv.insertAdjacentHTML('beforeend', resultHTML);
+                }
+            } else if (resultText) {
                 alert(resultText);
             }
             
             // Reset to standard mode
             document.getElementById('gameMode').value = 'standard';
-            gameMode = 'standard';
             toggleTournamentSettings();
             pairingIndex = 0;
             tournamentPairings = [];
