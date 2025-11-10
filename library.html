@@ -467,6 +467,7 @@
                 minPlayers: parseInt(minPlayers) || 0,
                 maxPlayers: parseInt(maxPlayers) || 0,
                 bestPlayerCount: 0, // Will be populated from BGG API
+                recommendedPlayerCount: '', // Will be populated from BGG API
                 desireScore,
                 locations: [],
                 inSportomax: source === 'sportomax' || source === 'sportomax_fallback' || source === 'dtw' || source === 'dtw_fallback'
@@ -600,19 +601,6 @@
                 }
             });
             
-            // Build convention table HTML
-            const conventionTableHTML = `
-                <div class="convention-table">
-                    ${Object.values(conventions).map(conv => `
-                        <div class="convention-item">
-                            <span class="convention-icon">${conv.emoji}</span>
-                            <span class="convention-count">${conv.count}</span>
-                            <span class="convention-location">${conv.name}</span>
-                        </div>
-                    `).join('')}
-                </div>
-            `;
-            
             card.innerHTML = `
                 <!-- Image -->
                 <div class="flex-shrink-0">
@@ -639,19 +627,33 @@
                         ${game.desireScore > 0 ? `<span class="${badgeColor} text-white text-xs font-bold px-2 py-1 rounded flex-shrink-0">${game.desireScore}</span>` : ''}
                     </div>
                     
-                    <div class="text-xs text-gray-600 space-y-0.5 mb-2">
-                        <div class="flex gap-3">
-                            <span class="font-semibold text-blue-600">⭐ ${game.rating}</span>
-                            <span>🏆 ${game.rank}</span>
+                    <!-- Stats and Convention Table in parallel -->
+                    <div class="flex gap-4 items-start">
+                        <!-- Game Stats -->
+                        <div class="text-xs text-gray-600 space-y-0.5 flex-1">
+                            <div class="flex gap-3">
+                                <span class="font-semibold text-blue-600">⭐ ${game.rating}</span>
+                                <span>🏆 ${game.rank}</span>
+                            </div>
+                            <div class="flex gap-3 flex-wrap">
+                                <span>👥 ${game.minPlayers}-${game.maxPlayers}</span>
+                                ${game.bestPlayerCount > 0 ? `<span>🎯 Best: ${game.bestPlayerCount}</span>` : ''}
+                                <span>📅 ${game.yearPublished}</span>
+                            </div>
+                            ${game.recommendedPlayerCount ? `<div class="text-gray-700 font-medium">📊 Recommended: ${game.recommendedPlayerCount}</div>` : ''}
                         </div>
-                        <div class="flex gap-3">
-                            <span>👥 ${game.minPlayers}-${game.maxPlayers}</span>
-                            ${game.bestPlayerCount > 0 ? `<span>🎯 Best: ${game.bestPlayerCount}</span>` : ''}
-                            <span>📅 ${game.yearPublished}</span>
+                        
+                        <!-- Convention Table -->
+                        <div class="convention-table flex-shrink-0">
+                            ${Object.values(conventions).map(conv => `
+                                <div class="convention-item">
+                                    <span class="convention-icon">${conv.emoji}</span>
+                                    <span class="convention-count">${conv.count}</span>
+                                    <span class="convention-location">${conv.name}</span>
+                                </div>
+                            `).join('')}
                         </div>
                     </div>
-                    
-                    ${conventionTableHTML}
                 </div>
             `;
             
@@ -703,29 +705,50 @@
                         updateThumbnail(id, thumbnail);
                     }
                     
-                    // Extract best player count from suggested_numplayers
-                    // Format: "1, 2, 3, 4, 5, 6, 7, 8, 9, 10+" or "1, 2, 3+"
-                    const suggestedNumPlayers = item.querySelector('suggested_numplayers');
-                    if (suggestedNumPlayers) {
-                        const recommendations = suggestedNumPlayers.querySelectorAll('recommend');
-                        let bestCount = 0;
+                    // Extract best and recommended player counts from poll-summary
+                    // Looking for: <poll-summary name="suggested_numplayers">
+                    //   <result name="bestwith" value="Best with 4 players" />
+                    //   <result name="recommendedwith" value="Recommended with 2–4 players" />
+                    // </poll-summary>
+                    const pollSummary = item.querySelector('poll-summary[name="suggested_numplayers"]');
+                    if (pollSummary) {
+                        const bestResult = pollSummary.querySelector('result[name="bestwith"]');
+                        const recResult = pollSummary.querySelector('result[name="recommendedwith"]');
                         
-                        // Find the "Best" recommendation
-                        recommendations.forEach(rec => {
-                            if (rec.getAttribute('type') === 'Best') {
-                                const numPlayers = rec.getAttribute('numplayers');
-                                if (numPlayers) {
-                                    // Remove '+' and parse to int
-                                    bestCount = parseInt(numPlayers.replace('+', '')) || 0;
+                        let bestCount = 0;
+                        let recommendedText = '';
+                        
+                        // Extract best player count
+                        // Format: "Best with 4 players" -> extract 4
+                        if (bestResult) {
+                            const bestValue = bestResult.getAttribute('value');
+                            if (bestValue) {
+                                const match = bestValue.match(/(\d+)/);
+                                if (match) {
+                                    bestCount = parseInt(match[1]);
                                 }
                             }
-                        });
+                        }
                         
-                        // Update the game's best player count
+                        // Extract recommended player count
+                        // Format: "Recommended with 2–4 players" -> extract "2–4"
+                        if (recResult) {
+                            const recValue = recResult.getAttribute('value');
+                            if (recValue) {
+                                // Extract number range (e.g., "2–4" or "2-4" or "3+")
+                                const match = recValue.match(/(\d+[–\-]?\d*\+?)/);
+                                if (match) {
+                                    recommendedText = match[1];
+                                }
+                            }
+                        }
+                        
+                        // Update the game's player counts
                         const game = allGames.find(g => g.id === id);
                         if (game) {
                             game.bestPlayerCount = bestCount;
-                            console.log(`[LIBRARY] Fetched best player count for ID ${id}: ${bestCount}`);
+                            game.recommendedPlayerCount = recommendedText;
+                            console.log(`[LIBRARY] Fetched player counts for ID ${id}: best=${bestCount}, recommended=${recommendedText}`);
                         }
                     }
                     
