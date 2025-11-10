@@ -105,9 +105,12 @@
                 <label class="block text-sm font-medium text-gray-700 mb-1">Convention</label>
                 <select id="conventionFilter" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
                     <option value="all">All Collections</option>
-                    <option value="bgg">⭐ BGG (Dallas)</option>
-                    <option value="dte">🚢 DTE (Cruise)</option>
-                    <option value="dtw">🎲 DTW (Vegas)</option>
+                    <option value="bgg-only">⭐ BGG (Dallas) - ONLY</option>
+                    <option value="bgg-sure">⭐ BGG (Dallas) - Sure to have</option>
+                    <option value="dte-only">🚢 DTE (Cruise) - ONLY</option>
+                    <option value="dte-sure">🚢 DTE (Cruise) - Sure to have</option>
+                    <option value="dtw-only">🎲 DTW (Vegas) - ONLY</option>
+                    <option value="dtw-sure">🎲 DTW (Vegas) - Sure to have</option>
                     <option value="sportomax">📚 My Collection Only</option>
                 </select>
             </div>
@@ -457,10 +460,14 @@
                 desireScore = (wanttoplay ? 5 : 0) + (wishlist ? (6 - wishlistpriority) : 0);
             }
             
-            // Location (from BGG/DTE XML, if present)
+            // Location - different sources store it differently
             let location = '';
             if (usesBggId) {
+                // BGG/DTE: <location> element
                 location = item.querySelector('location')?.textContent || '';
+            } else {
+                // Sportomax/DTW: <comment> element contains location code
+                location = item.querySelector('comment')?.textContent || '';
             }
             
             return {
@@ -496,16 +503,26 @@
                     return false;
                 }
 
-                // Convention filter - SHOW games at that convention
+                // Convention filter
                 if (convention !== 'all') {
                     if (convention === 'sportomax') {
                         // Show ONLY if in sportomax collection AND not in any other convention
                         if (!game.inSportomax || game.locations.length > 0) {
                             return false;
                         }
-                    } else if (convention === 'bgg' || convention === 'dte' || convention === 'dtw') {
-                        // Show games that have THIS convention (regardless of other conventions)
-                        const hasThisConvention = game.locations.some(loc => loc.location === convention);
+                    } else if (convention.endsWith('-only')) {
+                        // ONLY at that convention (exclusive)
+                        const convName = convention.split('-')[0]; // 'bgg-only' -> 'bgg'
+                        const hasThisConvention = game.locations.some(loc => loc.location === convName);
+                        const hasOtherConventions = game.locations.some(loc => loc.location !== convName);
+                        
+                        if (!hasThisConvention || hasOtherConventions) {
+                            return false;
+                        }
+                    } else if (convention.endsWith('-sure')) {
+                        // Sure to have that convention (can be at others too)
+                        const convName = convention.split('-')[0]; // 'bgg-sure' -> 'bgg'
+                        const hasThisConvention = game.locations.some(loc => loc.location === convName);
                         
                         if (!hasThisConvention) {
                             return false;
@@ -566,6 +583,11 @@
                 const game = filteredGames[i];
                 const card = createGameCard(game);
                 gameList.appendChild(card);
+                
+                // Apply cached thumbnail immediately if available
+                if (thumbnailCache[game.id]) {
+                    updateThumbnail(game.id, thumbnailCache[game.id]);
+                }
             }
             
             displayedCount = endIndex;
@@ -643,11 +665,11 @@
                             </div>
                             <div class="flex gap-3 flex-wrap">
                                 <span>👥 ${game.minPlayers}-${game.maxPlayers}</span>
-                                ${game.bestPlayerCount > 0 ? `<span>🎯 Best: ${game.bestPlayerCount}</span>` : ''}
+                                <span data-field="best">🎯 Best: ${game.bestPlayerCount > 0 ? game.bestPlayerCount : 'TBD'}</span>
                                 <span>📅 ${game.yearPublished}</span>
                             </div>
-                            ${game.recommendedPlayerCount ? `<div class="text-gray-700 font-medium">📊 Recommended: ${game.recommendedPlayerCount}</div>` : ''}
-                            ${game.location ? `<div class="text-gray-700 font-medium">📍 Location: ${game.location}</div>` : ''}
+                            <div data-field="recommended" class="text-gray-700 font-medium">📊 Recommended: ${game.recommendedPlayerCount || 'TBD'}</div>
+                            <div class="text-gray-700 font-medium">📍 Location: ${game.location || 'TBD'}</div>
                         </div>
                         
                         <!-- Convention Table -->
@@ -756,6 +778,21 @@
                             game.bestPlayerCount = bestCount;
                             game.recommendedPlayerCount = recommendedText;
                             console.log(`[LIBRARY] Fetched player counts for ID ${id}: best=${bestCount}, recommended=${recommendedText}`);
+                            
+                            // Update card display if visible
+                            const cards = document.querySelectorAll(`[data-objectid="${id}"]`);
+                            cards.forEach(card => {
+                                // Update best player count (find the span with 🎯 and replace TBD or old value)
+                                const bestSpan = card.querySelector('[data-field="best"]');
+                                if (bestSpan) {
+                                    bestSpan.textContent = bestCount > 0 ? bestCount : 'TBD';
+                                }
+                                // Update recommended (find div with 📊 and update)
+                                const recDiv = card.querySelector('[data-field="recommended"]');
+                                if (recDiv) {
+                                    recDiv.textContent = recommendedText || 'TBD';
+                                }
+                            });
                         }
                     }
                     
