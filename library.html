@@ -24,6 +24,35 @@
             font-size: 1.2rem;
             margin-left: 0.25rem;
         }
+        .convention-table {
+            display: flex;
+            gap: 1rem;
+            padding: 0.75rem;
+            background-color: #f9fafb;
+            border-radius: 0.375rem;
+        }
+        .convention-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            gap: 0.25rem;
+        }
+        .convention-icon {
+            font-size: 1.5rem;
+        }
+        .convention-count {
+            font-size: 0.875rem;
+            font-weight: bold;
+            color: #374151;
+        }
+        .convention-location {
+            font-size: 0.75rem;
+            color: #6b7280;
+        }
+        .game-card.no-convention {
+            opacity: 0.6;
+            background-color: #f3f4f6;
+        }
         #loadingSpinner {
             border: 3px solid #f3f3f3;
             border-top: 3px solid #3498db;
@@ -85,7 +114,7 @@
 
             <!-- Player Count Filter -->
             <div class="mb-3">
-                <label class="block text-sm font-medium text-gray-700 mb-1">Player Count</label>
+                <label class="block text-sm font-medium text-gray-700 mb-1">Player Count (Can Play)</label>
                 <select id="playerFilter" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
                     <option value="all">Any Player Count</option>
                     <option value="1">Solo (1 player)</option>
@@ -94,6 +123,20 @@
                     <option value="4">4 players</option>
                     <option value="5">5 players</option>
                     <option value="6">6+ players</option>
+                </select>
+            </div>
+
+            <!-- Best Player Count Filter -->
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-gray-700 mb-1">Best Player Count</label>
+                <select id="bestPlayerFilter" class="w-full border rounded-lg px-3 py-2 text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none">
+                    <option value="all">Any Best Player Count</option>
+                    <option value="1">Best for 1</option>
+                    <option value="2">Best for 2</option>
+                    <option value="3">Best for 3</option>
+                    <option value="4">Best for 4</option>
+                    <option value="5">Best for 5</option>
+                    <option value="6">Best for 6+</option>
                 </select>
             </div>
 
@@ -423,6 +466,7 @@
                 rank,
                 minPlayers: parseInt(minPlayers) || 0,
                 maxPlayers: parseInt(maxPlayers) || 0,
+                bestPlayerCount: 0, // Will be populated from BGG API
                 desireScore,
                 locations: [],
                 inSportomax: source === 'sportomax' || source === 'sportomax_fallback' || source === 'dtw' || source === 'dtw_fallback'
@@ -434,8 +478,9 @@
             const searchTerm = document.getElementById('searchInput').value.toLowerCase();
             const convention = document.getElementById('conventionFilter').value;
             const playerCount = document.getElementById('playerFilter').value;
+            const bestPlayer = document.getElementById('bestPlayerFilter').value;
 
-            console.log(`[LIBRARY] Filtering - search:'${searchTerm}', convention:${convention}, players:${playerCount}`);
+            console.log(`[LIBRARY] Filtering - search:'${searchTerm}', convention:${convention}, players:${playerCount}, best:${bestPlayer}`);
 
             filteredGames = allGames.filter(game => {
                 // Search filter
@@ -443,20 +488,25 @@
                     return false;
                 }
 
-                // Convention filter (only filter if not 'all')
+                // Convention filter - SHOW ONLY the selected convention
                 if (convention !== 'all') {
                     if (convention === 'sportomax') {
-                        // Show only if in sportomax collection
-                        if (!game.inSportomax) return false;
-                    } else {
-                        // Show only if has this convention location tag
-                        if (!game.locations.some(loc => loc.location === convention)) {
+                        // Show ONLY if in sportomax collection AND not in any other convention
+                        if (!game.inSportomax || game.locations.length > 0) {
+                            return false;
+                        }
+                    } else if (convention === 'bgg' || convention === 'dte' || convention === 'dtw') {
+                        // Show ONLY games that have THIS specific convention and EXCLUDE other conventions
+                        const hasThisConvention = game.locations.some(loc => loc.location === convention);
+                        const hasOtherConventions = game.locations.some(loc => loc.location !== convention);
+                        
+                        if (!hasThisConvention || hasOtherConventions) {
                             return false;
                         }
                     }
                 }
 
-                // Player count filter (only filter if not 'all')
+                // Player count filter (can play - game must support this player count)
                 if (playerCount !== 'all') {
                     const count = parseInt(playerCount);
                     if (count === 6) {
@@ -467,6 +517,18 @@
                         if (game.minPlayers > count || game.maxPlayers < count) {
                             return false;
                         }
+                    }
+                }
+
+                // Best player count filter (what the game is best for)
+                if (bestPlayer !== 'all') {
+                    const best = parseInt(bestPlayer);
+                    if (best === 6) {
+                        // Best for 6+
+                        if (game.bestPlayerCount < 6) return false;
+                    } else {
+                        // Exact best player count match
+                        if (game.bestPlayerCount !== best) return false;
                     }
                 }
 
@@ -513,15 +575,43 @@
             card.className = 'game-card bg-white rounded-lg shadow p-3 flex gap-3';
             card.dataset.objectid = game.id;
             
+            // Grey out if no conventions
+            if (game.locations.length === 0) {
+                card.classList.add('no-convention');
+            }
+            
             // Desire score badge color
             let badgeColor = 'bg-gray-400';
             if (game.desireScore >= 8) badgeColor = 'bg-green-500';
             else if (game.desireScore >= 5) badgeColor = 'bg-blue-500';
             else if (game.desireScore >= 3) badgeColor = 'bg-yellow-500';
             
-            const locationTags = game.locations.map(loc => 
-                `<span class="location-tag" title="${loc.location.toUpperCase()}">${loc.emoji}</span>`
-            ).join('');
+            // Build convention table (count occurrences)
+            const conventions = {
+                'dtw': { emoji: '🎲', name: 'DTW', count: 0, location: '' },
+                'dte': { emoji: '🚢', name: 'DTE', count: 0, location: '' },
+                'bgg': { emoji: '⭐', name: 'BGG', count: 0, location: '' }
+            };
+            
+            game.locations.forEach(loc => {
+                if (conventions[loc.location]) {
+                    conventions[loc.location].count++;
+                    conventions[loc.location].location = loc.location; // Track that it's present
+                }
+            });
+            
+            // Build convention table HTML
+            const conventionTableHTML = `
+                <div class="convention-table">
+                    ${Object.values(conventions).map(conv => `
+                        <div class="convention-item">
+                            <span class="convention-icon">${conv.emoji}</span>
+                            <span class="convention-count">${conv.count}</span>
+                            <span class="convention-location">${conv.name}</span>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
             
             card.innerHTML = `
                 <!-- Image -->
@@ -537,29 +627,31 @@
                 
                 <!-- Info -->
                 <div class="flex-1 min-w-0">
-                    <div class="flex items-start justify-between gap-2">
-                        <h3 class="font-bold text-sm leading-tight mb-1">
+                    <div class="flex items-start justify-between gap-2 mb-1">
+                        <h3 class="font-bold text-sm leading-tight">
                             <a href="https://boardgamegeek.com/boardgame/${game.id}" 
                                target="_blank" 
                                rel="noopener noreferrer"
                                class="text-blue-600 hover:text-blue-800 hover:underline cursor-pointer">
                                 ${game.name}
                             </a>
-                            ${locationTags}
                         </h3>
                         ${game.desireScore > 0 ? `<span class="${badgeColor} text-white text-xs font-bold px-2 py-1 rounded flex-shrink-0">${game.desireScore}</span>` : ''}
                     </div>
                     
-                    <div class="text-xs text-gray-600 space-y-0.5">
+                    <div class="text-xs text-gray-600 space-y-0.5 mb-2">
                         <div class="flex gap-3">
                             <span class="font-semibold text-blue-600">⭐ ${game.rating}</span>
                             <span>🏆 ${game.rank}</span>
                         </div>
                         <div class="flex gap-3">
                             <span>👥 ${game.minPlayers}-${game.maxPlayers}</span>
+                            ${game.bestPlayerCount > 0 ? `<span>🎯 Best: ${game.bestPlayerCount}</span>` : ''}
                             <span>📅 ${game.yearPublished}</span>
                         </div>
                     </div>
+                    
+                    ${conventionTableHTML}
                 </div>
             `;
             
@@ -610,6 +702,33 @@
                         thumbnailCache[id] = thumbnail;
                         updateThumbnail(id, thumbnail);
                     }
+                    
+                    // Extract best player count from suggested_numplayers
+                    // Format: "1, 2, 3, 4, 5, 6, 7, 8, 9, 10+" or "1, 2, 3+"
+                    const suggestedNumPlayers = item.querySelector('suggested_numplayers');
+                    if (suggestedNumPlayers) {
+                        const recommendations = suggestedNumPlayers.querySelectorAll('recommend');
+                        let bestCount = 0;
+                        
+                        // Find the "Best" recommendation
+                        recommendations.forEach(rec => {
+                            if (rec.getAttribute('type') === 'Best') {
+                                const numPlayers = rec.getAttribute('numplayers');
+                                if (numPlayers) {
+                                    // Remove '+' and parse to int
+                                    bestCount = parseInt(numPlayers.replace('+', '')) || 0;
+                                }
+                            }
+                        });
+                        
+                        // Update the game's best player count
+                        const game = allGames.find(g => g.id === id);
+                        if (game) {
+                            game.bestPlayerCount = bestCount;
+                            console.log(`[LIBRARY] Fetched best player count for ID ${id}: ${bestCount}`);
+                        }
+                    }
+                    
                     pendingThumbnails.delete(id);
                 });
                 
@@ -656,6 +775,7 @@
         document.getElementById('searchInput').addEventListener('input', applyFilters);
         document.getElementById('conventionFilter').addEventListener('change', applyFilters);
         document.getElementById('playerFilter').addEventListener('change', applyFilters);
+        document.getElementById('bestPlayerFilter').addEventListener('change', applyFilters);
 
         // Initialize
         loadLibraries();
