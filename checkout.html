@@ -363,44 +363,62 @@ Ticket to Ride,2025-01-14,9209</pre>
             }
         };
 
-        // Fetch plays data from BGG API
+        // Fetch plays data from BGG API (load all years in batches)
         async function fetchPlaysData() {
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=plays&username=${bggUsername}`);
-                if (!response.ok) return;
-                
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                
                 playsData = {};
-                const plays = xml.querySelectorAll('play');
+                const currentYear = new Date().getFullYear();
+                const startYear = 2010; // Start from 2010 to capture historical data
                 
-                plays.forEach(play => {
-                    const gameItem = play.querySelector('item');
-                    if (gameItem) {
-                        const gameId = gameItem.getAttribute('objectid');
-                        const playDate = play.getAttribute('date');
+                // Load plays for each year to avoid API pagination limits
+                for (let year = currentYear; year >= startYear; year--) {
+                    const minDate = `${year}-01-01`;
+                    const maxDate = `${year}-12-31`;
+                    
+                    try {
+                        const response = await fetch(`/api/bgg-helper?endpoint=plays&username=${bggUsername}&mindate=${minDate}&maxdate=${maxDate}`);
+                        if (!response.ok) continue;
                         
-                        if (!playsData[gameId]) {
-                            playsData[gameId] = {
-                                lastPlayDate: playDate ? new Date(playDate) : null,
-                                playCount: 0
-                            };
-                        }
-                        playsData[gameId].playCount++;
+                        const text = await response.text();
+                        const parser = new DOMParser();
+                        const xml = parser.parseFromString(text, 'text/xml');
                         
-                        // Update to most recent play date
-                        if (playDate) {
-                            const thisDate = new Date(playDate);
-                            if (!playsData[gameId].lastPlayDate || thisDate > playsData[gameId].lastPlayDate) {
-                                playsData[gameId].lastPlayDate = thisDate;
+                        const plays = xml.querySelectorAll('play');
+                        
+                        plays.forEach(play => {
+                            const gameItem = play.querySelector('item');
+                            if (gameItem) {
+                                const gameId = gameItem.getAttribute('objectid');
+                                const playDate = play.getAttribute('date');
+                                
+                                if (!playsData[gameId]) {
+                                    playsData[gameId] = {
+                                        lastPlayDate: playDate ? new Date(playDate) : null,
+                                        playCount: 0
+                                    };
+                                }
+                                playsData[gameId].playCount++;
+                                
+                                // Update to most recent play date
+                                if (playDate) {
+                                    const thisDate = new Date(playDate);
+                                    if (!playsData[gameId].lastPlayDate || thisDate > playsData[gameId].lastPlayDate) {
+                                        playsData[gameId].lastPlayDate = thisDate;
+                                    }
+                                }
                             }
-                        }
+                        });
+                        
+                        console.log(`Loaded ${plays.length} plays for ${year}`);
+                        
+                        // Small delay between requests to avoid rate limiting
+                        await new Promise(resolve => setTimeout(resolve, 200));
+                    } catch (yearError) {
+                        console.error(`Error loading plays for ${year}:`, yearError);
                     }
-                });
+                }
                 
-                console.log(`Loaded plays data for ${Object.keys(playsData).length} games`);
+                console.log(`Loaded plays data for ${Object.keys(playsData).length} games total`);
             } catch (error) {
                 console.error('Error fetching plays data:', error);
             }
@@ -442,6 +460,7 @@ Ticket to Ride,2025-01-14,9209</pre>
                 
                 // Format checkout date and count
                 let lastCheckoutText = '';
+                let isCheckoutDefault = false;
                 if (lastCheckout) {
                     const daysAgo = Math.floor((Date.now() - lastCheckout) / (1000 * 60 * 60 * 24));
                     if (daysAgo === 0) {
@@ -452,12 +471,14 @@ Ticket to Ride,2025-01-14,9209</pre>
                         lastCheckoutText = `${daysAgo}d ago`;
                     }
                 } else {
-                    lastCheckoutText = `1/1/${game.year}`;
+                    lastCheckoutText = `Default: 1/1/${game.year}`;
+                    isCheckoutDefault = true;
                 }
                 const checkoutCount = plays?.checkoutCount || 0;
                 
                 // Format play date and count
                 let lastPlayText = '';
+                let isPlayDefault = false;
                 if (plays?.lastPlayDate) {
                     const daysAgo = Math.floor((Date.now() - plays.lastPlayDate) / (1000 * 60 * 60 * 24));
                     if (daysAgo === 0) {
@@ -468,7 +489,8 @@ Ticket to Ride,2025-01-14,9209</pre>
                         lastPlayText = `${daysAgo}d ago`;
                     }
                 } else {
-                    lastPlayText = `1/1/${game.year}`;
+                    lastPlayText = `Default: 1/1/${game.year}`;
+                    isPlayDefault = true;
                 }
                 const playCount = plays?.playCount || 0;
                 
@@ -480,8 +502,8 @@ Ticket to Ride,2025-01-14,9209</pre>
                                 <div class="font-bold text-sm truncate">${game.name}</div>
                                 <div class="text-xs text-gray-600 mb-2">${game.year}</div>
                                 <div class="space-y-1 text-xs text-gray-600">
-                                    <div>📤 CO: <span class="font-medium">${lastCheckoutText}</span> (${checkoutCount})</div>
-                                    <div>🎮 Play: <span class="font-medium">${lastPlayText}</span> (${playCount})</div>
+                                    <div>📤 Checkout: <span class="font-medium ${isCheckoutDefault ? 'text-gray-400 italic' : ''}">${lastCheckoutText}</span> (${checkoutCount})</div>
+                                    <div>🎮 Play: <span class="font-medium ${isPlayDefault ? 'text-gray-400 italic' : ''}">${lastPlayText}</span> (${playCount})</div>
                                 </div>
                             </div>
                             <button onclick="handleGameAction('${game.id}')" class="px-2 py-1 text-xs rounded font-medium bg-blue-100 text-blue-700 whitespace-nowrap flex-shrink-0">
