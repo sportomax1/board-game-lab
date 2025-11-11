@@ -769,7 +769,8 @@
                         src="https://via.placeholder.com/80x80?text=Loading" 
                         alt="${game.name}"
                         data-objectid="${game.id}"
-                        class="w-20 h-20 object-cover rounded"
+                        class="w-20 h-20 object-cover rounded cursor-pointer hover:opacity-80"
+                        onclick="window.open('https://boardgamegeek.com/boardgame/${game.id}', '_blank');"
                         onerror="this.src='https://via.placeholder.com/80x80?text=No+Image'"
                     />
                 </div>
@@ -1000,80 +1001,163 @@
             currentGameId = gameId;
             currentGameName = gameName;
             
-            // Find the game's XML data for this convention
-            const game = allGames.find(g => g.id === gameId);
-            if (!game) return;
-            
-            // Find which XML file contains this game/convention combination
-            let xmlData = {
-                convention: convention,
-                location: game.location || 'N/A',
-                gameInfo: {
-                    id: game.id,
-                    name: game.name,
-                    rating: game.rating,
-                    rank: game.rank,
-                    minPlayers: game.minPlayers,
-                    maxPlayers: game.maxPlayers,
-                    yearPublished: game.yearPublished,
-                    desireScore: game.desireScore,
-                    bestPlayerCount: game.bestPlayerCount,
-                    recommendedPlayerCount: game.recommendedPlayerCount,
-                    location: game.location
-                },
-                conventions: game.locations.map(l => `${l.emoji}${l.location}`).join(', ')
-            };
-            
             const modal = document.getElementById('xmlModal');
             document.getElementById('xmlModalTitle').textContent = `${gameName}`;
-            document.getElementById('xmlModalSubtitle').textContent = `Convention: ${convention.toUpperCase()} | Location: ${game.location || 'TBD'}`;
-            document.getElementById('xmlModalContent').textContent = JSON.stringify(xmlData, null, 2);
+            document.getElementById('xmlModalSubtitle').textContent = `Convention: ${convention.toUpperCase()} | Loading XML data...`;
+            document.getElementById('xmlModalContent').textContent = 'Fetching XML data...';
             
             modal.classList.add('active');
+            
+            // Fetch the actual XML file for this convention
+            let xmlFile = '';
+            if (convention === 'dtw') xmlFile = 'library_dtw.xml';
+            else if (convention === 'dte') xmlFile = 'library_dte.xml';
+            else if (convention === 'bgg') xmlFile = 'library_bgg.xml';
+            else if (convention === 'sportomax') xmlFile = 'library_sportomax.xml';
+            
+            if (!xmlFile) {
+                document.getElementById('xmlModalContent').textContent = 'Unknown convention';
+                return;
+            }
+            
+            // Fetch and parse the XML file
+            fetch(xmlFile)
+                .then(response => response.text())
+                .then(text => {
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    
+                    // Find the game in this XML file
+                    let gameElement = null;
+                    let idField = '';
+                    let locationField = '';
+                    
+                    // Determine which format and ID field to search
+                    if (convention === 'bgg' || convention === 'dte') {
+                        // BGG/DTE use <game> elements with <bgg_id> children
+                        const games = xml.querySelectorAll('game');
+                        games.forEach(g => {
+                            const id = g.querySelector('bgg_id')?.textContent;
+                            if (id === gameId) {
+                                gameElement = g;
+                                idField = 'bgg_id';
+                                locationField = 'location';
+                            }
+                        });
+                    } else {
+                        // Sportomax/DTW use <item> elements with objectid attribute
+                        const items = xml.querySelectorAll('item');
+                        items.forEach(item => {
+                            const id = item.getAttribute('objectid');
+                            if (id === gameId) {
+                                gameElement = item;
+                                idField = 'objectid (attribute)';
+                                locationField = 'comment';
+                            }
+                        });
+                    }
+                    
+                    if (!gameElement) {
+                        document.getElementById('xmlModalContent').textContent = `Game not found in ${convention.toUpperCase()} collection`;
+                        return;
+                    }
+                    
+                    // Extract location based on convention
+                    let location = '';
+                    if (convention === 'bgg' || convention === 'dte') {
+                        location = gameElement.querySelector('location')?.textContent || 'Not found';
+                    } else {
+                        location = gameElement.querySelector('comment')?.textContent || 'Not found';
+                    }
+                    
+                    // Build XML display data
+                    const xmlDisplay = {
+                        source: `${convention.toUpperCase()} Collection`,
+                        gameId: gameId,
+                        gameName: gameName,
+                        location: location,
+                        idField: idField,
+                        xmlElement: `<${convention === 'bgg' || convention === 'dte' ? 'game' : 'item'}>...</${convention === 'bgg' || convention === 'dte' ? 'game' : 'item'}>`,
+                        xmlSnippet: gameElement.outerHTML.substring(0, 500) + '...'
+                    };
+                    
+                    document.getElementById('xmlModalSubtitle').textContent = `Convention: ${convention.toUpperCase()} | Location: ${location}`;
+                    document.getElementById('xmlModalContent').textContent = JSON.stringify(xmlDisplay, null, 2) + '\n\n--- XML SNIPPET ---\n' + gameElement.outerHTML;
+                })
+                .catch(error => {
+                    document.getElementById('xmlModalContent').textContent = `Error loading XML: ${error.message}`;
+                });
         }
 
         function showAPIModal(gameId, gameName) {
             currentGameId = gameId;
             currentGameName = gameName;
             
-            const game = allGames.find(g => g.id === gameId);
-            if (!game) return;
-            
-            // Show game data with all available information
-            let apiData = {
-                id: game.id,
-                name: game.name,
-                yearPublished: game.yearPublished,
-                rating: {
-                    average: game.rating,
-                    rank: game.rank
-                },
-                players: {
-                    min: game.minPlayers,
-                    max: game.maxPlayers,
-                    best: game.bestPlayerCount || 'Not fetched yet',
-                    recommended: game.recommendedPlayerCount || 'Not fetched yet'
-                },
-                library: {
-                    location: game.location || 'N/A',
-                    conventions: game.locations.map(l => ({
-                        convention: l.location,
-                        emoji: l.emoji,
-                        name: l.location === 'dtw' ? 'DTW (Vegas)' : l.location === 'dte' ? 'DTE (Cruise)' : 'BGG (Dallas)'
-                    }))
-                },
-                desire: {
-                    score: game.desireScore,
-                    inSportomax: game.inSportomax
-                }
-            };
-            
             const modal = document.getElementById('apiModal');
             document.getElementById('apiModalTitle').textContent = `${gameName}`;
-            document.getElementById('apiModalSubtitle').textContent = `BGG ID: ${gameId}`;
-            document.getElementById('apiModalContent').textContent = JSON.stringify(apiData, null, 2);
+            document.getElementById('apiModalSubtitle').textContent = `BGG API v2 | Loading...`;
+            document.getElementById('apiModalContent').textContent = 'Fetching BGG API data...';
             
             modal.classList.add('active');
+            
+            // Fetch the actual BGG API thing data
+            fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}`)
+                .then(response => response.text())
+                .then(text => {
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    
+                    // Check for errors
+                    if (xml.getElementsByTagName('error').length > 0) {
+                        const error = xml.getElementsByTagName('error')[0].textContent;
+                        document.getElementById('apiModalContent').textContent = `API Error: ${error}`;
+                        return;
+                    }
+                    
+                    const item = xml.querySelector('item');
+                    if (!item) {
+                        document.getElementById('apiModalContent').textContent = 'No item data found in API response';
+                        return;
+                    }
+                    
+                    // Extract key data from API response
+                    const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || gameName;
+                    const yearPublished = item.querySelector('yearpublished')?.getAttribute('value') || 'N/A';
+                    const minPlayers = item.querySelector('minplayers')?.getAttribute('value') || 'N/A';
+                    const maxPlayers = item.querySelector('maxplayers')?.getAttribute('value') || 'N/A';
+                    const playingTime = item.querySelector('playingtime')?.getAttribute('value') || 'N/A';
+                    const description = item.querySelector('description')?.textContent?.substring(0, 200) + '...' || 'N/A';
+                    
+                    // Extract poll-summary (player recommendations)
+                    let bestWith = 'Not available';
+                    let recommendedWith = 'Not available';
+                    const pollSummary = item.querySelector('poll-summary[name="suggested_numplayers"]');
+                    if (pollSummary) {
+                        const bestResult = pollSummary.querySelector('result[name="bestwith"]');
+                        const recResult = pollSummary.querySelector('result[name="recommendedwith"]');
+                        bestWith = bestResult?.getAttribute('value') || 'Not available';
+                        recommendedWith = recResult?.getAttribute('value') || 'Not available';
+                    }
+                    
+                    // Build display data
+                    const apiDisplay = {
+                        id: gameId,
+                        name: name,
+                        yearPublished: yearPublished,
+                        playingTime: playingTime,
+                        players: `${minPlayers}-${maxPlayers}`,
+                        bestWith: bestWith,
+                        recommendedWith: recommendedWith,
+                        description: description,
+                        _note: 'Full XML response available below'
+                    };
+                    
+                    document.getElementById('apiModalSubtitle').textContent = `BGG API v2 | ${yearPublished} | Players: ${minPlayers}-${maxPlayers}`;
+                    document.getElementById('apiModalContent').textContent = JSON.stringify(apiDisplay, null, 2) + '\n\n--- POLL SUMMARY ---\n' + (pollSummary?.outerHTML || 'Not found') + '\n\n--- FULL ITEM XML ---\n' + item.outerHTML.substring(0, 1000);
+                })
+                .catch(error => {
+                    document.getElementById('apiModalContent').textContent = `Error loading API data: ${error.message}`;
+                });
         }
 
         // Close modals when clicking outside
