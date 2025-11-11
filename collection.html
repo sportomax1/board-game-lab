@@ -618,6 +618,7 @@
         let allGames = []; // To store all games from CSV
         const grid = document.getElementById('game-grid');
         const noResultsMsg = document.getElementById('no-results');
+        let thumbnailCache = {}; // Cache thumbnails to avoid re-fetching
         
         // Filter inputs
         const nameFilter = document.getElementById('filter-name');
@@ -680,8 +681,28 @@
             const startIndex = currentBatch * BATCH_SIZE;
             const endIndex = Math.min(startIndex + BATCH_SIZE, filteredGamesList.length);
             
+            const batch = [];
             for (let i = startIndex; i < endIndex; i++) {
                 renderGameCard(filteredGamesList[i]);
+                batch.push(filteredGamesList[i].objectid);
+            }
+            
+            // Batch load thumbnails for this batch (20 at a time)
+            if (batch.length > 0) {
+                const uncachedIds = batch.filter(id => !thumbnailCache[id]);
+                if (uncachedIds.length > 0) {
+                    // Split into smaller chunks if needed (BGG API has limits)
+                    for (let i = 0; i < uncachedIds.length; i += 20) {
+                        const chunk = uncachedIds.slice(i, i + 20);
+                        fetchThumbnails(chunk);
+                    }
+                } else {
+                    // All cached, update immediately
+                    batch.forEach(id => {
+                        const url = thumbnailCache[id];
+                        if (url) updateThumbnailImage(id, url);
+                    });
+                }
             }
             
             currentBatch++;
@@ -797,6 +818,41 @@
             
             // Check if any filter value is in the player list
             return filterValues.some(filterVal => playerList.includes(filterVal));
+        }
+
+        // Batch fetch thumbnails in groups of 20
+        async function fetchThumbnails(objectIds) {
+            try {
+                const idsParam = objectIds.join(',');
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&type=boardgame`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const items = xml.querySelectorAll('item');
+                items.forEach(item => {
+                    const id = item.getAttribute('id');
+                    const thumbnail = item.querySelector('thumbnail')?.textContent;
+                    if (thumbnail) {
+                        thumbnailCache[id] = thumbnail;
+                        updateThumbnailImage(id, thumbnail);
+                    }
+                });
+            } catch (error) {
+                console.error('Error fetching thumbnails:', error);
+            }
+        }
+
+        // Update thumbnail in all game cards with this ID
+        function updateThumbnailImage(objectId, url) {
+            const cards = document.querySelectorAll(`[data-game-id="${objectId}"]`);
+            cards.forEach(card => {
+                const img = card.querySelector('.game-thumbnail-img');
+                if (img) {
+                    img.src = url;
+                    img.style.display = 'block';
+                }
+            });
         }
 
         /**
@@ -1425,9 +1481,16 @@
         function renderGameCard(game) {
             const card = document.createElement('div');
             card.className = 'game-card';
+            card.setAttribute('data-game-id', game.objectid);
             if (isSimpleView) {
                 card.classList.add('simple-view');
             }
+            
+            // Get cached thumbnail or placeholder
+            const thumbnail = thumbnailCache[game.objectid] || '';
+            const thumbnailHtml = thumbnail ? 
+                `<img src="${thumbnail}" alt="${game.objectname}" class="game-thumbnail-img" style="width: 100%; height: 120px; object-fit: cover; border-radius: 8px; margin-bottom: 0.75rem;">` :
+                `<img src="https://via.placeholder.com/100x140?text=Loading" alt="${game.objectname}" class="game-thumbnail-img" style="width: 100%; height: 120px; object-fit: cover; border-radius: 8px; margin-bottom: 0.75rem;">`;
             
             // Safely access properties and provide defaults using cleanValue
             const myRating = cleanValue(game.rating, 1);
@@ -1470,6 +1533,7 @@
             const statusText = statusFlags.join(', ') || '-';
 
             card.innerHTML = `
+                ${thumbnailHtml}
                 <h2><a href="https://boardgamegeek.com/boardgame/${game.objectid}" target="_blank" style="color: inherit; text-decoration: none;">${cleanValue(game.objectname) === '-' ? 'Unnamed Game' : game.objectname}</a></h2>
                     <div class="game-stats">
                         ${visibleFields.includes('myRating') ? `<div class="stat">
@@ -1480,7 +1544,7 @@
                             <span class="stat-label">Plays</span>
                             <span class="stat-value">${numPlays}</span>
                         </div>` : ''}
-                        ${visibleFields.includes('bayesaverage') ? `<div class="stat">
+                        ${visibleFields.includes('baverage') ? `<div class="stat">
                             <span class="stat-label">Weighted Avg</span>
                             <span class="stat-value">${bayesAvg}</span>
                         </div>` : ''}
