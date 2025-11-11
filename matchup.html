@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
     <title>Game Matchup Tracker</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/canvas-confetti@1.5.1/dist/confetti.browser.min.js"></script>
     <script>
         // Prevent Tailwind errors on null elements and other JS errors
         window.addEventListener('error', function(e) {
@@ -243,14 +244,14 @@
             <!-- Game Appearances (Live Stats) -->
             <div id="liveAppearances" class="bg-white rounded-lg shadow p-4 mb-4 hidden">
                 <div class="flex justify-between items-center mb-3">
-                    <h4 class="text-sm font-bold">Game Appearances</h4>
+                    <h4 class="text-sm font-bold">📊 Game Appearances</h4>
                     <div class="text-right">
                         <div class="text-xs text-gray-600">H-Index:</div>
-                        <div class="text-lg font-bold text-orange-600" id="liveHIndex">0</div>
+                        <div class="text-lg font-bold text-orange-600 cursor-pointer hover:text-orange-700 underline" id="liveHIndex" style="transition: color 0.2s;">0</div>
                     </div>
                 </div>
-                <div id="liveAppearanceDistribution" class="text-xs space-y-1 max-h-40 overflow-y-auto">
-                    <!-- Populated by JavaScript -->
+                <div id="liveAppearanceDistribution" class="flex flex-wrap gap-2">
+                    <!-- Populated by JavaScript with graphical boxes -->
                 </div>
             </div>
 
@@ -653,6 +654,34 @@
                         <li>📈 Same record, better games = higher ELO</li>
                     </ul>
                 </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- H-Index Modal -->
+    <div id="hIndexModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg max-w-2xl w-full p-6 max-h-96 overflow-y-auto">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-lg font-bold">📊 H-Index Games</h3>
+                <button onclick="closeHIndexModal()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+            </div>
+            
+            <div id="hIndexContent" class="space-y-3">
+                <!-- Games will be rendered here -->
+            </div>
+        </div>
+    </div>
+
+    <!-- Champion Modal -->
+    <div id="championModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg max-w-md w-full p-6 text-center">
+            <div class="flex justify-between items-center mb-4">
+                <h3 class="text-2xl font-bold">🏆 Champion!</h3>
+                <button onclick="closeChampionModal()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+            </div>
+            
+            <div id="championContent" class="space-y-4">
+                <!-- Champion game will be rendered here -->
             </div>
         </div>
     </div>
@@ -1085,16 +1114,40 @@
                 distributionCounts[count] = (distributionCounts[count] || 0) + 1;
             });
             
-            // Render distribution
+            // Render distribution as graphical boxes
             const distDiv = document.getElementById('liveAppearanceDistribution');
             const maxAppearances = Math.max(...Object.keys(distributionCounts).map(Number));
-            distDiv.innerHTML = Array.from({length: maxAppearances + 1}, (_, i) => i)
+            
+            const colorMap = {
+                0: 'bg-gray-300',
+                1: 'bg-blue-300',
+                2: 'bg-blue-400',
+                3: 'bg-blue-500',
+                4: 'bg-indigo-500',
+                5: 'bg-indigo-600',
+                6: 'bg-purple-600',
+                7: 'bg-purple-700',
+                8: 'bg-pink-600',
+                9: 'bg-red-600',
+                10: 'bg-red-700'
+            };
+            
+            const html = Array.from({length: maxAppearances + 1}, (_, i) => i)
                 .map(count => {
                     const gameCount = distributionCounts[count] || 0;
                     if (gameCount === 0) return '';
-                    return `<div class="flex justify-between"><span>${count} time${count !== 1 ? 's' : ''}:</span><span class="font-semibold">${gameCount} game${gameCount !== 1 ? 's' : ''}</span></div>`;
+                    const color = colorMap[count] || 'bg-red-800';
+                    const tooltip = `${count} appearance${count !== 1 ? 's' : ''}: ${gameCount} game${gameCount !== 1 ? 's' : ''}`;
+                    return `<div class="flex flex-col items-center" title="${tooltip}">
+                        <div class="${color} text-white rounded px-3 py-2 text-xs font-bold min-w-12 text-center hover:shadow-lg transition-shadow cursor-help">
+                            ${count}
+                        </div>
+                        <div class="text-xs text-gray-600 mt-1">${gameCount}</div>
+                    </div>`;
                 })
                 .join('');
+            
+            distDiv.innerHTML = html;
             
             // Calculate H-Index
             const appearances = Object.values(gameAppearances).sort((a, b) => b - a);
@@ -1110,7 +1163,7 @@
             liveHIndexEl.textContent = hIndex;
             liveHIndexEl.style.cursor = 'pointer';
             liveHIndexEl.style.textDecoration = 'underline';
-            liveHIndexEl.onclick = () => showHIndexGames(hIndex, gameAppearances, games);
+            liveHIndexEl.onclick = () => showHIndexGames(hIndex, gameAppearances, allGamesInCollection);
         }
 
         // Show next pair
@@ -1799,6 +1852,27 @@
             if (gameMode === 'bracket' && bracketState) {
                 const champion = bracketState.champion;
                 if (champion) {
+                    // Calculate champion stats from bracket matches
+                    let wins = 0, losses = 0;
+                    const bracketMatches = bracketState.roundsData || [];
+                    bracketMatches.forEach(roundData => {
+                        roundData.matchups?.forEach(matchup => {
+                            if (matchup.winner?.id === champion.id) {
+                                wins++;
+                            } else if (matchup.loser?.id === champion.id) {
+                                losses++;
+                            }
+                        });
+                    });
+                    
+                    const stats = {
+                        ...champion,
+                        wins,
+                        losses,
+                        winPct: wins / (wins + losses) || 0,
+                        elo: calculateELO(wins, losses, getBGGRating(champion.id))
+                    };
+                    
                     resultText = `🏆 BRACKET CHAMPION 🏆\n${champion.name}`;
                     resultHTML = `
                         <div class="bg-yellow-50 border-2 border-yellow-400 rounded-lg p-4 text-center">
@@ -1808,7 +1882,8 @@
                             <div class="text-sm text-yellow-700 mt-3">Tournament Complete!</div>
                         </div>
                     `;
-                    alert(resultText);
+                    // Show modal instead of alert
+                    showChampionModal(stats);
                 } else {
                     resultText = 'Bracket Tournament Complete';
                 }
@@ -1838,6 +1913,23 @@
                 
                 // Sort by wins desc
                 const sorted = Object.values(standings).sort((a, b) => b.wins - a.wins);
+                
+                // Show champion modal for round robin (top finisher)
+                if (sorted.length > 0) {
+                    const champion = sorted[0];
+                    const championGame = roundRobinState.allGames.find(g => g.id === champion.name);
+                    if (championGame) {
+                        const stats = {
+                            ...championGame,
+                            wins: champion.wins,
+                            losses: champion.losses,
+                            winPct: champion.wins / (champion.wins + champion.losses) || 0,
+                            elo: calculateELO(champion.wins, champion.losses, getBGGRating(championGame.id)),
+                            bggRating: getBGGRating(championGame.id)
+                        };
+                        showChampionModal(stats);
+                    }
+                }
                 
                 resultHTML = `
                     <div class="bg-green-50 border-2 border-green-400 rounded-lg p-4">
@@ -2129,17 +2221,40 @@
                     distributionCounts[0] = zeroAppearanceCount;
                 }
                 
-                // Render distribution
+                // Render distribution as graphical boxes
                 const distDiv = document.getElementById('appearanceDistribution');
                 const maxAppearances = Math.max(...Object.keys(distributionCounts).map(Number), 0);
-                distDiv.innerHTML = Array.from({length: maxAppearances + 1}, (_, i) => i)
+                
+                const colorMap = {
+                    0: 'bg-gray-300',
+                    1: 'bg-blue-300',
+                    2: 'bg-blue-400',
+                    3: 'bg-blue-500',
+                    4: 'bg-indigo-500',
+                    5: 'bg-indigo-600',
+                    6: 'bg-purple-600',
+                    7: 'bg-purple-700',
+                    8: 'bg-pink-600',
+                    9: 'bg-red-600',
+                    10: 'bg-red-700'
+                };
+                
+                const html = Array.from({length: maxAppearances + 1}, (_, i) => i)
                     .map(count => {
                         const gameCount = distributionCounts[count] || 0;
                         if (gameCount === 0) return '';
-                        return `<div class="flex justify-between"><span>${count} times:</span><span class="font-semibold">${gameCount} game${gameCount !== 1 ? 's' : ''}</span></div>`;
+                        const color = colorMap[count] || 'bg-red-800';
+                        const tooltip = `${count} appearance${count !== 1 ? 's' : ''}: ${gameCount} game${gameCount !== 1 ? 's' : ''}`;
+                        return `<div class="flex flex-col items-center" title="${tooltip}">
+                            <div class="${color} text-white rounded px-3 py-2 text-xs font-bold min-w-12 text-center hover:shadow-lg transition-shadow cursor-help">
+                                ${count}
+                            </div>
+                            <div class="text-xs text-gray-600 mt-1">${gameCount}</div>
+                        </div>`;
                     })
-                    .filter(x => x)
                     .join('');
+                
+                distDiv.innerHTML = html;
                 
                 // Calculate H-Index
                 const appearances = Object.values(gameAppearances).sort((a, b) => b - a);
@@ -2190,8 +2305,8 @@
             return game ? parseFloat(game.rating) || 0 : 0;
         }
 
-        // Show H-Index qualifying games
-        function showHIndexGames(hIndex, gameAppearances, allGames) {
+        // Show H-Index qualifying games modal
+        async function showHIndexGames(hIndex, gameAppearances, allGames) {
             if (hIndex === 0) {
                 alert('No H-Index games: need at least one game with 1+ appearances');
                 return;
@@ -2203,7 +2318,7 @@
                 .map(([gameId]) => {
                     const game = allGames.find(g => g.id === gameId);
                     const count = gameAppearances[gameId];
-                    return game ? `${game.name} (${count} plays)` : `Unknown Game (${count} plays)`;
+                    return { id: gameId, name: game?.name || 'Unknown Game', count };
                 });
             
             if (qualifyingGames.length === 0) {
@@ -2211,8 +2326,103 @@
                 return;
             }
             
-            const message = `H-Index: ${hIndex}\nGames with ${hIndex}+ appearances:\n\n${qualifyingGames.join('\n')}`;
-            alert(message);
+            // Fetch thumbnails for qualifying games
+            const gameIds = qualifyingGames.map(g => g.id);
+            const thumbnailMap = {};
+            
+            try {
+                // Batch fetch thumbnails (5 at a time to avoid overwhelming API)
+                for (let i = 0; i < gameIds.length; i += 5) {
+                    const batch = gameIds.slice(i, i + 5);
+                    const batchIds = batch.join(',');
+                    const response = await fetch(`/api/bgg-helper?endpoint=things&ids=${batchIds}`);
+                    if (response.ok) {
+                        const data = await response.json();
+                        if (data.results) {
+                            data.results.forEach(game => {
+                                thumbnailMap[game.id] = game.image || '';
+                            });
+                        }
+                    }
+                }
+            } catch (e) {
+                console.error('Error fetching thumbnails:', e);
+            }
+            
+            // Render games in modal
+            const contentDiv = document.getElementById('hIndexContent');
+            contentDiv.innerHTML = qualifyingGames
+                .map(game => {
+                    const thumbnail = thumbnailMap[game.id];
+                    return `<div class="flex gap-3 p-3 border rounded bg-gray-50 hover:bg-gray-100">
+                        <div class="flex-shrink-0">
+                            ${thumbnail ? `<img src="${thumbnail}" alt="${game.name}" class="w-12 h-16 object-cover rounded">` : `<div class="w-12 h-16 bg-gray-300 rounded flex items-center justify-center text-xs">No Image</div>`}
+                        </div>
+                        <div class="flex-1">
+                            <div class="font-semibold text-blue-600">${game.name}</div>
+                            <div class="text-sm text-gray-600">${game.count} appearance${game.count !== 1 ? 's' : ''}</div>
+                        </div>
+                    </div>`;
+                })
+                .join('');
+            
+            // Open modal
+            document.getElementById('hIndexModal').classList.remove('hidden');
+        }
+        
+        function closeHIndexModal() {
+            document.getElementById('hIndexModal').classList.add('hidden');
+        }
+
+        // Show champion modal with confetti
+        async function showChampionModal(championGame) {
+            if (!championGame) return;
+            
+            // Fetch thumbnail
+            let thumbnail = '';
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=things&ids=${championGame.id}`);
+                if (response.ok) {
+                    const data = await response.json();
+                    if (data.results && data.results.length > 0) {
+                        thumbnail = data.results[0].image || '';
+                    }
+                }
+            } catch (e) {
+                console.error('Error fetching champion thumbnail:', e);
+            }
+            
+            // Render champion content
+            const contentDiv = document.getElementById('championContent');
+            contentDiv.innerHTML = `
+                <div class="mb-4">
+                    ${thumbnail ? `<img src="${thumbnail}" alt="${championGame.name}" class="w-32 h-44 object-cover rounded mx-auto mb-4">` : ''}
+                    <h2 class="text-2xl font-bold text-blue-600">${championGame.name}</h2>
+                </div>
+                <div class="space-y-2 text-left bg-gray-50 p-4 rounded">
+                    <p class="text-sm"><span class="font-semibold">Wins:</span> ${championGame.wins}</p>
+                    <p class="text-sm"><span class="font-semibold">Losses:</span> ${championGame.losses}</p>
+                    <p class="text-sm"><span class="font-semibold">Win %:</span> ${(championGame.winPct * 100).toFixed(1)}%</p>
+                    <p class="text-sm"><span class="font-semibold">ELO:</span> ${championGame.elo}</p>
+                    ${championGame.bggRating ? `<p class="text-sm"><span class="font-semibold">BGG Rating:</span> ${championGame.bggRating.toFixed(2)}/10</p>` : ''}
+                </div>
+            `;
+            
+            // Open modal
+            document.getElementById('championModal').classList.remove('hidden');
+            
+            // Trigger confetti after a short delay
+            setTimeout(() => {
+                confetti({
+                    particleCount: 100,
+                    spread: 70,
+                    origin: { y: 0.6 }
+                });
+            }, 100);
+        }
+        
+        function closeChampionModal() {
+            document.getElementById('championModal').classList.add('hidden');
         }
 
         // Current sort mode for standings

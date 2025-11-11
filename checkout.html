@@ -105,9 +105,20 @@
             <!-- Search -->
             <div class="bg-white rounded-lg shadow p-4 mb-4">
                 <input type="text" id="searchGames" placeholder="🔍 Search games..." class="w-full border rounded-lg px-3 py-2 text-sm mb-3">
-                <button onclick="loadGames()" class="w-full px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
-                    Reload Collection
-                </button>
+                <div class="flex gap-2">
+                    <button onclick="loadGames()" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
+                        Reload Collection
+                    </button>
+                </div>
+                <div class="mt-3">
+                    <label class="block text-xs font-medium text-gray-700 mb-2">Sort By:</label>
+                    <div class="grid grid-cols-2 gap-2">
+                        <button onclick="sortCheckoutGames('alpha')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="alpha">📝 Alphabetical</button>
+                        <button onclick="sortCheckoutGames('checkout')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="checkout">🕐 Last Checkout</button>
+                        <button onclick="sortCheckoutGames('play')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="play">🎮 Last Play</button>
+                        <button onclick="sortCheckoutGames('year')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="year">📅 Year Published</button>
+                    </div>
+                </div>
             </div>
 
             <!-- Game List -->
@@ -235,6 +246,9 @@ Ticket to Ride,2025-01-14,9209</pre>
         let allCheckouts = [];
         let currentCheckoutGame = null;
         let currentCheckinCheckout = null;
+        let playsData = {}; // { gameId: { lastPlayDate, playCount } }
+        let checkoutDates = {}; // { gameId: lastCheckoutDate }
+        let currentSortMode = 'alpha'; // 'alpha', 'checkout', 'play', 'year'
 
         // Initialize Firebase
         async function initFirebase() {
@@ -325,6 +339,18 @@ Ticket to Ride,2025-01-14,9209</pre>
                 }
                 
                 document.getElementById('emptyCheckout').classList.add('hidden');
+                
+                // Fetch plays data
+                await fetchPlaysData();
+                
+                // Build checkout dates map from history
+                checkoutDates = {};
+                allCheckouts.forEach(c => {
+                    if (!checkoutDates[c.gameId] || c.checkoutDate.toDate() > checkoutDates[c.gameId]) {
+                        checkoutDates[c.gameId] = c.checkoutDate.toDate();
+                    }
+                });
+                
                 renderGameList();
                 
                 document.getElementById('loading').classList.add('hidden');
@@ -334,6 +360,49 @@ Ticket to Ride,2025-01-14,9209</pre>
                 document.getElementById('loading').classList.add('hidden');
             }
         };
+
+        // Fetch plays data from BGG API
+        async function fetchPlaysData() {
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=plays&username=${bggUsername}`);
+                if (!response.ok) return;
+                
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                playsData = {};
+                const plays = xml.querySelectorAll('play');
+                
+                plays.forEach(play => {
+                    const gameItem = play.querySelector('item');
+                    if (gameItem) {
+                        const gameId = gameItem.getAttribute('objectid');
+                        const playDate = play.getAttribute('date');
+                        
+                        if (!playsData[gameId]) {
+                            playsData[gameId] = {
+                                lastPlayDate: playDate ? new Date(playDate) : null,
+                                playCount: 0
+                            };
+                        }
+                        playsData[gameId].playCount++;
+                        
+                        // Update to most recent play date
+                        if (playDate) {
+                            const thisDate = new Date(playDate);
+                            if (!playsData[gameId].lastPlayDate || thisDate > playsData[gameId].lastPlayDate) {
+                                playsData[gameId].lastPlayDate = thisDate;
+                            }
+                        }
+                    }
+                });
+                
+                console.log(`Loaded plays data for ${Object.keys(playsData).length} games`);
+            } catch (error) {
+                console.error('Error fetching plays data:', error);
+            }
+        }
 
         // Load checkout history
         async function loadCheckouts() {
@@ -360,9 +429,44 @@ Ticket to Ride,2025-01-14,9209</pre>
             
             const search = document.getElementById('searchGames')?.value.toLowerCase() || '';
             
-            const filtered = allGames.filter(g => g.name.toLowerCase().includes(search));
+            let filtered = allGames.filter(g => g.name.toLowerCase().includes(search));
+            
+            // Apply sorting
+            filtered = sortGamesArray(filtered, currentSortMode);
             
             list.innerHTML = filtered.map(game => {
+                const plays = playsData[game.id];
+                const lastCheckout = checkoutDates[game.id];
+                
+                // Calculate time since last event
+                let lastEventText = '';
+                if (lastCheckout) {
+                    const daysAgo = Math.floor((Date.now() - lastCheckout) / (1000 * 60 * 60 * 24));
+                    if (daysAgo === 0) {
+                        lastEventText = '📤 Today';
+                    } else if (daysAgo === 1) {
+                        lastEventText = '📤 Yesterday';
+                    } else {
+                        lastEventText = `📤 ${daysAgo}d ago`;
+                    }
+                }
+                
+                let lastPlayText = '';
+                if (plays?.lastPlayDate) {
+                    const daysAgo = Math.floor((Date.now() - plays.lastPlayDate) / (1000 * 60 * 60 * 24));
+                    if (daysAgo === 0) {
+                        lastPlayText = '🎮 Today';
+                    } else if (daysAgo === 1) {
+                        lastPlayText = '🎮 Yesterday';
+                    } else {
+                        lastPlayText = `🎮 ${daysAgo}d ago`;
+                    }
+                } else if (plays?.playCount === 0) {
+                    const yearPublished = parseInt(game.year) || 1900;
+                    const daysAgo = Math.floor((Date.now() - new Date(yearPublished, 0, 1)) / (1000 * 60 * 60 * 24));
+                    lastPlayText = `🎮 1/${game.year}`;
+                }
+                
                 return `
                     <div class="bg-white rounded-lg shadow p-3 game-card">
                         <div class="flex items-center gap-3">
@@ -370,6 +474,9 @@ Ticket to Ride,2025-01-14,9209</pre>
                             <div class="flex-1 min-w-0">
                                 <div class="font-bold text-sm truncate">${game.name}</div>
                                 <div class="text-xs text-gray-600">${game.year}</div>
+                                <div class="text-xs text-gray-500 mt-1">
+                                    ${lastEventText || ''} ${lastPlayText || ''}
+                                </div>
                             </div>
                             <button onclick="handleGameAction('${game.id}')" class="px-3 py-1 text-xs rounded font-medium bg-blue-100 text-blue-700">
                                 Checkout
@@ -383,6 +490,58 @@ Ticket to Ride,2025-01-14,9209</pre>
                 list.innerHTML = '<div class="text-center py-8 text-gray-500">No games found</div>';
             }
         }
+        
+        // Sort games array by current sort mode
+        function sortGamesArray(games, sortMode) {
+            const sorted = [...games];
+            
+            switch (sortMode) {
+                case 'alpha':
+                    sorted.sort((a, b) => a.name.localeCompare(b.name));
+                    break;
+                case 'checkout':
+                    sorted.sort((a, b) => {
+                        const dateA = checkoutDates[a.id] || new Date(0);
+                        const dateB = checkoutDates[b.id] || new Date(0);
+                        return dateB - dateA; // Most recent first
+                    });
+                    break;
+                case 'play':
+                    sorted.sort((a, b) => {
+                        const dateA = playsData[a.id]?.lastPlayDate || new Date(0);
+                        const dateB = playsData[b.id]?.lastPlayDate || new Date(0);
+                        return dateB - dateA; // Most recent first
+                    });
+                    break;
+                case 'year':
+                    sorted.sort((a, b) => {
+                        const yearA = parseInt(a.year) || 0;
+                        const yearB = parseInt(b.year) || 0;
+                        return yearB - yearA; // Most recent first
+                    });
+                    break;
+            }
+            
+            return sorted;
+        }
+        
+        // Change checkout sort mode
+        window.sortCheckoutGames = (sortMode) => {
+            currentSortMode = sortMode;
+            
+            // Update button styles
+            document.querySelectorAll('.sortBtn').forEach(btn => {
+                if (btn.dataset.sort === sortMode) {
+                    btn.classList.add('bg-blue-100', 'text-blue-700');
+                    btn.classList.remove('bg-gray-100');
+                } else {
+                    btn.classList.remove('bg-blue-100', 'text-blue-700');
+                    btn.classList.add('bg-gray-100');
+                }
+            });
+            
+            renderGameList();
+        };
 
         // Handle game action (checkout)
         window.handleGameAction = async (gameId) => {
