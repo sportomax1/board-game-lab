@@ -113,12 +113,12 @@
                 <div class="mt-3">
                     <label class="block text-xs font-medium text-gray-700 mb-2">Sort By:</label>
                     <div class="grid grid-cols-2 gap-2">
-                        <button onclick="sortCheckoutGames('alpha')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="alpha">📝 A-Z</button>
-                        <button onclick="sortCheckoutGames('checkout-short')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="checkout-short">🕐 Soonest</button>
-                        <button onclick="sortCheckoutGames('play-short')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="play-short">🎮 Soon</button>
-                        <button onclick="sortCheckoutGames('year')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="year">📅 Year</button>
-                        <button onclick="sortCheckoutGames('checkout-long')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="checkout-long">🕰️ Longest CO</button>
-                        <button onclick="sortCheckoutGames('play-long')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="play-long">⏱️ Longest Play</button>
+                        <button onclick="sortCheckoutGames('alpha')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="alpha" title="Sort alphabetically A to Z">📝 A-Z</button>
+                        <button onclick="sortCheckoutGames('checkout-short')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="checkout-short" title="Most recent checkouts first">🕐 Checked Out Recently</button>
+                        <button onclick="sortCheckoutGames('play-short')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="play-short" title="Most recent plays first">🎮 Played Recently</button>
+                        <button onclick="sortCheckoutGames('year')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="year" title="Newest published games first">📅 Year Published</button>
+                        <button onclick="sortCheckoutGames('checkout-long')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="checkout-long" title="Longest time since last checkout">🕰️ Not CO'd (Oldest)</button>
+                        <button onclick="sortCheckoutGames('play-long')" class="text-xs py-2 px-3 rounded bg-gray-100 hover:bg-gray-200 font-medium sortBtn" data-sort="play-long" title="Longest time since last play">⏱️ Not Played (Oldest)</button>
                     </div>
                 </div>
             </div>
@@ -363,58 +363,89 @@ Ticket to Ride,2025-01-14,9209</pre>
             }
         };
 
-        // Fetch plays data from BGG API (load all years in batches)
+        // Fetch plays data from BGG API (load all months in batches to avoid 100-record per-call limit)
         async function fetchPlaysData() {
             try {
                 playsData = {};
                 const currentYear = new Date().getFullYear();
                 const startYear = 2010; // Start from 2010 to capture historical data
                 
-                // Load plays for each year to avoid API pagination limits
+                // Track if we find any plays in a year to stop when reaching empty years
+                let consecutiveEmptyYears = 0;
+                const maxEmptyYears = 2; // Stop after 2 consecutive empty years
+                
+                // Load plays for each month of each year to avoid 100 record per-call limit
                 for (let year = currentYear; year >= startYear; year--) {
-                    const minDate = `${year}-01-01`;
-                    const maxDate = `${year}-12-31`;
+                    let yearHasPlays = false;
                     
-                    try {
-                        const response = await fetch(`/api/bgg-helper?endpoint=plays&username=${bggUsername}&mindate=${minDate}&maxdate=${maxDate}`);
-                        if (!response.ok) continue;
+                    // Load each month separately to get more data per year
+                    for (let month = 12; month >= 1; month--) {
+                        const monthStr = String(month).padStart(2, '0');
+                        const minDate = `${year}-${monthStr}-01`;
                         
-                        const text = await response.text();
-                        const parser = new DOMParser();
-                        const xml = parser.parseFromString(text, 'text/xml');
+                        // Calculate last day of month
+                        const lastDay = new Date(year, month, 0).getDate();
+                        const maxDate = `${year}-${monthStr}-${lastDay}`;
                         
-                        const plays = xml.querySelectorAll('play');
-                        
-                        plays.forEach(play => {
-                            const gameItem = play.querySelector('item');
-                            if (gameItem) {
-                                const gameId = gameItem.getAttribute('objectid');
-                                const playDate = play.getAttribute('date');
-                                
-                                if (!playsData[gameId]) {
-                                    playsData[gameId] = {
-                                        lastPlayDate: playDate ? new Date(playDate) : null,
-                                        playCount: 0
+                        try {
+                            const response = await fetch(`/api/bgg-helper?endpoint=plays&username=${bggUsername}&mindate=${minDate}&maxdate=${maxDate}`);
+                            if (!response.ok) continue;
+                            
+                            const text = await response.text();
+                            const parser = new DOMParser();
+                            const xml = parser.parseFromString(text, 'text/xml');
+                            
+                            const plays = xml.querySelectorAll('play');
+                            
+                            if (plays.length > 0) {
+                                yearHasPlays = true;
+                            }
+                            
+                            plays.forEach(play => {
+                                const gameItem = play.querySelector('item');
+                                if (gameItem) {
+                                    const gameId = gameItem.getAttribute('objectid');
+                                    const playDate = play.getAttribute('date');
+                                    
+                                    if (!playsData[gameId]) {
+                                        playsData[gameId] = {
+                                            lastPlayDate: playDate ? new Date(playDate) : null,
+                                            playCount: 0
                                     };
-                                }
-                                playsData[gameId].playCount++;
-                                
-                                // Update to most recent play date
-                                if (playDate) {
-                                    const thisDate = new Date(playDate);
-                                    if (!playsData[gameId].lastPlayDate || thisDate > playsData[gameId].lastPlayDate) {
-                                        playsData[gameId].lastPlayDate = thisDate;
+                                    }
+                                    playsData[gameId].playCount++;
+                                    
+                                    // Update to most recent play date
+                                    if (playDate) {
+                                        const thisDate = new Date(playDate);
+                                        if (!playsData[gameId].lastPlayDate || thisDate > playsData[gameId].lastPlayDate) {
+                                            playsData[gameId].lastPlayDate = thisDate;
+                                        }
                                     }
                                 }
-                            }
-                        });
+                            });
+                            
+                            console.log(`Loaded ${plays.length} plays for ${year}-${monthStr}`);
+                            
+                            // Small delay between requests to avoid rate limiting
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        } catch (monthError) {
+                            console.error(`Error loading plays for ${year}-${monthStr}:`, monthError);
+                        }
+                    }
+                    
+                    // If year had no plays, increment counter; otherwise reset
+                    if (!yearHasPlays) {
+                        consecutiveEmptyYears++;
+                        console.log(`Year ${year} had no plays. Empty years: ${consecutiveEmptyYears}`);
                         
-                        console.log(`Loaded ${plays.length} plays for ${year}`);
-                        
-                        // Small delay between requests to avoid rate limiting
-                        await new Promise(resolve => setTimeout(resolve, 200));
-                    } catch (yearError) {
-                        console.error(`Error loading plays for ${year}:`, yearError);
+                        // Stop if we've found 2 consecutive years with no plays
+                        if (consecutiveEmptyYears >= maxEmptyYears) {
+                            console.log(`Stopping play fetch - found ${maxEmptyYears} consecutive years with no entries`);
+                            break;
+                        }
+                    } else {
+                        consecutiveEmptyYears = 0; // Reset counter if we find plays
                     }
                 }
                 
