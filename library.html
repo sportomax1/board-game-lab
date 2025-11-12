@@ -408,6 +408,12 @@
                 sportomaxItems.forEach(item => {
                     const game = parseGame(item, 'sportomax');
                     if (game && game.id) {
+                        // Add sportomax location data
+                        game.locations.push({ 
+                            location: 'sportomax', 
+                            emoji: '🎲',
+                            libraryLocation: game.location // Store actual location (from comment field)
+                        });
                         gamesMap.set(game.id, game);
                         added++;
                     }
@@ -427,12 +433,21 @@
                     if (id) {
                         if (gamesMap.has(id)) {
                             const existing = gamesMap.get(id);
-                            existing.locations.push({ location: 'dtw', emoji: '🎲' });
+                            const dtwGame = parseGame(item, 'dtw');
+                            existing.locations.push({ 
+                                location: 'dtw', 
+                                emoji: '🎲',
+                                libraryLocation: dtwGame?.location || '' // Store actual location from comment field
+                            });
                             console.log(`[LIBRARY] DTW: ${existing.name} - added location tag`);
                         } else {
                             const game = parseGame(item, 'dtw');
                             if (game) {
-                                game.locations.push({ location: 'dtw', emoji: '🎲' });
+                                game.locations.push({ 
+                                    location: 'dtw', 
+                                    emoji: '🎲',
+                                    libraryLocation: game.location // Store actual location from comment field
+                                });
                                 gamesMap.set(id, game);
                                 dtwAdded++;
                             }
@@ -465,12 +480,21 @@
                     if (id) {
                         if (gamesMap.has(id)) {
                             const existing = gamesMap.get(id);
-                            existing.locations.push({ location, emoji });
+                            const newGame = parseGame(item, location, true);
+                            existing.locations.push({ 
+                                location, 
+                                emoji,
+                                libraryLocation: newGame?.location || '' // Store actual location from location field
+                            });
                             console.log(`[LIBRARY] ${name}: ${existing.name} (ID: ${id}) - added location tag`);
                         } else {
                             const game = parseGame(item, location, true); // true = uses bgg_id
                             if (game) {
-                                game.locations.push({ location, emoji });
+                                game.locations.push({ 
+                                    location, 
+                                    emoji,
+                                    libraryLocation: game.location // Store actual location from location field
+                                });
                                 gamesMap.set(id, game);
                                 added++;
                                 console.log(`[LIBRARY] ${name}: NEW GAME - ${game.name} (ID: ${id}, desire: ${game.desireScore}, rating: ${game.rating})`);
@@ -614,9 +638,11 @@
                 maxPlayers: parseInt(maxPlayers) || 0,
                 bestPlayerCount: 0, // Will be populated from BGG API
                 recommendedPlayerCount: '', // Will be populated from BGG API
+                playingTime: 0, // Will be populated from BGG API
+                weight: 0, // Will be populated from BGG API
                 desireScore,
                 location, // Library location (e.g., "CARD RACK", "T", "shelf")
-                locations: [],
+                locations: [], // Will store { location, emoji, libraryLocation } for each convention
                 inSportomax: source === 'sportomax' || source === 'sportomax_fallback' || source === 'dtw' || source === 'dtw_fallback'
             };
         }
@@ -748,17 +774,20 @@
             else if (game.desireScore >= 5) badgeColor = 'bg-blue-500';
             else if (game.desireScore >= 3) badgeColor = 'bg-yellow-500';
             
-            // Build convention table (count occurrences)
+            // Build convention table with per-convention locations
             const conventions = {
-                'dtw': { emoji: '🎲', name: 'DTW', count: 0, location: '' },
-                'dte': { emoji: '🚢', name: 'DTE', count: 0, location: '' },
-                'bgg': { emoji: '⭐', name: 'BGG', count: 0, location: '' }
+                'sportomax': { emoji: '🎲', name: 'Sportomax', libraryLocations: [] },
+                'dtw': { emoji: '🎲', name: 'DTW', libraryLocations: [] },
+                'dte': { emoji: '🚢', name: 'DTE', libraryLocations: [] },
+                'bgg': { emoji: '⭐', name: 'BGG', libraryLocations: [] }
             };
             
             game.locations.forEach(loc => {
-                if (conventions[loc.location]) {
-                    conventions[loc.location].count++;
-                    conventions[loc.location].location = loc.location; // Track that it's present
+                const key = loc.location;
+                if (conventions[key]) {
+                    if (loc.libraryLocation && !conventions[key].libraryLocations.includes(loc.libraryLocation)) {
+                        conventions[key].libraryLocations.push(loc.libraryLocation);
+                    }
                 }
             });
             
@@ -799,27 +828,26 @@
                             <div class="flex gap-3 flex-wrap">
                                 <span>👥 ${game.minPlayers}-${game.maxPlayers}</span>
                                 <span data-field="best">🎯 ${game.bestPlayerCount > 0 ? game.bestPlayerCount : 'TBD'}</span>
+                                <span>⏱️ ${game.playingTime > 0 ? game.playingTime + ' min' : 'TBD'}</span>
+                                <span>⚖️ ${game.weight > 0 ? game.weight.toFixed(2) : 'TBD'}</span>
                                 <span>📅 ${game.yearPublished}</span>
                             </div>
                             <div data-field="recommended" class="text-gray-700 font-medium">� ${game.recommendedPlayerCount || 'TBD'}</div>
                         </div>
                         
-                        <!-- Convention Table and Location -->
-                        <div class="flex flex-col gap-2 flex-shrink-0">
-                            <!-- Convention Table -->
-                            <div class="convention-table">
-                                ${Object.values(conventions).filter(conv => conv.count > 0).map(conv => `
-                                    <div class="convention-item cursor-pointer hover:opacity-70" onclick="showXMLModal('${game.id}', '${game.name}', '${conv.location}'); return false;" title="Click to see XML data">
-                                        <span class="convention-icon">${conv.emoji}</span>
-                                        <span class="convention-count">${conv.count}</span>
-                                        <span class="convention-location">${conv.name}</span>
+                        <!-- Convention Locations -->
+                        <div class="flex flex-col gap-1 flex-shrink-0 text-xs bg-gray-50 rounded p-2">
+                            ${Object.entries(conventions)
+                                .filter(([key, conv]) => conv.libraryLocations.length > 0)
+                                .map(([key, conv]) => `
+                                    <div class="flex items-center gap-1 cursor-pointer hover:opacity-70" onclick="showXMLModal('${game.id}', '${game.name}', '${key}'); return false;" title="Click to see ${conv.name} XML data">
+                                        <span class="text-base">${conv.emoji}</span>
+                                        <div class="flex flex-col">
+                                            <span class="font-semibold">${conv.name}</span>
+                                            <span class="text-gray-600">${conv.libraryLocations.join(', ')}</span>
+                                        </div>
                                     </div>
                                 `).join('')}
-                            </div>
-                            <!-- Location -->
-                            <div class="text-center text-xs bg-gray-100 rounded px-2 py-1 font-medium">
-                                📍 ${game.location || 'TBD'}
-                            </div>
                         </div>
                     </div>
                 </div>
@@ -873,6 +901,13 @@
                         updateThumbnail(id, thumbnail);
                     }
                     
+                    // Extract playing time and weight from BGG API
+                    const playingTimeElement = item.querySelector('playingtime');
+                    const playingTime = playingTimeElement ? parseInt(playingTimeElement.getAttribute('value')) : 0;
+                    
+                    const weightElement = item.querySelector('boardgameweight');
+                    const weight = weightElement ? parseFloat(weightElement.getAttribute('value')) : 0;
+                    
                     // Extract best and recommended player counts from poll-summary
                     // Looking for: <poll-summary name="suggested_numplayers">
                     //   <result name="bestwith" value="Best with 4 players" />
@@ -916,7 +951,9 @@
                         if (game) {
                             game.bestPlayerCount = bestCount;
                             game.recommendedPlayerCount = recommendedText;
-                            console.log(`[LIBRARY] Fetched player counts for ID ${id}: best=${bestCount}, recommended=${recommendedText}`);
+                            game.playingTime = playingTime;
+                            game.weight = weight;
+                            console.log(`[LIBRARY] Fetched for ID ${id}: best=${bestCount}, recommended=${recommendedText}, playtime=${playingTime}, weight=${weight}`);
                             
                             // Update card display if visible
                             const cards = document.querySelectorAll(`[data-objectid="${id}"]`);
@@ -929,7 +966,7 @@
                                 // Update recommended - just update the value, keep emoji
                                 const recDiv = card.querySelector('[data-field="recommended"]');
                                 if (recDiv) {
-                                    recDiv.textContent = `👍 ${recommendedText || 'TBD'}`;
+                                    recDiv.textContent = `� ${recommendedText || 'TBD'}`;
                                 }
                             });
                         }
