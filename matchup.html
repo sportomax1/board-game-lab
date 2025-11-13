@@ -533,8 +533,18 @@
             <!-- Daily Records Tab -->
             <div id="dashboard-daily" class="hidden">
                 <div class="bg-white rounded-lg shadow p-4 mb-4">
-                    <h3 class="font-bold text-lg mb-3">📊 Records Added Per Day</h3>
-                    <p class="text-xs text-gray-600 mb-3">Tournament records created each day</p>
+                    <h3 class="font-bold text-lg mb-3">📊 Records Added Per Period</h3>
+                    <p class="text-xs text-gray-600 mb-3">Tournament records created grouped by period</p>
+                    
+                    <!-- Grouping Buttons -->
+                    <div class="flex flex-wrap gap-2 mb-4">
+                        <button onclick="setDailyGrouping('day')" id="group-day" class="px-3 py-1 text-xs rounded font-medium bg-blue-100 text-blue-700 border-2 border-blue-600">Day</button>
+                        <button onclick="setDailyGrouping('week')" id="group-week" class="px-3 py-1 text-xs rounded font-medium bg-gray-100 text-gray-700 border-2 border-gray-300">Week</button>
+                        <button onclick="setDailyGrouping('month')" id="group-month" class="px-3 py-1 text-xs rounded font-medium bg-gray-100 text-gray-700 border-2 border-gray-300">Month</button>
+                        <button onclick="setDailyGrouping('quarter')" id="group-quarter" class="px-3 py-1 text-xs rounded font-medium bg-gray-100 text-gray-700 border-2 border-gray-300">Quarter</button>
+                        <button onclick="setDailyGrouping('year')" id="group-year" class="px-3 py-1 text-xs rounded font-medium bg-gray-100 text-gray-700 border-2 border-gray-300">Year</button>
+                    </div>
+                    
                     <div id="dailyRecordsList" class="space-y-2">
                         <!-- Populated by JavaScript -->
                     </div>
@@ -740,6 +750,7 @@
         let autoMatchupMode = 'random'; // random, weight-class, theme, rating-bracket
         let currentView = 'matchup'; // Track current view
         let currentDashboardTab = 'matchups'; // Track current dashboard tab
+        let dailyGroupingMode = 'day'; // day, week, month, quarter, year - for Daily tab grouping
 
         // Tournament state
         let gameMode = 'standard'; // standard, bracket, roundrobin
@@ -3002,55 +3013,120 @@
             `).join('');
         };
 
-        // Load daily records - count matchups added per day
-        window.loadDailyRecords = () => {
-            console.log('[Matchup] loadDailyRecords called. allMatchups.length:', allMatchups.length);
+        // Set daily grouping mode and refresh
+        window.setDailyGrouping = (mode) => {
+            dailyGroupingMode = mode;
             
-            const dailyCount = {};
-            
-            // Count matchups by date
-            allMatchups.forEach(m => {
-                const date = new Date(m.date);
-                const dateKey = date.toISOString().split('T')[0]; // YYYY-MM-DD format
-                
-                if (!dailyCount[dateKey]) {
-                    dailyCount[dateKey] = 0;
+            // Update button styles
+            ['day', 'week', 'month', 'quarter', 'year'].forEach(m => {
+                const btn = document.getElementById(`group-${m}`);
+                if (m === mode) {
+                    btn.className = 'px-3 py-1 text-xs rounded font-medium bg-blue-100 text-blue-700 border-2 border-blue-600';
+                } else {
+                    btn.className = 'px-3 py-1 text-xs rounded font-medium bg-gray-100 text-gray-700 border-2 border-gray-300';
                 }
-                dailyCount[dateKey]++;
             });
             
-            console.log('[Matchup] dailyCount keys:', Object.keys(dailyCount));
+            // Reload the daily records with new grouping
+            loadDailyRecords();
+        };
+
+        // Load daily records - count matchups added per day/week/month/quarter/year
+        window.loadDailyRecords = () => {
+            console.log('[Matchup] loadDailyRecords called. allMatchups.length:', allMatchups.length, 'grouping:', dailyGroupingMode);
             
-            // Sort dates descending (most recent first)
-            const sortedDates = Object.keys(dailyCount)
-                .sort((a, b) => new Date(b) - new Date(a));
+            const groupedCount = {};
+            const groupedDates = {};
+            
+            // Count matchups by period based on grouping mode
+            allMatchups.forEach(m => {
+                const date = new Date(m.date);
+                let periodKey;
+                
+                switch(dailyGroupingMode) {
+                    case 'week':
+                        // Get Monday of the week
+                        const d = new Date(date);
+                        const day = d.getDay();
+                        const diff = d.getDate() - day + (day === 0 ? -6 : 1); // Adjust when day is Sunday
+                        const monday = new Date(d.setDate(diff));
+                        periodKey = monday.toISOString().split('T')[0];
+                        break;
+                    case 'month':
+                        periodKey = date.toISOString().split('T')[0].substring(0, 7); // YYYY-MM
+                        break;
+                    case 'quarter':
+                        const quarter = Math.floor(date.getMonth() / 3) + 1;
+                        periodKey = `${date.getFullYear()}-Q${quarter}`;
+                        break;
+                    case 'year':
+                        periodKey = date.getFullYear().toString();
+                        break;
+                    case 'day':
+                    default:
+                        periodKey = date.toISOString().split('T')[0]; // YYYY-MM-DD
+                }
+                
+                if (!groupedCount[periodKey]) {
+                    groupedCount[periodKey] = 0;
+                    groupedDates[periodKey] = date;
+                }
+                groupedCount[periodKey]++;
+            });
+            
+            console.log('[Matchup] groupedCount keys:', Object.keys(groupedCount));
+            
+            // Sort periods descending (most recent first)
+            const sortedPeriods = Object.keys(groupedCount)
+                .sort((a, b) => new Date(groupedDates[b]) - new Date(groupedDates[a]));
             
             // Format data for display
-            const dailyData = sortedDates.map(date => ({
-                date,
-                count: dailyCount[date],
-                displayDate: new Date(date).toLocaleDateString('en-US', { 
-                    weekday: 'short', 
-                    month: 'short', 
-                    day: 'numeric',
-                    year: 'numeric'
-                })
-            }));
+            const periodData = sortedPeriods.map(period => {
+                const periodDate = groupedDates[period];
+                let displayPeriod;
+                
+                if (dailyGroupingMode === 'week') {
+                    const endDate = new Date(periodDate);
+                    endDate.setDate(endDate.getDate() + 6);
+                    displayPeriod = `Week of ${periodDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+                } else if (dailyGroupingMode === 'month') {
+                    displayPeriod = periodDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                } else if (dailyGroupingMode === 'quarter') {
+                    displayPeriod = period; // e.g., "2025-Q1"
+                } else if (dailyGroupingMode === 'year') {
+                    displayPeriod = period; // e.g., "2025"
+                } else {
+                    // day mode
+                    displayPeriod = periodDate.toLocaleDateString('en-US', { 
+                        weekday: 'short', 
+                        month: 'short', 
+                        day: 'numeric',
+                        year: 'numeric'
+                    });
+                }
+                
+                return {
+                    period,
+                    count: groupedCount[period],
+                    displayPeriod,
+                    date: periodDate
+                };
+            });
             
             // Render
             const list = document.getElementById('dailyRecordsList');
-            if (dailyData.length === 0) {
-                console.log('[Matchup] No daily data to display');
+            if (periodData.length === 0) {
+                console.log('[Matchup] No period data to display');
                 list.innerHTML = '<div class="text-center text-gray-500 py-8">No records yet</div>';
                 return;
             }
             
-            console.log('[Matchup] Rendering', dailyData.length, 'days of data');
+            console.log('[Matchup] Rendering', periodData.length, 'periods of data');
             
             // Calculate stats
-            const totalRecords = dailyData.reduce((sum, d) => sum + d.count, 0);
-            const avgPerDay = (totalRecords / dailyData.length).toFixed(1);
-            const maxDay = dailyData.reduce((max, d) => d.count > max.count ? d : max);
+            const totalRecords = periodData.reduce((sum, d) => sum + d.count, 0);
+            const avgPerPeriod = (totalRecords / periodData.length).toFixed(1);
+            const maxPeriod = periodData.reduce((max, d) => d.count > max.count ? d : max);
             
             list.innerHTML = `
                 <div class="bg-blue-50 rounded-lg p-3 mb-4">
@@ -3060,24 +3136,24 @@
                             <div class="text-xs text-gray-600">Total Records</div>
                         </div>
                         <div>
-                            <div class="text-2xl font-bold text-green-600">${avgPerDay}</div>
-                            <div class="text-xs text-gray-600">Per Day Avg</div>
+                            <div class="text-2xl font-bold text-green-600">${avgPerPeriod}</div>
+                            <div class="text-xs text-gray-600">Per ${dailyGroupingMode.charAt(0).toUpperCase() + dailyGroupingMode.slice(1)} Avg</div>
                         </div>
                         <div>
-                            <div class="text-2xl font-bold text-orange-600">${maxDay.count}</div>
-                            <div class="text-xs text-gray-600">Max Single Day</div>
+                            <div class="text-2xl font-bold text-orange-600">${maxPeriod.count}</div>
+                            <div class="text-xs text-gray-600">Max Single ${dailyGroupingMode.charAt(0).toUpperCase() + dailyGroupingMode.slice(1)}</div>
                         </div>
                     </div>
                 </div>
-                ${dailyData.map(d => `
+                ${periodData.map(d => `
                     <div class="bg-white rounded-lg shadow p-3 flex items-center justify-between">
                         <div>
-                            <div class="font-bold text-sm">${d.displayDate}</div>
-                            <div class="text-xs text-gray-600">${new Date(d.date).toLocaleDateString('en-US', { weekday: 'long' })}</div>
+                            <div class="font-bold text-sm">${d.displayPeriod}</div>
+                            ${dailyGroupingMode === 'day' ? `<div class="text-xs text-gray-600">${d.date.toLocaleDateString('en-US', { weekday: 'long' })}</div>` : ''}
                         </div>
                         <div class="text-right">
                             <div class="text-xl font-bold text-blue-600">${d.count}</div>
-                            <div class="text-xs text-gray-600">matchups</div>
+                            <div class="text-xs text-gray-600">matchup${d.count !== 1 ? 's' : ''}</div>
                         </div>
                     </div>
                 `).join('')}
