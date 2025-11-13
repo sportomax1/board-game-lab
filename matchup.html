@@ -1043,31 +1043,33 @@
                     ];
                     console.log(`[FILTER] Matchup Mode: FREQUENCY-HYBRID - ${newGames.length} new (75%) + ${usedGames.length} used (25%)`);
                 } else if (matchupMode === 'top-25-elo') {
-                    // Top 25% by ELO rating
-                    const standings = Object.values(allGames).map(g => {
-                        const bggRating = getBGGRating(g.id);
+                    // Top 25% by ELO rating - fetch BGG ratings and calculate ELO
+                    console.log(`[FILTER] Matchup Mode: TOP-25-ELO - fetching ${allGames.length} game ratings...`);
+                    const standings = await Promise.all(allGames.map(async (g) => {
+                        const bggRating = await fetchBGGAverageRating(g.id);
                         const elo = calculateELO(
                             Array.from(allMatchups).filter(m => m.winnerId === g.id).length,
                             Array.from(allMatchups).filter(m => m.loserId === g.id).length,
                             bggRating
                         );
                         return { ...g, elo };
-                    });
+                    }));
                     standings.sort((a, b) => b.elo - a.elo);
                     const top25Percent = Math.ceil(standings.length * 0.25);
                     games = standings.slice(0, top25Percent);
                     console.log(`[FILTER] Matchup Mode: TOP-25-ELO - ${games.length} top-rated games (ELO >= ${games[games.length-1]?.elo || 0})`);
                 } else if (matchupMode === 'bottom-25-elo') {
-                    // Bottom 25% by ELO rating
-                    const standings = Object.values(allGames).map(g => {
-                        const bggRating = getBGGRating(g.id);
+                    // Bottom 25% by ELO rating - fetch BGG ratings and calculate ELO
+                    console.log(`[FILTER] Matchup Mode: BOTTOM-25-ELO - fetching ${allGames.length} game ratings...`);
+                    const standings = await Promise.all(allGames.map(async (g) => {
+                        const bggRating = await fetchBGGAverageRating(g.id);
                         const elo = calculateELO(
                             Array.from(allMatchups).filter(m => m.winnerId === g.id).length,
                             Array.from(allMatchups).filter(m => m.loserId === g.id).length,
                             bggRating
                         );
                         return { ...g, elo };
-                    });
+                    }));
                     standings.sort((a, b) => a.elo - b.elo);
                     const bottom25Percent = Math.ceil(standings.length * 0.25);
                     games = standings.slice(0, bottom25Percent);
@@ -2379,7 +2381,49 @@
         // Get BGG rating for tiebreaker
         function getBGGRating(gameId) {
             const game = allGamesInCollection.find(g => g.id === gameId);
-            return game ? parseFloat(game.rating) || 0 : 0;
+            // Return the cached bggAverageRating if available, otherwise return 0
+            return game ? (game.bggAverageRating || 0) : 0;
+        }
+
+        // Cache for BGG average ratings (fetched from Thing API)
+        let bggAverageRatingCache = {};
+        
+        async function fetchBGGAverageRating(gameId) {
+            // Return cached value if available
+            if (bggAverageRatingCache[gameId] !== undefined) {
+                return bggAverageRatingCache[gameId];
+            }
+            
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&stats=1`);
+                if (!response.ok) {
+                    bggAverageRatingCache[gameId] = 0;
+                    return 0;
+                }
+                
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                // Get the average from statistics/ratings/average
+                const avgElement = xml.querySelector('statistics ratings average');
+                const avgRating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
+                
+                // Cache the result
+                bggAverageRatingCache[gameId] = avgRating;
+                
+                // Also update the game object for future use
+                const game = allGamesInCollection.find(g => g.id === gameId);
+                if (game) {
+                    game.bggAverageRating = avgRating;
+                }
+                
+                return avgRating;
+            } catch (error) {
+                console.error(`Error fetching BGG average rating for game ${gameId}:`, error);
+                bggAverageRatingCache[gameId] = 0;
+                return 0;
+            }
         }
 
         // Show H-Index qualifying games modal
@@ -2527,7 +2571,7 @@
         let standingsSortMode = 'elo'; // 'elo', 'wins', 'winpct'
 
         // Load standings
-        window.loadStandings = () => {
+        window.loadStandings = async () => {
             const stats = {};
             
             allMatchups.forEach(m => {
@@ -2557,8 +2601,8 @@
             });
             
             // Convert to array and calculate stats
-            const standings = Object.values(stats).map(g => {
-                const bggRating = getBGGRating(g.id);
+            const standings = await Promise.all(Object.values(stats).map(async (g) => {
+                const bggRating = await fetchBGGAverageRating(g.id);
                 return {
                     ...g,
                     total: g.wins + g.losses,
@@ -2566,7 +2610,7 @@
                     elo: calculateELO(g.wins, g.losses, bggRating),
                     bggRating: bggRating
                 };
-            });
+            }));
 
             // Sort based on current mode
             standings.sort((a, b) => {
