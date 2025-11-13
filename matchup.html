@@ -2842,7 +2842,7 @@
                 // Also update the game object for future use
                 const game = allGamesInCollection.find(g => g.id === gameId);
                 if (game) {
-                    game.bggAverageRating = avgRating;
+                    game.averageRating = avgRating;
                 }
                 
                 return avgRating;
@@ -2853,44 +2853,122 @@
             }
         }
 
-        // Cache for BGG weights (fetched from Thing API)
+        // Cache for BGG data (both rating and weight)
         let bggWeightCache = {};
+        
+        // Batch fetch BGG data in groups of 20 to get both rating and weight
+        async function fetchBGGBatchData(gameIds) {
+            const uncachedIds = gameIds.filter(id => !bggWeightCache[id]);
+            
+            if (uncachedIds.length === 0) {
+                return; // All cached
+            }
+            
+            console.log(`[BGG Batch] Fetching data for ${uncachedIds.length} games in batches of 20`);
+            
+            // Process in batches of 20
+            for (let i = 0; i < uncachedIds.length; i += 20) {
+                const batch = uncachedIds.slice(i, i + 20);
+                const idString = batch.join(',');
+                
+                try {
+                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idString}&stats=1`);
+                    if (!response.ok) {
+                        console.warn(`BGG API error for batch ${i/20 + 1}: ${response.status}`);
+                        batch.forEach(id => {
+                            bggWeightCache[id] = { weight: 0, rating: 0 };
+                        });
+                        continue;
+                    }
+                    
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    
+                    // Parse all items in the response
+                    const items = xml.querySelectorAll('item');
+                    items.forEach(item => {
+                        const id = item.getAttribute('id');
+                        
+                        // Extract average rating
+                        const avgElement = item.querySelector('statistics ratings average');
+                        const rating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
+                        
+                        // Extract weight
+                        const weightElement = item.querySelector('statistics ratings averageweight');
+                        const weight = weightElement ? parseFloat(weightElement.getAttribute('value') || 0) : 0;
+                        
+                        bggWeightCache[id] = { weight, rating };
+                        
+                        // Update game objects
+                        const game = allGamesInCollection.find(g => g.id === id);
+                        if (game) {
+                            game.averageRating = rating;
+                            game.weight = weight;
+                        }
+                        
+                        // Also update individual caches for backward compatibility
+                        bggAverageRatingCache[id] = rating;
+                        
+                        console.log(`[BGG] Game ${id}: rating=${rating.toFixed(2)}, weight=${weight.toFixed(2)}`);
+                    });
+                    
+                    // Rate limit between batches
+                    if (i + 20 < uncachedIds.length) {
+                        await new Promise(resolve => setTimeout(resolve, 1000));
+                    }
+                } catch (error) {
+                    console.error(`Error fetching BGG batch ${i/20 + 1}:`, error);
+                    batch.forEach(id => {
+                        bggWeightCache[id] = { weight: 0, rating: 0 };
+                    });
+                }
+            }
+        }
         
         async function fetchBGGWeight(gameId) {
             // Return cached value if available
             if (bggWeightCache[gameId] !== undefined) {
-                return bggWeightCache[gameId];
+                return bggWeightCache[gameId].weight || 0;
             }
             
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}`);
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&stats=1`);
                 if (!response.ok) {
-                    bggWeightCache[gameId] = null;
-                    return null;
+                    bggWeightCache[gameId] = { weight: 0, rating: 0 };
+                    return 0;
                 }
                 
                 const text = await response.text();
                 const parser = new DOMParser();
                 const xml = parser.parseFromString(text, 'text/xml');
                 
-                // Get the weight from boardgame element
-                const weightElement = xml.querySelector('boardgame');
-                const weight = weightElement ? parseFloat(weightElement.getAttribute('weight') || '0') : null;
+                // Get weight from statistics/ratings/averageweight
+                const weightElement = xml.querySelector('statistics ratings averageweight');
+                const weight = weightElement ? parseFloat(weightElement.getAttribute('value') || 0) : 0;
                 
-                // Cache the result
-                bggWeightCache[gameId] = weight;
+                // Also get rating
+                const avgElement = xml.querySelector('statistics ratings average');
+                const rating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
                 
-                // Also update the game object for future use
+                // Cache both
+                bggWeightCache[gameId] = { weight, rating };
+                
+                // Update game objects
                 const game = allGamesInCollection.find(g => g.id === gameId);
-                if (game && weight) {
+                if (game) {
                     game.weight = weight;
+                    game.averageRating = rating;
                 }
+                
+                // Update individual cache too
+                bggAverageRatingCache[gameId] = rating;
                 
                 return weight;
             } catch (error) {
-                console.error(`Error fetching BGG weight for game ${gameId}:`, error);
-                bggWeightCache[gameId] = null;
-                return null;
+                console.error(`Error fetching BGG data for game ${gameId}:`, error);
+                bggWeightCache[gameId] = { weight: 0, rating: 0 };
+                return 0;
             }
         }
 
@@ -3068,19 +3146,26 @@
                 stats[m.loserId].losses++;
             });
             
+            // Get all game IDs and fetch BGG data in batches
+            const gameIds = Object.keys(stats);
+            console.log(`[Standings] Loading data for ${gameIds.length} games`);
+            await fetchBGGBatchData(gameIds);
+            
             // Convert to array and calculate stats
-            const standings = await Promise.all(Object.values(stats).map(async (g) => {
-                const bggRating = await fetchBGGAverageRating(g.id);
-                const weight = await fetchBGGWeight(g.id);
+            const standings = Object.values(stats).map((g) => {
+                const bggData = bggWeightCache[g.id] || { weight: 0, rating: 0 };
+                const bggRating = bggData.rating || 0;
+                const weight = bggData.weight || 0;
+                
                 return {
                     ...g,
                     total: g.wins + g.losses,
                     winPct: g.wins / (g.wins + g.losses),
                     elo: calculateELO(g.wins, g.losses, bggRating),
-                    bggRating: bggRating,
+                    averageRating: bggRating,
                     weight: weight
                 };
-            }));
+            });
 
             // Sort based on current mode
             standings.sort((a, b) => {
@@ -3096,7 +3181,7 @@
                 
                 // Tiebreaker: BGG rating (higher is better)
                 if (primarySort === 0) {
-                    return b.bggRating - a.bggRating;
+                    return b.averageRating - a.averageRating;
                 }
                 
                 return primarySort;
@@ -3180,7 +3265,7 @@
                             </div>
                             <div>
                                 <div class="text-xs font-bold text-gray-600">BGG Rating</div>
-                                <div class="font-bold">${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10</div>
+                                <div class="font-bold">${game.averageRating ? game.averageRating.toFixed(2) : '—'}/10</div>
                             </div>
                             <div>
                                 <div class="text-xs font-bold text-gray-600">Complexity</div>
@@ -3555,7 +3640,7 @@
 
         // Load upsets
         window.loadUpsets = async () => {
-            // Build game stats and fetch ratings
+            // Build game stats
             const stats = {};
             
             allMatchups.forEach(m => {
@@ -3569,16 +3654,17 @@
                 stats[m.loserId].losses++;
             });
             
-            // Fetch BGG ratings for all games
+            // Fetch BGG ratings for all games in batches
             const gameIds = Object.keys(stats);
-            await Promise.all(gameIds.map(id => fetchBGGAverageRating(id)));
+            console.log(`[Upsets] Loading ratings for ${gameIds.length} games`);
+            await fetchBGGBatchData(gameIds);
             
             // Create rating-based rankings (higher rating = more favored)
             const ratingMap = {};
             Object.entries(stats).forEach(([id, game]) => {
-                const bggGame = allGamesInCollection.find(g => g.id === id);
+                const bggData = bggWeightCache[id] || { weight: 0, rating: 0 };
                 ratingMap[id] = {
-                    rating: bggGame ? (bggGame.averageRating || 0) : 0,
+                    rating: bggData.rating || 0,
                     name: game.name,
                     image: game.image
                 };
