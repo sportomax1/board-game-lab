@@ -136,6 +136,8 @@
                 <label class="block text-sm font-medium text-gray-700 mb-2">Matchup Mode</label>
                 <select id="matchupMode" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
                     <option value="all" selected>All Games</option>
+                    <option value="top-elo">⭐ Top ELO (Highest Ranked)</option>
+                    <option value="bottom-elo">💔 Bottom ELO (Lowest Ranked)</option>
                     <option value="top-half-apps">Top Half by Appearances</option>
                     <option value="bottom-half-apps">Bottom Half by Appearances</option>
                     <option value="middle-half-apps">Middle Half by Appearances</option>
@@ -755,7 +757,8 @@
         let allMatchups = []; // Cache for standings
         let sessionMatchupCount = 0; // Track matchups this session
         let usedGameIds = new Set(); // Track which games have been used
-        let matchupMode = 'all'; // all, top-half-apps, bottom-half-apps, middle-half-apps, top-half-elo, bottom-half-elo, middle-half-elo, lowest-apps, most-apps
+        let matchupMode = 'all'; // all, top-elo, bottom-elo, top-half-apps, bottom-half-apps, middle-half-apps, top-half-elo, bottom-half-elo, middle-half-elo, lowest-apps, most-apps
+        const IMAGE_PROXY = 'https://images.weserv.nl/?url='; // Proxy to fix CORS/canvas tainted image issues
         let lastMatchupId = null; // For undo feature
         let achievements = JSON.parse(localStorage.getItem('achievements') || '{}');
         let currentView = 'matchup'; // Track current view
@@ -1000,10 +1003,47 @@
                 });
                 
                 // Filter based on matchup mode (new modes)
+                console.log(`\n[MATCHUP MODE FILTER] Starting with ${allGames.length} total games`);
+                console.log(`[MATCHUP MODE FILTER] Selected mode: "${matchupMode}"`);
+                
                 let gamesBeforeMode = allGames.length;
-                if (matchupMode === 'top-half-apps') {
+                if (matchupMode === 'top-elo') {
+                    // Top ELO - ALL highest-ranked games (no limit)
+                    console.log(`[FILTER] Matchup Mode: TOP-ELO - fetching ELO ratings for ${allGames.length} games...`);
+                    const standings = await Promise.all(allGames.map(async (g) => {
+                        const bggRating = await fetchBGGAverageRating(g.id);
+                        const elo = calculateELO(
+                            allMatchups.filter(m => m.winnerId === g.id).length,
+                            allMatchups.filter(m => m.loserId === g.id).length,
+                            bggRating
+                        );
+                        return { ...g, elo };
+                    }));
+                    standings.sort((a, b) => b.elo - a.elo);
+                    games = standings;
+                    console.log(`[FILTER] TOP-ELO - ${games.length} games sorted by ELO (highest first)`);
+                    console.log(`[FILTER] ELO Range: ${games[games.length-1]?.elo || 0} to ${games[0]?.elo || 0}`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (ELO: ${g.elo})`));
+                } else if (matchupMode === 'bottom-elo') {
+                    // Bottom ELO - ALL lowest-ranked games (no limit)
+                    console.log(`[FILTER] Matchup Mode: BOTTOM-ELO - fetching ELO ratings for ${allGames.length} games...`);
+                    const standings = await Promise.all(allGames.map(async (g) => {
+                        const bggRating = await fetchBGGAverageRating(g.id);
+                        const elo = calculateELO(
+                            allMatchups.filter(m => m.winnerId === g.id).length,
+                            allMatchups.filter(m => m.loserId === g.id).length,
+                            bggRating
+                        );
+                        return { ...g, elo };
+                    }));
+                    standings.sort((a, b) => a.elo - b.elo);
+                    games = standings;
+                    console.log(`[FILTER] BOTTOM-ELO - ${games.length} games sorted by ELO (lowest first)`);
+                    console.log(`[FILTER] ELO Range: ${games[0]?.elo || 0} to ${games[games.length-1]?.elo || 0}`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (ELO: ${g.elo})`));
+                } else if (matchupMode === 'top-half-apps') {
                     // Top half by appearances - sort by usage count then take top half
-                    console.log(`[FILTER] Matchup Mode: TOP-HALF-APPS - fetching appearances...`);
+                    console.log(`[FILTER] Matchup Mode: TOP-HALF-APPS - calculating appearances...`);
                     const gameAppearances = {};
                     allMatchups.forEach(m => {
                         gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
@@ -1012,10 +1052,11 @@
                     const sorted = allGames.sort((a, b) => (gameAppearances[b.id] || 0) - (gameAppearances[a.id] || 0));
                     const halfCount = Math.ceil(sorted.length / 2);
                     games = sorted.slice(0, halfCount);
-                    console.log(`[FILTER] TOP-HALF-APPS - ${games.length} most-played games`);
+                    console.log(`[FILTER] TOP-HALF-APPS - Selected ${games.length} most-played games (out of ${gamesBeforeMode})`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (${gameAppearances[g.id] || 0} appearances)`));
                 } else if (matchupMode === 'bottom-half-apps') {
                     // Bottom half by appearances - sort by usage count ascending, take bottom half
-                    console.log(`[FILTER] Matchup Mode: BOTTOM-HALF-APPS - fetching appearances...`);
+                    console.log(`[FILTER] Matchup Mode: BOTTOM-HALF-APPS - calculating appearances...`);
                     const gameAppearances = {};
                     allMatchups.forEach(m => {
                         gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
@@ -1024,10 +1065,11 @@
                     const sorted = allGames.sort((a, b) => (gameAppearances[a.id] || 0) - (gameAppearances[b.id] || 0));
                     const halfCount = Math.ceil(sorted.length / 2);
                     games = sorted.slice(0, halfCount);
-                    console.log(`[FILTER] BOTTOM-HALF-APPS - ${games.length} least-played games`);
+                    console.log(`[FILTER] BOTTOM-HALF-APPS - Selected ${games.length} least-played games (out of ${gamesBeforeMode})`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (${gameAppearances[g.id] || 0} appearances)`));
                 } else if (matchupMode === 'middle-half-apps') {
                     // Middle half by appearances - sort then take middle section
-                    console.log(`[FILTER] Matchup Mode: MIDDLE-HALF-APPS - fetching appearances...`);
+                    console.log(`[FILTER] Matchup Mode: MIDDLE-HALF-APPS - calculating appearances...`);
                     const gameAppearances = {};
                     allMatchups.forEach(m => {
                         gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
@@ -1038,27 +1080,30 @@
                     const startIdx = quarterCount;
                     const endIdx = startIdx + Math.ceil(sorted.length / 2);
                     games = sorted.slice(startIdx, endIdx);
-                    console.log(`[FILTER] MIDDLE-HALF-APPS - ${games.length} mid-played games`);
+                    console.log(`[FILTER] MIDDLE-HALF-APPS - Selected ${games.length} mid-played games (out of ${gamesBeforeMode})`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (${gameAppearances[g.id] || 0} appearances)`));
                 } else if (matchupMode === 'lowest-apps') {
                     // Lowest apps - sort by 0 appearances first, then 1, then 2, etc
-                    console.log(`[FILTER] Matchup Mode: LOWEST-APPS - fetching appearances...`);
+                    console.log(`[FILTER] Matchup Mode: LOWEST-APPS - calculating appearances...`);
                     const gameAppearances = {};
                     allMatchups.forEach(m => {
                         gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
                         gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
                     });
                     games = allGames.sort((a, b) => (gameAppearances[a.id] || 0) - (gameAppearances[b.id] || 0));
-                    console.log(`[FILTER] LOWEST-APPS - sorted ascending by appearances`);
+                    console.log(`[FILTER] LOWEST-APPS - ${games.length} games sorted ascending by appearances`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (${gameAppearances[g.id] || 0} appearances)`));
                 } else if (matchupMode === 'most-apps') {
                     // Most apps - sort by most appearances first, descending
-                    console.log(`[FILTER] Matchup Mode: MOST-APPS - fetching appearances...`);
+                    console.log(`[FILTER] Matchup Mode: MOST-APPS - calculating appearances...`);
                     const gameAppearances = {};
                     allMatchups.forEach(m => {
                         gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
                         gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
                     });
                     games = allGames.sort((a, b) => (gameAppearances[b.id] || 0) - (gameAppearances[a.id] || 0));
-                    console.log(`[FILTER] MOST-APPS - sorted descending by appearances`);
+                    console.log(`[FILTER] MOST-APPS - ${games.length} games sorted descending by appearances`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (${gameAppearances[g.id] || 0} appearances)`));
                 } else if (matchupMode === 'top-half-elo') {
                     // Top half by ELO - fetch ratings, calculate ELO, take top half
                     console.log(`[FILTER] Matchup Mode: TOP-HALF-ELO - fetching ${allGames.length} game ratings...`);
@@ -1074,7 +1119,8 @@
                     standings.sort((a, b) => b.elo - a.elo);
                     const halfCount = Math.ceil(standings.length / 2);
                     games = standings.slice(0, halfCount);
-                    console.log(`[FILTER] TOP-HALF-ELO - ${games.length} top-rated games`);
+                    console.log(`[FILTER] TOP-HALF-ELO - Selected ${games.length} top-rated games (out of ${gamesBeforeMode})`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (ELO: ${g.elo})`));
                 } else if (matchupMode === 'bottom-half-elo') {
                     // Bottom half by ELO - fetch ratings, calculate ELO, take bottom half
                     console.log(`[FILTER] Matchup Mode: BOTTOM-HALF-ELO - fetching ${allGames.length} game ratings...`);
@@ -1090,7 +1136,8 @@
                     standings.sort((a, b) => a.elo - b.elo);
                     const halfCount = Math.ceil(standings.length / 2);
                     games = standings.slice(0, halfCount);
-                    console.log(`[FILTER] BOTTOM-HALF-ELO - ${games.length} lowest-rated games`);
+                    console.log(`[FILTER] BOTTOM-HALF-ELO - Selected ${games.length} lowest-rated games (out of ${gamesBeforeMode})`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (ELO: ${g.elo})`));
                 } else if (matchupMode === 'middle-half-elo') {
                     // Middle half by ELO - fetch ratings, calculate ELO, take middle section
                     console.log(`[FILTER] Matchup Mode: MIDDLE-HALF-ELO - fetching ${allGames.length} game ratings...`);
@@ -1108,11 +1155,12 @@
                     const startIdx = quarterCount;
                     const endIdx = startIdx + Math.ceil(standings.length / 2);
                     games = standings.slice(startIdx, endIdx);
-                    console.log(`[FILTER] MIDDLE-HALF-ELO - ${games.length} mid-rated games`);
+                    console.log(`[FILTER] MIDDLE-HALF-ELO - Selected ${games.length} mid-rated games (out of ${gamesBeforeMode})`);
+                    games.slice(0, 5).forEach((g, i) => console.log(`  #${i+1}: ${g.name} (ELO: ${g.elo})`));
                 } else {
                     // 'all' mode - use all games
                     games = allGames;
-                    console.log(`[FILTER] Matchup Mode: ALL - ${games.length} games`);
+                    console.log(`[FILTER] Matchup Mode: ALL - Using ${games.length} total games`);
                     
                     // Only apply playedRequired filter in "all" mode
                     if (playedRequired) {
@@ -1124,6 +1172,7 @@
                 
                 // Shuffle games
                 games = games.sort(() => Math.random() - 0.5);
+                console.log(`[MATCHUP MODE FILTER] Final game pool: ${games.length} games ready for matchups\n`);
                 
                 if (games.length === 0) {
                     alert(`No games found with current filters. Try different settings.`);
@@ -2671,6 +2720,8 @@
                     return;
                 }
 
+                console.log(`[EXPORT] Creating image for top ${top9.length} games`);
+
                 // Create canvas (3x3 grid)
                 const gridSize = 3;
                 const itemWidth = 200;
@@ -2710,16 +2761,25 @@
                     ctx.textAlign = 'center';
                     ctx.fillText(`#${i + 1}`, x + itemWidth / 2, y + 30);
                     
-                    // Load and draw game image
-                    const img = await loadImageAsync(game.image);
-                    const imgSize = 100;
-                    const imgX = x + (itemWidth - imgSize) / 2;
-                    const imgY = y + 45;
+                    // Load and draw game image (with proxy for CORS)
                     try {
+                        const proxiedUrl = IMAGE_PROXY + encodeURIComponent(game.image);
+                        console.log(`[EXPORT] Loading image ${i + 1}/9: ${game.name}`);
+                        const img = await loadImageAsync(proxiedUrl);
+                        const imgSize = 100;
+                        const imgX = x + (itemWidth - imgSize) / 2;
+                        const imgY = y + 45;
                         ctx.drawImage(img, imgX, imgY, imgSize, imgSize);
+                        console.log(`[EXPORT] ✓ Image loaded: ${game.name}`);
                     } catch (e) {
-                        // Image failed to load, skip it
-                        console.log('Failed to draw image for', game.name);
+                        // Image failed to load, draw placeholder
+                        console.warn(`[EXPORT] ⚠ Failed to load image for ${game.name}: ${e.message}`);
+                        ctx.fillStyle = '#e5e7eb';
+                        ctx.fillRect(x + 50, y + 45, 100, 100);
+                        ctx.fillStyle = '#9ca3af';
+                        ctx.font = 'bold 14px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('No Image', x + itemWidth / 2, y + 100);
                     }
                     
                     // Draw game name (wrapped)
@@ -2752,6 +2812,8 @@
                     ctx.fillText(`BGG: ${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10`, x + itemWidth / 2, statsY + 36);
                 }
                 
+                console.log(`[EXPORT] Canvas complete, converting to blob...`);
+                
                 // Download canvas as image
                 canvas.toBlob(blob => {
                     const url = URL.createObjectURL(blob);
@@ -2762,21 +2824,31 @@
                     a.click();
                     document.body.removeChild(a);
                     URL.revokeObjectURL(url);
+                    console.log(`[EXPORT] ✓ Image exported successfully: ${a.download}`);
                 });
             } catch (error) {
-                console.error('Error exporting image:', error);
+                console.error('[EXPORT] Error exporting image:', error);
                 alert('Error exporting image: ' + error.message);
             }
         };
         
-        // Helper function to load image asynchronously
+        // Helper function to load image asynchronously (with CORS proxy support)
         function loadImageAsync(src) {
             return new Promise((resolve, reject) => {
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
                 img.onload = () => resolve(img);
-                img.onerror = () => reject(new Error('Failed to load image: ' + src));
+                img.onerror = () => {
+                    console.warn(`[IMAGE] Failed to load: ${src}`);
+                    reject(new Error('Failed to load image'));
+                };
                 img.src = src;
+                // Set timeout for image loading
+                setTimeout(() => {
+                    if (!img.complete) {
+                        reject(new Error('Image load timeout'));
+                    }
+                }, 5000);
             });
         }
 
