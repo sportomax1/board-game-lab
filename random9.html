@@ -277,6 +277,25 @@
             background-color: #e7f3ff;
         }
 
+        #share-section {
+            margin-top: 20px;
+            padding: 15px;
+            background-color: #f9f9f9;
+            border-radius: 8px;
+        }
+
+        #share-text {
+            font-family: 'Segoe UI', Tahoma, Geneva, Verdana, sans-serif;
+            font-size: 14px;
+            resize: vertical;
+        }
+
+        #share-text:focus {
+            outline: none;
+            border-color: #b19cd9 !important;
+            box-shadow: 0 0 5px rgba(177, 156, 217, 0.5);
+        }
+
     </style>
 </head>
 <body>
@@ -320,6 +339,20 @@
                 </div>
             </div>
 
+            <div class="filter-section">
+                <h3>Player Count Filter</h3>
+                <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 8px;">
+                    <div>
+                        <label for="player-count-min" style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Min Players</label>
+                        <input type="number" id="player-count-min" min="1" max="20" value="1" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+                    <div>
+                        <label for="player-count-max" style="display: block; font-size: 12px; color: #666; margin-bottom: 4px;">Max Players</label>
+                        <input type="number" id="player-count-max" min="1" max="20" value="20" style="width: 100%; padding: 8px; border: 1px solid #ddd; border-radius: 6px; font-size: 14px; box-sizing: border-box;">
+                    </div>
+                </div>
+            </div>
+
             <div class="sort-section">
                 <h3>Sort Random Selection</h3>
                 <div class="radio-group">
@@ -339,7 +372,10 @@
         <div id="status">Select your filters and click "Get Games" to fetch 9 random games.</div>
         <div id="game-grid"></div>
         <button id="generate-btn" disabled>Generate Combined Image</button>
-        <button id="share-btn" disabled>Share Image</button>
+        <div id="share-section" style="display: none;">
+            <textarea id="share-text" placeholder="Add custom text to share with your image (optional)..." style="width: 100%; height: 80px; padding: 8px; margin: 10px 0; border: 1px solid #ddd; border-radius: 4px;"></textarea>
+            <button id="share-btn" disabled>Share Image</button>
+        </div>
         <div id="download-area"></div>
     </div>
 
@@ -351,7 +387,9 @@
             const grid = document.getElementById('game-grid');
             const status = document.getElementById('status');
             const generateBtn = document.getElementById('generate-btn');
+            const shareSection = document.getElementById('share-section');
             const shareBtn = document.getElementById('share-btn');
+            const shareText = document.getElementById('share-text');
             const downloadArea = document.getElementById('download-area');
 
             // Filter checkboxes
@@ -362,6 +400,10 @@
             const filterWishlist = document.getElementById('filter-wishlist');
             const filterPreordered = document.getElementById('filter-preordered');
             const filterExpansions = document.getElementById('filter-expansions');
+            
+            // Player count inputs
+            const playerCountMin = document.getElementById('player-count-min');
+            const playerCountMax = document.getElementById('player-count-max');
 
             // Sort radio buttons
             const sortRadios = document.getElementsByName('sort-method');
@@ -452,6 +494,8 @@
                 submitBtn.disabled = true;
                 generateBtn.disabled = true;
                 shareBtn.disabled = true;
+                shareSection.style.display = 'none';
+                shareText.value = '';
                 grid.innerHTML = '';
                 downloadArea.innerHTML = '';
                 currentCanvas = null;
@@ -502,12 +546,31 @@
                     // 2. Get 9 random game IDs
                     shuffleArray(items);
                     const randomItems = items.slice(0, 9);
-                    const gameIds = randomItems.map(item => item.getAttribute('objectid'));
-                    const gameIdString = gameIds.join(',');
+                    let gameIds = randomItems.map(item => item.getAttribute('objectid'));
+
+                    // Filter by player count if specified (not default 1-20)
+                    const minPlayers = parseInt(playerCountMin.value) || 1;
+                    const maxPlayers = parseInt(playerCountMax.value) || 20;
+                    if (minPlayers > 1 || maxPlayers < 20) {
+                        status.textContent = `Filtering ${gameIds.length} games by player count (${minPlayers}-${maxPlayers})...`;
+                        gameIds = await filterGamesByPlayerCount(gameIds, minPlayers, maxPlayers);
+                        
+                        if (gameIds.length === 0) {
+                            status.textContent = `No games found matching player count ${minPlayers}-${maxPlayers}. Try adjusting the range.`;
+                            populateGrid([]);
+                            return;
+                        }
+                        
+                        if (gameIds.length < 9) {
+                            status.textContent = `Found ${gameIds.length} games matching player count ${minPlayers}-${maxPlayers}. Using all of them.`;
+                        }
+                    }
 
                     status.textContent = `Fetching details for ${gameIds.length} games...`;
 
-                    // 3. Fetch the details (image, name, and rating) for those 9 games (ONE CALL)
+                    const gameIdString = gameIds.join(',');
+
+                    // 4. Fetch the details (image, name, and rating) for those games
                     const thingXMLText = await fetchBGG('thing', {
                         id: gameIdString,
                         stats: '1'
@@ -532,7 +595,7 @@
                         gameData.push({ id, proxiedUrl, avgRating });
                     });
                     
-                    // 4. Sort games based on selected method
+                    // 5. Sort games based on selected method
                     const sortMethod = Array.from(sortRadios).find(r => r.checked).value;
                     if (sortMethod === 'rating') {
                         gameData.sort((a, b) => b.avgRating - a.avgRating);
@@ -552,6 +615,44 @@
                 } finally {
                     submitBtn.disabled = false;
                 }
+            }
+            
+            /** Filter games by player count - fetch details for games to check min/max players */
+            async function filterGamesByPlayerCount(gameIds, minPlayers, maxPlayers) {
+                if (minPlayers <= 1 && maxPlayers >= 20) {
+                    // No filtering needed if using defaults
+                    return gameIds;
+                }
+                
+                const filtered = [];
+                
+                for (const gameId of gameIds) {
+                    try {
+                        const response = await fetchBGG('thing', { id: gameId, stats: '1' });
+                        const doc = parseXML(response);
+                        const item = doc.querySelector('item');
+                        
+                        if (item) {
+                            const min = parseInt(item.querySelector('minplayers')?.textContent || 1);
+                            const max = parseInt(item.querySelector('maxplayers')?.textContent || 999);
+                            
+                            // Check if player count range overlaps with our filter
+                            if (maxPlayers >= min && minPlayers <= max) {
+                                filtered.push(gameId);
+                            }
+                        } else {
+                            filtered.push(gameId); // Include if parse fails
+                        }
+                    } catch (error) {
+                        console.warn(`Error fetching player count for game ${gameId}:`, error);
+                        filtered.push(gameId); // Include on error
+                    }
+                    
+                    // Small delay between requests to avoid rate limiting
+                    await wait(100);
+                }
+                
+                return filtered.length >= 9 ? filtered.slice(0, 9) : filtered;
             }
 
             /** Creates and adds the game cell elements to the grid. */
@@ -655,6 +756,7 @@
                     
                     downloadArea.appendChild(link);
                     shareBtn.disabled = false;
+                    shareSection.style.display = 'block';
                     status.textContent = 'Image generated. Download or share it!';
 
                 } catch (error) {
@@ -675,22 +777,25 @@
                     const blob = await new Promise(resolve => currentCanvas.toBlob(resolve, 'image/png'));
                     const username = usernameInput.value.trim() || 'bgg-grid';
                     const file = new File([blob], `${username}-bgg-grid.png`, { type: 'image/png' });
+                    
+                    // Get custom share text or use default
+                    const customText = shareText.value.trim() || 'Check out my board game grid!';
 
                     // Check if Web Share API is supported
                     if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
                         await navigator.share({
                             files: [file],
                             title: 'My BGG Random 9 Grid',
-                            text: 'Check out my board game grid!'
+                            text: customText
                         });
                         status.textContent = 'Image shared successfully!';
                     } else {
-                        // Fallback: Copy to clipboard
+                        // Fallback: Copy to clipboard with text
                         if (navigator.clipboard && window.ClipboardItem) {
                             await navigator.clipboard.write([
                                 new ClipboardItem({ 'image/png': blob })
                             ]);
-                            status.textContent = 'Image copied to clipboard!';
+                            status.textContent = customText ? `Image copied to clipboard! (Also share this text: "${customText}")` : 'Image copied to clipboard!';
                         } else {
                             status.textContent = 'Sharing not supported. Please use the download link.';
                         }
