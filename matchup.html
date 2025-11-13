@@ -421,9 +421,6 @@
                 <button onclick="switchDashboardTab('upsets')" id="dash-tab-upsets" class="flex-1 py-2 text-sm font-medium text-gray-500 whitespace-nowrap px-3">
                     Upsets
                 </button>
-                <button onclick="switchDashboardTab('difficulty')" id="dash-tab-difficulty" class="flex-1 py-2 text-sm font-medium text-gray-500 whitespace-nowrap px-3">
-                    Difficulty
-                </button>
                 <button onclick="switchDashboardTab('controversial')" id="dash-tab-controversial" class="flex-1 py-2 text-sm font-medium text-gray-500 whitespace-nowrap px-3">
                     Controversial
                 </button>
@@ -509,6 +506,28 @@
                             Win% ↓
                         </button>
                     </div>
+
+                    <!-- Weight Filter -->
+                    <div class="mb-3">
+                        <label class="text-xs font-bold text-gray-700 block mb-2">Filter by Weight (Complexity)</label>
+                        <div class="flex gap-2 flex-wrap">
+                            <button onclick="filterByWeight('all')" id="weightAll" class="py-1 px-2 bg-blue-600 text-white rounded text-xs font-medium">
+                                All
+                            </button>
+                            <button onclick="filterByWeight('1-2')" id="weight1-2" class="py-1 px-2 bg-gray-200 text-gray-700 rounded text-xs font-medium">
+                                Light (1-2)
+                            </button>
+                            <button onclick="filterByWeight('2-3')" id="weight2-3" class="py-1 px-2 bg-gray-200 text-gray-700 rounded text-xs font-medium">
+                                Medium (2-3)
+                            </button>
+                            <button onclick="filterByWeight('3-4')" id="weight3-4" class="py-1 px-2 bg-gray-200 text-gray-700 rounded text-xs font-medium">
+                                Heavy (3-4)
+                            </button>
+                            <button onclick="filterByWeight('4-5')" id="weight4-5" class="py-1 px-2 bg-gray-200 text-gray-700 rounded text-xs font-medium">
+                                Very Heavy (4-5)
+                            </button>
+                        </div>
+                    </div>
                     
                     <div id="standingsList" class="space-y-2">
                         <!-- Populated by JavaScript -->
@@ -545,19 +564,8 @@
             <div id="dashboard-upsets" class="hidden">
                 <div class="bg-white rounded-lg shadow p-4 mb-4">
                     <h3 class="font-bold text-lg mb-3">😱 Biggest Upsets</h3>
-                    <p class="text-xs text-gray-600 mb-3">Lower-ranked games beating higher-ranked</p>
+                    <p class="text-xs text-gray-600 mb-3">Lower-rated games beating higher-rated</p>
                     <div id="upsetsList" class="space-y-3">
-                        <!-- Populated by JavaScript -->
-                    </div>
-                </div>
-            </div>
-
-            <!-- Difficulty Tiers Tab -->
-            <div id="dashboard-difficulty" class="hidden">
-                <div class="bg-white rounded-lg shadow p-4 mb-4">
-                    <h3 class="font-bold text-lg mb-3">🎲 Difficulty Tiers</h3>
-                    <p class="text-xs text-gray-600 mb-3">Games grouped by BGG complexity weight</p>
-                    <div id="difficultyList" class="space-y-4">
                         <!-- Populated by JavaScript -->
                     </div>
                 </div>
@@ -822,6 +830,7 @@
         let currentView = 'matchup'; // Track current view
         let currentDashboardTab = 'matchups'; // Track current dashboard tab
         let dailyGroupingMode = 'day'; // day, week, month, quarter, year - for Daily tab grouping
+        let currentWeightFilter = 'all'; // Track weight filter for standings
 
         // Tournament state
         let gameMode = 'standard'; // standard, bracket, roundrobin, poolplay
@@ -940,7 +949,7 @@
             currentDashboardTab = tab;
             
             // Remove active state from all tabs
-            ['matchups', 'standings', 'streaks', 'upsets', 'difficulty', 'controversial', 'rivalries', 'daily'].forEach(t => {
+            ['matchups', 'standings', 'streaks', 'upsets', 'controversial', 'rivalries', 'daily'].forEach(t => {
                 document.getElementById(`dash-tab-${t}`).classList.remove('border-blue-600', 'text-blue-600');
                 document.getElementById(`dash-tab-${t}`).classList.add('text-gray-500');
                 document.getElementById(`dashboard-${t}`).classList.add('hidden');
@@ -958,8 +967,6 @@
                 loadStreaks();
             } else if (tab === 'upsets') {
                 loadUpsets();
-            } else if (tab === 'difficulty') {
-                loadDifficultyTiers();
             } else if (tab === 'controversial') {
                 loadControversialGames();
             } else if (tab === 'rivalries') {
@@ -2846,6 +2853,47 @@
             }
         }
 
+        // Cache for BGG weights (fetched from Thing API)
+        let bggWeightCache = {};
+        
+        async function fetchBGGWeight(gameId) {
+            // Return cached value if available
+            if (bggWeightCache[gameId] !== undefined) {
+                return bggWeightCache[gameId];
+            }
+            
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}`);
+                if (!response.ok) {
+                    bggWeightCache[gameId] = null;
+                    return null;
+                }
+                
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                // Get the weight from boardgame element
+                const weightElement = xml.querySelector('boardgame');
+                const weight = weightElement ? parseFloat(weightElement.getAttribute('weight') || '0') : null;
+                
+                // Cache the result
+                bggWeightCache[gameId] = weight;
+                
+                // Also update the game object for future use
+                const game = allGamesInCollection.find(g => g.id === gameId);
+                if (game && weight) {
+                    game.weight = weight;
+                }
+                
+                return weight;
+            } catch (error) {
+                console.error(`Error fetching BGG weight for game ${gameId}:`, error);
+                bggWeightCache[gameId] = null;
+                return null;
+            }
+        }
+
         // Show H-Index qualifying games modal
         async function showHIndexGames(hIndex, gameAppearances, allGames) {
             if (hIndex === 0) {
@@ -3023,12 +3071,14 @@
             // Convert to array and calculate stats
             const standings = await Promise.all(Object.values(stats).map(async (g) => {
                 const bggRating = await fetchBGGAverageRating(g.id);
+                const weight = await fetchBGGWeight(g.id);
                 return {
                     ...g,
                     total: g.wins + g.losses,
                     winPct: g.wins / (g.wins + g.losses),
                     elo: calculateELO(g.wins, g.losses, bggRating),
-                    bggRating: bggRating
+                    bggRating: bggRating,
+                    weight: weight
                 };
             }));
 
@@ -3062,7 +3112,42 @@
         // Render standings list (used for search filtering)
         function renderStandingsList(standings) {
             const list = document.getElementById('standingsList');
-            list.innerHTML = standings.map((game, idx) => `
+            
+            // Filter by weight if needed
+            let filteredStandings = standings;
+            if (currentWeightFilter !== 'all') {
+                filteredStandings = standings.filter(game => {
+                    if (!game.weight) return false;
+                    const w = game.weight;
+                    if (currentWeightFilter === '1-2') return w >= 1 && w < 2;
+                    if (currentWeightFilter === '2-3') return w >= 2 && w < 3;
+                    if (currentWeightFilter === '3-4') return w >= 3 && w < 4;
+                    if (currentWeightFilter === '4-5') return w >= 4 && w <= 5;
+                    return true;
+                });
+            }
+            
+            list.innerHTML = filteredStandings.map((game, idx) => {
+                // Determine weight category tag
+                let weightTag = '—';
+                let weightColor = 'gray';
+                if (game.weight) {
+                    if (game.weight < 2) {
+                        weightTag = `Light (${game.weight.toFixed(2)})`;
+                        weightColor = 'green';
+                    } else if (game.weight < 3) {
+                        weightTag = `Medium (${game.weight.toFixed(2)})`;
+                        weightColor = 'blue';
+                    } else if (game.weight < 4) {
+                        weightTag = `Heavy (${game.weight.toFixed(2)})`;
+                        weightColor = 'orange';
+                    } else {
+                        weightTag = `Very Heavy (${game.weight.toFixed(2)})`;
+                        weightColor = 'red';
+                    }
+                }
+                
+                return `
                 <div class="border rounded-lg bg-white hover:shadow-md transition-shadow cursor-pointer mb-2" onclick="toggleStandingDetails('standing-${game.id}')">
                     <!-- Card summary row -->
                     <div class="flex items-center gap-3 p-3 border-b">
@@ -3072,7 +3157,10 @@
                             <div class="font-bold text-sm">${game.name}</div>
                             <div class="text-xs text-gray-600">${game.wins}W - ${game.losses}L (${(game.winPct * 100).toFixed(0)}%) • ELO: ${game.elo}</div>
                         </div>
-                        <div class="text-lg" id="toggle-arrow-${game.id}">▼</div>
+                        <div class="flex flex-col items-end gap-1">
+                            <span class="text-xs px-2 py-1 rounded font-medium bg-${weightColor}-100 text-${weightColor}-700">${weightTag}</span>
+                            <div class="text-lg" id="toggle-arrow-${game.id}">▼</div>
+                        </div>
                     </div>
                     
                     <!-- Expanded details (hidden by default) -->
@@ -3094,13 +3182,17 @@
                                 <div class="text-xs font-bold text-gray-600">BGG Rating</div>
                                 <div class="font-bold">${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10</div>
                             </div>
+                            <div>
+                                <div class="text-xs font-bold text-gray-600">Complexity</div>
+                                <div class="font-bold">${game.weight ? game.weight.toFixed(2) : '—'}/5</div>
+                            </div>
                         </div>
                         <button onclick="event.stopPropagation(); showGameHistory('${game.id}', '${game.name.replace(/'/g, "\\'")}'); return false;" class="w-full mt-2 py-1 px-2 bg-blue-100 text-blue-600 rounded text-xs font-medium hover:bg-blue-200">
                             View Game History
                         </button>
                     </div>
                 </div>
-            `).join('');
+            `}).join('');
         }
         
         // Toggle standing details visibility
@@ -3293,6 +3385,26 @@
             renderStandingsList(filtered);
         };
 
+        // Filter standings by weight
+        window.filterByWeight = (weight) => {
+            currentWeightFilter = weight;
+            
+            // Update button styles
+            ['all', '1-2', '2-3', '3-4', '4-5'].forEach(w => {
+                const btn = document.getElementById(`weight${w}`);
+                if (w === weight) {
+                    btn.classList.remove('bg-gray-200', 'text-gray-700');
+                    btn.classList.add('bg-blue-600', 'text-white');
+                } else {
+                    btn.classList.remove('bg-blue-600', 'text-white');
+                    btn.classList.add('bg-gray-200', 'text-gray-700');
+                }
+            });
+            
+            // Re-render with filter applied
+            renderStandingsList(window.currentStandings);
+        };
+
         // Load streaks
         window.loadStreaks = () => {
             const gameStreaks = {};
@@ -3442,40 +3554,69 @@
         };
 
         // Load upsets
-        window.loadUpsets = () => {
-            // Build rankings from standings
+        window.loadUpsets = async () => {
+            // Build game stats and fetch ratings
             const stats = {};
             
             allMatchups.forEach(m => {
                 if (!stats[m.winnerId]) {
-                    stats[m.winnerId] = { id: m.winnerId, name: m.winnerName, image: m.winnerImage, wins: 0 };
+                    stats[m.winnerId] = { id: m.winnerId, name: m.winnerName, image: m.winnerImage, wins: 0, losses: 0 };
                 }
                 if (!stats[m.loserId]) {
-                    stats[m.loserId] = { id: m.loserId, name: m.loserName, image: m.loserImage, wins: 0 };
+                    stats[m.loserId] = { id: m.loserId, name: m.loserName, image: m.loserImage, wins: 0, losses: 0 };
                 }
                 stats[m.winnerId].wins++;
+                stats[m.loserId].losses++;
             });
             
-            const rankings = Object.values(stats).sort((a, b) => b.wins - a.wins);
-            const rankMap = {};
-            rankings.forEach((g, idx) => {
-                rankMap[g.id] = idx + 1;
+            // Fetch BGG ratings for all games
+            const gameIds = Object.keys(stats);
+            await Promise.all(gameIds.map(id => fetchBGGAverageRating(id)));
+            
+            // Create rating-based rankings (higher rating = more favored)
+            const ratingMap = {};
+            Object.entries(stats).forEach(([id, game]) => {
+                const bggGame = allGamesInCollection.find(g => g.id === id);
+                ratingMap[id] = {
+                    rating: bggGame ? (bggGame.averageRating || 0) : 0,
+                    name: game.name,
+                    image: game.image
+                };
             });
             
-            // Find upsets (lower-ranked beats higher-ranked)
+            const ratings = Object.entries(ratingMap)
+                .sort((a, b) => b[1].rating - a[1].rating);
+            const ratingRankMap = {};
+            ratings.forEach(([id, data], idx) => {
+                ratingRankMap[id] = { rank: idx + 1, rating: data.rating };
+            });
+            
+            // Find upsets (lower-rated beats higher-rated)
             const upsets = allMatchups.map(m => {
-                const winnerRank = rankMap[m.winnerId] || 999;
-                const loserRank = rankMap[m.loserId] || 999;
+                const winnerRank = ratingRankMap[m.winnerId]?.rank || 999;
+                const loserRank = ratingRankMap[m.loserId]?.rank || 999;
+                const winnerRating = ratingRankMap[m.winnerId]?.rating || 0;
+                const loserRating = ratingRankMap[m.loserId]?.rating || 0;
                 const upset = winnerRank > loserRank ? loserRank - winnerRank : 0;
+                const ratingDiff = Math.abs(winnerRating - loserRating);
                 
                 return {
                     ...m,
                     winnerRank,
                     loserRank,
-                    upsetMagnitude: Math.abs(upset)
+                    winnerRating: winnerRating.toFixed(1),
+                    loserRating: loserRating.toFixed(1),
+                    upsetMagnitude: Math.abs(upset),
+                    ratingDiff: ratingDiff.toFixed(1)
                 };
-            }).filter(m => m.upsetMagnitude > 0)
-              .sort((a, b) => b.upsetMagnitude - a.upsetMagnitude);
+            }).filter(m => m.upsetMagnitude > 0 || m.winnerRank > m.loserRank)
+              .sort((a, b) => {
+                  // Sort by rating difference first, then by rank difference
+                  const ratingDiffA = parseFloat(a.ratingDiff);
+                  const ratingDiffB = parseFloat(b.ratingDiff);
+                  if (ratingDiffB !== ratingDiffA) return ratingDiffB - ratingDiffA;
+                  return b.upsetMagnitude - a.upsetMagnitude;
+              });
             
             // Render
             const list = document.getElementById('upsetsList');
@@ -3490,95 +3631,17 @@
                         <div class="text-2xl">😱</div>
                         <div class="flex-1">
                             <div class="text-sm">
-                                <span class="font-bold">#${m.winnerRank} ${m.winnerName}</span> beat 
-                                <span class="font-bold">#${m.loserRank} ${m.loserName}</span>
+                                <span class="font-bold">${m.winnerName}</span> (${m.winnerRating}★) beat 
+                                <span class="font-bold">${m.loserName}</span> (${m.loserRating}★)
                             </div>
                             <div class="text-xs text-gray-600">
-                                ${m.timestamp.toDate().toLocaleDateString()} • Upset magnitude: ${m.upsetMagnitude}
+                                ${m.timestamp.toDate().toLocaleDateString()} • Rating difference: ${m.ratingDiff}
                             </div>
                         </div>
                     </div>
                     ${m.notes ? `<div class="text-xs text-gray-700 mt-2">${m.notes}</div>` : ''}
                 </div>
             `).join('');
-        };
-
-        // Load difficulty tiers
-        window.loadDifficultyTiers = () => {
-            // Get all games with matchup records
-            const stats = {};
-            
-            allMatchups.forEach(m => {
-                if (!stats[m.winnerId]) {
-                    const game = allGamesInCollection.find(g => g.id === m.winnerId);
-                    stats[m.winnerId] = {
-                        id: m.winnerId,
-                        name: m.winnerName,
-                        image: m.winnerImage,
-                        weight: game ? parseFloat(game.weight) || 0 : 0,
-                        wins: 0,
-                        losses: 0
-                    };
-                }
-                if (!stats[m.loserId]) {
-                    const game = allGamesInCollection.find(g => g.id === m.loserId);
-                    stats[m.loserId] = {
-                        id: m.loserId,
-                        name: m.loserName,
-                        image: m.loserImage,
-                        weight: game ? parseFloat(game.weight) || 0 : 0,
-                        wins: 0,
-                        losses: 0
-                    };
-                }
-                stats[m.winnerId].wins++;
-                stats[m.loserId].losses++;
-            });
-            
-            // Group by difficulty tiers
-            const tiers = {
-                'Light (< 2.0)': [],
-                'Medium-Light (2.0-2.5)': [],
-                'Medium (2.5-3.0)': [],
-                'Medium-Heavy (3.0-3.5)': [],
-                'Heavy (3.5-4.0)': [],
-                'Very Heavy (4.0+)': []
-            };
-            
-            Object.values(stats).forEach(game => {
-                const w = game.weight;
-                if (w < 2.0) tiers['Light (< 2.0)'].push(game);
-                else if (w < 2.5) tiers['Medium-Light (2.0-2.5)'].push(game);
-                else if (w < 3.0) tiers['Medium (2.5-3.0)'].push(game);
-                else if (w < 3.5) tiers['Medium-Heavy (3.0-3.5)'].push(game);
-                else if (w < 4.0) tiers['Heavy (3.5-4.0)'].push(game);
-                else tiers['Very Heavy (4.0+)'].push(game);
-            });
-            
-            // Render
-            const list = document.getElementById('difficultyList');
-            list.innerHTML = Object.entries(tiers).map(([tier, games]) => {
-                if (games.length === 0) return '';
-                
-                games.sort((a, b) => b.wins - a.wins);
-                
-                return `
-                    <div class="border rounded-lg p-3">
-                        <h4 class="font-bold text-sm mb-2">${tier} <span class="text-gray-500">(${games.length} games)</span></h4>
-                        <div class="space-y-2">
-                            ${games.map(g => `
-                                <div class="flex items-center gap-2 text-xs">
-                                    <img src="${g.image}" class="w-8 h-8 rounded object-contain bg-gray-100">
-                                    <div class="flex-1">
-                                        <div class="font-medium">${g.name}</div>
-                                        <div class="text-gray-600">${g.wins}W - ${g.losses}L • Weight: ${g.weight.toFixed(2)}</div>
-                                    </div>
-                                </div>
-                            `).join('')}
-                        </div>
-                    </div>
-                `;
-            }).filter(Boolean).join('');
         };
 
         // Load controversial games
