@@ -1893,8 +1893,8 @@
                 recordRoundRobinResult();
                 pairingIndex++;
             } else if (gameMode === 'poolplay') {
-                // Record pool play result
                 if (poolPlayState && poolPlayState.phase === 'pools') {
+                    // Record pool play result
                     const currentPairing = tournamentPairings[pairingIndex];
                     if (currentPairing) {
                         const poolKey = `pool${currentPairing.poolIdx}`;
@@ -1916,13 +1916,16 @@
                             console.log(`[POOL PLAY] Pool ${currentPairing.poolIdx + 1}: ${winnerEntry?.game.name} beat ${loserEntry?.game.name}`);
                         }
                     }
-                }
-                
-                pairingIndex++;
-                
-                // Check if pool play is complete
-                if (pairingIndex >= tournamentPairings.length) {
-                    completePoolPlayPhase();
+                    
+                    pairingIndex++;
+                    
+                    // Check if pool play is complete
+                    if (pairingIndex >= tournamentPairings.length) {
+                        completePoolPlayPhase();
+                    }
+                } else if (poolPlayState && poolPlayState.phase === 'bracket') {
+                    // Record pool play bracket result - use pool play bracket state
+                    recordPoolPlayBracketWinner(winnerId);
                 }
             } else {
                 pairingIndex++;
@@ -2057,45 +2060,146 @@
             
             if (allComplete) {
                 console.log(`[BRACKET] Round ${round} complete!`);
-                currentRoundData.complete = true;
                 
+                // For double elimination, capture losers for losers bracket
+                if (bracketState.doubleElimination && round === 1) {
+                    const losers = currentRoundData.matchups
+                        .map(m => m.left.id === matchup.winner.id ? m.right : m.left)
+                        .filter(l => l !== null);
+                    
+                    const round1LosersMatchups = [];
+                    for (let i = 0; i < losers.length; i += 2) {
+                        if (losers[i] && losers[i + 1]) {
+                            round1LosersMatchups.push({
+                                left: losers[i],
+                                right: losers[i + 1],
+                                winner: null
+                            });
+                        }
+                    }
+                    
+                    if (round1LosersMatchups.length > 0) {
+                        bracketState.losersBracketData[1] = {
+                            matchups: round1LosersMatchups,
+                            complete: false
+                        };
+                        console.log(`[BRACKET] Losers bracket R1 created with ${round1LosersMatchups.length} matchups`);
+                    }
+                }
+                
+                // Prepare next round or declare champion
                 if (round === bracketState.totalRounds) {
-                    // This was the final round - we have a champion!
-                    const champion = currentRoundData.matchups[0].winner;
-                    console.log(`[BRACKET] 🏆 TOURNAMENT CHAMPION: ${champion.name}`);
-                    bracketState.champion = champion;
+                    // Tournament complete
+                    bracketState.champion = winnerGame;
+                    console.log(`[BRACKET] 🏆 TOURNAMENT CHAMPION: ${winnerGame.name}!`);
                     showTournamentResults();
-                    return;
+                } else {
+                    // Prepare next round
+                    const nextRound = round + 1;
+                    const winners = currentRoundData.matchups.map(m => m.winner);
+                    
+                    const nextRoundMatchups = [];
+                    for (let i = 0; i < winners.length; i += 2) {
+                        nextRoundMatchups.push({
+                            left: winners[i],
+                            right: winners[i + 1],
+                            winner: null
+                        });
+                    }
+                    
+                    bracketState.roundsData[nextRound] = {
+                        matchups: nextRoundMatchups,
+                        complete: false
+                    };
+                    bracketState.currentRound = nextRound;
+                    
+                    // Generate pairings for next round
+                    tournamentPairings = nextRoundMatchups.map(m => ({ left: m.left, right: m.right }));
+                    pairingIndex = 0;
+                    
+                    console.log(`[BRACKET] Advanced to Round ${nextRound} with ${tournamentPairings.length} matchups`);
                 }
                 
-                // Advance to next round
-                const nextRound = round + 1;
-                console.log(`[BRACKET] Advancing ${currentRoundData.matchups.length} winners to Round ${nextRound}`);
-                
-                // Get winners and pair them for next round
-                const winners = currentRoundData.matchups.map(m => m.winner);
-                const nextRoundMatchups = [];
-                
-                for (let i = 0; i < winners.length; i += 2) {
-                    nextRoundMatchups.push({
-                        left: winners[i],
-                        right: winners[i + 1],
-                        winner: null
-                    });
-                }
-                
-                bracketState.roundsData[nextRound] = {
-                    matchups: nextRoundMatchups,
-                    complete: false
-                };
-                
-                bracketState.currentRound = nextRound;
-                pairingIndex = 0;
-                generateBracketPairings();
+                updateBracketVisualization();
+            }
+        }
+
+        // Record pool play bracket winner (similar to bracket but uses poolPlayState.bracketState)
+        function recordPoolPlayBracketWinner(winnerId) {
+            if (!poolPlayState || !poolPlayState.bracketState) return;
+            
+            const bracketState2 = poolPlayState.bracketState;
+            const round = bracketState2.currentRound;
+            const currentRoundData = bracketState2.roundsData[round];
+            
+            if (!currentRoundData) {
+                console.error(`[POOL PLAY BRACKET] Round ${round} data not found!`);
+                return;
             }
             
-            // Update bracket visualization
-            updateBracketVisualization();
+            // Find the matchup this winner belongs to
+            const matchupIndex = tournamentPairings.findIndex(p => 
+                p.left && p.right && (p.left.id === winnerId || p.right.id === winnerId)
+            );
+            
+            if (matchupIndex === -1) {
+                console.error(`[POOL PLAY BRACKET] Winner ${winnerId} not found in current pairings!`);
+                return;
+            }
+            
+            // Record winner in this matchup
+            const matchup = currentRoundData.matchups[matchupIndex];
+            const winnerGame = matchup.left.id === winnerId ? matchup.left : matchup.right;
+            
+            matchup.winner = winnerGame;
+            console.log(`[POOL PLAY BRACKET] R${round} Matchup ${matchupIndex + 1}: ${winnerGame.name} wins!`);
+            
+            // Advance to next matchup in this round
+            pairingIndex++;
+            
+            // Check if all matchups in this round are complete
+            const allComplete = currentRoundData.matchups.every(m => m.winner !== null);
+            
+            if (allComplete) {
+                console.log(`[POOL PLAY BRACKET] Round ${round} complete!`);
+                
+                // Prepare next round or declare champion
+                if (round === bracketState2.totalRounds) {
+                    // Pool play tournament complete
+                    bracketState2.champion = winnerGame;
+                    console.log(`[POOL PLAY BRACKET] 🏆 POOL PLAY CHAMPION: ${winnerGame.name}!`);
+                    showTournamentResults();
+                } else {
+                    // Prepare next round
+                    const nextRound = round + 1;
+                    const winners = currentRoundData.matchups.map(m => m.winner);
+                    
+                    const nextRoundMatchups = [];
+                    for (let i = 0; i < winners.length; i += 2) {
+                        if (winners[i] && winners[i + 1]) {
+                            nextRoundMatchups.push({
+                                left: winners[i],
+                                right: winners[i + 1],
+                                winner: null
+                            });
+                        }
+                    }
+                    
+                    bracketState2.roundsData[nextRound] = {
+                        matchups: nextRoundMatchups,
+                        complete: false
+                    };
+                    bracketState2.currentRound = nextRound;
+                    
+                    // Generate pairings for next round (skip byes)
+                    tournamentPairings = nextRoundMatchups
+                        .filter(m => m.left && m.right)
+                        .map(m => ({ left: m.left, right: m.right }));
+                    pairingIndex = 0;
+                    
+                    console.log(`[POOL PLAY BRACKET] Advanced to Round ${nextRound} with ${tournamentPairings.length} matchups`);
+                }
+            }
         }
         
         // Update bracket tournament visualization
@@ -2297,15 +2401,59 @@
                     };
                     showChampionModal(stats);
                     
+                    // Show both pool play results and bracket progression
                     resultHTML = `
-                        <div class="bg-purple-50 border-2 border-purple-400 rounded-lg p-4">
-                            <div class="text-2xl font-bold text-purple-900 mb-3 text-center">🏆 POOL PLAY TOURNAMENT CHAMPION! 🏆</div>
+                        <div class="bg-purple-50 border-2 border-purple-400 rounded-lg p-4 space-y-3">
+                            <div class="text-2xl font-bold text-purple-900 text-center">🏆 TOURNAMENT CHAMPION! 🏆</div>
                             <div class="text-xl text-center font-bold text-purple-800">${champion.name}</div>
-                            <div class="text-xs text-purple-700 mt-2 text-center">Defeated pool play and bracket phases</div>
+                            
+                            <div class="border-t-2 border-purple-300 pt-3">
+                                <div class="text-sm font-bold text-purple-900 mb-2">📊 Pool Play Results</div>
+                    `;
+                    
+                    poolPlayState.pools.forEach((pool, poolIdx) => {
+                        const poolKey = `pool${poolIdx}`;
+                        const poolResults = poolPlayState.poolResults.get(poolKey);
+                        
+                        if (poolResults) {
+                            const ranked = [...poolResults].sort((a, b) => {
+                                if (b.points !== a.points) return b.points - a.points;
+                                return b.wins - a.wins;
+                            });
+                            
+                            resultHTML += `<div class="bg-white rounded p-2 mb-2">
+                                <div class="text-xs font-bold text-purple-800 mb-1">Pool ${poolIdx + 1}</div>
+                            `;
+                            
+                            ranked.forEach((r, idx) => {
+                                const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : '  ';
+                                const advancing = idx < poolPlayState.advancePerPool ? '✓' : '';
+                                resultHTML += `
+                                    <div class="text-xs text-purple-700 flex justify-between">
+                                        <span>${medal} #${idx + 1} ${r.game.name}</span>
+                                        <span>${r.wins}W-${r.losses}L (${r.points}pts) ${advancing}</span>
+                                    </div>
+                                `;
+                            });
+                            
+                            resultHTML += `</div>`;
+                        }
+                    });
+                    
+                    // Show bracket progression
+                    resultHTML += `
+                            </div>
+                            <div class="border-t-2 border-purple-300 pt-3">
+                                <div class="text-sm font-bold text-purple-900 mb-2">🎯 Bracket Phase</div>
+                                <div class="text-xs text-purple-700 text-center">
+                                    ${poolPlayState.advancingTeams.length} teams competed in bracket format<br/>
+                                    <strong class="text-purple-800">${champion.name}</strong> won the bracket!
+                                </div>
+                            </div>
                         </div>
                     `;
                 } else {
-                    // Pool play results - show all pools
+                    // Pool play phase only - show all pools
                     resultHTML = `
                         <div class="bg-indigo-50 border-2 border-indigo-400 rounded-lg p-4">
                             <div class="text-2xl font-bold text-indigo-900 mb-3 text-center">🎪 POOL PLAY COMPLETE!</div>
@@ -2342,7 +2490,7 @@
                     
                     resultHTML += `
                             <div class="text-xs text-indigo-700 mt-3 text-center">
-                                ${poolPlayState.advancingTeams.length} teams advancing to bracket
+                                ${poolPlayState.advancingTeams.length} teams advancing to bracket →
                             </div>
                         </div>
                     `;
@@ -3055,7 +3203,7 @@
                     </div>
                     
                     <!-- Expanded details (hidden by default) -->
-                    <div id="standing-${game.id}" class="hidden bg-gray-50 p-3 border-t space-y-2 text-sm">
+                    <div id="standing-${game.id}" class="hidden bg-gray-50 p-3 border-t space-y-3 text-sm">
                         <div class="grid grid-cols-2 gap-2">
                             <div>
                                 <div class="text-xs font-bold text-gray-600">Record</div>
@@ -3066,10 +3214,29 @@
                                 <div class="font-bold">${(game.winPct * 100).toFixed(1)}%</div>
                             </div>
                             <div>
+                                <div class="text-xs font-bold text-gray-600">Total Games</div>
+                                <div class="font-bold">${game.wins + game.losses}</div>
+                            </div>
+                            <div>
                                 <div class="text-xs font-bold text-gray-600">ELO Rating</div>
                                 <div class="font-bold">${game.elo}</div>
                             </div>
                         </div>
+                        
+                        <!-- ELO Formula Breakdown -->
+                        <div class="bg-white rounded p-2 border border-blue-200">
+                            <div class="text-xs font-bold text-blue-900 mb-2">📊 ELO Formula Breakdown:</div>
+                            <div class="text-xs text-gray-700 space-y-1 font-mono">
+                                <div>Win % = ${game.wins} / ${game.wins + game.losses} = <span class="font-bold">${(game.winPct * 100).toFixed(2)}%</span></div>
+                                <div>Base ELO = (${(game.winPct).toFixed(4)})³ × ${game.wins + game.losses} × 100</div>
+                                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = ${(Math.pow(game.winPct, 3) * (game.wins + game.losses) * 100).toFixed(2)}</div>
+                                <div class="font-bold border-t pt-1 mt-1">Final ELO = <span class="text-blue-600">${game.elo}</span></div>
+                                <div class="text-xs text-gray-600 mt-2">
+                                    <span class="italic">Formula rewards win % efficiency: higher win % with more games = higher ELO</span>
+                                </div>
+                            </div>
+                        </div>
+                        
                         <button onclick="event.stopPropagation(); showGameHistory('${game.id}', '${game.name.replace(/'/g, "\\'")}'); return false;" class="w-full mt-2 py-1 px-2 bg-blue-100 text-blue-600 rounded text-xs font-medium hover:bg-blue-200">
                             View Game History
                         </button>
@@ -3417,34 +3584,49 @@
         };
 
         // Load upsets
-        window.loadUpsets = () => {
-            // Build rankings from standings (wins-based ranking)
-            const stats = {};
+        window.loadUpsets = async () => {
+            // Build rankings from BGG average rating (higher rating = higher rank/rank 1)
+            // First, fetch average ratings for all games in collection
+            const gameRatings = {};
             
+            // Get all unique game IDs from matchups
+            const gameIds = new Set();
             allMatchups.forEach(m => {
-                if (!stats[m.winnerId]) {
-                    stats[m.winnerId] = { id: m.winnerId, name: m.winnerName, image: m.winnerImage, wins: 0 };
-                }
-                if (!stats[m.loserId]) {
-                    stats[m.loserId] = { id: m.loserId, name: m.loserName, image: m.loserImage, wins: 0 };
-                }
-                stats[m.winnerId].wins++;
+                gameIds.add(m.winnerId);
+                gameIds.add(m.loserId);
             });
             
-            const rankings = Object.values(stats).sort((a, b) => b.wins - a.wins);
+            // Fetch ratings for all games
+            console.log(`[UPSETS] Fetching BGG ratings for ${gameIds.size} games...`);
+            for (const gameId of gameIds) {
+                const rating = await fetchBGGAverageRating(gameId);
+                gameRatings[gameId] = rating;
+            }
+            
+            // Create rank map (higher rating = lower rank number #1)
+            const ratedGames = Array.from(gameIds)
+                .map(id => ({ id, rating: gameRatings[id] }))
+                .sort((a, b) => b.rating - a.rating); // Highest rating first
+            
             const rankMap = {};
-            rankings.forEach((g, idx) => {
-                rankMap[g.id] = idx + 1;
+            ratedGames.forEach((g, idx) => {
+                rankMap[g.id] = idx + 1; // Rank 1 = highest rating
             });
             
-            // Find upsets (lower-ranked beats higher-ranked)
+            // Find upsets (lower-ranked beats higher-ranked by rating, where lower rank number = higher rating)
             const upsets = allMatchups.map(m => {
+                const winnerRating = gameRatings[m.winnerId] || 0;
+                const loserRating = gameRatings[m.loserId] || 0;
                 const winnerRank = rankMap[m.winnerId] || 999;
                 const loserRank = rankMap[m.loserId] || 999;
+                
+                // Upset = lower-ranked (higher rank number) beats higher-ranked (lower rank number)
                 const upset = winnerRank > loserRank ? loserRank - winnerRank : 0;
                 
                 return {
                     ...m,
+                    winnerRating,
+                    loserRating,
                     winnerRank,
                     loserRank,
                     upsetMagnitude: Math.abs(upset)
@@ -3464,24 +3646,17 @@
                     <div class="flex items-start gap-3 mb-2">
                         <div class="text-3xl">😱</div>
                         <div class="flex-1">
-                            <div class="flex items-center gap-2 mb-1">
-                                <img src="${m.winnerImage}" alt="${m.winnerName}" class="w-10 h-10 rounded object-contain bg-gray-100">
-                                <div class="text-sm">
-                                    <span class="font-bold">#${m.winnerRank} ${m.winnerName}</span> beat 
-                                </div>
+                            <div class="font-bold text-sm text-gray-900">
+                                <span class="text-green-600">#${m.winnerRank} ${m.winnerName}</span>
+                                <span class="text-gray-400"> beat </span>
+                                <span class="text-red-600">#${m.loserRank} ${m.loserName}</span>
                             </div>
-                            <div class="flex items-center gap-2">
-                                <img src="${m.loserImage}" alt="${m.loserName}" class="w-10 h-10 rounded object-contain bg-gray-100">
-                                <div class="text-sm">
-                                    <span class="font-bold">#${m.loserRank} ${m.loserName}</span>
-                                </div>
+                            <div class="text-xs text-gray-600 mt-1">
+                                Ratings: ${m.winnerRating.toFixed(1)} vs ${m.loserRating.toFixed(1)} (Rank swing: +${m.upsetMagnitude})
                             </div>
-                            <div class="text-xs text-gray-600 mt-2">
-                                ${m.timestamp.toDate().toLocaleDateString()} • Upset magnitude: ${m.upsetMagnitude}
-                            </div>
+                            <div class="text-xs text-gray-500 mt-1">${new Date(m.timestamp).toLocaleDateString()}</div>
                         </div>
                     </div>
-                    ${m.notes ? `<div class="text-xs text-gray-700 mt-2 bg-gray-50 p-2 rounded">${m.notes}</div>` : ''}
                 </div>
             `).join('');
         };
