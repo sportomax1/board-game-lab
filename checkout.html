@@ -118,6 +118,9 @@
                 <button onclick="switchTab('dashboard')" id="tab-dashboard" class="flex-1 py-3 px-2 text-center font-medium text-gray-500 whitespace-nowrap text-sm">
                     Dashboard
                 </button>
+                <button onclick="switchTab('random')" id="tab-random" class="flex-1 py-3 px-2 text-center font-medium text-gray-500 whitespace-nowrap text-sm">
+                    🎲 Random
+                </button>
                 <button onclick="switchTab('settings')" id="tab-settings" class="flex-1 py-3 px-2 text-center font-medium text-gray-500 whitespace-nowrap text-sm">
                     Settings
                 </button>
@@ -235,6 +238,57 @@
                 <h3 class="text-lg font-bold mb-3">🏆 Most Checked Out Games</h3>
                 <div id="mostCheckedOut" class="space-y-2">
                     <!-- Populated by JavaScript -->
+                </div>
+            </div>
+        </div>
+
+        <!-- Random View -->
+        <div id="view-random" class="hidden max-w-md mx-auto px-4 py-6">
+            <!-- Filters -->
+            <div class="bg-white rounded-lg shadow p-4 mb-4">
+                <h3 class="text-lg font-bold mb-4">🎲 Random Game Picker</h3>
+                
+                <!-- Filter Options -->
+                <div class="mb-4 space-y-3">
+                    <div>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="checkbox" id="excludeExpansions" class="w-4 h-4 text-blue-600 rounded" checked>
+                            <span class="text-sm font-medium text-gray-700">Exclude Expansions</span>
+                        </label>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">Player Count</label>
+                        <div class="flex gap-2">
+                            <input type="number" id="playerCountMin" min="1" max="20" value="1" class="flex-1 border rounded px-2 py-2 text-sm" placeholder="Min">
+                            <input type="number" id="playerCountMax" min="1" max="20" value="20" class="flex-1 border rounded px-2 py-2 text-sm" placeholder="Max">
+                        </div>
+                    </div>
+                    
+                    <div>
+                        <label class="block text-sm font-medium text-gray-700 mb-2">How Many Games?</label>
+                        <input type="number" id="randomCount" min="1" max="20" value="9" class="w-full border rounded px-2 py-2 text-sm">
+                    </div>
+                </div>
+                
+                <button onclick="pickRandomGames()" class="w-full py-2 px-4 bg-blue-600 text-white rounded-lg font-medium">
+                    🎲 Pick Random Games
+                </button>
+            </div>
+            
+            <!-- Results -->
+            <div id="randomResults" class="hidden bg-white rounded-lg shadow p-4 mb-4">
+                <h3 class="text-lg font-bold mb-4">🎯 Your Selection</h3>
+                <div id="randomGamesList" class="space-y-2 mb-4">
+                    <!-- Populated by JavaScript -->
+                </div>
+                
+                <!-- Share Options -->
+                <div class="border-t pt-4 space-y-2">
+                    <textarea id="shareText" class="w-full border rounded px-2 py-2 text-sm font-mono" rows="3" placeholder="Share text"></textarea>
+                    <button onclick="copyRandomShare()" class="w-full py-2 px-4 bg-green-600 text-white rounded-lg text-sm font-medium">
+                        📋 Copy to Clipboard
+                    </button>
                 </div>
             </div>
         </div>
@@ -1395,7 +1449,7 @@
 
         // Tab switching
         window.switchTab = (tab) => {
-            ['checkout', 'history', 'dashboard', 'settings'].forEach(t => {
+            ['checkout', 'history', 'dashboard', 'random', 'settings'].forEach(t => {
                 document.getElementById(`view-${t}`).classList.add('hidden');
                 document.getElementById(`tab-${t}`).classList.remove('tab-active', 'text-blue-600');
                 document.getElementById(`tab-${t}`).classList.add('text-gray-500');
@@ -1411,10 +1465,159 @@
                 loadCheckouts(); // Auto-refresh history when tab clicked
             } else if (tab === 'settings') {
                 renderRetroRecentRecords(); // Populate recent records for quick update
+            } else if (tab === 'random') {
+                // Reset results when switching to random tab
+                document.getElementById('randomResults').classList.add('hidden');
             }
         };
 
         // Logout
+        // Pick random games with filters
+        window.pickRandomGames = async () => {
+            const excludeExpansions = document.getElementById('excludeExpansions').checked;
+            const playerCountMin = parseInt(document.getElementById('playerCountMin').value) || 1;
+            const playerCountMax = parseInt(document.getElementById('playerCountMax').value) || 20;
+            const randomCount = parseInt(document.getElementById('randomCount').value) || 9;
+            
+            // Filter games based on criteria
+            let filtered = allGames.filter(game => {
+                // Exclude expansions if checked (expansions usually have "Expansion" in name)
+                if (excludeExpansions) {
+                    const isExpansion = game.name.toLowerCase().includes('expansion');
+                    if (isExpansion) return false;
+                }
+                return true;
+            });
+            
+            if (filtered.length === 0) {
+                alert('No games match your filters');
+                return;
+            }
+            
+            // If player count filtering is enabled (not default 1-20), fetch detailed info
+            if (playerCountMin > 1 || playerCountMax < 20) {
+                // Fetch player count info for filtered games (in batches to avoid rate limiting)
+                filtered = await filterByPlayerCount(filtered, playerCountMin, playerCountMax);
+            }
+            
+            if (filtered.length === 0) {
+                alert('No games match your player count filter');
+                return;
+            }
+            
+            // Pick random games
+            const count = Math.min(randomCount, filtered.length);
+            const selected = [];
+            const indices = new Set();
+            
+            while (selected.length < count) {
+                const idx = Math.floor(Math.random() * filtered.length);
+                if (!indices.has(idx)) {
+                    indices.add(idx);
+                    selected.push(filtered[idx]);
+                }
+            }
+            
+            // Display results
+            displayRandomResults(selected, playerCountMin, playerCountMax);
+        };
+        
+        // Filter games by player count (fetches detailed info)
+        async function filterByPlayerCount(games, minPlayers, maxPlayers) {
+            const filtered = [];
+            let processed = 0;
+            
+            for (const game of games) {
+                try {
+                    // Fetch game details from BGG thing API
+                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&type=boardgame`);
+                    if (!response.ok) {
+                        filtered.push(game); // Include if fetch fails
+                        continue;
+                    }
+                    
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    const item = xml.querySelector('item');
+                    
+                    if (item) {
+                        const min = parseInt(item.querySelector('minplayers')?.textContent || 1);
+                        const max = parseInt(item.querySelector('maxplayers')?.textContent || 1);
+                        
+                        // Check if player count range overlaps
+                        if (maxPlayers >= min && minPlayers <= max) {
+                            game.minPlayers = min;
+                            game.maxPlayers = max;
+                            filtered.push(game);
+                        }
+                    } else {
+                        filtered.push(game); // Include if parse fails
+                    }
+                    
+                    processed++;
+                } catch (error) {
+                    console.warn(`Error fetching player count for game ${game.id}:`, error);
+                    filtered.push(game); // Include on error
+                }
+                
+                // Small delay between requests
+                if (processed < games.length) {
+                    await new Promise(resolve => setTimeout(resolve, 100));
+                }
+            }
+            
+            return filtered;
+        }
+        
+        // Display random game results
+        function displayRandomResults(games, playerCountMin, playerCountMax) {
+            const resultsList = document.getElementById('randomGamesList');
+            const resultsContainer = document.getElementById('randomResults');
+            
+            resultsList.innerHTML = games.map((game, idx) => `
+                <div class="flex items-start gap-3 p-2 border-b">
+                    <div class="flex-shrink-0 text-center font-bold text-blue-600 w-6">${idx + 1}</div>
+                    <img src="${game.image}" alt="" class="w-12 h-16 rounded object-contain bg-gray-100 flex-shrink-0">
+                    <div class="flex-1 min-w-0">
+                        <div class="font-medium text-sm truncate">${game.name}</div>
+                        <div class="text-xs text-gray-600">${game.minPlayers || '?'}-${game.maxPlayers || '?'} players • ${game.year}</div>
+                    </div>
+                </div>
+            `).join('');
+            
+            // Generate default share text
+            const gameList = games.map((g, idx) => `${idx + 1}. ${g.name}`).join('\n');
+            const filterText = [];
+            if (document.getElementById('excludeExpansions').checked) {
+                filterText.push('(no expansions)');
+            }
+            if (playerCountMin > 1 || playerCountMax < 20) {
+                filterText.push(`(${playerCountMin}-${playerCountMax} players)`);
+            }
+            
+            const defaultShare = `🎲 Random ${games.length} Games ${filterText.join(' ')}\n\n${gameList}`;
+            document.getElementById('shareText').value = defaultShare;
+            
+            resultsContainer.classList.remove('hidden');
+        }
+        
+        // Copy share text to clipboard
+        window.copyRandomShare = async () => {
+            const shareText = document.getElementById('shareText').value;
+            try {
+                await navigator.clipboard.writeText(shareText);
+                const btn = event.target;
+                const origText = btn.textContent;
+                btn.textContent = '✅ Copied!';
+                setTimeout(() => {
+                    btn.textContent = origText;
+                }, 2000);
+            } catch (error) {
+                alert('Failed to copy to clipboard');
+            }
+        };
+
         window.logout = () => {
             if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('app_password_hint');
