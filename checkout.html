@@ -126,13 +126,23 @@
 
         <!-- Checkout View -->
         <div id="view-checkout" class="max-w-md mx-auto px-4 py-6">
-            <!-- Search -->
+            <!-- Search & Retro Mode Toggle -->
             <div class="bg-white rounded-lg shadow p-4 mb-4">
                 <div class="flex gap-2 mb-3">
                     <input type="text" id="searchGames" placeholder="🔍 Search games..." class="flex-1 border rounded-lg px-3 py-2 text-sm">
                     <button onclick="clearSearch()" class="px-4 py-2 bg-gray-500 text-white rounded-lg text-sm font-medium">Clear</button>
                 </div>
-                <div class="flex gap-2">
+                
+                <!-- Retro Mode Toggle & Date -->
+                <div class="mb-3 p-2 bg-purple-50 rounded-lg border border-purple-200">
+                    <div class="flex items-center gap-2 mb-2">
+                        <input type="checkbox" id="retroModeToggle" onchange="toggleRetroMode()" class="w-4 h-4 text-purple-600 rounded cursor-pointer">
+                        <label for="retroModeToggle" class="text-sm font-semibold text-purple-900 cursor-pointer">⏰ Retro Mode (Past Date)</label>
+                    </div>
+                    <input type="date" id="retroModeDate" class="w-full border rounded px-2 py-1 text-xs hidden" onchange="updateRetroModeDate()">
+                </div>
+                
+                <div class="flex gap-2 mb-3">
                     <button onclick="loadGames()" class="flex-1 px-4 py-2 bg-blue-600 text-white rounded-lg text-sm font-medium">
                         Reload Collection
                     </button>
@@ -243,24 +253,13 @@
                 </button>
             </div>
 
-            <!-- Retro Mode -->
+            <!-- Date Management (Batch Update & Quick Edit) -->
             <div class="bg-white rounded-lg shadow p-4 mb-4">
-                <h3 class="font-bold text-gray-900 mb-3">⏰ Retro Mode</h3>
+                <h3 class="font-bold text-gray-900 mb-3">📅 Date Management</h3>
                 <p class="text-xs text-gray-600 mb-3">
-                    Add checkouts from the past or update dates on existing records.
+                    Update checkout dates on existing records. Toggle Retro Mode in the Checkout tab to add new past records.
                 </p>
                 
-                <!-- Add Retro Record -->
-                <div class="mb-3 pb-3 border-b">
-                    <label class="block text-xs font-semibold text-gray-700 mb-2">Add Retro Record</label>
-                    <input type="number" id="retroGameId" placeholder="Game ID (required)" class="w-full border rounded px-2 py-1 text-xs mb-2">
-                    <input type="date" id="retroCheckoutDate" class="w-full border rounded px-2 py-1 text-xs mb-2">
-                    <button onclick="addRetroRecord()" class="w-full py-2 px-2 bg-purple-600 text-white rounded text-xs font-medium">
-                        Add Record
-                    </button>
-                    <p id="retroAddStatus" class="text-xs mt-1 text-gray-600"></p>
-                </div>
-
                 <!-- Batch Update Dates -->
                 <div class="mb-3 pb-3 border-b">
                     <label class="block text-xs font-semibold text-gray-700 mb-2">Batch Update Dates</label>
@@ -354,6 +353,8 @@
         let currentSortMode = 'alpha'; // 'alpha', 'checkout', 'play', 'year'
         let recentlyCheckedOut = new Set(); // Track games checked out in this session for visual highlight
         let checkoutGroupingMode = 'day'; // day, week, month, quarter, year - for Daily Records grouping
+        let retroModeEnabled = false; // Retro mode toggle state
+        let retroModeDate = null; // Selected date for retro mode
 
         // Initialize Firebase
         async function initFirebase() {
@@ -690,6 +691,28 @@
             renderGameList();
         };
         
+        // Toggle retro mode
+        window.toggleRetroMode = () => {
+            retroModeEnabled = document.getElementById('retroModeToggle').checked;
+            const dateInput = document.getElementById('retroModeDate');
+            
+            if (retroModeEnabled) {
+                dateInput.classList.remove('hidden');
+                // Set default date to today
+                const today = new Date().toISOString().split('T')[0];
+                dateInput.value = today;
+                retroModeDate = today;
+            } else {
+                dateInput.classList.add('hidden');
+                retroModeDate = null;
+            }
+        };
+        
+        // Update retro mode date
+        window.updateRetroModeDate = () => {
+            retroModeDate = document.getElementById('retroModeDate').value;
+        };
+        
         // Change checkout sort mode
         window.sortCheckoutGames = (sortMode) => {
             currentSortMode = sortMode;
@@ -714,11 +737,17 @@
             if (!game) return;
             
             try {
+                // Use retro mode date if enabled, otherwise use current time
+                let checkoutDate = Timestamp.now();
+                if (retroModeEnabled && retroModeDate) {
+                    checkoutDate = Timestamp.fromDate(new Date(retroModeDate));
+                }
+                
                 await addDoc(collection(db, 'checkouts'), {
                     gameId: game.id,
                     gameName: game.name,
                     gameImage: game.image,
-                    checkoutDate: Timestamp.now(),
+                    checkoutDate: checkoutDate,
                     username: bggUsername
                 });
                 
@@ -805,58 +834,7 @@
         };
 
         // Retro Mode: Add record with custom past date
-        window.addRetroRecord = async () => {
-            const gameId = document.getElementById('retroGameId').value.trim();
-            const dateStr = document.getElementById('retroCheckoutDate').value;
-            const statusEl = document.getElementById('retroAddStatus');
-            
-            if (!gameId) {
-                statusEl.textContent = '❌ Game ID required';
-                return;
-            }
-            
-            if (!dateStr) {
-                statusEl.textContent = '❌ Date required';
-                return;
-            }
-            
-            statusEl.textContent = '⏳ Fetching game details...';
-            
-            try {
-                // Fetch game details from BGG
-                const details = await fetchGameDetails(gameId);
-                const gameName = details?.name || `Game ${gameId}`;
-                const gameImage = details?.image || 'https://via.placeholder.com/100?text=No+Image';
-                
-                // Add to Firestore with custom date
-                const checkoutDate = Timestamp.fromDate(new Date(dateStr));
-                
-                await addDoc(collection(db, 'checkouts'), {
-                    gameName: gameName,
-                    gameImage: gameImage,
-                    gameId: String(gameId),
-                    checkoutDate: checkoutDate,
-                    username: bggUsername
-                });
-                
-                statusEl.textContent = `✅ Added "${gameName}" for ${new Date(dateStr).toLocaleDateString()}`;
-                document.getElementById('retroGameId').value = '';
-                document.getElementById('retroCheckoutDate').value = '';
-                
-                // Reload after short delay
-                setTimeout(async () => {
-                    await loadCheckouts();
-                    renderHistoryList();
-                    renderRetroRecentRecords();
-                }, 500);
-                
-            } catch (error) {
-                console.error('Error adding retro record:', error);
-                statusEl.textContent = `❌ Error: ${error.message}`;
-            }
-        };
-
-        // Retro Mode: Batch update dates
+        // Batch update dates on existing records
         window.batchUpdateDates = async () => {
             const data = document.getElementById('batchDateUpdateData').value.trim();
             const statusEl = document.getElementById('batchUpdateStatus');
