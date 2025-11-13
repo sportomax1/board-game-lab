@@ -243,6 +243,19 @@
                 </button>
             </div>
 
+            <!-- Resync Missing Data -->
+            <div class="bg-white rounded-lg shadow p-4 mb-4">
+                <h3 class="font-bold text-gray-900 mb-3">🔄 Resync Missing Data</h3>
+                <p class="text-xs text-gray-600 mb-3">
+                    Find records with placeholder data and fetch real game details from BGG.
+                    This will update any records with "Game XXX" names or placeholder images.
+                </p>
+                <button onclick="resyncMissingData()" class="w-full py-2 bg-orange-600 text-white rounded-lg font-medium">
+                    Resync All Missing Data
+                </button>
+                <p id="resyncStatus" class="text-xs mt-2 text-gray-600"></p>
+            </div>
+
             <div class="bg-white rounded-lg shadow p-4 mb-4">
                 <h3 class="font-bold text-gray-900 mb-3">Bulk Import</h3>
                 <details class="mb-3" open>
@@ -1121,6 +1134,96 @@
             if (confirm('Are you sure you want to logout?')) {
                 localStorage.removeItem('app_password_hint');
                 location.reload();
+            }
+        };
+
+        // Resync missing data - find records with placeholder data and update from BGG
+        window.resyncMissingData = async () => {
+            if (!confirm('This will scan all checkout records and update any with placeholder data from BGG. Continue?')) {
+                return;
+            }
+
+            const statusEl = document.getElementById('resyncStatus');
+            statusEl.textContent = 'Scanning records...';
+            
+            try {
+                // Load all checkouts
+                const checkoutsSnapshot = await getDocs(query(collection(db, 'checkouts'), orderBy('checkoutDate', 'desc')));
+                
+                const needsUpdate = [];
+                
+                // Find records with placeholder data
+                checkoutsSnapshot.forEach(doc => {
+                    const data = doc.data();
+                    const hasPlaceholderImage = data.gameImage?.includes('placeholder') || !data.gameImage;
+                    const hasPlaceholderName = data.gameName?.startsWith('Game ') || !data.gameName;
+                    
+                    if ((hasPlaceholderImage || hasPlaceholderName) && data.gameId) {
+                        needsUpdate.push({
+                            id: doc.id,
+                            gameId: data.gameId,
+                            currentName: data.gameName,
+                            currentImage: data.gameImage
+                        });
+                    }
+                });
+                
+                if (needsUpdate.length === 0) {
+                    statusEl.textContent = '✅ No records need updating - all data looks good!';
+                    return;
+                }
+                
+                statusEl.textContent = `Found ${needsUpdate.length} records to update. Fetching from BGG...`;
+                
+                let updated = 0;
+                let failed = 0;
+                
+                for (let i = 0; i < needsUpdate.length; i++) {
+                    const record = needsUpdate[i];
+                    statusEl.textContent = `Updating ${i + 1}/${needsUpdate.length}: Game ${record.gameId}...`;
+                    
+                    // Fetch game details from BGG
+                    const details = await fetchGameDetails(record.gameId);
+                    
+                    if (details) {
+                        try {
+                            // Update the record in Firestore
+                            await updateDoc(doc(db, 'checkouts', record.id), {
+                                gameName: details.name,
+                                gameImage: details.image
+                            });
+                            
+                            console.log(`✅ Updated ${record.gameId}: ${details.name}`);
+                            updated++;
+                        } catch (error) {
+                            console.error(`❌ Failed to update ${record.gameId}:`, error);
+                            failed++;
+                        }
+                    } else {
+                        console.warn(`⚠️ Could not fetch details for ${record.gameId}`);
+                        failed++;
+                    }
+                    
+                    // Small delay to avoid rate limiting
+                    if (i < needsUpdate.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
+                    }
+                }
+                
+                statusEl.textContent = `✅ Complete! Updated ${updated}/${needsUpdate.length} records${failed > 0 ? ` (${failed} failed)` : ''}`;
+                
+                // Reload data after a short delay
+                setTimeout(async () => {
+                    await loadCheckouts();
+                    renderHistoryList();
+                    if (document.getElementById('view-dashboard').classList.contains('hidden') === false) {
+                        renderDashboard();
+                    }
+                }, 1500);
+                
+            } catch (error) {
+                console.error('Error during resync:', error);
+                statusEl.textContent = '❌ Error: ' + error.message;
             }
         };
 
