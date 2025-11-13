@@ -1178,35 +1178,54 @@
                 let updated = 0;
                 let failed = 0;
                 
-                for (let i = 0; i < needsUpdate.length; i++) {
-                    const record = needsUpdate[i];
-                    statusEl.textContent = `Updating ${i + 1}/${needsUpdate.length}: Game ${record.gameId}...`;
+                // Process in batches of 20
+                const batchSize = 20;
+                for (let batchStart = 0; batchStart < needsUpdate.length; batchStart += batchSize) {
+                    const batchEnd = Math.min(batchStart + batchSize, needsUpdate.length);
+                    const batch = needsUpdate.slice(batchStart, batchEnd);
                     
-                    // Fetch game details from BGG
-                    const details = await fetchGameDetails(record.gameId);
+                    statusEl.textContent = `Fetching batch ${Math.ceil(batchStart / batchSize + 1)}... (${batchStart + 1}-${batchEnd}/${needsUpdate.length})`;
                     
-                    if (details) {
-                        try {
-                            // Update the record in Firestore
-                            await updateDoc(doc(db, 'checkouts', record.id), {
-                                gameName: details.name,
-                                gameImage: details.image
-                            });
-                            
-                            console.log(`✅ Updated ${record.gameId}: ${details.name}`);
-                            updated++;
-                        } catch (error) {
-                            console.error(`❌ Failed to update ${record.gameId}:`, error);
+                    // Fetch all details for this batch in parallel
+                    const detailsPromises = batch.map(record => fetchGameDetails(record.gameId));
+                    const detailsResults = await Promise.all(detailsPromises);
+                    
+                    // Now update Firestore for each record in this batch
+                    for (let i = 0; i < batch.length; i++) {
+                        const record = batch[i];
+                        const details = detailsResults[i];
+                        
+                        statusEl.textContent = `Updating ${batchStart + i + 1}/${needsUpdate.length}: Game ${record.gameId}...`;
+                        
+                        if (details) {
+                            try {
+                                // Update the record in Firestore
+                                await updateDoc(doc(db, 'checkouts', record.id), {
+                                    gameName: details.name,
+                                    gameImage: details.image
+                                });
+                                
+                                console.log(`✅ Updated ${record.gameId}: ${details.name}`);
+                                updated++;
+                            } catch (error) {
+                                console.error(`❌ Failed to update ${record.gameId}:`, error);
+                                failed++;
+                            }
+                        } else {
+                            console.warn(`⚠️ Could not fetch details for ${record.gameId}`);
                             failed++;
                         }
-                    } else {
-                        console.warn(`⚠️ Could not fetch details for ${record.gameId}`);
-                        failed++;
+                        
+                        // Small delay between Firestore updates
+                        if (batchStart + i < needsUpdate.length - 1) {
+                            await new Promise(resolve => setTimeout(resolve, 50));
+                        }
                     }
                     
-                    // Small delay to avoid rate limiting
-                    if (i < needsUpdate.length - 1) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                    // Longer delay between batches
+                    if (batchEnd < needsUpdate.length) {
+                        statusEl.textContent = `Batch complete. Waiting before next batch...`;
+                        await new Promise(resolve => setTimeout(resolve, 1000));
                     }
                 }
                 
@@ -1274,9 +1293,41 @@
                 let imported = 0;
                 let fetched = 0;
                 
+                // First pass: collect all records that need fetching
+                const recordsToFetch = records.filter(r => r.gameId && (!r.gameName || !r.gameImage));
+                const batchSize = 20;
+                
+                // Fetch game details in batches
+                for (let batchStart = 0; batchStart < recordsToFetch.length; batchStart += batchSize) {
+                    const batchEnd = Math.min(batchStart + batchSize, recordsToFetch.length);
+                    const batch = recordsToFetch.slice(batchStart, batchEnd);
+                    
+                    statusEl.textContent = `Fetching batch ${Math.ceil(batchStart / batchSize + 1)}... (${batchStart + 1}-${batchEnd}/${recordsToFetch.length})`;
+                    
+                    // Fetch all details for this batch in parallel
+                    const detailsPromises = batch.map(record => fetchGameDetails(record.gameId));
+                    const detailsResults = await Promise.all(detailsPromises);
+                    
+                    // Update records with fetched details
+                    for (let i = 0; i < batch.length; i++) {
+                        const details = detailsResults[i];
+                        if (details) {
+                            batch[i].gameName = batch[i].gameName || details.name;
+                            batch[i].gameImage = batch[i].gameImage || details.image;
+                            fetched++;
+                        }
+                    }
+                    
+                    // Wait between batches
+                    if (batchEnd < recordsToFetch.length) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                }
+                
+                // Second pass: import all records
                 for (let idx = 0; idx < records.length; idx++) {
                     const record = records[idx];
-                    statusEl.textContent = `Processing ${idx + 1}/${records.length}...`;
+                    statusEl.textContent = `Importing ${idx + 1}/${records.length}...`;
                     
                     // gameId is required
                     if (!record.gameId) {
@@ -1287,19 +1338,10 @@
                     let gameName = record.gameName;
                     let gameImage = record.gameImage;
                     
-                    // Auto-fetch game details if not provided
+                    // Fallback if fetch failed
                     if (!gameName || !gameImage) {
-                        statusEl.textContent = `Fetching game ${record.gameId} (${idx + 1}/${records.length})...`;
-                        const details = await fetchGameDetails(record.gameId);
-                        
-                        if (details) {
-                            gameName = gameName || details.name;
-                            gameImage = gameImage || details.image;
-                            fetched++;
-                        } else {
-                            gameName = gameName || `Game ${record.gameId}`;
-                            gameImage = gameImage || 'https://via.placeholder.com/100?text=No+Image';
-                        }
+                        gameName = gameName || `Game ${record.gameId}`;
+                        gameImage = gameImage || 'https://via.placeholder.com/100?text=No+Image';
                     }
 
                     // Parse date if it's a string
@@ -1368,41 +1410,77 @@
                 const statusEl = document.getElementById('importStatus');
                 statusEl.textContent = 'Processing...';
                 
-                let imported = 0;
-                let fetched = 0;
-                
+                // Parse all rows first
+                const recordsData = [];
                 for (let i = 1; i < lines.length; i++) {
                     const parts = lines[i].split(',').map(p => p.trim());
                     const gameId = parts[gameIdIndex];
-                    statusEl.textContent = `Processing ${i}/${lines.length - 1}...`;
                     
                     if (!gameId) {
                         console.warn('Skipping row without gameId:', lines[i]);
                         continue;
                     }
-
-                    let gameName = gameNameIndex >= 0 ? parts[gameNameIndex] : '';
-                    let gameImage = imageIndex >= 0 ? parts[imageIndex] : '';
                     
-                    // Auto-fetch game details if not provided
-                    if (!gameName || !gameImage) {
-                        statusEl.textContent = `Fetching game ${gameId} (${i}/${lines.length - 1})...`;
-                        const details = await fetchGameDetails(gameId);
-                        
+                    recordsData.push({
+                        gameId,
+                        gameName: gameNameIndex >= 0 ? parts[gameNameIndex] : '',
+                        gameImage: imageIndex >= 0 ? parts[imageIndex] : '',
+                        checkoutDate: dateIndex >= 0 ? parts[dateIndex] : '',
+                        lineNumber: i
+                    });
+                }
+                
+                let imported = 0;
+                let fetched = 0;
+                
+                // First pass: collect records that need fetching and fetch in batches
+                const recordsToFetch = recordsData.filter(r => !r.gameName || !r.gameImage);
+                const batchSize = 20;
+                
+                for (let batchStart = 0; batchStart < recordsToFetch.length; batchStart += batchSize) {
+                    const batchEnd = Math.min(batchStart + batchSize, recordsToFetch.length);
+                    const batch = recordsToFetch.slice(batchStart, batchEnd);
+                    
+                    statusEl.textContent = `Fetching batch ${Math.ceil(batchStart / batchSize + 1)}... (${batchStart + 1}-${batchEnd}/${recordsToFetch.length})`;
+                    
+                    // Fetch all details for this batch in parallel
+                    const detailsPromises = batch.map(record => fetchGameDetails(record.gameId));
+                    const detailsResults = await Promise.all(detailsPromises);
+                    
+                    // Update records with fetched details
+                    for (let i = 0; i < batch.length; i++) {
+                        const details = detailsResults[i];
                         if (details) {
-                            gameName = gameName || details.name;
-                            gameImage = gameImage || details.image;
+                            batch[i].gameName = batch[i].gameName || details.name;
+                            batch[i].gameImage = batch[i].gameImage || details.image;
                             fetched++;
-                        } else {
-                            gameName = gameName || `Game ${gameId}`;
-                            gameImage = gameImage || 'https://via.placeholder.com/100?text=No+Image';
                         }
+                    }
+                    
+                    // Wait between batches
+                    if (batchEnd < recordsToFetch.length) {
+                        await new Promise(resolve => setTimeout(resolve, 500));
+                    }
+                }
+                
+                // Second pass: import all records
+                for (let i = 0; i < recordsData.length; i++) {
+                    const record = recordsData[i];
+                    statusEl.textContent = `Importing ${i + 1}/${recordsData.length}...`;
+                    
+                    let gameName = record.gameName;
+                    let gameImage = record.gameImage;
+                    
+                    // Fallback if fetch failed
+                    if (!gameName || !gameImage) {
+                        gameName = gameName || `Game ${record.gameId}`;
+                        gameImage = gameImage || 'https://via.placeholder.com/100?text=No+Image';
                     }
 
                     let checkoutDate = Timestamp.now();
-                    if (dateIndex >= 0 && parts[dateIndex]) {
+                    if (record.checkoutDate) {
                         try {
-                            checkoutDate = Timestamp.fromDate(new Date(parts[dateIndex]));
+                            checkoutDate = Timestamp.fromDate(new Date(record.checkoutDate));
                         } catch (e) {
                             // Keep current timestamp if date is invalid
                         }
@@ -1412,17 +1490,17 @@
                         await addDoc(collection(db, 'checkouts'), {
                             gameName: gameName,
                             gameImage: gameImage,
-                            gameId: String(gameId),
+                            gameId: String(record.gameId),
                             checkoutDate: checkoutDate,
                             username: bggUsername
                         });
                         imported++;
                     } catch (error) {
-                        console.error('Error importing row:', lines[i], error);
+                        console.error('Error importing row:', record, error);
                     }
                 }
 
-                statusEl.textContent = `✅ Imported ${imported}/${lines.length - 1} records${fetched > 0 ? ` (auto-fetched ${fetched} from BGG)` : ''}`;
+                statusEl.textContent = `✅ Imported ${imported}/${recordsData.length} records${fetched > 0 ? ` (auto-fetched ${fetched} from BGG)` : ''}`;
                 document.getElementById('bulkImportData').value = '';
                 
                 // Reload after short delay
