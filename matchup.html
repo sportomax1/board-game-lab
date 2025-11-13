@@ -135,29 +135,17 @@
 
                 <label class="block text-sm font-medium text-gray-700 mb-2">Matchup Mode</label>
                 <select id="matchupMode" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
-                    <option value="all" selected>All Games (Standard)</option>
-                    <option value="used-only">Previously Matched Games Only</option>
-                    <option value="new-only">New Games Only (Never Matched)</option>
-                    <option value="hybrid">Hybrid (Mix Used & New)</option>
-                    <option value="top-half">Top Half by Appearances</option>
-                    <option value="bottom-half">Bottom Half by Appearances</option>
-                    <option value="frequency-hybrid">Frequency Hybrid Mix</option>
-                    <option value="top-25-elo">Top 25% by ELO Rating</option>
-                    <option value="bottom-25-elo">Bottom 25% by ELO Rating</option>
+                    <option value="all" selected>All Games</option>
+                    <option value="top-half-apps">Top Half by Appearances</option>
+                    <option value="bottom-half-apps">Bottom Half by Appearances</option>
+                    <option value="middle-half-apps">Middle Half by Appearances</option>
+                    <option value="top-half-elo">Top Half by ELO</option>
+                    <option value="bottom-half-elo">Bottom Half by ELO</option>
+                    <option value="middle-half-elo">Middle Half by ELO</option>
+                    <option value="lowest-apps">Lowest Apps (0s → 1s → 2s...)</option>
+                    <option value="most-apps">Most Apps (Descending)</option>
                 </select>
 
-                <label class="block text-sm font-medium text-gray-700 mb-2">Auto-Pairing Mode</label>
-                <div class="flex gap-2 mb-3">
-                    <select id="autoPairingMode" class="flex-1 border rounded-lg px-3 py-2 text-sm">
-                        <option value="random">Random</option>
-                        <option value="weight-class">Weight Class (Playtime)</option>
-                        <option value="theme">Same Theme</option>
-                        <option value="rating-bracket">Rating Bracket</option>
-                    </select>
-                    <button onclick="toggleAutoPairing()" id="autoPairingToggle" class="px-3 py-2 bg-gray-100 rounded-lg text-xs">
-                        Auto
-                    </button>
-                </div>
                 
                 <label class="block text-sm font-medium text-gray-700 mb-2">Collection Filter</label>
                 <div class="grid grid-cols-2 gap-2 mb-3">
@@ -439,9 +427,14 @@
                             <h3 class="font-bold text-lg">Game Rankings</h3>
                             <p class="text-xs text-gray-600">ELO based on wins + BGG community average rating</p>
                         </div>
-                        <button onclick="openEloExplainModal()" class="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded font-medium hover:bg-blue-200">
-                            📊 How ELO?
-                        </button>
+                        <div class="flex gap-2">
+                            <button onclick="openEloExplainModal()" class="text-xs bg-blue-100 text-blue-600 px-2 py-1 rounded font-medium hover:bg-blue-200">
+                                📊 How ELO?
+                            </button>
+                            <button onclick="exportTop9Image()" class="text-xs bg-green-100 text-green-600 px-2 py-1 rounded font-medium hover:bg-green-200">
+                                📸 Export Top 9
+                            </button>
+                        </div>
                     </div>
                     
                     <!-- Sort Controls -->
@@ -762,10 +755,9 @@
         let allMatchups = []; // Cache for standings
         let sessionMatchupCount = 0; // Track matchups this session
         let usedGameIds = new Set(); // Track which games have been used
-        let matchupMode = 'all'; // all, used-only, new-only, hybrid
+        let matchupMode = 'all'; // all, top-half-apps, bottom-half-apps, middle-half-apps, top-half-elo, bottom-half-elo, middle-half-elo, lowest-apps, most-apps
         let lastMatchupId = null; // For undo feature
         let achievements = JSON.parse(localStorage.getItem('achievements') || '{}');
-        let autoMatchupMode = 'random'; // random, weight-class, theme, rating-bracket
         let currentView = 'matchup'; // Track current view
         let currentDashboardTab = 'matchups'; // Track current dashboard tab
         let dailyGroupingMode = 'day'; // day, week, month, quarter, year - for Daily tab grouping
@@ -1007,89 +999,116 @@
                     gameAppearances[g.id] = usedGameIds.has(g.id) ? 1 : 0;
                 });
                 
-                // Filter based on matchup mode (this is the primary filter)
+                // Filter based on matchup mode (new modes)
                 let gamesBeforeMode = allGames.length;
-                if (matchupMode === 'used-only') {
-                    games = allGames.filter(g => usedGameIds.has(g.id));
-                    console.log(`[FILTER] Matchup Mode: USED-ONLY - ${gamesBeforeMode} → ${games.length}`);
-                } else if (matchupMode === 'new-only') {
-                    games = allGames.filter(g => !usedGameIds.has(g.id));
-                    console.log(`[FILTER] Matchup Mode: NEW-ONLY - ${gamesBeforeMode} → ${games.length}`);
-                } else if (matchupMode === 'hybrid') {
-                    const usedGames = allGames.filter(g => usedGameIds.has(g.id));
-                    const newGames = allGames.filter(g => !usedGameIds.has(g.id));
-                    // Mix: alternate between used and new
-                    games = [];
-                    const maxLen = Math.max(usedGames.length, newGames.length);
-                    for (let i = 0; i < maxLen; i++) {
-                        if (i < usedGames.length) games.push(usedGames[i]);
-                        if (i < newGames.length) games.push(newGames[i]);
-                    }
-                    console.log(`[FILTER] Matchup Mode: HYBRID - Mixed ${usedGames.length} used + ${newGames.length} new = ${games.length}`);
-                } else if (matchupMode === 'top-half') {
-                    // Top half by appearances (used games first, then new)
-                    const usedGames = allGames.filter(g => usedGameIds.has(g.id));
-                    const topHalfCount = Math.ceil(allGames.length / 2);
-                    games = usedGames.slice(0, topHalfCount);
-                    if (games.length < topHalfCount) {
-                        const newGames = allGames.filter(g => !usedGameIds.has(g.id));
-                        games.push(...newGames.slice(0, topHalfCount - games.length));
-                    }
-                    console.log(`[FILTER] Matchup Mode: TOP-HALF - ${games.length} most-played games`);
-                } else if (matchupMode === 'bottom-half') {
-                    // Bottom half by appearances (new games first, then least-played)
-                    const newGames = allGames.filter(g => !usedGameIds.has(g.id));
-                    const bottomHalfCount = Math.ceil(allGames.length / 2);
-                    games = newGames.slice(0, bottomHalfCount);
-                    if (games.length < bottomHalfCount) {
-                        const usedGames = allGames.filter(g => usedGameIds.has(g.id));
-                        games.push(...usedGames.slice(-Math.min(bottomHalfCount - games.length, usedGames.length)).reverse());
-                    }
-                    console.log(`[FILTER] Matchup Mode: BOTTOM-HALF - ${games.length} least-played games`);
-                } else if (matchupMode === 'frequency-hybrid') {
-                    // Hybrid: 75% new games, 25% used games
-                    const usedGames = allGames.filter(g => usedGameIds.has(g.id));
-                    const newGames = allGames.filter(g => !usedGameIds.has(g.id));
-                    const newTarget = Math.ceil(allGames.length * 0.75);
-                    const usedTarget = Math.ceil(allGames.length * 0.25);
-                    
-                    games = [
-                        ...newGames.slice(0, newTarget),
-                        ...usedGames.slice(0, usedTarget)
-                    ];
-                    console.log(`[FILTER] Matchup Mode: FREQUENCY-HYBRID - ${newGames.length} new (75%) + ${usedGames.length} used (25%)`);
-                } else if (matchupMode === 'top-25-elo') {
-                    // Top 25% by ELO rating - fetch BGG ratings and calculate ELO
-                    console.log(`[FILTER] Matchup Mode: TOP-25-ELO - fetching ${allGames.length} game ratings...`);
+                if (matchupMode === 'top-half-apps') {
+                    // Top half by appearances - sort by usage count then take top half
+                    console.log(`[FILTER] Matchup Mode: TOP-HALF-APPS - fetching appearances...`);
+                    const gameAppearances = {};
+                    allMatchups.forEach(m => {
+                        gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
+                        gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
+                    });
+                    const sorted = allGames.sort((a, b) => (gameAppearances[b.id] || 0) - (gameAppearances[a.id] || 0));
+                    const halfCount = Math.ceil(sorted.length / 2);
+                    games = sorted.slice(0, halfCount);
+                    console.log(`[FILTER] TOP-HALF-APPS - ${games.length} most-played games`);
+                } else if (matchupMode === 'bottom-half-apps') {
+                    // Bottom half by appearances - sort by usage count ascending, take bottom half
+                    console.log(`[FILTER] Matchup Mode: BOTTOM-HALF-APPS - fetching appearances...`);
+                    const gameAppearances = {};
+                    allMatchups.forEach(m => {
+                        gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
+                        gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
+                    });
+                    const sorted = allGames.sort((a, b) => (gameAppearances[a.id] || 0) - (gameAppearances[b.id] || 0));
+                    const halfCount = Math.ceil(sorted.length / 2);
+                    games = sorted.slice(0, halfCount);
+                    console.log(`[FILTER] BOTTOM-HALF-APPS - ${games.length} least-played games`);
+                } else if (matchupMode === 'middle-half-apps') {
+                    // Middle half by appearances - sort then take middle section
+                    console.log(`[FILTER] Matchup Mode: MIDDLE-HALF-APPS - fetching appearances...`);
+                    const gameAppearances = {};
+                    allMatchups.forEach(m => {
+                        gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
+                        gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
+                    });
+                    const sorted = allGames.sort((a, b) => (gameAppearances[b.id] || 0) - (gameAppearances[a.id] || 0));
+                    const quarterCount = Math.ceil(sorted.length / 4);
+                    const startIdx = quarterCount;
+                    const endIdx = startIdx + Math.ceil(sorted.length / 2);
+                    games = sorted.slice(startIdx, endIdx);
+                    console.log(`[FILTER] MIDDLE-HALF-APPS - ${games.length} mid-played games`);
+                } else if (matchupMode === 'lowest-apps') {
+                    // Lowest apps - sort by 0 appearances first, then 1, then 2, etc
+                    console.log(`[FILTER] Matchup Mode: LOWEST-APPS - fetching appearances...`);
+                    const gameAppearances = {};
+                    allMatchups.forEach(m => {
+                        gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
+                        gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
+                    });
+                    games = allGames.sort((a, b) => (gameAppearances[a.id] || 0) - (gameAppearances[b.id] || 0));
+                    console.log(`[FILTER] LOWEST-APPS - sorted ascending by appearances`);
+                } else if (matchupMode === 'most-apps') {
+                    // Most apps - sort by most appearances first, descending
+                    console.log(`[FILTER] Matchup Mode: MOST-APPS - fetching appearances...`);
+                    const gameAppearances = {};
+                    allMatchups.forEach(m => {
+                        gameAppearances[m.winnerId] = (gameAppearances[m.winnerId] || 0) + 1;
+                        gameAppearances[m.loserId] = (gameAppearances[m.loserId] || 0) + 1;
+                    });
+                    games = allGames.sort((a, b) => (gameAppearances[b.id] || 0) - (gameAppearances[a.id] || 0));
+                    console.log(`[FILTER] MOST-APPS - sorted descending by appearances`);
+                } else if (matchupMode === 'top-half-elo') {
+                    // Top half by ELO - fetch ratings, calculate ELO, take top half
+                    console.log(`[FILTER] Matchup Mode: TOP-HALF-ELO - fetching ${allGames.length} game ratings...`);
                     const standings = await Promise.all(allGames.map(async (g) => {
                         const bggRating = await fetchBGGAverageRating(g.id);
                         const elo = calculateELO(
-                            Array.from(allMatchups).filter(m => m.winnerId === g.id).length,
-                            Array.from(allMatchups).filter(m => m.loserId === g.id).length,
+                            allMatchups.filter(m => m.winnerId === g.id).length,
+                            allMatchups.filter(m => m.loserId === g.id).length,
                             bggRating
                         );
                         return { ...g, elo };
                     }));
                     standings.sort((a, b) => b.elo - a.elo);
-                    const top25Percent = Math.ceil(standings.length * 0.25);
-                    games = standings.slice(0, top25Percent);
-                    console.log(`[FILTER] Matchup Mode: TOP-25-ELO - ${games.length} top-rated games (ELO >= ${games[games.length-1]?.elo || 0})`);
-                } else if (matchupMode === 'bottom-25-elo') {
-                    // Bottom 25% by ELO rating - fetch BGG ratings and calculate ELO
-                    console.log(`[FILTER] Matchup Mode: BOTTOM-25-ELO - fetching ${allGames.length} game ratings...`);
+                    const halfCount = Math.ceil(standings.length / 2);
+                    games = standings.slice(0, halfCount);
+                    console.log(`[FILTER] TOP-HALF-ELO - ${games.length} top-rated games`);
+                } else if (matchupMode === 'bottom-half-elo') {
+                    // Bottom half by ELO - fetch ratings, calculate ELO, take bottom half
+                    console.log(`[FILTER] Matchup Mode: BOTTOM-HALF-ELO - fetching ${allGames.length} game ratings...`);
                     const standings = await Promise.all(allGames.map(async (g) => {
                         const bggRating = await fetchBGGAverageRating(g.id);
                         const elo = calculateELO(
-                            Array.from(allMatchups).filter(m => m.winnerId === g.id).length,
-                            Array.from(allMatchups).filter(m => m.loserId === g.id).length,
+                            allMatchups.filter(m => m.winnerId === g.id).length,
+                            allMatchups.filter(m => m.loserId === g.id).length,
                             bggRating
                         );
                         return { ...g, elo };
                     }));
                     standings.sort((a, b) => a.elo - b.elo);
-                    const bottom25Percent = Math.ceil(standings.length * 0.25);
-                    games = standings.slice(0, bottom25Percent);
-                    console.log(`[FILTER] Matchup Mode: BOTTOM-25-ELO - ${games.length} lowest-rated games (ELO <= ${games[games.length-1]?.elo || 0})`);
+                    const halfCount = Math.ceil(standings.length / 2);
+                    games = standings.slice(0, halfCount);
+                    console.log(`[FILTER] BOTTOM-HALF-ELO - ${games.length} lowest-rated games`);
+                } else if (matchupMode === 'middle-half-elo') {
+                    // Middle half by ELO - fetch ratings, calculate ELO, take middle section
+                    console.log(`[FILTER] Matchup Mode: MIDDLE-HALF-ELO - fetching ${allGames.length} game ratings...`);
+                    const standings = await Promise.all(allGames.map(async (g) => {
+                        const bggRating = await fetchBGGAverageRating(g.id);
+                        const elo = calculateELO(
+                            allMatchups.filter(m => m.winnerId === g.id).length,
+                            allMatchups.filter(m => m.loserId === g.id).length,
+                            bggRating
+                        );
+                        return { ...g, elo };
+                    }));
+                    standings.sort((a, b) => b.elo - a.elo);
+                    const quarterCount = Math.ceil(standings.length / 4);
+                    const startIdx = quarterCount;
+                    const endIdx = startIdx + Math.ceil(standings.length / 2);
+                    games = standings.slice(startIdx, endIdx);
+                    console.log(`[FILTER] MIDDLE-HALF-ELO - ${games.length} mid-rated games`);
                 } else {
                     // 'all' mode - use all games
                     games = allGames;
@@ -1264,21 +1283,9 @@
             
             let left, right;
             
-            // Apply auto-pairing logic if enabled and mode is not random
-            const toggle = document.getElementById('autoPairingToggle');
-            if (toggle && toggle.textContent === 'Auto' && autoMatchupMode !== 'random') {
-                const pair = getSmartPair();
-                if (pair) {
-                    left = pair.left;
-                    right = pair.right;
-                }
-            }
-            
-            // Fallback to random pairing
-            if (!left || !right) {
-                left = games.pop();
-                right = games.pop();
-            }
+            // Random pairing
+            left = games.pop();
+            right = games.pop();
             
             currentPair = { left, right };
             renderMatchupCard();
@@ -1306,52 +1313,6 @@
             if (tournamentActive && bracketState) {
                 updateBracketVisualization();
             }
-        }
-
-        // Get smart pair based on auto-pairing mode
-        function getSmartPair() {
-            if (games.length < 2) return null;
-            
-            if (autoMatchupMode === 'rating-bracket') {
-                // Group by rating ranges: 0-6, 6-7, 7-8, 8-10
-                const brackets = {
-                    '0-6': games.filter(g => g.rating < 6),
-                    '6-7': games.filter(g => g.rating >= 6 && g.rating < 7),
-                    '7-8': games.filter(g => g.rating >= 7 && g.rating < 8),
-                    '8-10': games.filter(g => g.rating >= 8)
-                };
-                
-                // Find a bracket with at least 2 games
-                for (const bracket of Object.values(brackets)) {
-                    if (bracket.length >= 2) {
-                        const idx1 = Math.floor(Math.random() * bracket.length);
-                        const game1 = bracket[idx1];
-                        bracket.splice(idx1, 1);
-                        
-                        const idx2 = Math.floor(Math.random() * bracket.length);
-                        const game2 = bracket[idx2];
-                        
-                        // Remove from main games array
-                        games = games.filter(g => g.id !== game1.id && g.id !== game2.id);
-                        
-                        return { left: game1, right: game2 };
-                    }
-                }
-            } else if (autoMatchupMode === 'weight-class') {
-                // Note: This requires playtime data which isn't in the current collection API call
-                // For now, fall back to random
-                // To implement: would need to fetch game details for each game
-                console.log('Weight-class pairing requires additional BGG API calls for playtime data');
-                return null;
-            } else if (autoMatchupMode === 'theme') {
-                // Note: This requires category/mechanic data which isn't in the current collection API call
-                // For now, fall back to random
-                // To implement: would need to fetch game details for each game
-                console.log('Theme-based pairing requires additional BGG API calls for category data');
-                return null;
-            }
-            
-            return null; // Fallback to random
         }
 
         // Undo last matchup
@@ -1439,24 +1400,6 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-        };
-
-        // Toggle auto-pairing mode
-        window.toggleAutoPairing = () => {
-            const toggle = document.getElementById('autoPairingToggle');
-            const dropdown = document.getElementById('autoPairingMode');
-            
-            if (toggle.textContent === 'Auto') {
-                toggle.textContent = 'Manual';
-                toggle.classList.remove('bg-blue-500');
-                toggle.classList.add('bg-gray-400');
-                autoMatchupMode = 'random'; // Disable auto mode
-            } else {
-                toggle.textContent = 'Auto';
-                toggle.classList.remove('bg-gray-400');
-                toggle.classList.add('bg-blue-500');
-                autoMatchupMode = dropdown.value; // Use selected mode
-            }
         };
 
         // Toggle tournament settings visibility
@@ -2659,16 +2602,182 @@
         function renderStandingsList(standings) {
             const list = document.getElementById('standingsList');
             list.innerHTML = standings.map((game, idx) => `
-                <div class="flex items-center gap-3 p-2 border-b cursor-pointer hover:bg-gray-50" onclick="showGameHistory('${game.id}', '${game.name.replace(/'/g, "\\'")}')">
-                    <div class="text-lg font-bold text-gray-400 w-8">${idx + 1}</div>
-                    <img src="${game.image}" alt="${game.name}" class="w-10 h-10 rounded object-contain bg-gray-100">
-                    <div class="flex-1">
-                        <div class="font-bold text-sm">${game.name}</div>
-                        <div class="text-xs text-gray-600">${game.wins}W - ${game.losses}L (${(game.winPct * 100).toFixed(0)}%) • ELO: ${game.elo} • Rating: ${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10</div>
+                <div class="border rounded-lg bg-white hover:shadow-md transition-shadow cursor-pointer mb-2" onclick="toggleStandingDetails('standing-${game.id}')">
+                    <!-- Card summary row -->
+                    <div class="flex items-center gap-3 p-3 border-b">
+                        <div class="text-lg font-bold text-gray-400 w-6">${idx + 1}</div>
+                        <img src="${game.image}" alt="${game.name}" class="w-12 h-12 rounded object-contain bg-gray-100">
+                        <div class="flex-1">
+                            <div class="font-bold text-sm">${game.name}</div>
+                            <div class="text-xs text-gray-600">${game.wins}W - ${game.losses}L (${(game.winPct * 100).toFixed(0)}%) • ELO: ${game.elo}</div>
+                        </div>
+                        <div class="text-lg" id="toggle-arrow-${game.id}">▼</div>
                     </div>
-                    <div class="text-xs text-blue-600">View →</div>
+                    
+                    <!-- Expanded details (hidden by default) -->
+                    <div id="standing-${game.id}" class="hidden bg-gray-50 p-3 border-t space-y-2 text-sm">
+                        <div class="grid grid-cols-2 gap-2">
+                            <div>
+                                <div class="text-xs font-bold text-gray-600">Record</div>
+                                <div class="font-bold">${game.wins}-${game.losses}</div>
+                            </div>
+                            <div>
+                                <div class="text-xs font-bold text-gray-600">Win %</div>
+                                <div class="font-bold">${(game.winPct * 100).toFixed(1)}%</div>
+                            </div>
+                            <div>
+                                <div class="text-xs font-bold text-gray-600">ELO Rating</div>
+                                <div class="font-bold">${game.elo}</div>
+                            </div>
+                            <div>
+                                <div class="text-xs font-bold text-gray-600">BGG Rating</div>
+                                <div class="font-bold">${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10</div>
+                            </div>
+                        </div>
+                        <button onclick="event.stopPropagation(); showGameHistory('${game.id}', '${game.name.replace(/'/g, "\\'")}'); return false;" class="w-full mt-2 py-1 px-2 bg-blue-100 text-blue-600 rounded text-xs font-medium hover:bg-blue-200">
+                            View Game History
+                        </button>
+                    </div>
                 </div>
             `).join('');
+        }
+        
+        // Toggle standing details visibility
+        window.toggleStandingDetails = (id) => {
+            const details = document.getElementById(id);
+            const arrow = document.getElementById(`toggle-arrow-${id.replace('standing-', '')}`);
+            if (details.classList.contains('hidden')) {
+                details.classList.remove('hidden');
+                arrow.textContent = '▲';
+            } else {
+                details.classList.add('hidden');
+                arrow.textContent = '▼';
+            }
+        };
+
+        // Export top 9 games as combined image (like random9.html)
+        window.exportTop9Image = async () => {
+            if (!window.currentStandings || window.currentStandings.length === 0) {
+                alert('No standings to export. Load standings first.');
+                return;
+            }
+
+            try {
+                // Get top 9 games
+                const top9 = window.currentStandings.slice(0, 9);
+                
+                if (top9.length === 0) {
+                    alert('Need at least 1 game to export.');
+                    return;
+                }
+
+                // Create canvas (3x3 grid)
+                const gridSize = 3;
+                const itemWidth = 200;
+                const itemHeight = 280;
+                const canvasWidth = gridSize * itemWidth;
+                const canvasHeight = gridSize * itemHeight;
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = canvasWidth;
+                canvas.height = canvasHeight;
+                const ctx = canvas.getContext('2d');
+                
+                // White background
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+                
+                // Draw each game
+                for (let i = 0; i < top9.length; i++) {
+                    const game = top9[i];
+                    const row = Math.floor(i / gridSize);
+                    const col = i % gridSize;
+                    const x = col * itemWidth;
+                    const y = row * itemHeight;
+                    
+                    // Draw card background
+                    ctx.fillStyle = '#f3f4f6';
+                    ctx.fillRect(x + 5, y + 5, itemWidth - 10, itemHeight - 10);
+                    
+                    // Draw border
+                    ctx.strokeStyle = '#d1d5db';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x + 5, y + 5, itemWidth - 10, itemHeight - 10);
+                    
+                    // Draw rank
+                    ctx.fillStyle = '#6b7280';
+                    ctx.font = 'bold 24px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`#${i + 1}`, x + itemWidth / 2, y + 30);
+                    
+                    // Load and draw game image
+                    const img = await loadImageAsync(game.image);
+                    const imgSize = 100;
+                    const imgX = x + (itemWidth - imgSize) / 2;
+                    const imgY = y + 45;
+                    try {
+                        ctx.drawImage(img, imgX, imgY, imgSize, imgSize);
+                    } catch (e) {
+                        // Image failed to load, skip it
+                        console.log('Failed to draw image for', game.name);
+                    }
+                    
+                    // Draw game name (wrapped)
+                    ctx.fillStyle = '#000000';
+                    ctx.font = 'bold 11px Arial';
+                    ctx.textAlign = 'center';
+                    const nameY = y + 160;
+                    const words = game.name.split(' ');
+                    let line = '';
+                    let lineNum = 0;
+                    for (const word of words) {
+                        if ((line + word).length > 12) {
+                            ctx.fillText(line, x + itemWidth / 2, nameY + lineNum * 12);
+                            line = word;
+                            lineNum++;
+                        } else {
+                            line += (line ? ' ' : '') + word;
+                        }
+                    }
+                    if (line) ctx.fillText(line, x + itemWidth / 2, nameY + lineNum * 12);
+                    
+                    // Draw stats
+                    ctx.fillStyle = '#4b5563';
+                    ctx.font = '9px Arial';
+                    ctx.textAlign = 'center';
+                    const statsY = y + 200;
+                    ctx.fillText(`${game.wins}W - ${game.losses}L`, x + itemWidth / 2, statsY);
+                    ctx.fillText(`${(game.winPct * 100).toFixed(0)}% Win Rate`, x + itemWidth / 2, statsY + 12);
+                    ctx.fillText(`ELO: ${game.elo}`, x + itemWidth / 2, statsY + 24);
+                    ctx.fillText(`BGG: ${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10`, x + itemWidth / 2, statsY + 36);
+                }
+                
+                // Download canvas as image
+                canvas.toBlob(blob => {
+                    const url = URL.createObjectURL(blob);
+                    const a = document.createElement('a');
+                    a.href = url;
+                    a.download = `top-9-rankings_${new Date().toISOString().split('T')[0]}.png`;
+                    document.body.appendChild(a);
+                    a.click();
+                    document.body.removeChild(a);
+                    URL.revokeObjectURL(url);
+                });
+            } catch (error) {
+                console.error('Error exporting image:', error);
+                alert('Error exporting image: ' + error.message);
+            }
+        };
+        
+        // Helper function to load image asynchronously
+        function loadImageAsync(src) {
+            return new Promise((resolve, reject) => {
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                img.onload = () => resolve(img);
+                img.onerror = () => reject(new Error('Failed to load image: ' + src));
+                img.src = src;
+            });
         }
 
         // Sort standings by different criteria
@@ -3416,14 +3525,6 @@
 
         // Search standings
         document.getElementById('searchStandings')?.addEventListener('input', searchStandings);
-
-        // Auto-pairing mode change
-        document.getElementById('autoPairingMode')?.addEventListener('change', (e) => {
-            const toggle = document.getElementById('autoPairingToggle');
-            if (toggle.textContent === 'Auto') {
-                autoMatchupMode = e.target.value;
-            }
-        });
 
         // Sort matchups
         window.sortMatchups = async (order) => {
