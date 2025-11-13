@@ -243,6 +243,44 @@
                 </button>
             </div>
 
+            <!-- Retro Mode -->
+            <div class="bg-white rounded-lg shadow p-4 mb-4">
+                <h3 class="font-bold text-gray-900 mb-3">⏰ Retro Mode</h3>
+                <p class="text-xs text-gray-600 mb-3">
+                    Add checkouts from the past or update dates on existing records.
+                </p>
+                
+                <!-- Add Retro Record -->
+                <div class="mb-3 pb-3 border-b">
+                    <label class="block text-xs font-semibold text-gray-700 mb-2">Add Retro Record</label>
+                    <input type="number" id="retroGameId" placeholder="Game ID (required)" class="w-full border rounded px-2 py-1 text-xs mb-2">
+                    <input type="date" id="retroCheckoutDate" class="w-full border rounded px-2 py-1 text-xs mb-2">
+                    <button onclick="addRetroRecord()" class="w-full py-2 px-2 bg-purple-600 text-white rounded text-xs font-medium">
+                        Add Record
+                    </button>
+                    <p id="retroAddStatus" class="text-xs mt-1 text-gray-600"></p>
+                </div>
+
+                <!-- Batch Update Dates -->
+                <div class="mb-3 pb-3 border-b">
+                    <label class="block text-xs font-semibold text-gray-700 mb-2">Batch Update Dates</label>
+                    <textarea id="batchDateUpdateData" placeholder='Format: gameId,newDate&#10;13,2025-01-15&#10;9209,2025-01-14' class="w-full border rounded px-2 py-1 text-xs font-mono" rows="4"></textarea>
+                    <button onclick="batchUpdateDates()" class="w-full py-2 px-2 bg-indigo-600 text-white rounded text-xs font-medium mt-2">
+                        Batch Update
+                    </button>
+                    <p id="batchUpdateStatus" class="text-xs mt-1 text-gray-600"></p>
+                </div>
+
+                <!-- Quick Date Updater (Recent Records) -->
+                <div>
+                    <label class="block text-xs font-semibold text-gray-700 mb-2">Quick Update Recent Records</label>
+                    <div id="retroRecentRecords" class="space-y-2 max-h-48 overflow-y-auto">
+                        <!-- Populated by JavaScript -->
+                    </div>
+                    <p id="quickUpdateStatus" class="text-xs mt-1 text-gray-600"></p>
+                </div>
+            </div>
+
             <!-- Resync Missing Data -->
             <div class="bg-white rounded-lg shadow p-4 mb-4">
                 <h3 class="font-bold text-gray-900 mb-3">🔄 Resync Missing Data</h3>
@@ -504,6 +542,7 @@
                 });
                 
                 renderHistoryList();
+                renderRetroRecentRecords();
                 // updateHistoryStats(); // Stub - no stats display needed currently
             } catch (error) {
                 console.error('Error loading checkouts:', error);
@@ -762,6 +801,217 @@
                 await loadCheckouts();
             } catch (error) {
                 console.error('Error deleting checkout:', error);
+            }
+        };
+
+        // Retro Mode: Add record with custom past date
+        window.addRetroRecord = async () => {
+            const gameId = document.getElementById('retroGameId').value.trim();
+            const dateStr = document.getElementById('retroCheckoutDate').value;
+            const statusEl = document.getElementById('retroAddStatus');
+            
+            if (!gameId) {
+                statusEl.textContent = '❌ Game ID required';
+                return;
+            }
+            
+            if (!dateStr) {
+                statusEl.textContent = '❌ Date required';
+                return;
+            }
+            
+            statusEl.textContent = '⏳ Fetching game details...';
+            
+            try {
+                // Fetch game details from BGG
+                const details = await fetchGameDetails(gameId);
+                const gameName = details?.name || `Game ${gameId}`;
+                const gameImage = details?.image || 'https://via.placeholder.com/100?text=No+Image';
+                
+                // Add to Firestore with custom date
+                const checkoutDate = Timestamp.fromDate(new Date(dateStr));
+                
+                await addDoc(collection(db, 'checkouts'), {
+                    gameName: gameName,
+                    gameImage: gameImage,
+                    gameId: String(gameId),
+                    checkoutDate: checkoutDate,
+                    username: bggUsername
+                });
+                
+                statusEl.textContent = `✅ Added "${gameName}" for ${new Date(dateStr).toLocaleDateString()}`;
+                document.getElementById('retroGameId').value = '';
+                document.getElementById('retroCheckoutDate').value = '';
+                
+                // Reload after short delay
+                setTimeout(async () => {
+                    await loadCheckouts();
+                    renderHistoryList();
+                    renderRetroRecentRecords();
+                }, 500);
+                
+            } catch (error) {
+                console.error('Error adding retro record:', error);
+                statusEl.textContent = `❌ Error: ${error.message}`;
+            }
+        };
+
+        // Retro Mode: Batch update dates
+        window.batchUpdateDates = async () => {
+            const data = document.getElementById('batchDateUpdateData').value.trim();
+            const statusEl = document.getElementById('batchUpdateStatus');
+            
+            if (!data) {
+                statusEl.textContent = '❌ No data provided';
+                return;
+            }
+            
+            try {
+                const lines = data.split('\n').filter(l => l.trim());
+                const updates = [];
+                
+                for (const line of lines) {
+                    const [gameId, dateStr] = line.split(',').map(s => s.trim());
+                    if (gameId && dateStr) {
+                        updates.push({ gameId, dateStr });
+                    }
+                }
+                
+                if (updates.length === 0) {
+                    statusEl.textContent = '❌ No valid entries found';
+                    return;
+                }
+                
+                statusEl.textContent = `⏳ Updating ${updates.length} records...`;
+                
+                let updated = 0;
+                let failed = 0;
+                
+                for (let i = 0; i < updates.length; i++) {
+                    const { gameId, dateStr } = updates[i];
+                    statusEl.textContent = `⏳ Updating ${i + 1}/${updates.length}...`;
+                    
+                    try {
+                        // Find record(s) with this gameId and update the most recent one
+                        const q = query(
+                            collection(db, 'checkouts'),
+                            where('gameId', '==', String(gameId)),
+                            orderBy('checkoutDate', 'desc')
+                        );
+                        const snapshot = await getDocs(q);
+                        
+                        if (snapshot.empty) {
+                            console.warn(`No record found for game ${gameId}`);
+                            failed++;
+                        } else {
+                            // Update the most recent record
+                            const doc_ref = snapshot.docs[0];
+                            const newDate = Timestamp.fromDate(new Date(dateStr));
+                            
+                            await updateDoc(doc_ref.ref, {
+                                checkoutDate: newDate
+                            });
+                            
+                            console.log(`✅ Updated game ${gameId} to ${dateStr}`);
+                            updated++;
+                        }
+                    } catch (error) {
+                        console.error(`Failed to update game ${gameId}:`, error);
+                        failed++;
+                    }
+                    
+                    // Small delay between updates
+                    if (i < updates.length - 1) {
+                        await new Promise(resolve => setTimeout(resolve, 50));
+                    }
+                }
+                
+                statusEl.textContent = `✅ Updated ${updated}/${updates.length}${failed > 0 ? ` (${failed} failed)` : ''}`;
+                document.getElementById('batchDateUpdateData').value = '';
+                
+                // Reload after short delay
+                setTimeout(async () => {
+                    await loadCheckouts();
+                    renderHistoryList();
+                    renderRetroRecentRecords();
+                    if (document.getElementById('view-dashboard').classList.contains('hidden') === false) {
+                        renderDashboard();
+                    }
+                }, 500);
+                
+            } catch (error) {
+                console.error('Error batch updating dates:', error);
+                statusEl.textContent = `❌ Error: ${error.message}`;
+            }
+        };
+
+        // Render recent records for quick date updates
+        function renderRetroRecentRecords() {
+            const container = document.getElementById('retroRecentRecords');
+            if (!container) return;
+            
+            // Show last 10 records sorted by checkout date descending
+            const recent = [...allCheckouts].sort((a, b) => 
+                b.checkoutDate.toDate() - a.checkoutDate.toDate()
+            ).slice(0, 10);
+            
+            container.innerHTML = recent.map(record => {
+                const date = record.checkoutDate.toDate();
+                const dateStr = date.toISOString().split('T')[0];
+                
+                return `
+                    <div class="flex items-center gap-2 bg-gray-50 p-2 rounded text-xs">
+                        <div class="flex-1 min-w-0">
+                            <div class="font-semibold truncate">${record.gameName}</div>
+                            <div class="text-gray-600">${dateStr}</div>
+                        </div>
+                        <input type="date" id="date-${record.id}" value="${dateStr}" class="border rounded px-1 py-0.5 text-xs">
+                        <button onclick="quickUpdateDate('${record.id}')" class="px-2 py-0.5 bg-blue-500 text-white rounded text-xs whitespace-nowrap">
+                            Update
+                        </button>
+                    </div>
+                `;
+            }).join('');
+            
+            if (recent.length === 0) {
+                container.innerHTML = '<div class="text-xs text-gray-500 text-center py-2">No records yet</div>';
+            }
+        }
+
+        // Quick update single date
+        window.quickUpdateDate = async (recordId) => {
+            const newDateStr = document.getElementById(`date-${recordId}`).value;
+            const statusEl = document.getElementById('quickUpdateStatus');
+            
+            if (!newDateStr) {
+                statusEl.textContent = '❌ Date required';
+                return;
+            }
+            
+            try {
+                statusEl.textContent = '⏳ Updating...';
+                const newDate = Timestamp.fromDate(new Date(newDateStr));
+                
+                await updateDoc(doc(db, 'checkouts', recordId), {
+                    checkoutDate: newDate
+                });
+                
+                statusEl.textContent = '✅ Updated!';
+                
+                // Reload after short delay
+                setTimeout(async () => {
+                    await loadCheckouts();
+                    renderHistoryList();
+                    renderRetroRecentRecords();
+                    statusEl.textContent = '';
+                    if (document.getElementById('view-dashboard').classList.contains('hidden') === false) {
+                        renderDashboard();
+                    }
+                }, 300);
+                
+            } catch (error) {
+                console.error('Error updating date:', error);
+                statusEl.textContent = `❌ Error: ${error.message}`;
             }
         };
 
@@ -1126,6 +1376,8 @@
                 renderDashboard();
             } else if (tab === 'history') {
                 loadCheckouts(); // Auto-refresh history when tab clicked
+            } else if (tab === 'settings') {
+                renderRetroRecentRecords(); // Populate recent records for quick update
             }
         };
 
