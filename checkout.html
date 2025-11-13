@@ -213,6 +213,21 @@
                     <!-- Populated by JavaScript -->
                 </div>
             </div>
+
+            <!-- Daily Records -->
+            <div class="bg-white rounded-lg shadow p-4">
+                <h3 class="text-lg font-bold mb-3">📅 Checkout Records by Period</h3>
+                <div class="flex gap-1 mb-3 overflow-x-auto">
+                    <button onclick="setCheckoutGrouping('day')" id="checkout-group-day" class="text-xs py-2 px-3 rounded bg-blue-100 text-blue-700 font-medium whitespace-nowrap">Day</button>
+                    <button onclick="setCheckoutGrouping('week')" id="checkout-group-week" class="text-xs py-2 px-3 rounded bg-gray-100 font-medium whitespace-nowrap">Week</button>
+                    <button onclick="setCheckoutGrouping('month')" id="checkout-group-month" class="text-xs py-2 px-3 rounded bg-gray-100 font-medium whitespace-nowrap">Month</button>
+                    <button onclick="setCheckoutGrouping('quarter')" id="checkout-group-quarter" class="text-xs py-2 px-3 rounded bg-gray-100 font-medium whitespace-nowrap">Quarter</button>
+                    <button onclick="setCheckoutGrouping('year')" id="checkout-group-year" class="text-xs py-2 px-3 rounded bg-gray-100 font-medium whitespace-nowrap">Year</button>
+                </div>
+                <div id="checkoutRecordsList" class="space-y-2">
+                    <!-- Populated by JavaScript -->
+                </div>
+            </div>
         </div>
 
         <!-- Settings View -->
@@ -280,6 +295,7 @@ Ticket to Ride,2025-01-14,9209</pre>
         let checkoutDates = {}; // { gameId: lastCheckoutDate }
         let currentSortMode = 'alpha'; // 'alpha', 'checkout', 'play', 'year'
         let recentlyCheckedOut = new Set(); // Track games checked out in this session for visual highlight
+        let checkoutGroupingMode = 'day'; // day, week, month, quarter, year - for Daily Records grouping
 
         // Initialize Firebase
         async function initFirebase() {
@@ -793,6 +809,173 @@ Ticket to Ride,2025-01-14,9209</pre>
             renderMostCheckedOut();
             renderRecentCheckouts();
             renderCheckoutStatsDashboard();
+            loadCheckoutRecords(); // Load daily records
+        };
+
+        // Set checkout grouping mode and refresh
+        window.setCheckoutGrouping = (mode) => {
+            checkoutGroupingMode = mode;
+            
+            // Update button styles
+            ['day', 'week', 'month', 'quarter', 'year'].forEach(m => {
+                const btn = document.getElementById(`checkout-group-${m}`);
+                if (btn) {
+                    if (m === mode) {
+                        btn.classList.add('bg-blue-100', 'text-blue-700');
+                        btn.classList.remove('bg-gray-100');
+                    } else {
+                        btn.classList.remove('bg-blue-100', 'text-blue-700');
+                        btn.classList.add('bg-gray-100');
+                    }
+                }
+            });
+            
+            // Reload the checkout records with new grouping
+            loadCheckoutRecords();
+        };
+
+        // Load checkout records - count checkouts per day/week/month/quarter/year
+        window.loadCheckoutRecords = () => {
+            console.log('[Checkout] loadCheckoutRecords called. allCheckouts.length:', allCheckouts.length, 'grouping:', checkoutGroupingMode);
+            
+            const groupedCount = {};
+            const groupedDates = {};
+            let skippedCount = 0;
+            
+            // Count checkouts by period based on grouping mode
+            allCheckouts.forEach(c => {
+                if (!c.checkoutDate) {
+                    console.warn('[Checkout] Skipping checkout with no date field');
+                    skippedCount++;
+                    return;
+                }
+                
+                // Convert Firestore timestamp to Date
+                const date = c.checkoutDate.toDate ? c.checkoutDate.toDate() : new Date(c.checkoutDate);
+                if (!date.getTime() || isNaN(date.getTime())) {
+                    console.warn('[Checkout] Invalid date:', c.checkoutDate);
+                    skippedCount++;
+                    return;
+                }
+                
+                let periodKey;
+                
+                switch(checkoutGroupingMode) {
+                    case 'week':
+                        const d = new Date(date);
+                        const day = d.getDay();
+                        const diff = d.getDate() - day + (day === 0 ? -6 : 1);
+                        const monday = new Date(d.getFullYear(), d.getMonth(), diff);
+                        if (monday.getTime() && !isNaN(monday.getTime())) {
+                            periodKey = `${monday.getFullYear()}-${String(monday.getMonth()+1).padStart(2,'0')}-${String(monday.getDate()).padStart(2,'0')}`;
+                        } else {
+                            const weekNumber = Math.ceil((date.getDate() - date.getDay() + 1) / 7);
+                            periodKey = `${date.getFullYear()}-W${String(weekNumber).padStart(2, '0')}`;
+                        }
+                        break;
+                    case 'month':
+                        periodKey = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}`;
+                        break;
+                    case 'quarter':
+                        const quarter = Math.floor(date.getMonth() / 3) + 1;
+                        periodKey = `${date.getFullYear()}-Q${quarter}`;
+                        break;
+                    case 'year':
+                        periodKey = date.getFullYear().toString();
+                        break;
+                    case 'day':
+                    default:
+                        periodKey = `${date.getFullYear()}-${String(date.getMonth()+1).padStart(2,'0')}-${String(date.getDate()).padStart(2,'0')}`;
+                }
+                
+                if (!groupedCount[periodKey]) {
+                    groupedCount[periodKey] = 0;
+                    groupedDates[periodKey] = date;
+                }
+                groupedCount[periodKey]++;
+            });
+            
+            console.log('[Checkout] Processed checkouts. Valid:', Object.values(groupedCount).reduce((a, b) => a + b, 0), 'Skipped:', skippedCount, 'Keys:', Object.keys(groupedCount));
+            
+            // Sort periods descending (most recent first)
+            const sortedPeriods = Object.keys(groupedCount)
+                .sort((a, b) => new Date(groupedDates[b]) - new Date(groupedDates[a]));
+            
+            // Format data for display
+            const periodData = sortedPeriods.map(period => {
+                const periodDate = groupedDates[period];
+                let displayPeriod;
+                
+                if (checkoutGroupingMode === 'week') {
+                    displayPeriod = `Week of ${periodDate.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: 'numeric' })}`;
+                } else if (checkoutGroupingMode === 'month') {
+                    displayPeriod = periodDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                } else if (checkoutGroupingMode === 'quarter') {
+                    displayPeriod = period;
+                } else if (checkoutGroupingMode === 'year') {
+                    displayPeriod = period;
+                } else {
+                    displayPeriod = periodDate.toLocaleDateString('en-US', { 
+                        weekday: 'short', 
+                        month: 'short', 
+                        day: 'numeric',
+                        year: 'numeric'
+                    });
+                }
+                
+                return {
+                    period,
+                    count: groupedCount[period],
+                    displayPeriod,
+                    date: periodDate
+                };
+            });
+            
+            // Render
+            const list = document.getElementById('checkoutRecordsList');
+            if (periodData.length === 0) {
+                console.log('[Checkout] No period data to display');
+                list.innerHTML = '<div class="text-center text-gray-500 py-4 text-xs">No checkouts yet</div>';
+                return;
+            }
+            
+            console.log('[Checkout] Rendering', periodData.length, 'periods of data');
+            
+            // Calculate stats
+            const totalRecords = periodData.reduce((sum, d) => sum + d.count, 0);
+            const avgPerPeriod = (totalRecords / periodData.length).toFixed(1);
+            const maxPeriod = periodData.reduce((max, d) => d.count > max.count ? d : max);
+            
+            list.innerHTML = `
+                <div class="bg-blue-50 rounded-lg p-2 mb-2">
+                    <div class="grid grid-cols-3 gap-2 text-center">
+                        <div>
+                            <div class="text-lg font-bold text-blue-600">${totalRecords}</div>
+                            <div class="text-xs text-gray-600">Total</div>
+                        </div>
+                        <div>
+                            <div class="text-lg font-bold text-green-600">${avgPerPeriod}</div>
+                            <div class="text-xs text-gray-600">Avg</div>
+                        </div>
+                        <div>
+                            <div class="text-lg font-bold text-orange-600">${maxPeriod.count}</div>
+                            <div class="text-xs text-gray-600">Max</div>
+                        </div>
+                    </div>
+                </div>
+                ${periodData.map(d => `
+                    <div class="bg-white rounded-lg shadow p-2 flex items-center justify-between text-sm">
+                        <div class="flex-1 min-w-0">
+                            <div class="font-medium truncate">${d.displayPeriod}</div>
+                            ${checkoutGroupingMode === 'day' ? `<div class="text-xs text-gray-500">${d.date.toLocaleDateString('en-US', { weekday: 'long' })}</div>` : ''}
+                        </div>
+                        <div class="text-right">
+                            <div class="text-lg font-bold text-blue-600">${d.count}</div>
+                            <div class="text-xs text-gray-500">checkout${d.count !== 1 ? 's' : ''}</div>
+                        </div>
+                    </div>
+                `).join('')}
+            `;
         };
 
         window.renderMostCheckedOut = () => {
