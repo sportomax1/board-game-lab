@@ -1013,15 +1013,25 @@
                 const parser = new DOMParser();
                 const xml = parser.parseFromString(text, 'text/xml');
                 
-                let allGames = Array.from(xml.querySelectorAll('item')).map(item => ({
-                    id: item.getAttribute('objectid'),
-                    name: item.querySelector('name').textContent,
-                    year: item.querySelector('yearpublished')?.textContent || 'N/A',
-                    image: item.querySelector('thumbnail')?.textContent || '',
-                    rating: parseFloat(item.querySelector('rating')?.getAttribute('value') || 0),
-                    numPlays: parseInt(item.querySelector('numplays')?.textContent || 0),
-                    isExpansion: item.getAttribute('subtype') === 'boardgameexpansion'
-                }));
+                let allGames = Array.from(xml.querySelectorAll('item')).map(item => {
+                    // Extract user's personal rating
+                    const userRating = parseFloat(item.querySelector('rating')?.getAttribute('value') || 0);
+                    
+                    // Extract BGG average rating from statistics (when stats=1)
+                    const avgElement = item.querySelector('statistics ratings average');
+                    const averageRating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
+                    
+                    return {
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name').textContent,
+                        year: item.querySelector('yearpublished')?.textContent || 'N/A',
+                        image: item.querySelector('thumbnail')?.textContent || '',
+                        rating: userRating,  // User's personal rating
+                        averageRating: averageRating,  // BGG community average (now extracted!)
+                        numPlays: parseInt(item.querySelector('numplays')?.textContent || 0),
+                        isExpansion: item.getAttribute('subtype') === 'boardgameexpansion'
+                    };
+                });
                 
                 console.log(`[FILTER] Loaded ${allGames.length} games from BGG`);
                 
@@ -2933,49 +2943,8 @@
         // Get BGG rating for tiebreaker
         function getBGGRating(gameId) {
             const game = allGamesInCollection.find(g => g.id === gameId);
-            // Return the cached bggAverageRating if available, otherwise return 0
-            return game ? (game.bggAverageRating || 0) : 0;
-        }
-
-        // Cache for BGG average ratings (fetched from Thing API)
-        let bggAverageRatingCache = {};
-        
-        async function fetchBGGAverageRating(gameId) {
-            // Return cached value if available
-            if (bggAverageRatingCache[gameId] !== undefined) {
-                return bggAverageRatingCache[gameId];
-            }
-            
-            try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&stats=1`);
-                if (!response.ok) {
-                    bggAverageRatingCache[gameId] = 0;
-                    return 0;
-                }
-                
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                
-                // Get the average from statistics/ratings/average
-                const avgElement = xml.querySelector('statistics ratings average');
-                const avgRating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
-                
-                // Cache the result
-                bggAverageRatingCache[gameId] = avgRating;
-                
-                // Also update the game object for future use
-                const game = allGamesInCollection.find(g => g.id === gameId);
-                if (game) {
-                    game.averageRating = avgRating;
-                }
-                
-                return avgRating;
-            } catch (error) {
-                console.error(`Error fetching BGG average rating for game ${gameId}:`, error);
-                bggAverageRatingCache[gameId] = 0;
-                return 0;
-            }
+            // Return the cached averageRating if available, otherwise return 0
+            return game ? (game.averageRating || 0) : 0;
         }
 
         // Show H-Index qualifying games modal
@@ -3154,11 +3123,16 @@
             
             // Convert to array and calculate stats
             const standings = Object.values(stats).map((g) => {
+                // Get average rating from allGamesInCollection cache
+                const gameData = allGamesInCollection.find(game => game.id === g.id);
+                const averageRating = gameData ? (gameData.averageRating || 0) : 0;
+                
                 return {
                     ...g,
                     total: g.wins + g.losses,
                     winPct: g.wins / (g.wins + g.losses),
-                    elo: calculateELO(g.wins, g.losses)
+                    averageRating: averageRating,
+                    elo: calculateELO(g.wins, g.losses, averageRating)
                 };
             });
 
@@ -3584,9 +3558,9 @@
         };
 
         // Load upsets
-        window.loadUpsets = async () => {
+        window.loadUpsets = () => {
             // Build rankings from BGG average rating (higher rating = higher rank/rank 1)
-            // First, fetch average ratings for all games in collection
+            // Use cached averageRating from games loaded during collection
             const gameRatings = {};
             
             // Get all unique game IDs from matchups
@@ -3596,12 +3570,11 @@
                 gameIds.add(m.loserId);
             });
             
-            // Fetch ratings for all games
-            console.log(`[UPSETS] Fetching BGG ratings for ${gameIds.size} games...`);
-            for (const gameId of gameIds) {
-                const rating = await fetchBGGAverageRating(gameId);
-                gameRatings[gameId] = rating;
-            }
+            // Get ratings from cached allGamesInCollection
+            gameIds.forEach(gameId => {
+                const game = allGamesInCollection.find(g => g.id === gameId);
+                gameRatings[gameId] = game ? (game.averageRating || 0) : 0;
+            });
             
             // Create rank map (higher rating = lower rank number #1)
             const ratedGames = Array.from(gameIds)
