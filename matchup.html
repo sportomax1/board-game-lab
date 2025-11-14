@@ -810,10 +810,11 @@
         let dailyGroupingMode = 'day'; // day, week, month, quarter, year - for Daily tab grouping
 
         // Tournament state
-        let gameMode = 'standard'; // standard, bracket, roundrobin, poolplay
+        let gameMode = 'standard'; // standard, bracket, roundrobin, poolplay, swiss
         let bracketState = null; // Bracket tournament data
         let roundRobinState = null; // Round robin tournament data
         let poolPlayState = null; // Pool play tournament data
+        let swissState = null; // Swiss system tournament data
         let tournamentActive = false;
         let tournamentPairings = []; // Queue of pairings to play
         let pairingIndex = 0; // Current pairing progress
@@ -1017,8 +1018,9 @@
                     // Extract user's personal rating
                     const userRating = parseFloat(item.querySelector('rating')?.getAttribute('value') || 0);
                     
-                    // Extract BGG average rating from statistics (when stats=1)
-                    const avgElement = item.querySelector('statistics ratings average');
+                    // Extract BGG average rating from statistics/rating/average (when stats=1)
+                    // Path: <statistics><rating><average value="6.50257" /></rating></statistics>
+                    const avgElement = item.querySelector('statistics rating average');
                     const averageRating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
                     
                     return {
@@ -1027,7 +1029,7 @@
                         year: item.querySelector('yearpublished')?.textContent || 'N/A',
                         image: item.querySelector('thumbnail')?.textContent || '',
                         rating: userRating,  // User's personal rating
-                        averageRating: averageRating,  // BGG community average (now extracted!)
+                        averageRating: averageRating,  // BGG community average rating
                         numPlays: parseInt(item.querySelector('numplays')?.textContent || 0),
                         isExpansion: item.getAttribute('subtype') === 'boardgameexpansion'
                     };
@@ -1579,6 +1581,9 @@
             } else if (mode === 'poolplay') {
                 initializePoolPlay(availableGames);
                 showTournamentDebugMessage(`✅ POOL PLAY TOURNAMENT INITIALIZED`, 'poolplay');
+            } else if (mode === 'swiss') {
+                initializeSwiss(availableGames);
+                showTournamentDebugMessage(`✅ SWISS TOURNAMENT INITIALIZED`, 'swiss');
             }
             
             updateTournamentProgress();
@@ -1867,6 +1872,81 @@
             console.log(`[POOL PLAY] Generated ${tournamentPairings.length} pairings across all pools`);
         }
 
+        // Initialize Swiss system tournament (3-5 rounds, pairing by score)
+        function initializeSwiss(availableGames) {
+            const numRounds = parseInt(document.getElementById('swissRounds').value) || 3;
+            const numTeams = 16; // Swiss works best with 16 teams
+            
+            // Randomize and select teams
+            const shuffledGames = [...availableGames].sort(() => Math.random() - 0.5);
+            const selectedTeams = shuffledGames.slice(0, numTeams);
+            
+            console.log(`[SWISS] Starting Swiss system with ${selectedTeams.length} teams over ${numRounds} rounds`);
+            console.log(`[SWISS] Teams: ${selectedTeams.map(g => g.name).join(', ')}`);
+            
+            // Initialize Swiss state
+            swissState = {
+                allTeams: selectedTeams,
+                numRounds: numRounds,
+                currentRound: 1,
+                standings: selectedTeams.map(team => ({
+                    team,
+                    wins: 0,
+                    losses: 0,
+                    points: 0,
+                    opponents: []
+                })),
+                results: [],
+                complete: false
+            };
+            
+            // Generate first round pairings (random pairing)
+            generateSwissPairings();
+            tournamentActive = true;
+        }
+
+        // Generate Swiss pairings for current round
+        function generateSwissPairings() {
+            if (!swissState) return;
+            
+            const round = swissState.currentRound;
+            tournamentPairings = [];
+            
+            // Sort teams by points (descending), then by wins (descending)
+            const sortedTeams = [...swissState.standings].sort((a, b) => {
+                if (b.points !== a.points) return b.points - a.points;
+                return b.wins - a.wins;
+            });
+            
+            // Pair teams using Swiss system: top half vs bottom half by score
+            const halfSize = Math.floor(sortedTeams.length / 2);
+            for (let i = 0; i < halfSize; i++) {
+                const player1 = sortedTeams[i];
+                let player2 = sortedTeams[halfSize + i];
+                
+                // Avoid rematches if possible
+                let attempts = 0;
+                while (player1.opponents.includes(player2.team.id) && attempts < 3) {
+                    const randomIndex = halfSize + Math.floor(Math.random() * halfSize);
+                    player2 = sortedTeams[randomIndex];
+                    attempts++;
+                }
+                
+                if (!tournamentPairings.some(p => 
+                    (p.left.id === player1.team.id && p.right.id === player2.team.id) ||
+                    (p.left.id === player2.team.id && p.right.id === player1.team.id)
+                )) {
+                    tournamentPairings.push({
+                        left: player1.team,
+                        right: player2.team
+                    });
+                }
+            }
+            
+            pairingIndex = 0;
+            console.log(`[SWISS] Round ${round}: ${tournamentPairings.length} matches`);
+        }
+
         // Get next tournament pairing
         function getNextTournamentPairing() {
             if (!tournamentActive || tournamentPairings.length === 0) return null;
@@ -1936,6 +2016,47 @@
                 } else if (poolPlayState && poolPlayState.phase === 'bracket') {
                     // Record pool play bracket result - use pool play bracket state
                     recordPoolPlayBracketWinner(winnerId);
+                }
+            } else if (gameMode === 'swiss') {
+                // Record Swiss result
+                if (swissState) {
+                    const pairing = tournamentPairings[pairingIndex];
+                    const winnerEntry = swissState.standings.find(s => s.team.id === winnerId);
+                    const loserEntry = swissState.standings.find(s => s.team.id === loserId);
+                    
+                    if (winnerEntry && loserEntry) {
+                        winnerEntry.wins++;
+                        winnerEntry.points += 3; // Win = 3 points in Swiss
+                        winnerEntry.opponents.push(loserId);
+                        
+                        loserEntry.losses++;
+                        loserEntry.points += 0; // Loss = 0 points
+                        loserEntry.opponents.push(winnerId);
+                        
+                        swissState.results.push({
+                            round: swissState.currentRound,
+                            winnerId, loserEntry,
+                            winnerName: winnerEntry.team.name,
+                            loserName: loserEntry.team.name
+                        });
+                        
+                        console.log(`[SWISS] R${swissState.currentRound}: ${winnerEntry.team.name} beat ${loserEntry.team.name}`);
+                    }
+                    
+                    pairingIndex++;
+                    
+                    // Check if round complete
+                    if (pairingIndex >= tournamentPairings.length) {
+                        if (swissState.currentRound >= swissState.numRounds) {
+                            // Tournament complete
+                            swissState.complete = true;
+                            showTournamentResults();
+                        } else {
+                            // Advance to next round
+                            swissState.currentRound++;
+                            generateSwissPairings();
+                        }
+                    }
                 }
             } else {
                 pairingIndex++;
@@ -2578,6 +2699,50 @@
                 `;
                 
                 resultText = '✅ Round Robin Tournament Complete!';
+            } else if (gameMode === 'swiss' && swissState) {
+                // Show Swiss tournament results
+                const finalStandings = [...swissState.standings].sort((a, b) => {
+                    if (b.points !== a.points) return b.points - a.points;
+                    return b.wins - a.wins;
+                });
+                
+                const champion = finalStandings[0];
+                if (champion) {
+                    showChampionModal({
+                        ...champion.team,
+                        wins: champion.wins,
+                        losses: champion.losses,
+                        winPct: champion.wins / (champion.wins + champion.losses) || 0,
+                        elo: calculateELO(champion.wins, champion.losses, getBGGRating(champion.team.id))
+                    });
+                }
+                
+                resultHTML = `
+                    <div class="bg-blue-50 border-2 border-blue-400 rounded-lg p-4">
+                        <div class="text-2xl font-bold text-blue-900 mb-3 text-center">🏅 SWISS TOURNAMENT COMPLETE!</div>
+                        <div class="text-sm font-bold text-blue-800 mb-2">Final Standings (${swissState.numRounds} Rounds)</div>
+                        <div class="space-y-1">
+                `;
+                
+                finalStandings.forEach((standing, idx) => {
+                    const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : '  ';
+                    resultHTML += `
+                        <div class="text-sm text-blue-800 bg-white rounded px-2 py-1 flex justify-between">
+                            <span>${medal} #${idx + 1} ${standing.team.name}</span>
+                            <span class="font-bold">${standing.wins}W-${standing.losses}L (${standing.points}pts)</span>
+                        </div>
+                    `;
+                });
+                
+                resultHTML += `
+                        </div>
+                        <div class="text-xs text-blue-700 mt-3 text-center">
+                            ${swissState.numRounds} rounds completed
+                        </div>
+                    </div>
+                `;
+                
+                resultText = '🏅 Swiss Tournament Complete!';
             }
             
             // Show results modal or alert
@@ -3616,16 +3781,33 @@
             
             list.innerHTML = upsets.map(m => `
                 <div class="bg-white rounded-lg shadow p-3">
-                    <div class="flex items-start gap-3 mb-2">
-                        <div class="text-3xl">😱</div>
+                    <div class="flex items-start gap-3">
+                        <div class="text-3xl flex-shrink-0">😱</div>
                         <div class="flex-1">
-                            <div class="font-bold text-sm text-gray-900">
-                                <span class="text-green-600">#${m.winnerRank} ${m.winnerName}</span>
-                                <span class="text-gray-400"> beat </span>
-                                <span class="text-red-600">#${m.loserRank} ${m.loserName}</span>
+                            <!-- Winner (higher rank number = lower rated) -->
+                            <div class="flex items-center gap-2 mb-2">
+                                ${m.winnerImage ? `<img src="${m.winnerImage}" alt="${m.winnerName}" class="w-10 h-10 rounded object-contain bg-gray-100">` : `<div class="w-10 h-10 bg-gray-200 rounded"></div>`}
+                                <div class="text-sm">
+                                    <span class="text-green-600 font-bold">#${m.winnerRank}</span>
+                                    <span class="text-gray-900 font-bold">${m.winnerName}</span>
+                                </div>
                             </div>
-                            <div class="text-xs text-gray-600 mt-1">
-                                Ratings: ${m.winnerRating.toFixed(1)} vs ${m.loserRating.toFixed(1)} (Rank swing: +${m.upsetMagnitude})
+                            
+                            <!-- vs -->
+                            <div class="text-xs text-gray-500 px-2 py-1 text-center font-bold">vs</div>
+                            
+                            <!-- Loser (lower rank number = higher rated) -->
+                            <div class="flex items-center gap-2 mb-2">
+                                ${m.loserImage ? `<img src="${m.loserImage}" alt="${m.loserName}" class="w-10 h-10 rounded object-contain bg-gray-100">` : `<div class="w-10 h-10 bg-gray-200 rounded"></div>`}
+                                <div class="text-sm">
+                                    <span class="text-red-600 font-bold">#${m.loserRank}</span>
+                                    <span class="text-gray-900 font-bold">${m.loserName}</span>
+                                </div>
+                            </div>
+                            
+                            <!-- Stats -->
+                            <div class="text-xs text-gray-600 mt-2 bg-gray-50 p-2 rounded">
+                                Ratings: ${m.winnerRating.toFixed(1)} vs ${m.loserRating.toFixed(1)} | Rank swing: +${m.upsetMagnitude}
                             </div>
                             <div class="text-xs text-gray-500 mt-1">${new Date(m.timestamp).toLocaleDateString()}</div>
                         </div>
