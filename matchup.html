@@ -1012,27 +1012,25 @@
                 const xml = parser.parseFromString(text, 'text/xml');
                 
                 let allGames = Array.from(xml.querySelectorAll('item')).map(item => {
-                    // Extract user's personal rating
+                    // Extract user's personal rating from <rating value="N/A">
                     const userRating = parseFloat(item.querySelector('rating')?.getAttribute('value') || 0);
                     
-                    // Extract BGG average rating from statistics/rating/average (when stats=1)
-                    // Path: <statistics><rating><average value="6.50257" /></rating></statistics>
-                    const avgElement = item.querySelector('statistics rating average');
-                    const averageRating = avgElement ? parseFloat(avgElement.getAttribute('value') || 0) : 0;
+                    // Extract average and bayesaverage from <rating><average> and <rating><bayesaverage>
+                    // Path: <rating><average value="9" /><bayesaverage value="0" /></rating>
+                    const ratingAvgElement = item.querySelector('rating average');
+                    const averageRating = ratingAvgElement ? parseFloat(ratingAvgElement.getAttribute('value') || 0) : 0;
                     
-                    // Extract Bayes average
-                    const bayesElement = item.querySelector('statistics rating bayesaverage');
-                    const bayesAverage = bayesElement ? parseFloat(bayesElement.getAttribute('value') || 0) : 0;
+                    const ratingBayesElement = item.querySelector('rating bayesaverage');
+                    const bayesAverage = ratingBayesElement ? parseFloat(ratingBayesElement.getAttribute('value') || 0) : 0;
+                    
+                    // Extract board game rank from <rank type="subtype" name="boardgame">
+                    const boardGameRank = item.querySelector('rating ranks rank[type="subtype"][name="boardgame"]')?.getAttribute('bayesaverage') || 'Not Ranked';
                     
                     // Extract number of plays
                     const numPlays = parseInt(item.querySelector('numplays')?.textContent || 0);
                     
                     const gameName = item.querySelector('name').textContent;
-                    console.log(`[BGG API] ${gameName} - Plays: ${numPlays}, User: ${userRating.toFixed(1)}, Avg: ${averageRating.toFixed(2)}, Bayes: ${bayesAverage.toFixed(2)}`);
-                    
-                    if (averageRating === 0) {
-                        console.warn(`[BGG API WARNING] ${gameName} has NO average rating - check XML structure`);
-                    }
+                    console.log(`[BGG API] ${gameName} - Plays: ${numPlays}, User: ${userRating.toFixed(1)}, Avg: ${averageRating.toFixed(2)}, Bayes: ${bayesAverage.toFixed(2)}, Rank: ${boardGameRank}`);
                     
                     return {
                         id: item.getAttribute('objectid'),
@@ -1040,8 +1038,9 @@
                         year: item.querySelector('yearpublished')?.textContent || 'N/A',
                         image: item.querySelector('thumbnail')?.textContent || '',
                         rating: userRating,  // User's personal rating
-                        averageRating: averageRating,  // BGG community average rating
-                        bayesAverage: bayesAverage,  // BGG Bayes average rating
+                        averageRating: averageRating,  // BGG collection average rating
+                        bayesAverage: bayesAverage,  // BGG collection Bayes average rating
+                        boardGameRank: boardGameRank,  // BGG board game rank
                         numPlays: numPlays,
                         isExpansion: item.getAttribute('subtype') === 'boardgameexpansion'
                     };
@@ -1063,11 +1062,20 @@
                 await loadMatchupHistory();
                 console.log(`[FILTER] Loaded matchup history. Used games: ${usedGameIds.size}`);
                 
-                // Calculate game appearances for new modes
+                // Calculate game appearances and wins for each game
                 const gameAppearances = {};
+                const gameWins = {};
                 allGames.forEach(g => {
-                    gameAppearances[g.id] = usedGameIds.has(g.id) ? 1 : 0;
+                    gameAppearances[g.id] = allMatchups.filter(m => m.winnerId === g.id || m.loserId === g.id).length;
+                    gameWins[g.id] = allMatchups.filter(m => m.winnerId === g.id).length;
                 });
+                
+                // Attach wins/appearances to each game object
+                allGames = allGames.map(g => ({
+                    ...g,
+                    appearances: gameAppearances[g.id] || 0,
+                    wins: gameWins[g.id] || 0
+                }));
                 
                 // Filter based on matchup mode (new modes)
                 console.log(`\n[MATCHUP MODE FILTER] Starting with ${allGames.length} total games`);
@@ -1490,14 +1498,19 @@
                 const userRating = left.rating || 0;
                 const avgRating = left.averageRating || 0;
                 const bayesRating = left.bayesAverage || 0;
+                const rank = left.boardGameRank || 'Not Ranked';
+                const appearances = left.appearances || 0;
+                const wins = left.wins || 0;
                 
                 leftStatsEl.innerHTML = `
                     <div class="text-purple-600 font-semibold">🎲 ${plays} play${plays !== 1 ? 's' : ''}</div>
                     ${userRating > 0 ? `<div class="text-green-600">⭐ You: ${userRating.toFixed(1)}</div>` : ''}
                     ${avgRating > 0 ? `<div class="text-blue-600">📊 BGG: ${avgRating.toFixed(2)}</div>` : '<div class="text-gray-400">📊 No BGG rating</div>'}
                     ${bayesRating > 0 ? `<div class="text-orange-600">🔢 Bayes: ${bayesRating.toFixed(2)}</div>` : ''}
+                    ${rank !== 'Not Ranked' ? `<div class="text-yellow-600">🏅 Rank: ${rank}</div>` : ''}
+                    <div class="text-indigo-600 font-semibold">📋 Appearances: ${appearances} | Wins: ${wins}</div>
                 `;
-                console.log(`[MATCHUP] ${left.name} - Plays: ${plays}, User: ${userRating}, Avg: ${avgRating}, Bayes: ${bayesRating}`);
+                console.log(`[MATCHUP] ${left.name} - Plays: ${plays}, User: ${userRating}, Avg: ${avgRating}, Bayes: ${bayesRating}, Rank: ${rank}, Appearances: ${appearances}, Wins: ${wins}`);
             }
             
             document.getElementById('rightImage').src = right.image;
@@ -1511,14 +1524,19 @@
                 const userRating = right.rating || 0;
                 const avgRating = right.averageRating || 0;
                 const bayesRating = right.bayesAverage || 0;
+                const rank = right.boardGameRank || 'Not Ranked';
+                const appearances = right.appearances || 0;
+                const wins = right.wins || 0;
                 
                 rightStatsEl.innerHTML = `
                     <div class="text-purple-600 font-semibold">🎲 ${plays} play${plays !== 1 ? 's' : ''}</div>
                     ${userRating > 0 ? `<div class="text-green-600">⭐ You: ${userRating.toFixed(1)}</div>` : ''}
                     ${avgRating > 0 ? `<div class="text-blue-600">📊 BGG: ${avgRating.toFixed(2)}</div>` : '<div class="text-gray-400">📊 No BGG rating</div>'}
                     ${bayesRating > 0 ? `<div class="text-orange-600">🔢 Bayes: ${bayesRating.toFixed(2)}</div>` : ''}
+                    ${rank !== 'Not Ranked' ? `<div class="text-yellow-600">🏅 Rank: ${rank}</div>` : ''}
+                    <div class="text-indigo-600 font-semibold">📋 Appearances: ${appearances} | Wins: ${wins}</div>
                 `;
-                console.log(`[MATCHUP] ${right.name} - Plays: ${plays}, User: ${userRating}, Avg: ${avgRating}, Bayes: ${bayesRating}`);
+                console.log(`[MATCHUP] ${right.name} - Plays: ${plays}, User: ${userRating}, Avg: ${avgRating}, Bayes: ${bayesRating}, Rank: ${rank}, Appearances: ${appearances}, Wins: ${wins}`);
             }
             
             document.getElementById('matchupCard').classList.remove('hidden');
