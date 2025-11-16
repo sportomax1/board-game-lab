@@ -168,6 +168,59 @@
             white-space: pre-wrap;
             word-wrap: break-word;
         }
+        /* Compact view styles */
+        .game-card.compact {
+            padding: 0.5rem;
+            flex-direction: column;
+            gap: 0.5rem;
+        }
+        .game-card.compact img {
+            width: 60px;
+            height: 60px;
+        }
+        .game-card.compact .text-xs {
+            font-size: 0.65rem;
+        }
+        .game-card.compact h3 {
+            font-size: 0.75rem;
+        }
+        /* Mechanics expandable */
+        .mechanics-section {
+            max-height: 0;
+            overflow: hidden;
+            transition: max-height 0.3s ease;
+        }
+        .mechanics-section.expanded {
+            max-height: 500px;
+        }
+        .more-button {
+            cursor: pointer;
+            user-select: none;
+            transition: transform 0.2s;
+        }
+        .more-button:hover {
+            transform: scale(1.1);
+        }
+        /* Quick filter buttons */
+        .quick-filter-btn {
+            padding: 0.375rem 0.75rem;
+            border-radius: 9999px;
+            font-size: 0.75rem;
+            font-weight: 500;
+            cursor: pointer;
+            transition: all 0.2s;
+            border: 2px solid #e5e7eb;
+            background: white;
+        }
+        .quick-filter-btn:hover {
+            border-color: #3b82f6;
+            background: #eff6ff;
+        }
+        .quick-filter-btn.active {
+            background: #3b82f6;
+            color: white;
+            border-color: #3b82f6;
+        }
     </style>
 </head>
 <body class="bg-gray-100">
@@ -178,14 +231,32 @@
                 <h1 class="text-2xl font-bold mb-2">🎲 Game Library</h1>
                 <p class="text-sm opacity-90">All collections sorted by desire to play</p>
             </div>
-            <button onclick="showInfoModal()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center text-lg font-bold transition">
-                ℹ️
-            </button>
+            <div class="flex gap-2">
+                <button onclick="toggleCompactView()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center text-lg font-bold transition" title="Toggle compact view">
+                    📋
+                </button>
+                <button onclick="showInfoModal()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center text-lg font-bold transition">
+                    ℹ️
+                </button>
+            </div>
         </div>
     </div>
 
     <!-- Filters -->
     <div class="container mx-auto p-4">
+        <!-- Quick Filters -->
+        <div class="bg-white rounded-lg shadow p-3 mb-3">
+            <label class="block text-xs font-medium text-gray-700 mb-2">⚡ Quick Filters</label>
+            <div class="flex flex-wrap gap-2">
+                <button class="quick-filter-btn" onclick="applyQuickFilter('best4')" data-quick="best4">Best for 4p</button>
+                <button class="quick-filter-btn" onclick="applyQuickFilter('light')" data-quick="light">Light (&lt;2.5)</button>
+                <button class="quick-filter-btn" onclick="applyQuickFilter('medium')" data-quick="medium">Medium (2.5-3.5)</button>
+                <button class="quick-filter-btn" onclick="applyQuickFilter('heavy')" data-quick="heavy">Heavy (&gt;3.5)</button>
+                <button class="quick-filter-btn" onclick="applyQuickFilter('quick')" data-quick="quick">Quick (&lt;60min)</button>
+                <button class="quick-filter-btn" onclick="applyQuickFilter('long')" data-quick="long">Long (&gt;120min)</button>
+                <button class="quick-filter-btn" onclick="clearQuickFilters()">Clear Quick Filters</button>
+            </div>
+        </div>
         <div class="bg-white rounded-lg shadow p-4 mb-4">
             <!-- Search -->
             <div class="mb-3">
@@ -372,6 +443,93 @@
         const BATCH_SIZE = 20; // Load 20 games at a time
         let thumbnailCache = {};
         let pendingThumbnails = new Set();
+        let isCompactView = false;
+        let activeQuickFilters = new Set();
+        
+        // localStorage cache for BGG API (7 day expiry)
+        const CACHE_EXPIRY = 7 * 24 * 60 * 60 * 1000; // 7 days in ms
+        
+        function getCachedAPIData(gameIds) {
+            const cached = {};
+            const toFetch = [];
+            
+            gameIds.forEach(id => {
+                const key = `bgg_api_${id}`;
+                const item = localStorage.getItem(key);
+                if (item) {
+                    try {
+                        const data = JSON.parse(item);
+                        if (Date.now() - data.timestamp < CACHE_EXPIRY) {
+                            cached[id] = data.value;
+                        } else {
+                            localStorage.removeItem(key);
+                            toFetch.push(id);
+                        }
+                    } catch (e) {
+                        toFetch.push(id);
+                    }
+                } else {
+                    toFetch.push(id);
+                }
+            });
+            
+            return { cached, toFetch };
+        }
+        
+        function setCachedAPIData(id, data) {
+            try {
+                const key = `bgg_api_${id}`;
+                localStorage.setItem(key, JSON.stringify({
+                    timestamp: Date.now(),
+                    value: data
+                }));
+            } catch (e) {
+                console.warn('[LIBRARY] Cache storage failed:', e.message);
+            }
+        }
+        
+        function toggleCompactView() {
+            isCompactView = !isCompactView;
+            const cards = document.querySelectorAll('.game-card');
+            cards.forEach(card => {
+                if (isCompactView) {
+                    card.classList.add('compact');
+                } else {
+                    card.classList.remove('compact');
+                }
+            });
+        }
+        
+        function applyQuickFilter(filterType) {
+            const btn = document.querySelector(`[data-quick=\"${filterType}\"]`);
+            
+            if (activeQuickFilters.has(filterType)) {
+                activeQuickFilters.delete(filterType);
+                btn.classList.remove('active');
+            } else {
+                activeQuickFilters.add(filterType);
+                btn.classList.add('active');
+            }
+            
+            applyFilters();
+        }
+        
+        function clearQuickFilters() {
+            activeQuickFilters.clear();
+            document.querySelectorAll('.quick-filter-btn').forEach(btn => {
+                btn.classList.remove('active');
+            });
+            applyFilters();
+        }
+        
+        function toggleMechanics(gameId) {
+            const section = document.querySelector(`[data-mechanics=\"${gameId}\"]`);
+            const button = document.querySelector(`[data-more=\"${gameId}\"]`);
+            if (section) {
+                section.classList.toggle('expanded');
+                button.textContent = section.classList.contains('expanded') ? '▼' : '▶';
+            }
+        }
 
         // Load all XML files
         async function loadLibraries() {
@@ -716,6 +874,9 @@
                 recommendedPlayerCount: '', // Will be populated from BGG API
                 playingTime: 0, // Will be populated from BGG API
                 weight: 0, // Will be populated from BGG API
+                playCount: 0, // Will be populated from BGG API
+                mechanics: [], // Will be populated from BGG API
+                categories: [], // Will be populated from BGG API
                 desireScore,
                 location, // Library location (e.g., "CARD RACK", "T", "shelf")
                 locations: [], // Will store { location, emoji, libraryLocation } for each convention
@@ -790,6 +951,18 @@
                     } else {
                         // Exact best player count match
                         if (game.bestPlayerCount !== best) return false;
+                    }
+                }
+                
+                // Quick filters
+                if (activeQuickFilters.size > 0) {
+                    for (const filter of activeQuickFilters) {
+                        if (filter === 'best4' && game.bestPlayerCount !== 4) return false;
+                        if (filter === 'light' && game.weight >= 2.5) return false;
+                        if (filter === 'medium' && (game.weight < 2.5 || game.weight > 3.5)) return false;
+                        if (filter === 'heavy' && game.weight <= 3.5) return false;
+                        if (filter === 'quick' && game.playingTime >= 60) return false;
+                        if (filter === 'long' && game.playingTime <= 120) return false;
                     }
                 }
 
@@ -921,10 +1094,20 @@
                                     <span>🏆 ${game.rank}</span>
                                     <span>📅 ${game.yearPublished}</span>
                                 </div>
-                                <!-- Column 3: Time/Weight -->
+                                <!-- Column 3: Time/Weight/Plays -->
                                 <div class="flex flex-col gap-0.5">
-                                    <span data-field="playtime">⏱️ ${game.playingTime > 0 ? game.playingTime + ' min' : 'TBD'}</span>
+                                    <span data-field="playtime">⏱️ ${game.playingTime > 0 ? game.playingTime + ' min' : 'TBD'} <span class="more-button" data-more="${game.id}" onclick="toggleMechanics('${game.id}')" title="Show mechanics/categories">▶</span></span>
                                     <span data-field="weight">⚖️ ${game.weight > 0 ? game.weight.toFixed(2) : 'TBD'}</span>
+                                    <span data-field="plays">🎮 ${game.playCount > 0 ? game.playCount + ' plays' : 'No plays'}</span>
+                                </div>
+                            </div>
+                            <!-- Expandable mechanics/categories section -->
+                            <div class="mechanics-section mt-2 text-xs" data-mechanics="${game.id}">
+                                <div class="bg-gray-50 p-2 rounded">
+                                    <div class="font-semibold mb-1">🎲 Mechanics:</div>
+                                    <div data-field="mechanics" class="text-gray-700 mb-2">${game.mechanics.length > 0 ? game.mechanics.join(', ') : 'Loading...'}</div>
+                                    <div class="font-semibold mb-1">🏷️ Categories:</div>
+                                    <div data-field="categories" class="text-gray-700">${game.categories.length > 0 ? game.categories.join(', ') : 'Loading...'}</div>
                                 </div>
                             </div>
                         </div>
@@ -980,8 +1163,24 @@
         // Fetch thumbnails from BGG API
         async function fetchThumbnails(objectIds) {
             try {
-                const idsParam = objectIds.join(',');
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&type=boardgame`);
+                // Check cache first
+                const { cached, toFetch } = getCachedAPIData(objectIds);
+                
+                // Apply cached data immediately
+                Object.entries(cached).forEach(([id, data]) => {
+                    if (data.thumbnail) {
+                        thumbnailCache[id] = data.thumbnail;
+                        updateThumbnail(id, data.thumbnail);
+                    }
+                    updateGameData(id, data);
+                    pendingThumbnails.delete(id);
+                });
+                
+                // Fetch only uncached items
+                if (toFetch.length === 0) return;
+                
+                const idsParam = toFetch.join(',');
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&type=boardgame&stats=1`);
                 const text = await response.text();
                 const parser = new DOMParser();
                 const xml = parser.parseFromString(text, 'text/xml');
@@ -1034,12 +1233,12 @@
                     //   <result name="recommmendedwith" value="Recommended with 2–4 players" /> (NOTE: 3 m's!)
                     // </poll-summary>
                     const pollSummary = item.querySelector('poll-summary[name="suggested_numplayers"]');
+                    let bestCount = 0;
+                    let recommendedText = '';
+                    
                     if (pollSummary) {
                         const bestResult = pollSummary.querySelector('result[name="bestwith"]');
                         const recResult = pollSummary.querySelector('result[name="recommmendedwith"]'); // 3 m's in BGG XML!
-                        
-                        let bestCount = 0;
-                        let recommendedText = '';
                         
                         // Extract best player count
                         // Format: "Best with 4 players" -> extract 4
@@ -1065,49 +1264,92 @@
                                 }
                             }
                         }
-                        
-                        // Update the game's player counts
-                        const game = allGames.find(g => g.id === id);
-                        if (game) {
-                            game.bestPlayerCount = bestCount;
-                            game.recommendedPlayerCount = recommendedText;
-                            game.playingTime = playingTime;
-                            game.weight = weight;
-                            console.log(`[LIBRARY] Fetched for ID ${id}: best=${bestCount}, recommended=${recommendedText}, playtime=${playingTime}, weight=${weight}`);
-                            
-                            // Update card display if visible
-                            const cards = document.querySelectorAll(`[data-objectid="${id}"]`);
-                            cards.forEach(card => {
-                                // Update best player count - just update the value, keep emoji
-                                const bestSpan = card.querySelector('[data-field="best"]');
-                                if (bestSpan) {
-                                    bestSpan.textContent = `🎯 Best: ${bestCount > 0 ? bestCount : 'TBD'}`;
-                                }
-                                // Update recommended - just update the value, keep emoji
-                                const recDiv = card.querySelector('[data-field="recommended"]');
-                                if (recDiv) {
-                                    recDiv.textContent = `👍 ${recommendedText || 'TBD'}`;
-                                }
-                                // Update playing time
-                                const timeSpan = card.querySelector('[data-field="playtime"]');
-                                if (timeSpan) {
-                                    timeSpan.textContent = `⏱️ ${playingTime > 0 ? playingTime + ' min' : 'TBD'}`;
-                                }
-                                // Update weight
-                                const weightSpan = card.querySelector('[data-field="weight"]');
-                                if (weightSpan) {
-                                    weightSpan.textContent = `⚖️ ${weight > 0 ? weight.toFixed(2) : 'TBD'}`;
-                                }
-                            });
+                    }
+                    
+                    // Extract mechanics and categories
+                    const mechanics = Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(link => link.getAttribute('value'));
+                    const categories = Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(link => link.getAttribute('value'));
+                    
+                    // Extract play count from statistics
+                    let playCount = 0;
+                    const statsElement = item.querySelector('statistics');
+                    if (statsElement) {
+                        const ratingsElement = statsElement.querySelector('ratings');
+                        if (ratingsElement) {
+                            const ownedElement = ratingsElement.querySelector('owned');
+                            if (ownedElement) {
+                                playCount = parseInt(ownedElement.getAttribute('value')) || 0;
+                            }
                         }
                     }
+                    
+                    // Store in cache
+                    const apiData = {
+                        thumbnail,
+                        playingTime,
+                        weight,
+                        bestCount,
+                        recommendedText,
+                        mechanics,
+                        categories,
+                        playCount
+                    };
+                    setCachedAPIData(id, apiData);
+                    
+                    // Update the game
+                    updateGameData(id, apiData);
                     
                     pendingThumbnails.delete(id);
                 });
                 
             } catch (error) {
                 console.warn('[LIBRARY] Error fetching thumbnails:', error);
-                objectIds.forEach(id => pendingThumbnails.delete(id));
+                toFetch.forEach(id => pendingThumbnails.delete(id));
+            }
+        }
+        
+        // Update game data helper function
+        function updateGameData(id, data) {
+            const game = allGames.find(g => g.id === id);
+            if (game) {
+                game.bestPlayerCount = data.bestCount || 0;
+                game.recommendedPlayerCount = data.recommendedText || '';
+                game.playingTime = data.playingTime || 0;
+                game.weight = data.weight || 0;
+                game.playCount = data.playCount || 0;
+                game.mechanics = data.mechanics || [];
+                game.categories = data.categories || [];
+                
+                console.log(`[LIBRARY] Updated ID ${id}: best=${game.bestPlayerCount}, playtime=${game.playingTime}, weight=${game.weight}, plays=${game.playCount}`);
+                
+                // Update card display if visible
+                const cards = document.querySelectorAll(`[data-objectid="${id}"]`);
+                cards.forEach(card => {
+                    const bestSpan = card.querySelector('[data-field="best"]');
+                    if (bestSpan) bestSpan.textContent = `🎯 Best: ${game.bestPlayerCount > 0 ? game.bestPlayerCount : 'TBD'}`;
+                    
+                    const recDiv = card.querySelector('[data-field="recommended"]');
+                    if (recDiv) recDiv.textContent = `👍 ${game.recommendedPlayerCount || 'TBD'}`;
+                    
+                    const timeSpan = card.querySelector('[data-field="playtime"]');
+                    if (timeSpan) {
+                        const moreButton = timeSpan.querySelector('.more-button');
+                        const moreHtml = moreButton ? moreButton.outerHTML : '';
+                        timeSpan.innerHTML = `⏱️ ${game.playingTime > 0 ? game.playingTime + ' min' : 'TBD'} ${moreHtml}`;
+                    }
+                    
+                    const weightSpan = card.querySelector('[data-field="weight"]');
+                    if (weightSpan) weightSpan.textContent = `⚖️ ${game.weight > 0 ? game.weight.toFixed(2) : 'TBD'}`;
+                    
+                    const playsSpan = card.querySelector('[data-field="plays"]');
+                    if (playsSpan) playsSpan.textContent = `🎮 ${game.playCount > 0 ? game.playCount + ' plays' : 'No plays'}`;
+                    
+                    const mechanicsDiv = card.querySelector('[data-field="mechanics"]');
+                    if (mechanicsDiv) mechanicsDiv.textContent = game.mechanics.length > 0 ? game.mechanics.join(', ') : 'None listed';
+                    
+                    const categoriesDiv = card.querySelector('[data-field="categories"]');
+                    if (categoriesDiv) categoriesDiv.textContent = game.categories.length > 0 ? game.categories.join(', ') : 'None listed';
+                });
             }
         }
 
