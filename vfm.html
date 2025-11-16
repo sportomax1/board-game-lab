@@ -900,6 +900,16 @@
                 </div>
             </div>
             
+            <!-- Sold/Available Filter -->
+            <div style="margin-top: 16px;">
+                <div class="search-label">💰 Sold Status</div>
+                <div class="search-type-buttons">
+                    <button class="search-type-btn active" data-sold-filter="all" onclick="setSoldFilter('all')">All Items</button>
+                    <button class="search-type-btn" data-sold-filter="sold" onclick="setSoldFilter('sold')">Sold Only</button>
+                    <button class="search-type-btn" data-sold-filter="available" onclick="setSoldFilter('available')">Available Only</button>
+                </div>
+            </div>
+            
             <div class="search-buttons">
                 <button class="search-btn btn-filter" onclick="applyFilter()">Filter</button>
                 <button class="search-btn btn-clear" onclick="clearFilter()">Show All</button>
@@ -1014,6 +1024,7 @@
         let collectionData = {};
         let collectionDataLoaded = false;
         let collectionDataLoading = false;
+        let currentSoldFilter = 'all'; // all, sold, available
         
         let currentCollectionFilters = {
             own: 'any',
@@ -1350,6 +1361,30 @@
             });
         }
         
+        function setSoldFilter(filter) {
+            currentSoldFilter = filter;
+            document.querySelectorAll('.search-type-btn[data-sold-filter]').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.soldFilter === filter);
+            });
+            applyFilter();
+        }
+        
+        // Detect if item is sold by checking body and comments
+        function isSold(item) {
+            const bodyText = (item.querySelector('body')?.textContent || '').toLowerCase();
+            const comments = Array.from(item.querySelectorAll('comment'));
+            const commentTexts = comments.map(c => (c.textContent || '').toLowerCase()).join(' ');
+            const allText = bodyText + ' ' + commentTexts;
+            
+            // Check for "not sold" or "notsold" - if found, item is NOT sold
+            if (allText.includes('not sold') || allText.includes('notsold')) {
+                return false;
+            }
+            
+            // Check for "sold" in body or comments
+            return allText.includes('sold');
+        }
+        
         function setViewMode(mode) {
             currentViewMode = mode;
             document.querySelectorAll('.view-toggle-btn').forEach(btn => {
@@ -1658,11 +1693,18 @@ function calculateGlobalGameStats() {
                 });
                 
                 // Load files sequentially and display each one as it loads (streaming)
-                for (const promise of loadPromises) {
+                for (let i = 0; i < loadPromises.length; i++) {
+                    const promise = loadPromises[i];
                     const items = await promise;
+                    
                     if (items.length > 0) {
+                        const fileName = xmlFiles[i].name;
+                        console.log(`[VFM STREAM] 📦 File ${i+1}/${loadPromises.length}: ${fileName} loaded with ${items.length} items`);
+                        
                         const filteredNewItems = items.filter(item => item.getAttribute('objectid') !== '340938');
                         allLoadedItems.push(...filteredNewItems);
+                        
+                        console.log(`[VFM STREAM] 📊 Total items so far: ${allLoadedItems.length}`);
                         
                         // Sort all items by date (newest first)
                         allItems = allLoadedItems.sort((a, b) => {
@@ -1674,6 +1716,8 @@ function calculateGlobalGameStats() {
                         // Recalculate global game stats with newly loaded items
                         calculateGlobalGameStats();
                         
+                        console.log(`[VFM STREAM] 🎨 Displaying items NOW (before loading next file)...`);
+                        
                         // Display items immediately (streaming mode)
                         currentPage = 0;
                         displayedItems = [];
@@ -1682,6 +1726,8 @@ function calculateGlobalGameStats() {
                         } else {
                             loadMoreItems();
                         }
+                        
+                        console.log(`[VFM STREAM] ✅ Display complete. Displayed ${displayedItems.length} items. Moving to next file...`);
                     }
                 }
                 
@@ -1942,8 +1988,9 @@ function calculateGlobalGameStats() {
             const hasGameSearch = !!gameSearchValue;
             const hasUserSearch = !!userSearchValue;
             const isCollectionFilterActive = Object.values(currentCollectionFilters).some(v => v !== 'any');
+            const hasSoldFilter = currentSoldFilter !== 'all';
             
-            isFilterActive = hasGameSearch || hasUserSearch || isCollectionFilterActive;
+            isFilterActive = hasGameSearch || hasUserSearch || isCollectionFilterActive || hasSoldFilter;
             
             if (!isFilterActive) {
                 clearFilter();
@@ -2010,7 +2057,18 @@ function calculateGlobalGameStats() {
                     passesFilter = passesFilter && foundUsername;
                 }
                 
-                return passesFilter && passesCollectionFilter(item);
+                // Check sold filter
+                let passesSoldFilter = true;
+                if (hasSoldFilter) {
+                    const itemIsSold = isSold(item);
+                    if (currentSoldFilter === 'sold') {
+                        passesSoldFilter = itemIsSold;
+                    } else if (currentSoldFilter === 'available') {
+                        passesSoldFilter = !itemIsSold;
+                    }
+                }
+                
+                return passesFilter && passesCollectionFilter(item) && passesSoldFilter;
             });
             
             currentPage = 0;
@@ -2060,10 +2118,16 @@ function calculateGlobalGameStats() {
         function clearFilter() {
             isFilterActive = false;
             currentSearchValue = '';
+            currentSoldFilter = 'all';
             
             document.getElementById('filterBadge').innerHTML = '';
             document.getElementById('userSearchInput').value = '';
             document.getElementById('gameSearchInput').value = '';
+            
+            // Reset sold filter buttons
+            document.querySelectorAll('.search-type-btn[data-sold-filter]').forEach(btn => {
+                btn.classList.toggle('active', btn.dataset.soldFilter === 'all');
+            });
             
             for (const filterKey in currentCollectionFilters) {
                 currentCollectionFilters[filterKey] = 'any';
@@ -2222,7 +2286,8 @@ function calculateGlobalGameStats() {
             const pData = privateData.get(objectId);
             
             const bodyText = item.querySelector('body')?.textContent || '';
-            console.log('[VFM] Creating detailed card for:', objectName, 'sold:', sold);
+            const itemIsSold = isSold(item);
+            console.log('[VFM] Creating detailed card for:', objectName, 'sold attr:', sold, 'detected sold:', itemIsSold);
             const buyerName = extractBuyerInfo(bodyText);
             if (buyerName) {
                 console.log('[VFM] ✓ Buyer name found:', buyerName);
@@ -2310,6 +2375,23 @@ statsHtml += `
     </table>
 `;
         
+        // --- NEW: Sold item stats (price + duplicate count) ---
+        let soldStatsHtml = '';
+        if (itemIsSold && displayPrice) {
+            // Count how many times this game appears in SOLD listings
+            const soldListings = allItems.filter(i => {
+                const isSameGame = i.getAttribute('objectid') === objectId;
+                const isItemSold = isSold(i);
+                return isSameGame && isItemSold;
+            });
+            
+            soldStatsHtml = `
+                <div class="private-stats" style="background: #fff3cd; padding: 6px 8px; border-radius: 4px; margin-top: 4px;">
+                    💰 <strong>$${displayPrice}</strong> • 📊 Appears in <strong>${soldListings.length}</strong> sold listing${soldListings.length !== 1 ? 's' : ''}
+                </div>
+            `;
+        }
+        
         // --- NEW: Add Rank and Average (Request 3) ---
         let privateStatsHtml = '';
         if (pData && (pData.rank || pData.average)) {
@@ -2384,7 +2466,9 @@ statsHtml += `
     <span class="card-stat">👍 ${thumbs}</span>
     <span class="card-stat-link" onclick="showComments(${index})" style="cursor: pointer; padding-left: 8px;">💬 ${commentCount}</span>
 </div>
-                            ${privateStatsHtml} </div>
+                            ${privateStatsHtml}
+                        </div>
+                        ${soldStatsHtml}
                         </div>
                     </div>
                 </div>
