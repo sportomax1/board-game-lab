@@ -902,11 +902,13 @@
             
             <!-- Sold/Available Filter -->
             <div style="margin-top: 16px;">
-                <div class="search-label">💰 Sold Status</div>
-                <div class="search-type-buttons">
-                    <button class="search-type-btn active" data-sold-filter="all" onclick="setSoldFilter('all')">All Items</button>
-                    <button class="search-type-btn" data-sold-filter="sold" onclick="setSoldFilter('sold')">Sold Only</button>
-                    <button class="search-type-btn" data-sold-filter="available" onclick="setSoldFilter('available')">Available Only</button>
+                <div style="display: flex; align-items: center; gap: 12px; margin-bottom: 4px;">
+                    <div class="search-label" style="margin: 0;">💰 Sold Status</div>
+                    <div class="search-type-buttons" style="margin: 0; flex: 1;">
+                        <button class="search-type-btn active" data-sold-filter="all" onclick="setSoldFilter('all')">All Items</button>
+                        <button class="search-type-btn" data-sold-filter="sold" onclick="setSoldFilter('sold')">Sold Only</button>
+                        <button class="search-type-btn" data-sold-filter="available" onclick="setSoldFilter('available')">Available Only</button>
+                    </div>
                 </div>
             </div>
             
@@ -2314,14 +2316,50 @@ function calculateGlobalGameStats() {
             const gameStats = calculateGameStats(objectId, sourceFile);
             const globalStats = globalGameStats[objectId]; // Look up the global stats
         
+        // Calculate sold statistics
+        const allSoldItems = allItems.filter(i => {
+            const isSameGame = i.getAttribute('objectid') === objectId;
+            return isSameGame && isSold(i);
+        });
+        
+        const soldPrices = allSoldItems.map(i => {
+            const priceAttr = i.getAttribute('price');
+            if (priceAttr) return parseFloat(priceAttr);
+            const bodyText = i.querySelector('body')?.textContent || '';
+            const priceMatch = bodyText.match(/\$(\d+(?:\.\d{2})?)/);
+            return priceMatch ? parseFloat(priceMatch[1]) : null;
+        }).filter(p => p !== null);
+        
+        const thisListingSoldPrice = (itemIsSold && displayPrice) ? parseFloat(displayPrice) : null;
+        const thisListingSoldCount = itemIsSold ? 1 : null;
+        
+        // Calculate sold stats for This VFM
+        const thisVFMSoldItems = allSoldItems.filter(i => i.getAttribute('geeklist-id') === geeklistId);
+        const thisVFMSoldPrices = thisVFMSoldItems.map(i => {
+            const priceAttr = i.getAttribute('price');
+            if (priceAttr) return parseFloat(priceAttr);
+            const bodyText = i.querySelector('body')?.textContent || '';
+            const priceMatch = bodyText.match(/\$(\d+(?:\.\d{2})?)/);
+            return priceMatch ? parseFloat(priceMatch[1]) : null;
+        }).filter(p => p !== null);
+        const thisVFMSoldAvg = thisVFMSoldPrices.length > 0 ? thisVFMSoldPrices.reduce((a, b) => a + b, 0) / thisVFMSoldPrices.length : null;
+        const thisVFMSoldCount = thisVFMSoldItems.length;
+        
+        // Calculate sold stats for All VFM
+        const allVFMSoldAvg = soldPrices.length > 0 ? soldPrices.reduce((a, b) => a + b, 0) / soldPrices.length : null;
+        const allVFMSoldCount = soldPrices.length;
+        
         let statsHtml = '';
 
 statsHtml += `
     <table class="mini-stats-table">
         <thead>
             <tr>
-                <th>&nbsp;</th> <th>Price</th>
+                <th>&nbsp;</th>
+                <th>Price</th>
                 <th>Count</th>
+                <th>Sold Price</th>
+                <th>Sold Count</th>
             </tr>
         </thead>
         <tbody>
@@ -2330,8 +2368,10 @@ statsHtml += `
 statsHtml += `
             <tr>
                 <td>This Listing</td>
-                <td style="font-weight: bold; **font-size: 22px;**">$${formattedPrice}</td>                
+                <td style="font-weight: bold; font-size: 22px;">$${formattedPrice}</td>
                 <td></td>
+                <td style="font-weight: bold; font-size: 22px;">${thisListingSoldPrice !== null ? '$' + thisListingSoldPrice.toFixed(2) : ''}</td>
+                <td>${thisListingSoldCount !== null ? thisListingSoldCount : ''}</td>
             </tr>
     `;
 
@@ -2342,6 +2382,8 @@ if (gameStats) {
                 <td>This VFM</td>
                 <td>$${gameStats.avg.toFixed(2)}</td>
                 <td>${gameStats.count}</td>
+                <td>${thisVFMSoldAvg !== null ? '$' + thisVFMSoldAvg.toFixed(2) : ''}</td>
+                <td>${thisVFMSoldCount > 0 ? thisVFMSoldCount : ''}</td>
             </tr>
     `;
 }
@@ -2354,6 +2396,8 @@ if (globalStats) {
                 <td>All VFM</td>
                 <td>$${globalAvgDisplay}</td>
                 <td>${globalStats.count}</td>
+                <td>${allVFMSoldAvg !== null ? '$' + allVFMSoldAvg.toFixed(2) : ''}</td>
+                <td>${allVFMSoldCount > 0 ? allVFMSoldCount : ''}</td>
             </tr>
     `;
 }
@@ -2365,8 +2409,11 @@ if (pData && pData.pricePaid) {
     statsHtml += `
             <tr>
                 <td style="font-weight: bold;">Price Paid:</td>
-                <td style="font-weight: bold; **font-size: 16px;**">$${paidPrice}</td>
-                <td>—</td> </tr>
+                <td style="font-weight: bold; font-size: 16px;">$${paidPrice}</td>
+                <td>—</td>
+                <td></td>
+                <td></td>
+            </tr>
     `;
 }
 
@@ -2374,23 +2421,6 @@ statsHtml += `
         </tbody>
     </table>
 `;
-        
-        // --- NEW: Sold item stats (price + duplicate count) ---
-        let soldStatsHtml = '';
-        if (itemIsSold && displayPrice) {
-            // Count how many times this game appears in SOLD listings
-            const soldListings = allItems.filter(i => {
-                const isSameGame = i.getAttribute('objectid') === objectId;
-                const isItemSold = isSold(i);
-                return isSameGame && isItemSold;
-            });
-            
-            soldStatsHtml = `
-                <div class="private-stats" style="background: #fff3cd; padding: 6px 8px; border-radius: 4px; margin-top: 4px;">
-                    💰 <strong>$${displayPrice}</strong> • 📊 Appears in <strong>${soldListings.length}</strong> sold listing${soldListings.length !== 1 ? 's' : ''}
-                </div>
-            `;
-        }
         
         // --- NEW: Add Rank and Average (Request 3) ---
         let privateStatsHtml = '';
@@ -2452,9 +2482,8 @@ statsHtml += `
                         <div class="card-top-row">
                             <div>
                                 <div class="game-name" style="cursor: pointer;" onclick="quickFilter('game', '${objectName.replace(/'/g, "\\'")}')">${objectName}</div>
-                                <div class="username" style="cursor: pointer;" onclick="quickFilter('user', '${username.replace(/'/g, "\\'")}')">@${username}</div>
+                                ${buyerName ? `<div style="color: #666; font-size: 0.85em; margin-top: 2px;"><span style="cursor: pointer;" onclick="quickFilter('user', '${username.replace(/'/g, "\\'")}')">@${username}</span> <span style="color: #10b981; font-weight: 600;">></span> <span style="cursor: pointer; color: #10b981; font-weight: 600;" onclick="quickFilter('user', '${buyerName.replace(/'/g, "\\'")}')">@${buyerName}</span></div>` : `<div class="username" style="cursor: pointer;" onclick="quickFilter('user', '${username.replace(/'/g, "\\'")}')">@${username}</div>`}
                                 ${userDetailsHtml}
-                                ${buyerName ? `<div class="buyer-info" style="color: #10b981; font-size: 0.85em; font-weight: 600; margin-top: 2px;">✓ Sold to <span style="cursor: pointer;" onclick="quickFilter('user', '${buyerName.replace(/'/g, "\\'")}')">${buyerName}</span></div>` : ''}
                                 <div class="geeklist-badge">${sourceLabel}</div>
                             </div>
                             <div class="badge-group">
@@ -2468,7 +2497,6 @@ statsHtml += `
 </div>
                             ${privateStatsHtml}
                         </div>
-                        ${soldStatsHtml}
                         </div>
                     </div>
                 </div>
