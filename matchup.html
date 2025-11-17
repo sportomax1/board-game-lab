@@ -420,6 +420,15 @@
                     <!-- Tournament structure rendered here -->
                 </div>
             </div>
+            
+            <!-- Bracket Results Visualization -->
+            <div id="bracketResultsView" class="hidden bg-white rounded-lg shadow p-4 mb-4">
+                <div class="flex justify-between items-center mb-3">
+                    <h3 class="font-bold text-gray-900">🏅 Tournament Bracket</h3>
+                    <button onclick="document.getElementById('bracketResultsView').classList.add('hidden')" class="text-xs text-gray-500 hover:text-gray-700">✕</button>
+                </div>
+                <div id="bracketResultsContent" class="space-y-4"></div>
+            </div>
 
             <!-- No More Games -->
             <div id="noGames" class="hidden text-center py-12">
@@ -2466,9 +2475,10 @@
             // Record winner in this matchup
             const matchup = currentRoundData.matchups[matchupIndex];
             const winnerGame = matchup.left.id === winnerId ? matchup.left : matchup.right;
+            const loserGame = matchup.left.id === winnerId ? matchup.right : matchup.left;
             
             matchup.winner = winnerGame;
-            console.log(`[BRACKET] R${round} Matchup ${matchupIndex + 1}: ${winnerGame.name} wins!`);
+            console.log(`[BRACKET] R${round} Matchup ${matchupIndex + 1}: ${winnerGame.name} defeats ${loserGame.name}!`);
             
             // Advance to next matchup in this round
             pairingIndex++;
@@ -2485,6 +2495,11 @@
                         .map(m => m.left.id === currentRoundData.matchups.find(mm => mm === m).winner.id ? currentRoundData.matchups.find(mm => mm === m).right : currentRoundData.matchups.find(mm => mm === m).left)
                         .filter(l => l !== null);
                     
+                    console.log(`[DOUBLE ELIM] R${round} Complete - ${losers.length} games dropped to losers bracket for "second chance"`);
+                    losers.forEach((loser, idx) => {
+                        console.log(`  └─ ${idx + 1}. ${loser.name} (1 loss, still alive!)`);
+                    });
+                    
                     // Create losers bracket matchups for this round's losers
                     const losersMatchups = [];
                     for (let i = 0; i < losers.length; i += 2) {
@@ -2494,6 +2509,7 @@
                                 right: losers[i + 1],
                                 winner: null
                             });
+                            console.log(`  ├─ Losers Bracket: ${losers[i].name} vs ${losers[i + 1].name}`);
                         }
                     }
                     
@@ -2505,7 +2521,7 @@
                             matchups: losersMatchups,
                             complete: false
                         };
-                        console.log(`[BRACKET] Double Elimination: Losers bracket R${round} created with ${losersMatchups.length} matchups`);
+                        console.log(`[DOUBLE ELIM] ✅ Losers bracket R${round} created with ${losersMatchups.length} matches (double elim active!)`);
                     }
                 }
                 
@@ -2672,6 +2688,65 @@
         window.toggleBracketView = () => {
             document.getElementById('bracketView').classList.toggle('hidden');
         };
+        
+        // Show bracket results with winner progression and photos
+        function showBracketResults() {
+            if (!bracketState || !bracketState.champion) return;
+            
+            const bracketResultsView = document.getElementById('bracketResultsView');
+            const bracketResultsContent = document.getElementById('bracketResultsContent');
+            
+            let html = '';
+            
+            // Build visualization for each round
+            for (let r = 1; r <= bracketState.totalRounds; r++) {
+                const roundData = bracketState.roundsData[r];
+                if (!roundData) continue;
+                
+                const isChampionshipRound = r === bracketState.totalRounds;
+                const roundTitle = isChampionshipRound ? '🏆 Championship' : `Round ${r}`;
+                
+                html += `<div class="bg-gray-50 rounded p-3">`;
+                html += `<div class="font-bold text-gray-900 mb-2 text-sm">${roundTitle}</div>`;
+                html += `<div class="space-y-2">`;
+                
+                roundData.matchups.forEach((match, idx) => {
+                    const winner = match.winner;
+                    const loser = match.left.id === winner?.id ? match.right : match.left;
+                    
+                    if (winner && loser) {
+                        html += `
+                            <div class="flex items-center gap-2 text-xs bg-white p-2 rounded border border-gray-200">
+                                <div class="flex-1 text-center">
+                                    <img src="${loser.image}" alt="${loser.name}" class="w-8 h-8 rounded object-cover mx-auto mb-1" onerror="this.src='/images/placeholder.png'">
+                                    <div class="text-gray-600 line-clamp-1 text-xs">${loser.name}</div>
+                                </div>
+                                <div class="text-gray-400 font-bold text-xs">vs</div>
+                                <div class="flex-1 text-center">
+                                    <img src="${winner.image}" alt="${winner.name}" class="w-8 h-8 rounded object-cover mx-auto mb-1 border-2 border-green-400" onerror="this.src='/images/placeholder.png'">
+                                    <div class="text-green-700 font-bold line-clamp-1 text-xs">${winner.name}</div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                });
+                
+                html += `</div></div>`;
+            }
+            
+            // Add champion summary
+            const champion = bracketState.champion;
+            html += `
+                <div class="bg-yellow-50 border-2 border-yellow-300 rounded p-3 text-center">
+                    <div class="text-sm font-bold text-yellow-900 mb-2">🥇 CHAMPION 🥇</div>
+                    <img src="${champion.image}" alt="${champion.name}" class="w-16 h-16 rounded object-cover mx-auto mb-2" onerror="this.src='/images/placeholder.png'">
+                    <div class="font-bold text-lg text-yellow-900">${champion.name}</div>
+                </div>
+            `;
+            
+            bracketResultsContent.innerHTML = html;
+            bracketResultsView.classList.remove('hidden');
+        }
 
         // Record round robin result
         function recordRoundRobinResult() {
@@ -3053,6 +3128,12 @@
             console.log('[TOURNAMENT] Ending session automatically - tournament complete');
             document.getElementById('matchupCard').classList.add('hidden');
             document.getElementById('noGames').classList.remove('hidden');
+            
+            // For bracket mode, show bracket visualization with results
+            if (gameMode === 'bracket' && bracketState && bracketState.champion) {
+                showBracketResults();
+            }
+            
             document.getElementById('noGames').innerHTML = `
                 <div class="text-center py-12">
                     <div class="text-6xl mb-4">🏆</div>
