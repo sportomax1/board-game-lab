@@ -143,6 +143,10 @@
                         <label for="retroModeToggle" class="text-sm font-semibold text-purple-900 cursor-pointer">⏰ Retro Mode (Past Date)</label>
                     </div>
                     <input type="date" id="retroModeDate" class="w-full border rounded px-2 py-1 text-xs hidden" onchange="updateRetroModeDate()">
+                    <div class="flex items-center gap-2 mt-2 hidden" id="retroPrevOwnedContainer">
+                        <input type="checkbox" id="includePrevOwnedToggle" onchange="reloadGamesWithPrevOwned()" class="w-4 h-4 text-purple-600 rounded cursor-pointer">
+                        <label for="includePrevOwnedToggle" class="text-xs font-medium text-purple-800 cursor-pointer">📦 Include Previously Owned</label>
+                    </div>
                 </div>
                 
                 <div class="flex gap-2 mb-3">
@@ -408,6 +412,7 @@
         let checkoutGroupingMode = 'day'; // day, week, month, quarter, year - for Daily Records grouping
         let retroModeEnabled = false; // Retro mode toggle state
         let retroModeDate = null; // Selected date for retro mode
+        let includePreviouslyOwned = false; // Include previously owned games during retro adds
         let checkoutCounts = {}; // { gameId: count } - total checkouts per game
 
         // Initialize Firebase
@@ -477,9 +482,12 @@
             document.getElementById('loading').classList.remove('hidden');
             
             try {
+                // Build filter: include previously owned games if retro mode is enabled
+                const ownFilter = includePreviouslyOwned ? {} : { own: 1 };
+                
                 const text = await fetchBGG('collection', {
                     username: bggUsername,
-                    own: 1,
+                    ...ownFilter,
                     stats: 1
                 });
                 
@@ -491,7 +499,8 @@
                     name: item.querySelector('name').textContent,
                     year: item.querySelector('yearpublished')?.textContent || 'N/A',
                     image: item.querySelector('thumbnail')?.textContent || '',
-                    rating: parseFloat(item.querySelector('rating')?.getAttribute('value') || 0)
+                    rating: parseFloat(item.querySelector('rating')?.getAttribute('value') || 0),
+                    owned: item.getAttribute('subtype') === 'boardgame' ? (item.querySelector('status')?.getAttribute('own') === '1') : false
                 }));
                 
                 if (allGames.length === 0) {
@@ -664,12 +673,15 @@
                 }
                 const playCount = plays?.playCount || 0;
                 
+                // Show badge if game is previously owned (not currently in collection)
+                const prevOwnedBadge = includePreviouslyOwned && game.owned === false ? '<span class="ml-1 text-xs bg-gray-200 text-gray-700 px-1 rounded">Previously Owned</span>' : '';
+                
                 return `
                     <div class="bg-white rounded-lg shadow p-3 game-card" id="game-${game.id}">
                         <div class="flex items-start gap-3">
                             <img src="${game.image}" alt="${game.name}" class="w-16 h-20 rounded object-contain bg-gray-100 flex-shrink-0">
                             <div class="flex-1 min-w-0">
-                                <div class="font-bold text-sm truncate">${game.name}</div>
+                                <div class="font-bold text-sm truncate">${game.name}${prevOwnedBadge}</div>
                                 <div class="text-xs text-gray-600 mb-2">${game.year}</div>
                                 <div class="space-y-1 text-xs text-gray-600">
                                     <div>📤 Checkout: <span class="font-medium ${isCheckoutDefault ? 'text-gray-400 italic' : ''}">${lastCheckoutText}</span> (${checkoutCount})</div>
@@ -751,22 +763,34 @@
         window.toggleRetroMode = () => {
             retroModeEnabled = document.getElementById('retroModeToggle').checked;
             const dateInput = document.getElementById('retroModeDate');
+            const prevOwnedContainer = document.getElementById('retroPrevOwnedContainer');
             
             if (retroModeEnabled) {
                 dateInput.classList.remove('hidden');
+                prevOwnedContainer.classList.remove('hidden');
                 // Set default date to today
                 const today = new Date().toISOString().split('T')[0];
                 dateInput.value = today;
                 retroModeDate = today;
             } else {
                 dateInput.classList.add('hidden');
+                prevOwnedContainer.classList.add('hidden');
                 retroModeDate = null;
+                includePreviouslyOwned = false;
+                document.getElementById('includePrevOwnedToggle').checked = false;
             }
         };
         
         // Update retro mode date
         window.updateRetroModeDate = () => {
             retroModeDate = document.getElementById('retroModeDate').value;
+        };
+        
+        // Reload games with/without previously owned games
+        window.reloadGamesWithPrevOwned = async () => {
+            includePreviouslyOwned = document.getElementById('includePrevOwnedToggle').checked;
+            console.log(`[RETRO] ${includePreviouslyOwned ? 'Including' : 'Excluding'} previously owned games`);
+            await loadGames();
         };
         
         // Change checkout sort mode
