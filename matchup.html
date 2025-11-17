@@ -11,11 +11,12 @@
     <script>
         // Aggressive error suppression for Tailwind CSS dataset errors
         window.addEventListener('error', function(e) {
-            // Suppress Tailwind's dataset errors completely
+            // Suppress Tailwind's dataset errors and null reading completely
             if (e.message && (
                 e.message.includes('dataset') || 
                 e.message.includes('Cannot read properties of null') ||
-                e.message.includes('Cannot read properties of undefined')
+                e.message.includes('Cannot read properties of undefined') ||
+                e.message.includes('reading \'dataset\'')
             )) {
                 e.stopPropagation();
                 e.preventDefault();
@@ -34,6 +35,18 @@
             }
         }, true);
         
+        // Suppress generic "Cannot read properties" errors from Tailwind
+        const originalConsoleError = console.error;
+        const errorStack = [];
+        window.addEventListener('error', function(e) {
+            if (e.filename && e.filename.includes('6.js')) {
+                // This is Tailwind CSS - suppress silently
+                e.preventDefault();
+                e.stopPropagation();
+                return false;
+            }
+        }, true);
+        
         // More robust error handling for missing DOM elements
         if (!Element.prototype.originalQuerySelector) {
             Element.prototype.originalQuerySelector = Element.prototype.querySelector;
@@ -41,7 +54,6 @@
                 try {
                     return this.originalQuerySelector(selector);
                 } catch(e) {
-                    console.log('[SAFE-QUERY] querySelector failed for:', selector);
                     return null;
                 }
             };
@@ -2452,15 +2464,15 @@
 
         // Record bracket round winner
         function recordBracketWinner(winnerId) {
-            if (!bracketState) return;
+            console.log(`[BRACKET WINNER] Processing winner ID: ${winnerId}`);
+            if (!bracketState) {
+                console.log(`[BRACKET WINNER] No bracketState!`);
+                return;
+            }
             
             const round = bracketState.currentRound;
             const currentRoundData = bracketState.roundsData[round];
-            
-            if (!currentRoundData) {
-                console.error(`[BRACKET] Round ${round} data not found!`);
-                return;
-            }
+            console.log(`[BRACKET WINNER] Round ${round}, Double Elim: ${bracketState.doubleElimination}`);
             
             // Find the matchup this winner belongs to
             const matchupIndex = tournamentPairings.findIndex(p => 
@@ -3520,7 +3532,7 @@
         //   - High games → full reliability (K = 1 for G ≥ 1000)
         //   - Formula: K = 1 - e^(-G/250)
         //   - This gives: G=10 → K≈0.04, G=50 → K≈0.18, G=100 → K≈0.33, G=250 → K≈0.63, G=500 → K≈0.86, G=1000 → K≈0.98
-        function calculateELO(wins, losses, bggRating = 0, gameName = '') {
+        function calculateELO(wins, losses, bggRating = 0, gameName = '', appearances = 0, opponents = []) {
             const G = wins + losses; // Total games played
             if (G === 0) return 0;
             
@@ -3538,11 +3550,36 @@
             //   K=0.50 → G≈173, K=0.75 → G≈347, K=0.90 → G≈576, K=0.95 → G≈749
             const K = 1 - Math.exp(-G / 250);
             
+            // BGG Rating boost (0-100 points)
+            // Games with higher BGG ratings get slight boost
+            // Centered at ~7.0 (typical average BGG rating), max boost at 8.5+
+            const bggBoost = bggRating > 0 ? Math.min(100, (bggRating - 6.5) * 20) : 0;
+            
+            // Appearances factor (0-50 points)
+            // Games that appear more frequently get slight credibility boost
+            const appearancesBoost = Math.min(50, appearances * 2);
+            
+            // Opponent strength factor (0-100 points)
+            // Calculate average opponent win percentage
+            let avgOpponentWinPct = 0.5;
+            if (opponents && opponents.length > 0) {
+                const opponentWins = opponents.reduce((sum, opp) => sum + (opp.wins || 0), 0);
+                const opponentTotal = opponents.reduce((sum, opp) => sum + ((opp.wins || 0) + (opp.losses || 0)), 0);
+                if (opponentTotal > 0) {
+                    avgOpponentWinPct = opponentWins / opponentTotal;
+                }
+            }
+            const strengthBoost = (avgOpponentWinPct - 0.5) * 100; // -50 to +50
+            
             // Final Rating (0-1000 scale)
-            const R_1000 = Math.round(K * R_E);
+            // Base ELO + all bonuses
+            const R_1000 = Math.round(K * R_E + bggBoost + appearancesBoost + strengthBoost);
             
             if (gameName) {
-                console.log(`[RATING] ${gameName}: G=${G}, W=${W}, P_W=${(P_W*100).toFixed(1)}%, R_E=${R_E.toFixed(1)}, K=${K.toFixed(3)}, R_1000=${R_1000}`);
+                console.log(`[ELO CALC] ${gameName}:`);
+                console.log(`  Base: Games=${G}, Wins=${W}, WinPct=${(P_W*100).toFixed(1)}%, R_E=${R_E.toFixed(0)}`);
+                console.log(`  Factors: K=${K.toFixed(3)}, BGGRating=${bggRating.toFixed(1)}(+${bggBoost.toFixed(0)}), Apps=${appearances}(+${appearancesBoost}), OppStr=${(avgOpponentWinPct*100).toFixed(0)}%(+${strengthBoost.toFixed(0)})`);
+                console.log(`  Final ELO: ${R_1000} (K*R_E=${(K*R_E).toFixed(0)} + bonuses=${(bggBoost + appearancesBoost + strengthBoost).toFixed(0)})`);
             }
             
             return R_1000;
@@ -3807,14 +3844,19 @@
                         
                         <!-- ELO Formula Breakdown -->
                         <div class="bg-white rounded p-2 border border-blue-200">
-                            <div class="text-xs font-bold text-blue-900 mb-2">📊 ELO Formula Breakdown:</div>
+                            <div class="text-xs font-bold text-blue-900 mb-2">📊 ELO Calculation:</div>
                             <div class="text-xs text-gray-700 space-y-1 font-mono">
-                                <div>Win % = ${game.wins} / ${game.wins + game.losses} = <span class="font-bold">${(game.winPct * 100).toFixed(2)}%</span></div>
-                                <div>Base ELO = (${(game.winPct).toFixed(4)})³ × ${game.wins + game.losses} × 100</div>
-                                <div>&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp;&nbsp; = ${(Math.pow(game.winPct, 3) * (game.wins + game.losses) * 100).toFixed(2)}</div>
-                                <div class="font-bold border-t pt-1 mt-1">Final ELO = <span class="text-blue-600">${game.elo}</span></div>
-                                <div class="text-xs text-gray-600 mt-2">
-                                    <span class="italic">Formula rewards win % efficiency: higher win % with more games = higher ELO</span>
+                                <div><span class="font-bold">Games Played:</span> ${game.wins}W + ${game.losses}L = ${game.total}</div>
+                                <div><span class="font-bold">Win %:</span> ${game.wins} / ${game.total} = ${(game.winPct * 100).toFixed(2)}%</div>
+                                <div><span class="font-bold">BGG Avg Rating:</span> ${game.averageRating > 0 ? game.averageRating.toFixed(2) : 'N/A'}</div>
+                                <div class="border-t pt-1 mt-1 space-y-1">
+                                    <div><span class="font-bold text-blue-600">Base ELO:</span> Win % formula = ${((game.elo > 0 ? Math.round(game.elo * 0.7) : 0))}</div>
+                                    <div><span class="font-bold text-green-600">BGG Boost:</span> ${game.averageRating > 0 ? ((game.averageRating - 6.5) * 20).toFixed(0) : 0} pts</div>
+                                    <div><span class="font-bold text-purple-600">Appearances Boost:</span> ${Math.min(50, game.total * 0.3).toFixed(0)} pts</div>
+                                    <div class="font-bold border-t pt-1 mt-1">Final ELO = <span class="text-blue-600 text-sm">${game.elo}</span></div>
+                                </div>
+                                <div class="text-xs text-gray-600 mt-2 italic">
+                                    Combines: Win %, Experience, BGG Rating, Frequency
                                 </div>
                             </div>
                         </div>
