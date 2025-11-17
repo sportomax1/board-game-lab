@@ -2510,51 +2510,73 @@
                         console.log(`  └─ ${idx + 1}. ${loser.name} (1 loss, still alive!)`);
                     });
                     
-                    // In double elimination, losers bracket structure:
-                    // - Each W bracket round drops losers to L bracket
-                    // - L bracket games are paired: losers from current W round play first (minor stage)
-                    // - Then L bracket winners play losers from previous W rounds (major stage)
-                    // For simplicity: immediately pair new losers and queue them
+                    // Double elimination structure:
+                    // - Collect losers from current W-bracket round
+                    // - Also collect undefeated L-bracket winners from previous rounds
+                    // - Pair new losers with L-bracket winners in "major" stage
                     
-                    // Get existing losers from losers bracket if they exist and haven't played yet
-                    let allLosersToPlay = [...losersThisRound];
+                    // Get previous round L-bracket winners (if they exist)
+                    let prevRoundLBracketWinners = [];
+                    if (round > 1 && bracketState.losersBracketData[round - 1]) {
+                        const prevLBracketData = bracketState.losersBracketData[round - 1];
+                        if (prevLBracketData.majorWinner) {
+                            prevRoundLBracketWinners.push(prevLBracketData.majorWinner);
+                            console.log(`[DOUBLE ELIM] Found previous L-bracket winner: ${prevLBracketData.majorWinner.name}`);
+                        }
+                    }
                     
                     // Initialize losers bracket data for this round if needed
                     if (!bracketState.losersBracketData[round]) {
                         bracketState.losersBracketData[round] = {
-                            matchups: [],
+                            minorMatchups: [],
+                            majorMatchups: [],
+                            minorWinner: null,
+                            majorWinner: null,
                             complete: false
                         };
                     }
                     
-                    // Pair losers from this round (minor stage of L bracket)
+                    const lBracketData = bracketState.losersBracketData[round];
+                    
+                    // MINOR STAGE: Pair losers from this round (they play each other)
                     const minorMatchups = [];
-                    for (let i = 0; i < allLosersToPlay.length; i += 2) {
-                        if (allLosersToPlay[i] && allLosersToPlay[i + 1]) {
+                    for (let i = 0; i < losersThisRound.length; i += 2) {
+                        if (losersThisRound[i] && losersThisRound[i + 1]) {
                             minorMatchups.push({
-                                left: allLosersToPlay[i],
-                                right: allLosersToPlay[i + 1],
+                                left: losersThisRound[i],
+                                right: losersThisRound[i + 1],
                                 winner: null,
-                                stage: 'minor'  // First stage: losers from same round
+                                stage: 'minor'
                             });
-                            console.log(`  ├─ [Minor] ${allLosersToPlay[i].name} vs ${allLosersToPlay[i + 1].name}`);
+                            console.log(`  ├─ [Minor] ${losersThisRound[i].name} vs ${losersThisRound[i + 1].name}`);
+                        } else if (losersThisRound[i]) {
+                            // Odd loser gets bye to major
+                            minorMatchups.push({
+                                left: losersThisRound[i],
+                                right: null,
+                                winner: losersThisRound[i],  // Bye = auto-advance
+                                stage: 'minor-bye'
+                            });
+                            console.log(`  ├─ [Minor Bye] ${losersThisRound[i].name} advances (odd loser)`);
                         }
                     }
                     
-                    // Store losers bracket matchups
-                    bracketState.losersBracketData[round].matchups = minorMatchups;
-                    console.log(`[DOUBLE ELIM] ✅ Losers bracket R${round} created with ${minorMatchups.length} minor matches (${minorMatchups.length} games to play)`);
+                    // Store minor matchups
+                    lBracketData.minorMatchups = minorMatchups;
+                    console.log(`[DOUBLE ELIM] ✅ L-bracket R${round} minor stage: ${minorMatchups.length} matchups created`);
                     
-                    // Queue losers bracket matchups immediately after winners bracket round
-                    // They play before moving to next winners bracket round
-                    for (const match of minorMatchups) {
-                        tournamentPairings.push({ left: match.left, right: match.right, losersBracketRound: round });
+                    // Queue minor matchups first
+                    for (const match of minorMatchups.filter(m => m.winner === null)) {
+                        tournamentPairings.push({ left: match.left, right: match.right, losersBracketRound: round, stage: 'minor' });
                     }
+                    
+                    // After minor, we'll create major matchups (minor winners vs L-bracket previous winner + new losers)
+                    console.log(`[DOUBLE ELIM] Minor stage queued, major stage will follow after minor completion`);
                 }
                 
                 // Prepare next round or declare champion
                 if (round === bracketState.totalRounds) {
-                    // Final round complete - check if we need to play finals (losers bracket winner vs winners bracket winner)
+                    // Final round complete
                     if (bracketState.doubleElimination && Object.keys(bracketState.losersBracketData).length > 0) {
                         console.log(`[DOUBLE ELIM] Final round complete! Winners bracket champion: ${winnerGame.name}`);
                         console.log(`[DOUBLE ELIM] 📋 Still processing losers bracket to determine finals matchup...`);
@@ -2563,7 +2585,7 @@
                         bracketState.currentRound = nextRound;
                         console.log(`[BRACKET] Moving to Finals Round (W: ${winnerGame.name} vs L: TBD)`);
                     } else {
-                        // Single elimination or losers bracket already complete
+                        // Single elimination
                         bracketState.champion = winnerGame;
                         console.log(`[BRACKET] 🏆 TOURNAMENT CHAMPION: ${winnerGame.name}!`);
                         showTournamentResults();
