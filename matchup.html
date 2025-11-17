@@ -1812,9 +1812,34 @@
             document.getElementById('poolPlayInfo').textContent = info;
         };
 
+        // Game Mode Categories:
+        // CONTINUOUS (Evolving Field): Standard, Winner Stays, Loser Stays, Alternating
+        //   - Games can enter/exit the pool mid-session
+        //   - Session continues until manually ended
+        // TOURNAMENT (Fixed Field): Bracket, Round Robin, Pool Play + Bracket, Swiss
+        //   - Field is set at tournament start, no changes
+        //   - Session automatically ends when tournament completes
+        //   - Each mode has specific completion logic
+        
         // Initialize tournament based on mode
         function initializeTournament(availableGames) {
             const mode = document.getElementById('gameMode').value;
+            
+            // Validate that fixed-field modes have enough games
+            const fixedFieldModes = ['bracket', 'roundrobin', 'poolplay', 'swiss'];
+            if (fixedFieldModes.includes(mode)) {
+                let minGames = 2;
+                if (mode === 'bracket') minGames = parseInt(document.getElementById('bracketSize').value);
+                if (mode === 'roundrobin') minGames = parseInt(document.getElementById('roundrobinSize').value);
+                if (mode === 'poolplay') minGames = parseInt(document.getElementById('poolSize').value) * parseInt(document.getElementById('numPools').value);
+                if (mode === 'swiss') minGames = 16;
+                
+                if (availableGames.length < minGames) {
+                    alert(`Tournament mode requires ${minGames} games. You have ${availableGames.length} available.`);
+                    return;
+                }
+                console.log(`[TOURNAMENT] Fixed-field mode '${mode}' validated with ${availableGames.length} games (need ${minGames})`);
+            }
             
             if (mode === 'bracket') {
                 initializeBracket(availableGames);
@@ -2329,7 +2354,9 @@
         function completePoolPlayPhase() {
             if (!poolPlayState || poolPlayState.phase !== 'pools') return;
             
-            console.log(`[POOL PLAY] 🏆 POOL PLAY PHASE COMPLETE`);
+            console.log(`[POOL PLAY] 🏆 POOL PLAY PHASE COMPLETE - Advancing to Bracket Phase`);
+            const phaseMsg = `Pool Play complete! ${poolPlayState.advancingTeams.length} teams advancing to bracket format.`;
+            console.log(`[POOL PLAY] ${phaseMsg}`);
             
             // Rank teams within each pool and determine who advances
             const advancingTeams = [];
@@ -2452,16 +2479,17 @@
             if (allComplete) {
                 console.log(`[BRACKET] Round ${round} complete!`);
                 
-                // For double elimination, capture losers for losers bracket
-                if (bracketState.doubleElimination && round === 1) {
+                // For double elimination, handle losers bracket at each round
+                if (bracketState.doubleElimination) {
                     const losers = currentRoundData.matchups
-                        .map(m => m.left.id === matchup.winner.id ? m.right : m.left)
+                        .map(m => m.left.id === currentRoundData.matchups.find(mm => mm === m).winner.id ? currentRoundData.matchups.find(mm => mm === m).right : currentRoundData.matchups.find(mm => mm === m).left)
                         .filter(l => l !== null);
                     
-                    const round1LosersMatchups = [];
+                    // Create losers bracket matchups for this round's losers
+                    const losersMatchups = [];
                     for (let i = 0; i < losers.length; i += 2) {
                         if (losers[i] && losers[i + 1]) {
-                            round1LosersMatchups.push({
+                            losersMatchups.push({
                                 left: losers[i],
                                 right: losers[i + 1],
                                 winner: null
@@ -2469,14 +2497,15 @@
                         }
                     }
                     
-                    if (round1LosersMatchups.length > 0) {
-                        bracketState.losersBracketData[1] = {
-                            matchups: round1LosersMatchups,
+                    if (losersMatchups.length > 0) {
+                        if (!bracketState.losersBracketData[round]) {
+                            bracketState.losersBracketData[round] = {};
+                        }
+                        bracketState.losersBracketData[round] = {
+                            matchups: losersMatchups,
                             complete: false
                         };
-                        console.log(`[BRACKET] Losers bracket R1 created with ${round1LosersMatchups.length} matchups`);
-                    }
-                }
+                        console.log(`[BRACKET] Double Elimination: Losers bracket R${round} created with ${losersMatchups.length} matchups`);
                 
                 // Prepare next round or declare champion
                 if (round === bracketState.totalRounds) {
@@ -2734,10 +2763,13 @@
             return progressDiv;
         }
 
-        // Show tournament results
+        // Show tournament results and END SESSION
         function showTournamentResults() {
             tournamentActive = false;
+            sessionMatchupCount = 0; // Reset session counter - tournament is complete
+            document.getElementById('sessionCount').textContent = '0'; // Update display
             const gameMode = document.getElementById('gameMode').value;
+            console.log(`[TOURNAMENT] ${gameMode.toUpperCase()} TOURNAMENT COMPLETE - Session Ended`);
             let resultText = '';
             let resultHTML = '';
             
@@ -3015,11 +3047,30 @@
                 alert(resultText);
             }
             
-            // Reset to standard mode
+            // End session automatically - hide matchup card and show completion message
+            console.log('[TOURNAMENT] Ending session automatically - tournament complete');
+            document.getElementById('matchupCard').classList.add('hidden');
+            document.getElementById('noGames').classList.remove('hidden');
+            document.getElementById('noGames').innerHTML = `
+                <div class="text-center py-12">
+                    <div class="text-6xl mb-4">🏆</div>
+                    <h2 class="text-xl font-bold text-gray-900 mb-2">Tournament Complete!</h2>
+                    <p class="text-gray-600 mb-4">Session ended. Your session matchup counter has been reset.</p>
+                    <button onclick="location.reload()" class="bg-blue-600 text-white px-6 py-2 rounded-lg font-medium">
+                        Start New Session
+                    </button>
+                </div>
+            `;
+            
+            // Reset tournament state completely
             document.getElementById('gameMode').value = 'standard';
             toggleTournamentSettings();
             pairingIndex = 0;
             tournamentPairings = [];
+            bracketState = null;
+            roundRobinState = null;
+            poolPlayState = null;
+            swissState = null;
         }
 
         // Check and show achievements
