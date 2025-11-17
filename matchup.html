@@ -850,6 +850,10 @@
         let lastWinner = null; // Track last winner for winnerstays mode
         let lastLoser = null; // Track last loser for loserstays mode
         let alternatingCount = 0; // Track matchup count for alternating mode
+        
+        // Matchup mode persistence
+        let allGamesPool = []; // Full game collection for rebuilding queues
+        let usedGameIds = new Set(); // Track games already matched in stays mode
 
         // Unlock app with password (defined early for onclick handler)
         window.unlockApp = async () => {
@@ -1323,7 +1327,7 @@
                 
                 // Only shuffle for truly random modes (shuffle ruins intentional sorts)
                 // TOP-ELO, BOTTOM-ELO, LOWEST-APPS, MOST-APPS preserve their ordering
-                const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps'];
+                const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
                 if (!orderPreservingModes.includes(matchupMode)) {
                     games = games.sort(() => Math.random() - 0.5);
                     console.log(`[MATCHUP MODE FILTER] ✓ Games shuffled`);
@@ -1331,6 +1335,10 @@
                     console.log(`[MATCHUP MODE FILTER] ✓ Games order PRESERVED (${matchupMode} mode)`);
                 }
                 console.log(`[MATCHUP MODE FILTER] Final game pool: ${games.length} games ready for matchups\n`);
+                
+                // Store full games pool for rebuilding queue in stays modes
+                allGamesPool = [...games];
+                usedGameIds.clear();
                 
                 if (games.length === 0) {
                     alert(`No games found with current filters. Try different settings.`);
@@ -1467,6 +1475,29 @@
             liveHIndexEl.onclick = () => showHIndexGames(hIndex, gameAppearances, allGamesInCollection);
         }
 
+        // Rebuild games queue based on matchup mode (for stays modes)
+        function rebuildGamesQueue() {
+            console.log(`[REBUILD QUEUE] Rebuilding for matchupMode: ${matchupMode}, used games: ${usedGameIds.size}`);
+            
+            // Filter out used games
+            let availableGames = allGamesPool.filter(g => !usedGameIds.has(g.id));
+            
+            if (availableGames.length === 0) {
+                console.log(`[REBUILD QUEUE] All games used, resetting used games tracker`);
+                usedGameIds.clear();
+                availableGames = [...allGamesPool];
+            }
+            
+            // Re-sort based on matchup mode (don't shuffle order-preserving modes)
+            const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
+            if (!orderPreservingModes.includes(matchupMode)) {
+                availableGames = availableGames.sort(() => Math.random() - 0.5);
+            }
+            
+            games = availableGames;
+            console.log(`[REBUILD QUEUE] Queue rebuilt: ${games.length} games available`);
+        }
+        
         // Show next pair
         function nextPair() {
             // Remove any lingering winner overlays
@@ -1498,33 +1529,60 @@
             const currentGameMode = document.getElementById('gameMode').value;
             
             // Winner Stays mode - winner stays on left, new opponent on right
-            if (currentGameMode === 'winnerstays' && lastWinner && games.length > 0) {
-                left = lastWinner;
-                right = games.pop();
-                console.log(`[WINNER STAYS] ${left.name} stays, ${right.name} challenges`);
+            if (currentGameMode === 'winnerstays' && lastWinner) {
+                if (games.length === 0) {
+                    rebuildGamesQueue();
+                }
+                if (games.length > 0) {
+                    left = lastWinner;
+                    // Use shift for order-preserving modes, pop for random
+                    const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
+                    right = orderPreservingModes.includes(matchupMode) ? games.shift() : games.pop();
+                    usedGameIds.add(right.id);
+                    console.log(`[WINNER STAYS] ${left.name} stays, ${right.name} challenges (mode: ${matchupMode})`);
+                }
             }
             // Loser Stays mode - loser stays on left, new opponent on right
-            else if (currentGameMode === 'loserstays' && lastLoser && games.length > 0) {
-                left = lastLoser;
-                right = games.pop();
-                console.log(`[LOSER STAYS] ${left.name} stays, ${right.name} challenges`);
+            else if (currentGameMode === 'loserstays' && lastLoser) {
+                if (games.length === 0) {
+                    rebuildGamesQueue();
+                }
+                if (games.length > 0) {
+                    left = lastLoser;
+                    // Use shift for order-preserving modes, pop for random
+                    const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
+                    right = orderPreservingModes.includes(matchupMode) ? games.shift() : games.pop();
+                    usedGameIds.add(right.id);
+                    console.log(`[LOSER STAYS] ${left.name} stays, ${right.name} challenges (mode: ${matchupMode})`);
+                }
             }
             // Alternating mode - flip between winner stays and loser stays each matchup
-            else if (currentGameMode === 'alternating' && (lastWinner || lastLoser) && games.length > 0) {
-                // Even matchups: winner stays, odd matchups: loser stays
-                if (alternatingCount % 2 === 1 && lastWinner) {
-                    left = lastWinner;
-                    right = games.pop();
-                    console.log(`[ALTERNATING - WINNER STAYS] ${left.name} stays, ${right.name} challenges`);
-                } else if (alternatingCount % 2 === 0 && lastLoser) {
-                    left = lastLoser;
-                    right = games.pop();
-                    console.log(`[ALTERNATING - LOSER STAYS] ${left.name} stays, ${right.name} challenges`);
-                } else {
-                    // First matchup or missing data - start fresh
-                    left = games.pop();
-                    right = games.pop();
-                    console.log(`[ALTERNATING - START] ${left.name} vs ${right.name}`);
+            else if (currentGameMode === 'alternating' && (lastWinner || lastLoser)) {
+                if (games.length === 0) {
+                    rebuildGamesQueue();
+                }
+                if (games.length > 0) {
+                    // Even matchups: winner stays, odd matchups: loser stays
+                    if (alternatingCount % 2 === 1 && lastWinner) {
+                        left = lastWinner;
+                        const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
+                        right = orderPreservingModes.includes(matchupMode) ? games.shift() : games.pop();
+                        usedGameIds.add(right.id);
+                        console.log(`[ALTERNATING - WINNER STAYS] ${left.name} stays, ${right.name} challenges (mode: ${matchupMode})`);
+                    } else if (alternatingCount % 2 === 0 && lastLoser) {
+                        left = lastLoser;
+                        const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
+                        right = orderPreservingModes.includes(matchupMode) ? games.shift() : games.pop();
+                        usedGameIds.add(right.id);
+                        console.log(`[ALTERNATING - LOSER STAYS] ${left.name} stays, ${right.name} challenges (mode: ${matchupMode})`);
+                    } else {
+                        // First matchup or missing data - start fresh
+                        left = games.pop();
+                        right = games.pop();
+                        if (left) usedGameIds.add(left.id);
+                        if (right) usedGameIds.add(right.id);
+                        console.log(`[ALTERNATING - START] ${left.name} vs ${right.name} (mode: ${matchupMode})`);
+                    }
                 }
             }
             // For modes with intentional ordering, pair consecutive games
