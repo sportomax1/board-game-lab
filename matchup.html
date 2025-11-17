@@ -2490,6 +2490,7 @@
             const loserGame = matchup.left.id === winnerId ? matchup.right : matchup.left;
             
             matchup.winner = winnerGame;
+            matchup.loser = loserGame;  // Track losers for double elim
             console.log(`[BRACKET] R${round} Matchup ${matchupIndex + 1}: ${winnerGame.name} defeats ${loserGame.name}!`);
             
             // Advance to next matchup in this round
@@ -2503,46 +2504,70 @@
                 
                 // For double elimination, handle losers bracket at each round
                 if (bracketState.doubleElimination) {
-                    const losers = currentRoundData.matchups
-                        .map(m => m.left.id === currentRoundData.matchups.find(mm => mm === m).winner.id ? currentRoundData.matchups.find(mm => mm === m).right : currentRoundData.matchups.find(mm => mm === m).left)
-                        .filter(l => l !== null);
-                    
-                    console.log(`[DOUBLE ELIM] R${round} Complete - ${losers.length} games dropped to losers bracket for "second chance"`);
-                    losers.forEach((loser, idx) => {
+                    const losersThisRound = currentRoundData.matchups.map(m => m.loser).filter(l => l !== null);
+                    console.log(`[DOUBLE ELIM] R${round} Complete - ${losersThisRound.length} games dropped to losers bracket for "second chance"`);
+                    losersThisRound.forEach((loser, idx) => {
                         console.log(`  └─ ${idx + 1}. ${loser.name} (1 loss, still alive!)`);
                     });
                     
-                    // Create losers bracket matchups for this round's losers
-                    const losersMatchups = [];
-                    for (let i = 0; i < losers.length; i += 2) {
-                        if (losers[i] && losers[i + 1]) {
-                            losersMatchups.push({
-                                left: losers[i],
-                                right: losers[i + 1],
-                                winner: null
+                    // In double elimination, losers bracket structure:
+                    // - Each W bracket round drops losers to L bracket
+                    // - L bracket games are paired: losers from current W round play first (minor stage)
+                    // - Then L bracket winners play losers from previous W rounds (major stage)
+                    // For simplicity: immediately pair new losers and queue them
+                    
+                    // Get existing losers from losers bracket if they exist and haven't played yet
+                    let allLosersToPlay = [...losersThisRound];
+                    
+                    // Initialize losers bracket data for this round if needed
+                    if (!bracketState.losersBracketData[round]) {
+                        bracketState.losersBracketData[round] = {
+                            matchups: [],
+                            complete: false
+                        };
+                    }
+                    
+                    // Pair losers from this round (minor stage of L bracket)
+                    const minorMatchups = [];
+                    for (let i = 0; i < allLosersToPlay.length; i += 2) {
+                        if (allLosersToPlay[i] && allLosersToPlay[i + 1]) {
+                            minorMatchups.push({
+                                left: allLosersToPlay[i],
+                                right: allLosersToPlay[i + 1],
+                                winner: null,
+                                stage: 'minor'  // First stage: losers from same round
                             });
-                            console.log(`  ├─ Losers Bracket: ${losers[i].name} vs ${losers[i + 1].name}`);
+                            console.log(`  ├─ [Minor] ${allLosersToPlay[i].name} vs ${allLosersToPlay[i + 1].name}`);
                         }
                     }
                     
-                    if (losersMatchups.length > 0) {
-                        if (!bracketState.losersBracketData[round]) {
-                            bracketState.losersBracketData[round] = {};
-                        }
-                        bracketState.losersBracketData[round] = {
-                            matchups: losersMatchups,
-                            complete: false
-                        };
-                        console.log(`[DOUBLE ELIM] ✅ Losers bracket R${round} created with ${losersMatchups.length} matches (double elim active!)`);
+                    // Store losers bracket matchups
+                    bracketState.losersBracketData[round].matchups = minorMatchups;
+                    console.log(`[DOUBLE ELIM] ✅ Losers bracket R${round} created with ${minorMatchups.length} minor matches (${minorMatchups.length} games to play)`);
+                    
+                    // Queue losers bracket matchups immediately after winners bracket round
+                    // They play before moving to next winners bracket round
+                    for (const match of minorMatchups) {
+                        tournamentPairings.push({ left: match.left, right: match.right, losersBracketRound: round });
                     }
                 }
                 
                 // Prepare next round or declare champion
                 if (round === bracketState.totalRounds) {
-                    // Tournament complete
-                    bracketState.champion = winnerGame;
-                    console.log(`[BRACKET] 🏆 TOURNAMENT CHAMPION: ${winnerGame.name}!`);
-                    showTournamentResults();
+                    // Final round complete - check if we need to play finals (losers bracket winner vs winners bracket winner)
+                    if (bracketState.doubleElimination && Object.keys(bracketState.losersBracketData).length > 0) {
+                        console.log(`[DOUBLE ELIM] Final round complete! Winners bracket champion: ${winnerGame.name}`);
+                        console.log(`[DOUBLE ELIM] 📋 Still processing losers bracket to determine finals matchup...`);
+                        // Don't declare winner yet - losers bracket must finish
+                        const nextRound = round + 1;
+                        bracketState.currentRound = nextRound;
+                        console.log(`[BRACKET] Moving to Finals Round (W: ${winnerGame.name} vs L: TBD)`);
+                    } else {
+                        // Single elimination or losers bracket already complete
+                        bracketState.champion = winnerGame;
+                        console.log(`[BRACKET] 🏆 TOURNAMENT CHAMPION: ${winnerGame.name}!`);
+                        showTournamentResults();
+                    }
                 } else {
                     // Prepare next round
                     const nextRound = round + 1;
@@ -3320,9 +3345,13 @@
                         showContinuePrompt();
                     }, 1000);
                 } else {
-                    // Show next pair after brief highlight animation
+                    // Show next pair after brief highlight animation (only if tournament not just ended)
                     setTimeout(() => {
-                        nextPair();
+                        if (tournamentActive) {
+                            nextPair();
+                        } else {
+                            console.log('[MATCHUP] Tournament ended - not loading new matchups');
+                        }
                         isProcessingSelection = false;
                     }, 1000);
                 }
@@ -3582,7 +3611,8 @@
                 console.log(`  Final ELO: ${R_1000} (K*R_E=${(K*R_E).toFixed(0)} + bonuses=${(bggBoost + appearancesBoost + strengthBoost).toFixed(0)})`);
             }
             
-            return R_1000;
+            // Return object with both ELO and opponent win percentage for display
+            return { elo: R_1000, avgOpponentWinPct: avgOpponentWinPct };
         }
 
         // Get BGG rating for tiebreaker
@@ -3772,12 +3802,39 @@
                 const gameData = allGamesInCollection.find(game => game.id === g.id);
                 const averageRating = gameData ? (gameData.averageRating || 0) : 0;
                 
+                // Calculate opponent list and their win percentages
+                const opponents = new Set();
+                allMatchups.forEach(m => {
+                    if (m.winnerId === g.id) {
+                        opponents.add(m.loserId);
+                    }
+                    if (m.loserId === g.id) {
+                        opponents.add(m.winnerId);
+                    }
+                });
+                const opponentArray = Array.from(opponents);
+                
+                // Calculate average opponent win percentage
+                let avgOpponentWinPct = 0.5;
+                if (opponentArray.length > 0) {
+                    const oppWinPcts = opponentArray.map(oppId => {
+                        const oppStats = stats[oppId];
+                        if (!oppStats) return 0.5;
+                        const oppTotal = oppStats.wins + oppStats.losses;
+                        return oppTotal > 0 ? oppStats.wins / oppTotal : 0.5;
+                    });
+                    avgOpponentWinPct = oppWinPcts.reduce((a, b) => a + b, 0) / oppWinPcts.length;
+                }
+                
+                const eloData = calculateELO(g.wins, g.losses, averageRating, g.name, g.wins + g.losses, opponentArray);
+                
                 return {
                     ...g,
                     total: g.wins + g.losses,
                     winPct: g.wins / (g.wins + g.losses),
                     averageRating: averageRating,
-                    elo: calculateELO(g.wins, g.losses, averageRating, g.name)
+                    avgOpponentWinPct: avgOpponentWinPct,
+                    elo: eloData.elo || 0
                 };
             });
 
@@ -3842,6 +3899,15 @@
                             </div>
                         </div>
                         
+                        <!-- Opponent Win % and Records -->
+                        <div class="bg-white rounded p-2 border border-orange-200">
+                            <div class="text-xs font-bold text-orange-900 mb-2">👥 Opponents:</div>
+                            <div class="text-xs text-gray-700 space-y-1">
+                                <div><span class="font-bold">Avg Opponent Win %:</span> ${(game.avgOpponentWinPct * 100).toFixed(1)}%</div>
+                                <div class="text-xs text-gray-600">Quality measure: Higher = tougher opponents beaten</div>
+                            </div>
+                        </div>
+                        
                         <!-- ELO Formula Breakdown -->
                         <div class="bg-white rounded p-2 border border-blue-200">
                             <div class="text-xs font-bold text-blue-900 mb-2">📊 ELO Calculation:</div>
@@ -3849,14 +3915,16 @@
                                 <div><span class="font-bold">Games Played:</span> ${game.wins}W + ${game.losses}L = ${game.total}</div>
                                 <div><span class="font-bold">Win %:</span> ${game.wins} / ${game.total} = ${(game.winPct * 100).toFixed(2)}%</div>
                                 <div><span class="font-bold">BGG Avg Rating:</span> ${game.averageRating > 0 ? game.averageRating.toFixed(2) : 'N/A'}</div>
+                                <div><span class="font-bold text-orange-600">Opponent Avg Win %:</span> ${(game.avgOpponentWinPct * 100).toFixed(1)}%</div>
                                 <div class="border-t pt-1 mt-1 space-y-1">
                                     <div><span class="font-bold text-blue-600">Base ELO:</span> Win % formula = ${((game.elo > 0 ? Math.round(game.elo * 0.7) : 0))}</div>
                                     <div><span class="font-bold text-green-600">BGG Boost:</span> ${game.averageRating > 0 ? ((game.averageRating - 6.5) * 20).toFixed(0) : 0} pts</div>
                                     <div><span class="font-bold text-purple-600">Appearances Boost:</span> ${Math.min(50, game.total * 0.3).toFixed(0)} pts</div>
+                                    <div><span class="font-bold text-orange-600">Opponent Strength Bonus:</span> ${(((game.avgOpponentWinPct - 0.5) * 100).toFixed(0))} pts</div>
                                     <div class="font-bold border-t pt-1 mt-1">Final ELO = <span class="text-blue-600 text-sm">${game.elo}</span></div>
                                 </div>
                                 <div class="text-xs text-gray-600 mt-2 italic">
-                                    Combines: Win %, Experience, BGG Rating, Frequency
+                                    Combines: Win %, Experience, BGG Rating, Frequency, Opponent Quality
                                 </div>
                             </div>
                         </div>
