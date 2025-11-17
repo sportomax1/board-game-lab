@@ -134,6 +134,9 @@
                 <label class="block text-sm font-medium text-gray-700 mb-2">Game Mode</label>
                 <select id="gameMode" onchange="toggleTournamentSettings()" class="w-full border rounded-lg px-3 py-2 mb-3 text-sm">
                     <option value="standard" selected>Standard Matchups</option>
+                    <option value="winnerstays">Winner Stays</option>
+                    <option value="loserstays">Loser Stays</option>
+                    <option value="alternating">Alternating (Winner/Loser)</option>
                     <option value="bracket">Bracket Tournament</option>
                     <option value="roundrobin">Round Robin Tournament</option>
                     <option value="poolplay">Pool Play + Bracket</option>
@@ -834,12 +837,19 @@
         let dailyGroupingMode = 'day'; // day, week, month, quarter, year - for Daily tab grouping
 
         // Tournament state
-        let gameMode = 'standard'; // standard, bracket, roundrobin, poolplay, swiss
+        let gameMode = 'standard'; // standard, winnerstays, loserstays, alternating, bracket, roundrobin, poolplay, swiss
         let bracketState = null; // Bracket tournament data
         let roundRobinState = null; // Round robin tournament data
         let poolPlayState = null; // Pool play tournament data
         let swissState = null; // Swiss system tournament data
         let tournamentActive = false;
+        let tournamentPairings = []; // Queue of pairings to play
+        let pairingIndex = 0; // Current pairing progress
+        
+        // Winner/Loser Stays state
+        let lastWinner = null; // Track last winner for winnerstays mode
+        let lastLoser = null; // Track last loser for loserstays mode
+        let alternatingCount = 0; // Track matchup count for alternating mode
         let tournamentPairings = []; // Queue of pairings to play
         let pairingIndex = 0; // Current pairing progress
 
@@ -1487,20 +1497,50 @@
             }
             
             let left, right;
+            const currentGameMode = document.getElementById('gameMode').value;
             
+            // Winner Stays mode - winner stays on left, new opponent on right
+            if (currentGameMode === 'winnerstays' && lastWinner && games.length > 0) {
+                left = lastWinner;
+                right = games.pop();
+                console.log(`[WINNER STAYS] ${left.name} stays, ${right.name} challenges`);
+            }
+            // Loser Stays mode - loser stays on left, new opponent on right
+            else if (currentGameMode === 'loserstays' && lastLoser && games.length > 0) {
+                left = lastLoser;
+                right = games.pop();
+                console.log(`[LOSER STAYS] ${left.name} stays, ${right.name} challenges`);
+            }
+            // Alternating mode - flip between winner stays and loser stays each matchup
+            else if (currentGameMode === 'alternating' && (lastWinner || lastLoser) && games.length > 0) {
+                // Even matchups: winner stays, odd matchups: loser stays
+                if (alternatingCount % 2 === 1 && lastWinner) {
+                    left = lastWinner;
+                    right = games.pop();
+                    console.log(`[ALTERNATING - WINNER STAYS] ${left.name} stays, ${right.name} challenges`);
+                } else if (alternatingCount % 2 === 0 && lastLoser) {
+                    left = lastLoser;
+                    right = games.pop();
+                    console.log(`[ALTERNATING - LOSER STAYS] ${left.name} stays, ${right.name} challenges`);
+                } else {
+                    // First matchup or missing data - start fresh
+                    left = games.pop();
+                    right = games.pop();
+                    console.log(`[ALTERNATING - START] ${left.name} vs ${right.name}`);
+                }
+            }
             // For modes with intentional ordering, pair consecutive games
             // TOP-ELO: #1 vs #2, #3 vs #4, etc. (highest ranked)
             // BOTTOM-ELO: #1 vs #2, #3 vs #4, etc. (lowest ranked)
             // LOWEST-APPS: #1 vs #2, #3 vs #4, etc. (least played)
             // MOST-APPS: #1 vs #2, #3 vs #4, etc. (most played)
             // MOST-WINS, LEAST-WINS, MOST-LOSSES, LEAST-LOSSES: ordered matchups
-            const orderPreservingModes = ['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'];
-            if (orderPreservingModes.includes(matchupMode)) {
+            else if (['top-elo', 'bottom-elo', 'lowest-apps', 'most-apps', 'most-wins', 'least-wins', 'most-losses', 'least-losses'].includes(matchupMode)) {
                 left = games.shift();
                 right = games.shift();
                 console.log(`[PAIRING] ${matchupMode} mode: ${left.name} vs ${right.name}`);
             } else {
-                // Random pairing for other modes
+                // Random pairing for other modes (including first matchup in stays modes)
                 left = games.pop();
                 right = games.pop();
             }
@@ -1673,7 +1713,7 @@
             const poolplayDiv = document.getElementById('poolplaySettingsDiv');
             const swissDiv = document.getElementById('swissSettingsDiv');
             
-            if (gameMode === 'standard') {
+            if (gameMode === 'standard' || gameMode === 'winnerstays' || gameMode === 'loserstays' || gameMode === 'alternating') {
                 tournamentSettings.classList.add('hidden');
             } else {
                 tournamentSettings.classList.remove('hidden');
@@ -3038,6 +3078,16 @@
                 // Record tournament result if in tournament mode
                 if (tournamentActive) {
                     recordTournamentResult(winner.id, loser.id);
+                }
+                
+                // Track winner/loser for stays modes
+                const currentGameMode = document.getElementById('gameMode').value;
+                if (currentGameMode === 'winnerstays' || currentGameMode === 'loserstays' || currentGameMode === 'alternating') {
+                    lastWinner = winner;
+                    lastLoser = loser;
+                    if (currentGameMode === 'alternating') {
+                        alternatingCount++;
+                    }
                 }
                 
                 // Update live appearances
