@@ -148,6 +148,17 @@
                 <button onclick="swipeCard('right')" class="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-bold flex items-center gap-2">
                     ❤️ Save
                 </button>
+                <button onclick="undoCard()" class="px-6 py-3 bg-yellow-600 hover:bg-yellow-700 rounded-lg font-bold flex items-center gap-2" id="undoButton">
+                    ↶ Undo
+                </button>
+            </div>
+            <div class="flex gap-2 justify-center mb-4">
+                <button onclick="showSessionResults()" class="flex-1 px-4 py-2 bg-blue-600 hover:bg-blue-700 rounded-lg font-bold text-sm">
+                    📊 Results
+                </button>
+                <button onclick="exitSession()" class="flex-1 px-4 py-2 bg-gray-600 hover:bg-gray-700 rounded-lg font-bold text-sm">
+                    🚪 Exit
+                </button>
             </div>
             <div class="text-center text-sm text-gray-400">
                 Swipe left to pass, right to save • <span id="likePercentage">0%</span> saved
@@ -203,12 +214,61 @@
         </div>
     </div>
 
+    <!-- ==================== SESSION RESULTS POPUP ==================== -->
+    <div id="sessionResultsPopup" class="hidden fixed inset-0 bg-black/60 backdrop-blur flex items-center justify-center p-4 z-50">
+        <div class="bg-gray-800 rounded-2xl shadow-2xl p-6 border-2 border-pink-500 max-w-md w-full">
+            <h2 class="text-2xl font-bold mb-4 text-pink-400 text-center">📊 Session Progress</h2>
+            
+            <!-- Quick Stats -->
+            <div class="grid grid-cols-2 gap-3 mb-6">
+                <div class="bg-gray-700 rounded-lg p-4 text-center border border-gray-600">
+                    <div class="text-2xl font-bold text-green-400" id="popupSaved">0</div>
+                    <div class="text-xs text-gray-400">Saved</div>
+                </div>
+                <div class="bg-gray-700 rounded-lg p-4 text-center border border-gray-600">
+                    <div class="text-2xl font-bold text-red-400" id="popupPassed">0</div>
+                    <div class="text-xs text-gray-400">Passed</div>
+                </div>
+            </div>
+            
+            <!-- More Stats -->
+            <div class="bg-gray-700 rounded-lg p-4 mb-6 border border-gray-600 text-sm space-y-2">
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Cards Reviewed:</span>
+                    <span class="font-bold text-white" id="popupReviewed">0</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Save Rate:</span>
+                    <span class="font-bold text-white" id="popupSaveRate">0%</span>
+                </div>
+                <div class="flex justify-between">
+                    <span class="text-gray-300">Remaining:</span>
+                    <span class="font-bold text-white" id="popupRemaining">0</span>
+                </div>
+            </div>
+
+            <!-- Recent Saves -->
+            <div class="bg-gray-700 rounded-lg p-3 mb-6 border border-gray-600 max-h-40 overflow-y-auto">
+                <div class="text-xs font-bold text-green-400 mb-2">Recent Saves:</div>
+                <div id="recentSavesList" class="space-y-1 text-xs">
+                    <div class="text-gray-400">None yet</div>
+                </div>
+            </div>
+
+            <!-- Close Button -->
+            <button onclick="hideSessionResults()" class="w-full bg-pink-600 hover:bg-pink-700 text-white py-2 rounded-lg font-bold">
+                Close
+            </button>
+        </div>
+    </div>
+
     <script>
         // ==================== STATE ====================
         let allGames = [];
         let currentCardIndex = 0;
         let savedGames = [];
         let passedGames = [];
+        let cardHistory = []; // Track card decisions for undo
         let touchStartX = 0;
         let touchStartY = 0;
         let currentFilter = 'all';
@@ -229,6 +289,7 @@
             // Reset state
             savedGames = [];
             passedGames = [];
+            cardHistory = [];
             currentCardIndex = 0;
 
             document.getElementById('setupScreen').classList.add('hidden');
@@ -282,6 +343,7 @@
                 console.log(`Starting session: ${sessionLength} games from ${allGames.length} total`);
                 
                 renderCard();
+                updateUndoButton();
             } catch (error) {
                 alert('Error: ' + error.message);
                 document.getElementById('loadingScreen').classList.add('hidden');
@@ -400,22 +462,120 @@
         }
 
         function saveCard() {
-            savedGames.push(allGames[currentCardIndex]);
+            const game = allGames[currentCardIndex];
+            savedGames.push(game);
+            cardHistory.push({ index: currentCardIndex, action: 'save', game: game });
             showFeedback('❤️', 'liked');
             currentCardIndex++;
             setTimeout(() => {
                 document.getElementById('savedCount').textContent = savedGames.length;
+                updateUndoButton();
                 renderCard();
             }, 500);
         }
 
         function passCard() {
-            passedGames.push(allGames[currentCardIndex]);
+            const game = allGames[currentCardIndex];
+            passedGames.push(game);
+            cardHistory.push({ index: currentCardIndex, action: 'pass', game: game });
             showFeedback('✗', 'passed');
             currentCardIndex++;
             setTimeout(() => {
+                updateUndoButton();
                 renderCard();
             }, 500);
+        }
+
+        function undoCard() {
+            if (cardHistory.length === 0) {
+                alert('Nothing to undo!');
+                return;
+            }
+
+            const lastAction = cardHistory.pop();
+            
+            // Remove from saved or passed list
+            if (lastAction.action === 'save') {
+                savedGames = savedGames.filter(g => g.name !== lastAction.game.name || savedGames.indexOf(lastAction.game) !== savedGames.length - 1);
+                savedGames.pop(); // Remove last save
+            } else if (lastAction.action === 'pass') {
+                passedGames.pop(); // Remove last pass
+            }
+            
+            // Go back to previous card
+            currentCardIndex = lastAction.index;
+            
+            // Update UI
+            document.getElementById('savedCount').textContent = savedGames.length;
+            updateUndoButton();
+            renderCard();
+            
+            showFeedback('↶', 'liked');
+            console.log('Undo action: removed ' + lastAction.action + ' for ' + lastAction.game.name);
+        }
+
+        function updateUndoButton() {
+            const undoButton = document.getElementById('undoButton');
+            if (cardHistory.length === 0) {
+                undoButton.disabled = true;
+                undoButton.style.opacity = '0.5';
+                undoButton.style.cursor = 'not-allowed';
+            } else {
+                undoButton.disabled = false;
+                undoButton.style.opacity = '1';
+                undoButton.style.cursor = 'pointer';
+            }
+        }
+
+        function showSessionResults() {
+            document.getElementById('sessionResultsPopup').classList.remove('hidden');
+            
+            // Update stats
+            const reviewed = currentCardIndex;
+            const saveRate = reviewed > 0 ? Math.round((savedGames.length / reviewed) * 100) : 0;
+            const remaining = Math.max(0, sessionLength - reviewed);
+            
+            document.getElementById('popupSaved').textContent = savedGames.length;
+            document.getElementById('popupPassed').textContent = passedGames.length;
+            document.getElementById('popupReviewed').textContent = reviewed + '/' + sessionLength;
+            document.getElementById('popupSaveRate').textContent = saveRate + '%';
+            document.getElementById('popupRemaining').textContent = remaining;
+            
+            // Show last 3 saved games
+            const recentSaves = savedGames.slice(-3).reverse();
+            const recentList = document.getElementById('recentSavesList');
+            if (recentSaves.length === 0) {
+                recentList.innerHTML = '<div class="text-gray-400">None yet</div>';
+            } else {
+                recentList.innerHTML = recentSaves.map(g => `<div class="text-green-300 truncate">✓ ${g.name}</div>`).join('');
+            }
+        }
+
+        function hideSessionResults() {
+            document.getElementById('sessionResultsPopup').classList.add('hidden');
+        }
+
+        function exitSession() {
+            if (confirm('Exit session? Your progress will be saved.')) {
+                document.getElementById('swipeScreen').classList.add('hidden');
+                document.getElementById('resultsScreen').classList.remove('hidden');
+                document.getElementById('sessionResultsPopup').classList.add('hidden');
+
+                document.getElementById('finalSaved').textContent = savedGames.length;
+                document.getElementById('finalPassed').textContent = passedGames.length;
+
+                const wishlistHtml = savedGames.map((game, idx) => `
+                    <div class="bg-gray-600 p-3 rounded-lg flex items-center gap-3">
+                        <img src="${game.image}" alt="${game.name}" class="w-12 h-16 object-cover rounded">
+                        <div class="flex-1 min-w-0">
+                            <div class="font-bold text-green-400 truncate">${idx + 1}. ${game.name}</div>
+                            <div class="text-xs text-gray-300">⭐ ${game.rating}</div>
+                        </div>
+                    </div>
+                `).join('');
+
+                document.getElementById('wishlistContainer').innerHTML = wishlistHtml || '<div class="text-center text-gray-400">No games saved</div>';
+            }
         }
 
         function showFeedback(emoji, type) {
