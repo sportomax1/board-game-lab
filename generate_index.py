@@ -59,6 +59,8 @@ def generate_html_index(output_file='index.html'):
     EXCLUDE_DIRS = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api'}
     
     # --- Start of HTML content ---
+    # NOTE: The 'active' class on the HTML filter button has been removed here, 
+    # as the JavaScript will handle the initial active state to ensure filtering is applied.
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
@@ -72,7 +74,7 @@ def generate_html_index(output_file='index.html'):
             background-color: #fdfdfd;
             color: #333;
         }}
-        .container {{ max-width: 800px; margin: auto; }}
+        .container {{ max-width: 1000px; margin: auto; }}
         h1 {{ 
             border-bottom: 2px solid #eee; 
             padding-bottom: 10px; 
@@ -115,24 +117,6 @@ def generate_html_index(output_file='index.html'):
             color: white;
             border-color: #0366d6;
         }}
-        .file-type-badge {{
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
-            text-transform: uppercase;
-            margin-left: 8px;
-        }}
-        .badge-html {{ background-color: #e34c26; color: white; }}
-        .badge-xml {{ background-color: #ff6600; color: white; }}
-        .badge-py {{ background-color: #3776ab; color: white; }}
-        .badge-js {{ background-color: #f7df1e; color: black; }}
-        .badge-json {{ background-color: #000; color: white; }}
-        .badge-yml {{ background-color: #cb171e; color: white; }}
-        .badge-md {{ background-color: #083fa1; color: white; }}
-        .badge-txt {{ background-color: #888; color: white; }}
-        .badge-other {{ background-color: #6c757d; color: white; }}
         /* --- End File Type Filter Styles --- */
 
         /* --- Sorting Button Styles --- */
@@ -163,60 +147,118 @@ def generate_html_index(output_file='index.html'):
         }}
         /* --- End Sorting Button Styles --- */
 
-        /* --- Card Styles (Mobile Friendly) --- */
+        /* --- New Compact Card/List Styles --- */
         .app-entry {{
+            display: flex; /* Makes the entry a flex container */
+            align-items: center; /* Vertically centers the content */
             border: 1px solid #ddd;
-            border-radius: 8px;
-            margin-bottom: 15px;
+            border-radius: 6px; /* Slightly smaller radius for list look */
+            margin-bottom: 8px; /* Smaller margin between entries */
             background-color: #fff;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.05);
+            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
             transition: box-shadow 0.2s ease;
+            padding: 0; /* Remove padding from the main container */
         }}
         .app-entry:hover {{
-            box-shadow: 0 3px 6px rgba(0,0,0,0.08);
+            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
+            background-color: #fafafa;
         }}
-
-        /* New style for the App Name Header (link) */
-        .app-name-header {{
-            display: block;
-            width: 100%;
-            padding: 12px 15px;
-            text-align: left;
-            background-color: #f0f6fc; /* Light blue background for header look */
-            border: none;
-            border-bottom: 1px solid #cce;
-            cursor: pointer;
+        
+        .file-link {{
+            /* The actual link is now the primary content */
+            flex-grow: 1; 
+            display: flex; 
+            align-items: center;
+            padding: 10px 15px; 
             text-decoration: none;
-            color: #1a1a1a; /* Darker text for bold header */
-            font-size: 18px; /* Slightly larger */
-            font-weight: 700; /* Bold */
-            border-top-left-radius: 8px;
-            border-top-right-radius: 8px;
-            transition: background-color 0.2s;
+            color: #333;
         }}
-        .app-name-header:hover {{
-            background-color: #e3effc;
+        .file-link:hover {{
+            color: #0366d6;
+        }}
+        
+        .file-path-container {{
+            /* Holds the file path and badge */
+            flex: 1 1 50%; /* Takes up roughly half the width or more */
+            display: flex;
+            align-items: center;
+            font-weight: 500;
+            font-size: 16px;
+            overflow: hidden;
+            white-space: nowrap;
+            text-overflow: ellipsis;
         }}
 
-        .file-info {{
-            padding: 10px 15px;
+        .file-update-info {{
+            /* Holds the last update time */
+            flex: 0 0 auto; /* Takes only required space */
+            margin-left: auto; /* Pushes to the right */
             font-size: 14px;
-            color: #555;
-            line-height: 1.4;
+            color: #6a6a6a;
+            white-space: nowrap;
         }}
-        .file-info p {{
-            margin: 5px 0; /* Add margin between file name and update time */
+
+        .file-type-badge {{
+            /* Badge styles are mostly the same, but centered in its container */
+            display: inline-block;
+            padding: 2px 8px;
+            border-radius: 4px;
+            font-size: 11px;
+            font-weight: 600;
+            text-transform: uppercase;
+            margin-right: 15px; /* Added margin to separate badge from path */
+            margin-left: 0; /* Removed old left margin */
+            flex-shrink: 0;
         }}
+        
+        /* Media query for smaller screens */
+        @media (max-width: 700px) {{
+            .app-entry {{
+                flex-direction: column; /* Stack items vertically */
+                align-items: stretch;
+            }}
+            .file-link {{
+                flex-direction: column;
+                align-items: flex-start;
+            }}
+            .file-path-container {{
+                width: 100%;
+                margin-bottom: 5px;
+            }}
+            .file-update-info {{
+                margin-left: 0;
+                width: 100%;
+                text-align: left;
+                padding-top: 5px;
+                border-top: 1px solid #eee;
+                font-size: 13px;
+                color: #888;
+            }}
+            .file-type-badge {{
+                margin-right: 0;
+                margin-left: 8px; /* Re-add small margin for flow */
+            }}
+        }}
+
+        /* Badge color map */
+        .badge-html {{ background-color: #e34c26; color: white; }}
+        .badge-xml {{ background-color: #ff6600; color: white; }}
+        .badge-py {{ background-color: #3776ab; color: white; }}
+        .badge-js {{ background-color: #f7df1e; color: black; }}
+        .badge-json {{ background-color: #000; color: white; }}
+        .badge-yml {{ background-color: #cb171e; color: white; }}
+        .badge-md {{ background-color: #083fa1; color: white; }}
+        .badge-txt {{ background-color: #888; color: white; }}
+        .badge-other {{ background-color: #6c757d; color: white; }}
     </style>
 </head>
 <body>
     <div class="container">
         <h1>Available Applications</h1>
-        <p>Click a file name to open it. Filter by file type below.</p>
+        <p>Click a file entry to open it. Filter by file type below.</p>
         
-        <!-- File Type Filters -->
         <div class="filter-controls">
-            <button class="filter-btn active" data-filter="all">All Files</button>
+            <button class="filter-btn" data-filter="all">All Files</button>
             <button class="filter-btn" data-filter=".html">HTML</button>
             <button class="filter-btn" data-filter=".xml">XML</button>
             <button class="filter-btn" data-filter=".py">Python</button>
@@ -227,16 +269,13 @@ def generate_html_index(output_file='index.html'):
             <button class="filter-btn" data-filter=".txt">Text</button>
         </div>
         
-        <!-- Search Bar -->
         <input type="text" id="searchInput" placeholder="Search files by name or path..." class="search-input">
         
-        <!-- Sorting Controls -->
         <div class="sort-controls">
             <button id="sortByUpdate" class="sort-btn active">Sort by Last Update (Newest)</button>
             <button id="sortByName" class="sort-btn">Sort by Name (A-Z)</button>
         </div>
 
-        <!-- Container for App Entries -->
         <div id="app-list">
 """
     
@@ -268,7 +307,8 @@ def generate_html_index(output_file='index.html'):
         # -----------------------------
 
         mod_time_dt_utc = datetime.fromtimestamp(mtime_epoch, timezone.utc)
-        app_name_label = path_obj.stem.replace('-', ' ').replace('_', ' ').title()
+        # Using the full path as the primary label for the compact view
+        app_name_label = file_path_str 
         
         # Get file extension
         file_ext = path_obj.suffix.lower()
@@ -312,26 +352,29 @@ def generate_html_index(output_file='index.html'):
     else:
         for file_data in sorted_files:
             file_path = file_data['path']
-            app_name_label = file_data['app_name_lower'].title()
+            # Using the full file path for the compact view
+            app_path_label = file_data['path'] 
             file_ext = file_data['extension']
             badge_class = get_badge_class(file_ext)
             
             # Add data- attributes for JavaScript sorting and filtering
+            # New HTML structure for one-line card:
             html_content += f"""
-            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['app_name_lower']}" data-extension="{file_ext}">
-                <a href="{file_path}" class="app-name-header" role="button">
-                    {app_name_label}
-                    <span class="file-type-badge badge-{badge_class}">{file_ext[1:]}</span>
+            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['path'].lower()}" data-extension="{file_ext}">
+                <a href="{file_path}" class="file-link" role="button">
+                    <div class="file-path-container">
+                        <span class="file-type-badge badge-{badge_class}">{file_ext[1:]}</span>
+                        {app_path_label}
+                    </div>
+                    <div class="file-update-info">
+                        Last Update: {file_data['mod_time_str_mtn']} ({file_data['time_since']})
+                    </div>
                 </a>
-                <div class="file-info">
-                    <p><strong>File Name:</strong> {file_path}</p>
-                    <p><strong>Last Update:</strong> {file_data['mod_time_str_mtn']} ({file_data['time_since']})</p>
-                </div>
             </div>
 """
 
     # End of the app list
-    html_content += "        </div> <!-- /#app-list -->\n"
+    html_content += "        </div> \n"
     
     # --- JavaScript for Sorting, Filtering, and File Type Filter ---
     html_content += """
@@ -343,8 +386,9 @@ def generate_html_index(output_file='index.html'):
             const searchInput = document.getElementById('searchInput');
             const filterButtons = document.querySelectorAll('.filter-btn');
             
-            let currentFilter = 'all';
-
+            // *** CHANGE 1: Set default filter to HTML ***
+            let currentFilter = '.html'; // Default to HTML
+            
             function sortItems(criteria) {
                 const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
                 
@@ -374,19 +418,19 @@ def generate_html_index(output_file='index.html'):
                 const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
                 
                 items.forEach(item => {
-                    const appName = item.dataset.name;
-                    const fileInfo = item.querySelector('.file-info').textContent;
+                    const itemName = item.dataset.name;
+                    const updateInfo = item.querySelector('.file-update-info').textContent.toLowerCase();
                     const extension = item.dataset.extension;
                     
                     // Check if item matches search term
-                    const matchesSearch = !searchTerm || appName.includes(searchTerm) || fileInfo.toLowerCase().includes(searchTerm);
+                    const matchesSearch = !searchTerm || itemName.includes(searchTerm) || updateInfo.includes(searchTerm);
                     
                     // Check if item matches file type filter
                     const matchesFilter = currentFilter === 'all' || extension === currentFilter;
                     
                     // Show item only if it matches both filters
                     if (matchesSearch && matchesFilter) {
-                        item.style.display = 'block';
+                        item.style.display = 'flex'; // Use flex for the new layout
                     } else {
                         item.style.display = 'none';
                     }
@@ -419,8 +463,9 @@ def generate_html_index(output_file='index.html'):
                 });
             });
 
-            // Initial setup
+            // Initial setup: Sort and then apply the default filter
             sortItems('update'); 
+            setFileTypeFilter(currentFilter); // *** CHANGE 2: Call to set initial filter/active button
         });
     </script>
 """
@@ -428,8 +473,7 @@ def generate_html_index(output_file='index.html'):
 
     # End of the HTML content
     html_content += """
-    </div> <!-- /.container -->
-</body>
+    </div> </body>
 </html>
 """
 
