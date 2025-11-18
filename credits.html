@@ -197,6 +197,7 @@
         let gameData = [];
         let isRunning = false;
         let rainInterval = null; // Interval for the rain effect
+        let actionModeInterval = null; // Interval for action mode
         let useBGGCollection = false; // Flag to track if using BGG collection
         let currentSpeedMultiplier = 1.0; // Speed multiplier for pace
         
@@ -531,15 +532,17 @@
         /* --- RAIN MODE --- */
         function setupRainMode() {
             stopCredits();
-            messageBox.textContent = "🌧️ Game covers are now raining down the screen!";
+            console.log('🌧️ Setting up RAIN MODE');
+            messageBox.textContent = "🌧️ Game covers are now raining down the screen! Click screen or press ESC to exit.";
             creditsContentEl.innerHTML = '';
             isRunning = true;
             stopButton.style.display = 'block';
             startButton.style.display = 'none';
 
-            const duration = parseInt(speedRange.value, 10);
-            // Rain rate based on speed (slower speed means slower rain rate)
-            const intervalTime = duration * 20; 
+            const speedMultiplier = parseFloat(speedRange.value);
+            // Rain rate based on speed: slower multiplier = slower rain, faster multiplier = faster rain
+            const baseIntervalTime = 1000; // 1 raindrop per second at default speed
+            const intervalTime = baseIntervalTime / speedMultiplier; 
 
             rainInterval = setInterval(() => {
                 if (gameData.length > 0) {
@@ -549,6 +552,10 @@
         }
 
         function dropRaindrop() {
+            if (gameData.length === 0) {
+                console.warn('No game data available for raindrop');
+                return;
+            }
             const randomIndex = Math.floor(Math.random() * gameData.length);
             const game = gameData[randomIndex];
             
@@ -559,20 +566,19 @@
             // Random start X position across the width
             const startX = Math.random() * creditsAreaEl.clientWidth;
             // The fall speed (shorter duration = faster fall)
-            const fallDuration = (Math.random() * 2) + 5; // 5s to 7s fall time
+            const fallDuration = (Math.random() * 2) + 4; // 4s to 6s fall time
 
             drop.style.left = `${startX}px`;
             drop.style.top = `-100px`; // Start off-screen top
             drop.style.opacity = '1';
-            drop.style.transitionDuration = `${fallDuration}s`;
-            drop.style.transform = `translateY(${creditsAreaEl.clientHeight + 100}px) scale(0.8)`;
             
             creditsAreaEl.appendChild(drop);
             
-            // Add a slight delay before starting the fall transition
-            setTimeout(() => {
+            // Trigger the fall transition
+            requestAnimationFrame(() => {
+                drop.style.transitionDuration = `${fallDuration}s`;
                 drop.style.transform = `translateY(${creditsAreaEl.clientHeight + 100}px) scale(0.8)`;
-            }, 10);
+            });
             
             // Cleanup after fall
             setTimeout(() => {
@@ -581,34 +587,41 @@
         }
 
         function stopRainMode() {
+            console.log('Stopping RAIN MODE');
             if (rainInterval) {
                 clearInterval(rainInterval);
                 rainInterval = null;
             }
+            // Remove all falling raindrops
+            document.querySelectorAll('.raindrop').forEach(drop => drop.remove());
         }
 
         /* --- ACTION MODE (Random Animations) --- */
+        let actionModeGameIndex = 0; // Track action mode index globally for cleanup
         function setupActionMode() {
             if (isRunning) return;
+            console.log('🎬 Setting up ACTION MODE');
             isRunning = true;
             stopButton.style.display = 'block';
             startButton.style.display = 'none';
             runtimeSpeedControl.classList.remove('hidden');
             creditsContentEl.innerHTML = '';
+            messageBox.textContent = '🎬 Action Mode! Games cycling with random animations. Click screen or press ESC to exit.';
 
             const sortedGames = sortGames(gameData, sortSelect.value);
-            let currentGameIndex = 0;
+            console.log(`ACTION MODE: Starting with ${sortedGames.length} games sorted by ${sortSelect.value}`);
+            actionModeGameIndex = 0;
 
             function showNextGame() {
-                if (!isRunning || currentGameIndex >= sortedGames.length) {
-                    if (isRunning) {
-                        // Loop back
-                        currentGameIndex = 0;
-                    }
+                if (!isRunning) {
+                    console.log('ACTION MODE: Stopped');
                     return;
                 }
+                if (actionModeGameIndex >= sortedGames.length) {
+                    console.log('ACTION MODE: Reached end of games, looping back');
+                    actionModeGameIndex = 0;
 
-                const game = sortedGames[currentGameIndex];
+                const game = sortedGames[actionModeGameIndex];
                 const gameContainer = document.createElement('div');
                 gameContainer.className = 'absolute inset-0 flex items-center justify-center';
 
@@ -634,11 +647,12 @@
                 gameContainer.appendChild(infoDiv);
                 creditsContentEl.innerHTML = '';
                 creditsContentEl.appendChild(gameContainer);
+                console.log(`ACTION MODE: Showing game #${actionModeGameIndex + 1}/${sortedGames.length} - ${game.name}`);
 
-                currentGameIndex++;
+                actionModeGameIndex++;
                 
                 const delayMs = 3000 / currentSpeedMultiplier; // Adjust delay based on speed multiplier
-                setTimeout(showNextGame, delayMs);
+                actionModeInterval = setTimeout(showNextGame, delayMs);
             }
 
             // Add CSS animations
@@ -683,15 +697,24 @@
         }
 
         function stopModes() {
+            console.log('Stopping all modes');
             // Stop Classic Roll
             creditsContentEl.classList.remove('roll-animation');
-            creditsContentEl.style.transform = 'translateX(-50%) translateY(100vh)'; 
+            creditsContentEl.style.transform = 'translateX(-50%) translateY(100vh)';
+            creditsContentEl.style.animation = 'none';
             
             // Stop Fireworks Mode
             document.querySelectorAll('.firework').forEach(el => el.remove());
             
             // Stop Rain Mode
             stopRainMode();
+            
+            // Stop Action Mode
+            if (actionModeInterval) {
+                clearTimeout(actionModeInterval);
+                actionModeInterval = null;
+            }
+            console.log('All modes stopped');
         }
 
         function stopCredits() {
@@ -709,12 +732,16 @@
         // --- Event Listeners and Initialization ---
 
         startButton.addEventListener('click', async () => {
+            console.log('START button clicked');
             // Only fetch if data is empty
             if (!gameData || gameData.length === 0) {
+                console.log('Fetching game data...');
                 const fetchedGames = await fetchGameData();
                 if (fetchedGames.length === 0) {
+                    console.error('Failed to fetch game data');
                     return; // Stop if fetch failed
                 }
+                console.log(`Successfully fetched ${fetchedGames.length} games`);
             }
             
             // Hide settings panel for fullscreen mode
@@ -722,18 +749,42 @@
             stopModes(); // Clear previous mode effects
 
             const selectedMode = modeSelect.value;
+            console.log(`Starting mode: ${selectedMode}`);
             if (selectedMode === 'classic') {
+                console.log('▶️ Starting CLASSIC mode');
                 startClassicRoll();
             } else if (selectedMode === 'fireworks') {
+                console.log('▶️ Starting FIREWORKS mode');
                 setupFireworksMode();
             } else if (selectedMode === 'rain') {
+                console.log('▶️ Starting RAIN mode');
                 setupRainMode();
             } else if (selectedMode === 'action') {
+                console.log('▶️ Starting ACTION mode');
                 setupActionMode();
             }
         });
 
-        stopButton.addEventListener('click', stopCredits);
+        stopButton.addEventListener('click', () => {
+            console.log('STOP button clicked');
+            stopCredits();
+        });
+        
+        // ESC key to exit any mode
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'Escape' && isRunning) {
+                console.log('ESC pressed - exiting mode');
+                stopCredits();
+            }
+        });
+        
+        // Click on credits area to exit
+        creditsAreaEl.addEventListener('click', (e) => {
+            if (isRunning && e.target === creditsAreaEl) {
+                console.log('Credits area clicked - exiting mode');
+                stopCredits();
+            }
+        });
         
         speedRange.addEventListener('input', (e) => {
             const multiplier = parseFloat(e.target.value);
@@ -742,12 +793,14 @@
             
             const selectedMode = modeSelect.value;
             if (isRunning) {
+                console.log(`Speed changed to ${multiplier}x in ${selectedMode} mode`);
                 if (selectedMode === 'classic') {
                     // Update animation speed multiplier
                     const baseDuration = 20; // base animation time
                     creditsContentEl.style.animationDuration = `${baseDuration / multiplier}s`;
                 } else if (selectedMode === 'rain') {
                     // Restart rain with new speed
+                    console.log('Restarting rain with new speed');
                     stopRainMode();
                     setupRainMode(); 
                 }
@@ -788,13 +841,12 @@
             // Initial UI setup
             if (speedControlEl) speedControlEl.style.display = modeSelect.value === 'fireworks' ? 'none' : 'block';
             
-            // Pre-fetch data immediately on load while showing the loading screen
-            fetchGameData().then(data => {
-                if (data.length > 0) {
-                    // Show prompt now that data is ready
-                    initialPrompt.style.display = 'block';
-                }
-            });
+            // IMPORTANT: Do NOT fetch data on load. Wait for user to click START button.
+            // This allows users to configure settings before making API calls.
+            console.log('Credits.html loaded. Waiting for user to click START button.');
+            loadingIndicator.style.display = 'none';
+            initialPrompt.style.display = 'block';
+            initialPrompt.textContent = '🎬 Settings configured. Hit START to begin!';
         });
     </script>
 </body>
