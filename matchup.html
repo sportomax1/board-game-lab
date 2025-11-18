@@ -1532,8 +1532,10 @@
                     if (gameCount === 0) return '';
                     const color = colorMap[count] || 'bg-red-800';
                     const tooltip = `${count} appearance${count !== 1 ? 's' : ''}: ${gameCount} game${gameCount !== 1 ? 's' : ''}`;
+                    const gameAppsJSON = JSON.stringify(gameAppearances).replace(/"/g, '&quot;');
+                    const allGamesJSON = JSON.stringify(allGamesInCollection.map(g => ({id: g.id, name: g.name, image: g.image}))).replace(/"/g, '&quot;');
                     return `<div class="flex flex-col items-center sm:mr-1" title="${tooltip}">
-                        <div class="${color} text-white rounded px-2 sm:px-3 py-2 text-xs font-bold min-w-10 sm:min-w-12 text-center hover:shadow-lg transition-shadow cursor-help">
+                        <div class="${color} text-white rounded px-2 sm:px-3 py-2 text-xs font-bold min-w-10 sm:min-w-12 text-center hover:shadow-lg transition-shadow cursor-pointer" onclick="showAppearanceCountModal(${count}, JSON.parse('${gameAppsJSON}'), JSON.parse('${allGamesJSON}'))">
                             ${count}
                         </div>
                         <div class="text-xs text-gray-600 mt-1">${gameCount}</div>
@@ -2753,6 +2755,43 @@
                     console.log(`[DOUBLE ELIM] L-bracket R${lBracketRound} Major stage complete!`);
                     lBracketData.majorWinner = lBracketData.majorMatchups[0].winner;  // Champion of losers bracket this round
                     console.log(`[DOUBLE ELIM] 👑 L-bracket R${lBracketRound} champion: ${lBracketData.majorWinner.name}`);
+                    
+                    // Now that losers bracket is complete for this round, prepare next winners round
+                    if (lBracketRound < bracketState.totalRounds) {
+                        const nextRound = lBracketRound + 1;
+                        const winners = bracketState.roundsData[lBracketRound].matchups.map(m => m.winner);
+                        
+                        const nextRoundMatchups = [];
+                        for (let i = 0; i < winners.length; i += 2) {
+                            if (winners[i] && winners[i + 1]) {
+                                nextRoundMatchups.push({
+                                    left: winners[i],
+                                    right: winners[i + 1],
+                                    winner: null,
+                                    matchupNumber: Math.floor(i / 2) + 1
+                                });
+                            }
+                        }
+                        
+                        bracketState.roundsData[nextRound] = {
+                            matchups: nextRoundMatchups,
+                            complete: false
+                        };
+                        bracketState.currentRound = nextRound;
+                        
+                        // Replace tournament pairings with next winners round
+                        tournamentPairings = nextRoundMatchups.map(m => ({ 
+                            left: m.left, 
+                            right: m.right,
+                            round: nextRound,
+                            stage: 'winners',
+                            matchupNumber: m.matchupNumber
+                        }));
+                        pairingIndex = 0;
+                        
+                        console.log(`[BRACKET] L-bracket complete for R${lBracketRound}, advancing winners to Round ${nextRound}`);
+                        console.log(`[BRACKET] Next round matchups: ${tournamentPairings.length}`);
+                    }
                 }
                 return;  // Exit early - we've handled the loser bracket result
             }
@@ -2894,40 +2933,47 @@
                         showTournamentResults();
                     }
                 } else {
-                    // Prepare next round
-                    const nextRound = round + 1;
-                    const winners = currentRoundData.matchups.map(m => m.winner);
-                    
-                    const nextRoundMatchups = [];
-                    for (let i = 0; i < winners.length; i += 2) {
-                        if (winners[i] && winners[i + 1]) {
-                            nextRoundMatchups.push({
-                                left: winners[i],
-                                right: winners[i + 1],
-                                winner: null,
-                                matchupNumber: Math.floor(i / 2) + 1
-                            });
+                    // Only prepare next round if NOT double elimination, OR if double elim is complete
+                    // For double elim: wait for losers bracket to finish before moving to next winners round
+                    if (!bracketState.doubleElimination) {
+                        // Single elimination: go straight to next round
+                        const nextRound = round + 1;
+                        const winners = currentRoundData.matchups.map(m => m.winner);
+                        
+                        const nextRoundMatchups = [];
+                        for (let i = 0; i < winners.length; i += 2) {
+                            if (winners[i] && winners[i + 1]) {
+                                nextRoundMatchups.push({
+                                    left: winners[i],
+                                    right: winners[i + 1],
+                                    winner: null,
+                                    matchupNumber: Math.floor(i / 2) + 1
+                                });
+                            }
                         }
+                        
+                        bracketState.roundsData[nextRound] = {
+                            matchups: nextRoundMatchups,
+                            complete: false
+                        };
+                        bracketState.currentRound = nextRound;
+                        
+                        // Replace tournament pairings with next round
+                        tournamentPairings = nextRoundMatchups.map(m => ({ 
+                            left: m.left, 
+                            right: m.right,
+                            round: nextRound,
+                            stage: 'winners',
+                            matchupNumber: m.matchupNumber
+                        }));
+                        pairingIndex = 0;
+                        
+                        console.log(`[BRACKET] Advanced to Round ${nextRound} with ${tournamentPairings.length} matchups`);
+                        console.log(`[BRACKET] Seeds: ${nextRoundMatchups.map((m, idx) => `#${m.left.bracketSeed} vs #${m.right.bracketSeed}`).join(', ')}`);
+                    } else {
+                        // Double elimination: losers bracket minor matchups already queued, DON'T prepare next winner round yet
+                        console.log(`[DOUBLE ELIM] Winners bracket R${round} complete. Losers bracket matchups queued. Next winner round will be prepared after L-bracket finishes.`);
                     }
-                    
-                    bracketState.roundsData[nextRound] = {
-                        matchups: nextRoundMatchups,
-                        complete: false
-                    };
-                    bracketState.currentRound = nextRound;
-                    
-                    // Replace tournament pairings with next round (don't append, because we haven't queued minor/major yet)
-                    tournamentPairings = nextRoundMatchups.map(m => ({ 
-                        left: m.left, 
-                        right: m.right,
-                        round: nextRound,
-                        stage: 'winners',
-                        matchupNumber: m.matchupNumber
-                    }));
-                    pairingIndex = 0;
-                    
-                    console.log(`[BRACKET] Advanced to Round ${nextRound} with ${tournamentPairings.length} matchups`);
-                    console.log(`[BRACKET] Seeds: ${nextRoundMatchups.map((m, idx) => `#${m.left.bracketSeed} vs #${m.right.bracketSeed}`).join(', ')}`);
                 }
                 
                 updateBracketVisualization();
@@ -4223,6 +4269,48 @@
         
         window.closeHIndexModal = () => {
             document.getElementById('hIndexModal').classList.add('hidden');
+        }
+
+        // Show games at specific appearance count (clicking appearance boxes)
+        async function showAppearanceCountModal(targetCount, gameAppearances, allGamesData) {
+            // Find games with exactly this count
+            const qualifyingGames = Object.entries(gameAppearances)
+                .filter(([gameId, count]) => count === targetCount)
+                .map(([gameId]) => {
+                    const gameId_num = parseInt(gameId);
+                    const game = allGamesData.find(g => g.id === gameId_num);
+                    const count = gameAppearances[gameId];
+                    return { id: gameId, name: game?.name || 'Unknown Game', image: game?.image || '', count };
+                })
+                .sort((a, b) => b.count - a.count);
+            
+            if (qualifyingGames.length === 0) {
+                alert(`No games with exactly ${targetCount} appearance${targetCount !== 1 ? 's' : ''}`);
+                return;
+            }
+            
+            // Update modal title and content
+            const modalTitle = document.querySelector('#hIndexModal h3');
+            if (modalTitle) {
+                modalTitle.textContent = `📊 Games with ${targetCount} Appearance${targetCount !== 1 ? 's' : ''}`;
+            }
+            
+            const contentDiv = document.getElementById('hIndexContent');
+            contentDiv.innerHTML = qualifyingGames
+                .map(game => `
+                    <div class="flex gap-3 p-3 border rounded bg-gray-50 hover:bg-gray-100">
+                        <div class="flex-shrink-0">
+                            ${game.image ? `<img src="${game.image}" alt="${game.name}" class="w-12 h-16 object-cover rounded" onerror="this.src='/images/placeholder.png'">` : `<div class="w-12 h-16 bg-gray-300 rounded flex items-center justify-center text-xs">No Image</div>`}
+                        </div>
+                        <div class="flex-1">
+                            <div class="font-semibold text-sm text-gray-900">${game.name}</div>
+                            <div class="text-xs text-gray-600 mt-1">${game.count} Appearance${game.count !== 1 ? 's' : ''}</div>
+                        </div>
+                    </div>
+                `)
+                .join('');
+            
+            document.getElementById('hIndexModal').classList.remove('hidden');
         }
 
         // Show champion modal with confetti
