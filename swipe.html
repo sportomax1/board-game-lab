@@ -1,0 +1,469 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGG Card Swiper</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .card {
+            touch-action: none;
+            cursor: grab;
+            transition: transform 0.1s ease-out, opacity 0.1s ease-out;
+        }
+        .card.dragging {
+            transition: none;
+        }
+        .card.swiped-right {
+            animation: swipeRight 0.5s ease-out forwards;
+        }
+        .card.swiped-left {
+            animation: swipeLeft 0.5s ease-out forwards;
+        }
+        @keyframes swipeRight {
+            to {
+                transform: translateX(150%) rotate(20deg);
+                opacity: 0;
+            }
+        }
+        @keyframes swipeLeft {
+            to {
+                transform: translateX(-150%) rotate(-20deg);
+                opacity: 0;
+            }
+        }
+        .feedback {
+            position: absolute;
+            font-weight: bold;
+            font-size: 2rem;
+            pointer-events: none;
+        }
+        .feedback.liked {
+            color: #10b981;
+            animation: feedbackFade 0.6s ease-out forwards;
+        }
+        .feedback.passed {
+            color: #ef4444;
+            animation: feedbackFade 0.6s ease-out forwards;
+        }
+        @keyframes feedbackFade {
+            0% {
+                opacity: 1;
+                transform: translateY(0) scale(1);
+            }
+            100% {
+                opacity: 0;
+                transform: translateY(-40px) scale(1.5);
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white">
+    <!-- ==================== SETUP SCREEN ==================== -->
+    <div id="setupScreen" class="min-h-screen bg-gradient-to-br from-pink-600 to-red-600 flex items-center justify-center p-4">
+        <div class="bg-gray-800 rounded-2xl shadow-2xl p-8 max-w-md w-full border-2 border-pink-500">
+            <h1 class="text-4xl font-bold text-center mb-2">💘 Card Swiper</h1>
+            <p class="text-center text-gray-300 mb-6">Swipe your collection to build a wishlist</p>
+
+            <div class="space-y-4">
+                <!-- BGG Username -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">BGG Username</label>
+                    <input type="text" id="bggUsernameInput" class="w-full border-2 border-gray-600 bg-gray-700 rounded-lg px-4 py-2 focus:ring-2 focus:ring-pink-500 focus:border-transparent outline-none text-white" placeholder="Enter username">
+                </div>
+
+                <!-- Collection Filter -->
+                <div>
+                    <label class="block text-sm font-medium text-gray-300 mb-2">Filter By</label>
+                    <div class="space-y-2">
+                        <label class="flex items-center">
+                            <input type="radio" name="filter" value="all" checked class="w-4 h-4 text-pink-600">
+                            <span class="ml-2 text-gray-300">All Games</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="radio" name="filter" value="own" class="w-4 h-4 text-pink-600">
+                            <span class="ml-2 text-gray-300">Owned Only</span>
+                        </label>
+                        <label class="flex items-center">
+                            <input type="radio" name="filter" value="wanttoplay" class="w-4 h-4 text-pink-600">
+                            <span class="ml-2 text-gray-300">Want to Play</span>
+                        </label>
+                    </div>
+                </div>
+
+                <!-- Start Button -->
+                <button onclick="startSwipe()" class="w-full bg-gradient-to-r from-pink-600 to-red-600 hover:from-pink-700 hover:to-red-700 text-white py-3 rounded-lg font-bold text-lg mt-6">
+                    Start Swiping
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== LOADING SCREEN ==================== -->
+    <div id="loadingScreen" class="hidden min-h-screen bg-gradient-to-br from-pink-600 to-red-600 flex items-center justify-center p-4">
+        <div class="bg-gray-800 rounded-2xl shadow-2xl p-8 max-w-md w-full text-center border-2 border-pink-500">
+            <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-pink-400 mx-auto mb-4"></div>
+            <p class="text-xl font-bold">Loading collection...</p>
+            <p class="text-gray-400 mt-2">Fetching your BGG games</p>
+        </div>
+    </div>
+
+    <!-- ==================== SWIPE SCREEN ==================== -->
+    <div id="swipeScreen" class="hidden min-h-screen bg-gradient-to-br from-gray-800 to-gray-900 p-4 flex flex-col">
+        <!-- Header -->
+        <div class="max-w-md mx-auto w-full mb-4">
+            <div class="flex items-center justify-between bg-gray-800 rounded-lg p-4 border border-gray-700">
+                <div>
+                    <div class="text-sm text-gray-400">Game <span id="cardNumber">1</span> of <span id="totalCards">10</span></div>
+                    <div class="text-lg font-bold text-pink-400" id="savedCount">0</div>
+                </div>
+                <div class="text-right">
+                    <div class="text-sm text-gray-400">Progress</div>
+                    <div id="progressBar" class="w-24 h-2 bg-gray-700 rounded-full mt-1 overflow-hidden">
+                        <div id="progressFill" class="h-full bg-gradient-to-r from-pink-500 to-red-500" style="width: 0%"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Card Stack -->
+        <div class="flex-1 max-w-md mx-auto w-full relative flex items-center justify-center">
+            <div id="cardContainer" class="relative w-full h-96">
+                <!-- Cards will be added here by JS -->
+            </div>
+        </div>
+
+        <!-- Controls -->
+        <div class="max-w-md mx-auto w-full mb-4">
+            <div class="flex gap-4 justify-center mb-4">
+                <button onclick="swipeCard('left')" class="px-6 py-3 bg-red-600 hover:bg-red-700 rounded-lg font-bold flex items-center gap-2">
+                    ✗ Pass
+                </button>
+                <button onclick="swipeCard('right')" class="px-6 py-3 bg-green-600 hover:bg-green-700 rounded-lg font-bold flex items-center gap-2">
+                    ❤️ Save
+                </button>
+            </div>
+            <div class="text-center text-sm text-gray-400">
+                Swipe left to pass, right to save • <span id="likePercentage">0%</span> saved
+            </div>
+        </div>
+    </div>
+
+    <!-- ==================== RESULTS SCREEN ==================== -->
+    <div id="resultsScreen" class="hidden min-h-screen bg-gradient-to-br from-gray-800 to-gray-900 flex items-center justify-center p-4">
+        <div class="max-w-2xl w-full">
+            <div class="bg-gray-800 rounded-2xl shadow-2xl p-8 border-2 border-pink-500 text-center mb-6">
+                <h1 class="text-4xl font-bold mb-2 text-pink-400">🎉 Done Swiping!</h1>
+                <p class="text-gray-400">Here's your wishlist summary</p>
+            </div>
+
+            <!-- Stats -->
+            <div class="grid grid-cols-2 gap-4 mb-8">
+                <div class="bg-gray-700 rounded-xl p-6 border border-gray-600 text-center">
+                    <div class="text-3xl font-bold text-green-400" id="finalSaved">0</div>
+                    <div class="text-sm text-gray-400 mt-1">Games Saved</div>
+                </div>
+                <div class="bg-gray-700 rounded-xl p-6 border border-gray-600 text-center">
+                    <div class="text-3xl font-bold text-red-400" id="finalPassed">0</div>
+                    <div class="text-sm text-gray-400 mt-1">Games Passed</div>
+                </div>
+            </div>
+
+            <!-- Wishlist -->
+            <div class="bg-gray-700 rounded-xl p-6 mb-8 border border-gray-600 max-h-96 overflow-y-auto">
+                <h2 class="text-2xl font-bold mb-4 text-green-400">✅ Your Wishlist</h2>
+                <div id="wishlistContainer" class="space-y-2">
+                    <!-- Games will be added here -->
+                </div>
+            </div>
+
+            <!-- Buttons -->
+            <div class="flex gap-3">
+                <button onclick="startSwipe()" class="flex-1 bg-pink-600 hover:bg-pink-700 text-white py-3 rounded-lg font-bold">
+                    Swipe Again
+                </button>
+                <button onclick="goToSetup()" class="flex-1 bg-gray-600 hover:bg-gray-700 text-white py-3 rounded-lg font-bold">
+                    Back to Setup
+                </button>
+            </div>
+
+            <!-- Download/Copy Option -->
+            <div class="mt-6 bg-gray-700 rounded-lg p-4 border border-gray-600">
+                <button onclick="copyWishlistToClipboard()" class="w-full bg-blue-600 hover:bg-blue-700 text-white py-2 rounded-lg font-bold">
+                    📋 Copy Wishlist to Clipboard
+                </button>
+                <p class="text-xs text-gray-400 mt-2 text-center">Easy to share or save!</p>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ==================== STATE ====================
+        let allGames = [];
+        let currentCardIndex = 0;
+        let savedGames = [];
+        let passedGames = [];
+        let touchStartX = 0;
+        let touchStartY = 0;
+        let currentFilter = 'all';
+
+        // ==================== SETUP ====================
+        async function startSwipe() {
+            const username = document.getElementById('bggUsernameInput').value.trim();
+            if (!username) {
+                alert('Please enter a BGG username');
+                return;
+            }
+
+            currentFilter = document.querySelector('input[name="filter"]:checked').value;
+            
+            // Reset state
+            savedGames = [];
+            passedGames = [];
+            currentCardIndex = 0;
+
+            document.getElementById('setupScreen').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&stats=1`);
+                if (!response.ok) throw new Error('Failed to fetch collection');
+
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+
+                allGames = Array.from(xml.querySelectorAll('item')).map(item => {
+                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    const image = item.querySelector('image')?.textContent || '';
+                    const own = item.getAttribute('own') === '1';
+                    const prevOwned = item.getAttribute('prevowned') === '1';
+                    const wantToPlay = item.getAttribute('want') === '1';
+                    const wantToBuy = item.getAttribute('wanttobuy') === '1';
+                    const rating = item.querySelector('stats')?.querySelector('average')?.textContent || '7.0';
+                    
+                    return { 
+                        name, 
+                        image, 
+                        own, 
+                        prevOwned, 
+                        wantToPlay, 
+                        wantToBuy,
+                        rating: parseFloat(rating).toFixed(1)
+                    };
+                }).filter(g => g.image);
+
+                // Apply filter
+                if (currentFilter === 'own') {
+                    allGames = allGames.filter(g => g.own);
+                } else if (currentFilter === 'wanttoplay') {
+                    allGames = allGames.filter(g => g.wantToPlay);
+                }
+
+                // Shuffle
+                allGames = allGames.sort(() => Math.random() - 0.5);
+
+                if (allGames.length === 0) throw new Error('No games found with that filter');
+
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('swipeScreen').classList.remove('hidden');
+                document.getElementById('totalCards').textContent = allGames.length;
+                
+                renderCard();
+            } catch (error) {
+                alert('Error: ' + error.message);
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('setupScreen').classList.remove('hidden');
+            }
+        }
+
+        // ==================== CARD RENDERING ====================
+        function renderCard() {
+            if (currentCardIndex >= allGames.length) {
+                endSwipe();
+                return;
+            }
+
+            const container = document.getElementById('cardContainer');
+            container.innerHTML = '';
+
+            const game = allGames[currentCardIndex];
+            const card = document.createElement('div');
+            card.className = 'card absolute top-0 left-0 w-full h-full rounded-2xl bg-gray-800 border-2 border-gray-700 shadow-2xl overflow-hidden cursor-grab active:cursor-grabbing';
+            card.innerHTML = `
+                <div class="relative w-full h-full flex flex-col">
+                    <img src="${game.image}" alt="${game.name}" class="w-full h-64 object-cover">
+                    <div class="flex-1 p-6 flex flex-col justify-between bg-gradient-to-t from-gray-900 via-gray-900 to-transparent">
+                        <div>
+                            <h2 class="text-2xl font-bold text-white mb-2">${game.name}</h2>
+                            <div class="flex gap-3 text-sm text-gray-300">
+                                ${game.own ? '<span class="bg-blue-600 px-2 py-1 rounded">Owned</span>' : ''}
+                                ${game.prevOwned ? '<span class="bg-purple-600 px-2 py-1 rounded">Previously Owned</span>' : ''}
+                                ${game.wantToPlay ? '<span class="bg-yellow-600 px-2 py-1 rounded">Want to Play</span>' : ''}
+                                ${game.wantToBuy ? '<span class="bg-green-600 px-2 py-1 rounded">Want to Buy</span>' : ''}
+                            </div>
+                        </div>
+                        <div class="text-yellow-400 text-lg font-bold">⭐ ${game.rating} BGG Rating</div>
+                    </div>
+                </div>
+                <div class="absolute top-4 right-4 bg-gray-900/80 backdrop-blur px-3 py-1 rounded-full text-sm text-gray-300">
+                    ${currentCardIndex + 1}/${allGames.length}
+                </div>
+            `;
+
+            let lastX = 0;
+            let isDragging = false;
+
+            card.addEventListener('mousedown', (e) => {
+                isDragging = true;
+                lastX = e.clientX;
+                card.classList.add('dragging');
+            });
+
+            document.addEventListener('mousemove', (e) => {
+                if (!isDragging) return;
+                const deltaX = e.clientX - lastX;
+                const rotate = (deltaX / window.innerWidth) * 20;
+                card.style.transform = `translateX(${deltaX}px) rotate(${rotate}deg)`;
+            });
+
+            document.addEventListener('mouseup', (e) => {
+                if (!isDragging) return;
+                isDragging = false;
+                card.classList.remove('dragging');
+
+                const deltaX = e.clientX - lastX;
+                const threshold = window.innerWidth * 0.3;
+
+                if (deltaX > threshold) {
+                    saveCard();
+                } else if (deltaX < -threshold) {
+                    passCard();
+                } else {
+                    card.style.transform = '';
+                }
+            });
+
+            // Touch support
+            card.addEventListener('touchstart', (e) => {
+                touchStartX = e.touches[0].clientX;
+                touchStartY = e.touches[0].clientY;
+                card.classList.add('dragging');
+            });
+
+            card.addEventListener('touchmove', (e) => {
+                const deltaX = e.touches[0].clientX - touchStartX;
+                const rotate = (deltaX / window.innerWidth) * 20;
+                card.style.transform = `translateX(${deltaX}px) rotate(${rotate}deg)`;
+            });
+
+            card.addEventListener('touchend', (e) => {
+                const deltaX = e.changedTouches[0].clientX - touchStartX;
+                card.classList.remove('dragging');
+                const threshold = window.innerWidth * 0.3;
+
+                if (deltaX > threshold) {
+                    saveCard();
+                } else if (deltaX < -threshold) {
+                    passCard();
+                } else {
+                    card.style.transform = '';
+                }
+            });
+
+            container.appendChild(card);
+            updateProgress();
+        }
+
+        // ==================== CARD ACTIONS ====================
+        function swipeCard(direction) {
+            const card = document.querySelector('.card');
+            if (direction === 'right') {
+                card.classList.add('swiped-right');
+                saveCard();
+            } else {
+                card.classList.add('swiped-left');
+                passCard();
+            }
+        }
+
+        function saveCard() {
+            savedGames.push(allGames[currentCardIndex]);
+            showFeedback('❤️', 'liked');
+            currentCardIndex++;
+            setTimeout(() => {
+                document.getElementById('savedCount').textContent = savedGames.length;
+                renderCard();
+            }, 500);
+        }
+
+        function passCard() {
+            passedGames.push(allGames[currentCardIndex]);
+            showFeedback('✗', 'passed');
+            currentCardIndex++;
+            setTimeout(() => {
+                renderCard();
+            }, 500);
+        }
+
+        function showFeedback(emoji, type) {
+            const feedback = document.createElement('div');
+            feedback.className = `feedback ${type}`;
+            feedback.textContent = emoji;
+            feedback.style.left = '50%';
+            feedback.style.top = '50%';
+            feedback.style.transform = 'translate(-50%, -50%)';
+            document.getElementById('cardContainer').appendChild(feedback);
+            
+            setTimeout(() => feedback.remove(), 600);
+        }
+
+        function updateProgress() {
+            const progress = ((currentCardIndex) / allGames.length) * 100;
+            document.getElementById('progressFill').style.width = progress + '%';
+            document.getElementById('cardNumber').textContent = currentCardIndex + 1;
+            
+            const likePercentage = allGames.length > 0 ? Math.round((savedGames.length / currentCardIndex) * 100) || 0 : 0;
+            document.getElementById('likePercentage').textContent = likePercentage + '%';
+        }
+
+        // ==================== END SWIPE ====================
+        function endSwipe() {
+            document.getElementById('swipeScreen').classList.add('hidden');
+            document.getElementById('resultsScreen').classList.remove('hidden');
+
+            document.getElementById('finalSaved').textContent = savedGames.length;
+            document.getElementById('finalPassed').textContent = passedGames.length;
+
+            const wishlistHtml = savedGames.map((game, idx) => `
+                <div class="bg-gray-600 p-3 rounded-lg flex items-center gap-3">
+                    <img src="${game.image}" alt="${game.name}" class="w-12 h-16 object-cover rounded">
+                    <div class="flex-1 min-w-0">
+                        <div class="font-bold text-green-400 truncate">${idx + 1}. ${game.name}</div>
+                        <div class="text-xs text-gray-300">⭐ ${game.rating}</div>
+                    </div>
+                </div>
+            `).join('');
+
+            document.getElementById('wishlistContainer').innerHTML = wishlistHtml || '<div class="text-center text-gray-400">No games saved</div>';
+        }
+
+        function goToSetup() {
+            document.getElementById('resultsScreen').classList.add('hidden');
+            document.getElementById('setupScreen').classList.remove('hidden');
+            document.getElementById('bggUsernameInput').value = '';
+            document.getElementById('bggUsernameInput').focus();
+        }
+
+        function copyWishlistToClipboard() {
+            const wishlist = savedGames.map((g, i) => `${i + 1}. ${g.name}`).join('\n');
+            navigator.clipboard.writeText(wishlist).then(() => {
+                alert('Wishlist copied to clipboard!');
+            });
+        }
+
+        // Init
+        document.getElementById('bggUsernameInput').focus();
+    </script>
+</body>
+</html>
