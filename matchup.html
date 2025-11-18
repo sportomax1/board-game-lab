@@ -551,6 +551,9 @@
                             <button onclick="exportTop9Image()" class="text-xs bg-green-100 text-green-600 px-2 py-1 rounded font-medium hover:bg-green-200">
                                 📸 Export Top 9
                             </button>
+                            <button onclick="viewTop9Image()" class="text-xs bg-purple-100 text-purple-600 px-2 py-1 rounded font-medium hover:bg-purple-200">
+                                👁️ View Image
+                            </button>
                         </div>
                     </div>
                     
@@ -1651,11 +1654,37 @@
             renderMatchupCard();
         }
         
+        // Update game appearances and wins from matchup history
+        function refreshGameStats(gameObj) {
+            if (!gameObj) return;
+            
+            // Recalculate appearances and wins from allMatchups
+            let appearances = 0;
+            let wins = 0;
+            
+            allMatchups.forEach(m => {
+                if (m.winnerId === gameObj.id || m.loserId === gameObj.id) {
+                    appearances++;
+                }
+                if (m.winnerId === gameObj.id) {
+                    wins++;
+                }
+            });
+            
+            // Update the game object
+            gameObj.appearances = appearances;
+            gameObj.wins = wins;
+        }
+
         // Render matchup card
         function renderMatchupCard() {
             if (!currentPair) return;
             
             const { left, right } = currentPair;
+            
+            // Refresh stats from latest matchup history
+            refreshGameStats(left);
+            refreshGameStats(right);
             
             document.getElementById('leftImage').src = left.image;
             document.getElementById('leftName').textContent = left.name;
@@ -4488,6 +4517,132 @@
             } catch (error) {
                 console.error('[EXPORT] Error exporting image:', error);
                 alert('Error exporting image: ' + error.message);
+            }
+        };
+        
+        // View top 9 games image in a modal
+        window.viewTop9Image = async () => {
+            if (!window.currentStandings || window.currentStandings.length === 0) {
+                alert('No standings to view. Load standings first.');
+                return;
+            }
+
+            try {
+                // Get top 9 games
+                const top9 = window.currentStandings.slice(0, 9);
+                
+                if (top9.length === 0) {
+                    alert('Need at least 1 game to view.');
+                    return;
+                }
+
+                console.log(`[VIEW] Creating preview image for top ${top9.length} games`);
+
+                // Create canvas (3x3 grid)
+                const gridSize = 3;
+                const itemWidth = 200;
+                const itemHeight = 280;
+                const canvasWidth = gridSize * itemWidth;
+                const canvasHeight = gridSize * itemHeight;
+                
+                const canvas = document.createElement('canvas');
+                canvas.width = canvasWidth;
+                canvas.height = canvasHeight;
+                const ctx = canvas.getContext('2d');
+                
+                // White background
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvasWidth, canvasHeight);
+                
+                // Draw each game
+                for (let i = 0; i < top9.length; i++) {
+                    const game = top9[i];
+                    const row = Math.floor(i / gridSize);
+                    const col = i % gridSize;
+                    const x = col * itemWidth;
+                    const y = row * itemHeight;
+                    
+                    // Draw card background
+                    ctx.fillStyle = '#f3f4f6';
+                    ctx.fillRect(x + 5, y + 5, itemWidth - 10, itemHeight - 10);
+                    
+                    // Draw border
+                    ctx.strokeStyle = '#d1d5db';
+                    ctx.lineWidth = 2;
+                    ctx.strokeRect(x + 5, y + 5, itemWidth - 10, itemHeight - 10);
+                    
+                    // Draw rank
+                    ctx.fillStyle = '#6b7280';
+                    ctx.font = 'bold 24px Arial';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(`#${i + 1}`, x + itemWidth / 2, y + 30);
+                    
+                    // Load and draw game image
+                    try {
+                        const proxiedUrl = IMAGE_PROXY + encodeURIComponent(game.image);
+                        console.log(`[VIEW] Loading image ${i + 1}/9: ${game.name}`);
+                        const img = await loadImageAsync(proxiedUrl);
+                        const imgSize = 100;
+                        const imgX = x + (itemWidth - imgSize) / 2;
+                        const imgY = y + 45;
+                        ctx.drawImage(img, imgX, imgY, imgSize, imgSize);
+                        console.log(`[VIEW] ✓ Image loaded: ${game.name}`);
+                    } catch (e) {
+                        // Image failed to load, draw placeholder
+                        console.warn(`[VIEW] ⚠ Failed to load image for ${game.name}: ${e.message}`);
+                        ctx.fillStyle = '#e5e7eb';
+                        ctx.fillRect(x + 50, y + 45, 100, 100);
+                        ctx.fillStyle = '#9ca3af';
+                        ctx.font = 'bold 14px Arial';
+                        ctx.textAlign = 'center';
+                        ctx.fillText('No Image', x + itemWidth / 2, y + 100);
+                    }
+                    
+                    // Draw game name (wrapped)
+                    ctx.fillStyle = '#000000';
+                    ctx.font = 'bold 11px Arial';
+                    ctx.textAlign = 'center';
+                    const nameY = y + 160;
+                    const words = game.name.split(' ');
+                    let line = '';
+                    let lineNum = 0;
+                    for (const word of words) {
+                        if ((line + word).length > 12) {
+                            ctx.fillText(line, x + itemWidth / 2, nameY + lineNum * 12);
+                            line = word;
+                            lineNum++;
+                        } else {
+                            line += (line ? ' ' : '') + word;
+                        }
+                    }
+                    if (line) ctx.fillText(line, x + itemWidth / 2, nameY + lineNum * 12);
+                    
+                    // Draw stats
+                    ctx.fillStyle = '#4b5563';
+                    ctx.font = '9px Arial';
+                    ctx.textAlign = 'center';
+                    const statsY = y + 200;
+                    ctx.fillText(`${game.wins}W - ${game.losses}L`, x + itemWidth / 2, statsY);
+                    ctx.fillText(`${(game.winPct * 100).toFixed(0)}% Win Rate`, x + itemWidth / 2, statsY + 12);
+                    ctx.fillText(`ELO: ${game.elo}`, x + itemWidth / 2, statsY + 24);
+                    ctx.fillText(`BGG: ${game.bggRating ? game.bggRating.toFixed(2) : '—'}/10`, x + itemWidth / 2, statsY + 36);
+                }
+                
+                console.log(`[VIEW] Canvas complete, displaying in modal...`);
+                
+                // Display in modal
+                const modal = document.getElementById('rawDataModal');
+                const content = document.getElementById('rawDataContent');
+                const imgData = canvas.toDataURL('image/png');
+                
+                content.innerHTML = `<img src="${imgData}" style="width: 100%; max-width: 100%; border-radius: 8px;">`;
+                document.querySelector('#rawDataModal .flex.justify-between.items-center h3').textContent = '👁️ Top 9 Games Preview';
+                modal.classList.remove('hidden');
+                
+                console.log(`[VIEW] ✓ Preview displayed successfully`);
+            } catch (error) {
+                console.error('[VIEW] Error viewing image:', error);
+                alert('Error creating preview: ' + error.message);
             }
         };
         
