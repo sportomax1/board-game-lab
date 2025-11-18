@@ -141,6 +141,33 @@
         <h1 class="text-3xl text-indigo-400 mb-4 font-bold">Credits Setup</h1>
 
         <div class="space-y-4">
+            <!-- BGG Username Input -->
+            <div>
+                <label for="bggUsername" class="block text-sm font-medium text-gray-300 mb-2">BoardGameGeek Username</label>
+                <input type="text" id="bggUsername" placeholder="BGG Username (optional)" value="" class="w-full p-3 bg-gray-700 text-white rounded-xl border-2 border-gray-600 focus:ring-indigo-500 focus:border-indigo-500">
+                <div class="text-xs text-gray-400 mt-1">Leave empty to use RAWG API, or enter BGG username for collection-based credits</div>
+            </div>
+
+            <!-- Collection Filters (shown only when BGG username is entered) -->
+            <div id="collectionFilters" style="display: none;" class="bg-gray-800 p-3 rounded-xl border border-gray-600 space-y-2">
+                <div class="flex items-center gap-3">
+                    <input type="checkbox" id="filterOwn" checked class="w-4 h-4">
+                    <label for="filterOwn" class="text-sm text-gray-300">Own Games</label>
+                </div>
+                <div class="flex items-center gap-3">
+                    <input type="checkbox" id="filterPrevOwned" class="w-4 h-4">
+                    <label for="filterPrevOwned" class="text-sm text-gray-300">Previously Owned</label>
+                </div>
+                <div class="flex items-center gap-3">
+                    <input type="checkbox" id="filterWantToPlay" class="w-4 h-4">
+                    <label for="filterWantToPlay" class="text-sm text-gray-300">Want to Play</label>
+                </div>
+                <div class="flex items-center gap-3">
+                    <input type="checkbox" id="filterWantToBuy" class="w-4 h-4">
+                    <label for="filterWantToBuy" class="text-sm text-gray-300">Want to Buy</label>
+                </div>
+            </div>
+
             <!-- Mode Selector -->
             <div>
                 <label for="modeSelect" class="block text-sm font-medium text-gray-300 mb-2">Mode</label>
@@ -206,6 +233,7 @@
         let gameData = [];
         let isRunning = false;
         let rainInterval = null; // Interval for the rain effect
+        let useBGGCollection = false; // Flag to track if using BGG collection
         
         // --- DOM Elements ---
         const creditsContentEl = document.getElementById('creditsContent');
@@ -220,6 +248,8 @@
         const messageBox = document.getElementById('messageBox');
         const loadingIndicator = document.getElementById('loadingIndicator');
         const initialPrompt = document.getElementById('initialPrompt');
+        const bggUsernameInput = document.getElementById('bggUsername');
+        const collectionFiltersDiv = document.getElementById('collectionFilters');
 
         // The RAWG API endpoint for a list of popular games
         const RAWG_URL = 'https://api.rawg.io/api/games?';
@@ -246,55 +276,109 @@
             }
         }
 
+        async function fetchFromBGG(username) {
+            try {
+                // Build filter parameters
+                let filters = [];
+                if (document.getElementById('filterOwn').checked) filters.push('own=1');
+                if (document.getElementById('filterPrevOwned').checked) filters.push('prevowned=1');
+                if (document.getElementById('filterWantToPlay').checked) filters.push('wanttoplay=1');
+                if (document.getElementById('filterWantToBuy').checked) filters.push('wanttobuy=1');
+
+                const filterStr = filters.length > 0 ? '&' + filters.join('&') : '&own=1';
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}${filterStr}&stats=1`);
+
+                if (!response.ok) throw new Error('Failed to fetch collection');
+
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+
+                const games = Array.from(xml.querySelectorAll('item')).map(item => {
+                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    const yearPublished = item.querySelector('yearpublished')?.textContent || 0;
+                    const rating = parseFloat(item.querySelector('average')?.textContent || 0);
+                    const image = item.querySelector('image')?.textContent || '';
+
+                    return {
+                        id: item.getAttribute('objectid'),
+                        name: name,
+                        released: parseInt(yearPublished),
+                        rating: rating,
+                        image: image,
+                        metacritic: 0
+                    };
+                }).filter(g => g.image);
+
+                // Remove duplicates
+                return Array.from(new Map(games.map(g => [g.name, g])).values());
+            } catch (error) {
+                console.error('BGG Fetch Error:', error);
+                throw error;
+            }
+        }
+
         async function fetchGameData() {
             loadingIndicator.style.display = 'flex'; // Show loading screen
             initialPrompt.style.display = 'none';
 
-            // 1. Get secrets from environment globals (Mimics secure access)
-            const apiKey = window.RAWG_KEY;
-            const bearerToken = window.BEARER_TOKEN;
-
-            if (apiKey === 'DEMO_API_KEY_REQUIRED' || !bearerToken) {
-                messageBox.textContent = '❌ Error: API Key or Bearer Token secrets are missing. Cannot fetch data.';
-                loadingIndicator.style.display = 'none';
-                initialPrompt.style.display = 'block';
-                return [];
-            }
-            
-            // Build URL parameters - fetching enough games for a good shuffle/effect
-            const url = `${RAWG_URL}key=${apiKey}&page_size=40&platforms=1&ordering=-rating`; 
-
-            // 2. Construct Fetch Options using the environment Bearer Token
-            const fetchOptions = {
-                method: 'GET',
-                headers: {
-                    // Uses the Bearer Token from the environment secret
-                    'Authorization': `Bearer ${bearerToken}`, 
-                    'Content-Type': 'application/json'
-                }
-            };
-
             try {
-                const response = await fetchWithRetry(url, fetchOptions);
-                const data = await response.json();
+                const bggUsername = bggUsernameInput.value.trim();
                 
-                // Process and filter data
-                const games = data.results.map(g => ({
-                    id: g.id,
-                    name: g.name,
-                    released: new Date(g.released).getFullYear() || 0,
-                    rating: g.rating,
-                    image: g.background_image, 
-                    metacritic: g.metacritic || 0
-                })).filter(g => g.image); 
+                if (bggUsername) {
+                    // Fetch from BGG collection
+                    useBGGCollection = true;
+                    const games = await fetchFromBGG(bggUsername);
+                    if (games.length === 0) {
+                        messageBox.textContent = '❌ No games found in BGG collection. Check username and filters.';
+                        loadingIndicator.style.display = 'none';
+                        initialPrompt.style.display = 'block';
+                        return [];
+                    }
+                    gameData = games;
+                    messageBox.textContent = `✅ Loaded ${games.length} games from BGG collection.`;
+                } else {
+                    // Fetch from RAWG API
+                    useBGGCollection = false;
+                    const apiKey = window.RAWG_KEY;
+                    const bearerToken = window.BEARER_TOKEN;
 
-                gameData = games;
-                messageBox.textContent = `✅ Loaded ${games.length} games.`;
-                return games;
+                    if (apiKey === 'DEMO_API_KEY_REQUIRED' || !bearerToken) {
+                        messageBox.textContent = '❌ Error: API Key or Bearer Token secrets are missing. Cannot fetch data.';
+                        loadingIndicator.style.display = 'none';
+                        initialPrompt.style.display = 'block';
+                        return [];
+                    }
+                    
+                    const url = `${RAWG_URL}key=${apiKey}&page_size=40&platforms=1&ordering=-rating`; 
+                    const fetchOptions = {
+                        method: 'GET',
+                        headers: {
+                            'Authorization': `Bearer ${bearerToken}`, 
+                            'Content-Type': 'application/json'
+                        }
+                    };
+
+                    const response = await fetchWithRetry(url, fetchOptions);
+                    const data = await response.json();
+                    
+                    const games = data.results.map(g => ({
+                        id: g.id,
+                        name: g.name,
+                        released: new Date(g.released).getFullYear() || 0,
+                        rating: g.rating,
+                        image: g.background_image, 
+                        metacritic: g.metacritic || 0
+                    })).filter(g => g.image);
+
+                    gameData = games;
+                    messageBox.textContent = `✅ Loaded ${games.length} games from RAWG API.`;
+                }
+                return gameData;
 
             } catch (error) {
                 console.error('API Fetch Error:', error);
-                messageBox.textContent = `❌ API Error: Failed to fetch game data. Check environment secrets.`;
+                messageBox.textContent = `❌ API Error: ${error.message}`;
                 return [];
             } finally {
                 loadingIndicator.style.display = 'none'; // Hide loading screen
@@ -514,6 +598,14 @@
 
         // --- Event Listeners and Initialization ---
 
+        bggUsernameInput.addEventListener('input', (e) => {
+            if (e.target.value.trim()) {
+                collectionFiltersDiv.style.display = 'block';
+            } else {
+                collectionFiltersDiv.style.display = 'none';
+            }
+        });
+
         startButton.addEventListener('click', async () => {
             // Only fetch if data is empty
             if (!gameData || gameData.length === 0) {
@@ -570,6 +662,7 @@
         window.addEventListener('load', () => {
             // Initial UI setup
             speedControlEl.style.display = modeSelect.value === 'fireworks' ? 'none' : 'block';
+            collectionFiltersDiv.style.display = 'none'; // Hidden by default
             
             // Pre-fetch data immediately on load while showing the loading screen
             fetchGameData().then(data => {
