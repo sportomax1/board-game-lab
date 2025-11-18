@@ -1,0 +1,433 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Arcade Credits Roller</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <!-- Firebase Imports -->
+    <script type="module">
+        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
+        import { getAuth, signInAnonymously, signInWithCustomToken, onAuthStateChanged } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
+        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        import { setLogLevel } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        
+        // Use provided global variables
+        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : null;
+        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
+
+        if (firebaseConfig) {
+            setLogLevel('debug');
+            window.firebaseApp = initializeApp(firebaseConfig);
+            window.db = getFirestore(window.firebaseApp);
+            window.auth = getAuth(window.firebaseApp);
+
+            // Auth Initialization
+            onAuthStateChanged(window.auth, async (user) => {
+                if (user) {
+                    console.log("Firebase Auth State Changed: Logged in.", user.uid);
+                    window.userId = user.uid;
+                } else {
+                    console.log("Firebase Auth State Changed: No user. Attempting sign-in.");
+                    try {
+                        if (initialAuthToken) {
+                            await signInWithCustomToken(window.auth, initialAuthToken);
+                        } else {
+                            await signInAnonymously(window.auth);
+                        }
+                    } catch (error) {
+                        console.error("Firebase sign-in failed:", error);
+                    }
+                }
+            });
+        } else {
+            console.error("Firebase configuration not found. Firestore features are disabled.");
+        }
+    </script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=VT323&display=swap');
+        
+        body {
+            font-family: 'VT323', monospace;
+            overscroll-behavior: none;
+            -webkit-user-select: none;
+            user-select: none;
+            /* Hide scrollbar for a clean credits look */
+            overflow: hidden; 
+        }
+
+        .credits-container {
+            position: relative;
+            height: 100vh;
+            width: 100%;
+            overflow: hidden;
+            background-color: #000000; /* Deep black for cinematic feel */
+        }
+
+        .credits-content {
+            position: absolute;
+            left: 50%;
+            bottom: 0; /* Start at the bottom */
+            transform: translateX(-50%) translateY(100%);
+            white-space: nowrap;
+            /* Will be animated via JS/CSS */
+        }
+
+        .roll-animation {
+            animation: creditsRoll linear infinite;
+        }
+
+        @keyframes creditsRoll {
+            from {
+                transform: translateX(-50%) translateY(100vh);
+            }
+            to {
+                transform: translateX(-50%) translateY(-100%);
+            }
+        }
+
+        .game-item {
+            margin: 24px 0;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            width: 100%;
+            min-height: 150px; /* Ensure minimum spacing */
+        }
+
+        .game-image {
+            width: 100px;
+            height: 100px;
+            object-fit: cover;
+            border-radius: 8px;
+            box-shadow: 0 0 10px rgba(255, 255, 255, 0.4);
+            filter: brightness(0.9);
+        }
+
+        /* Fireworks Mode Styling */
+        .firework {
+            position: absolute;
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 8px;
+            opacity: 0;
+            transition: opacity 0.5s, transform 3s cubic-bezier(0.25, 0.1, 0.25, 1);
+            pointer-events: none; /* Don't block mouse events */
+        }
+    </style>
+</head>
+<body class="bg-gray-900 text-white min-h-screen flex flex-col md:flex-row">
+
+    <!-- Settings Panel -->
+    <div id="settingsPanel" class="w-full md:w-1/3 lg:w-1/4 p-4 md:p-6 bg-gray-800 shadow-xl z-10 transition-all duration-300">
+        <h1 class="text-3xl text-yellow-400 mb-6 border-b border-yellow-400 pb-2">Credits Setup</h1>
+
+        <div class="space-y-4">
+            <!-- Mode Selector -->
+            <div>
+                <label for="modeSelect" class="block text-sm font-medium text-gray-300 mb-1">Animation Mode</label>
+                <select id="modeSelect" class="w-full p-2 bg-gray-700 text-white rounded-lg border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500">
+                    <option value="classic">Classic Roll (Bottom to Top)</option>
+                    <option value="fireworks">Interactive Fireworks (Click to Launch)</option>
+                </select>
+            </div>
+
+            <!-- Sorting Selector -->
+            <div>
+                <label for="sortSelect" class="block text-sm font-medium text-gray-300 mb-1">Sorting Order</label>
+                <select id="sortSelect" class="w-full p-2 bg-gray-700 text-white rounded-lg border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500">
+                    <option value="random">Random</option>
+                    <option value="name">Game Title (A-Z)</option>
+                    <option value="rating">Rating (High to Low)</option>
+                    <option value="year">Year Published (Newest First)</option>
+                </select>
+            </div>
+
+            <!-- Speed Control (Classic Mode Only) -->
+            <div id="speedControl">
+                <label for="speedRange" class="block text-sm font-medium text-gray-300 mb-1">Speed: <span id="speedValue">50</span>s Duration (Slower <-> Faster)</label>
+                <input type="range" id="speedRange" min="10" max="100" value="50" class="w-full h-2 bg-gray-700 rounded-lg appearance-none cursor-pointer range-lg">
+            </div>
+
+            <!-- Bearer Token Input -->
+            <div>
+                <label for="bearerToken" class="block text-sm font-medium text-gray-300 mb-1">Bearer Token (Mocked)</label>
+                <input type="password" id="bearerToken" value="mock_token_12345" class="w-full p-2 bg-gray-700 text-white rounded-lg border border-gray-600 focus:ring-yellow-500 focus:border-yellow-500" placeholder="Enter API Token">
+            </div>
+
+            <!-- Start Button -->
+            <button id="startButton" class="w-full py-3 mt-4 text-lg font-bold bg-green-600 hover:bg-green-700 text-white rounded-lg shadow-md transition-colors duration-200">
+                Start Credits
+            </button>
+            <button id="stopButton" class="w-full py-3 mt-2 text-lg font-bold bg-red-600 hover:bg-red-700 text-white rounded-lg shadow-md transition-colors duration-200" style="display: none;">
+                Stop Credits
+            </button>
+            <div id="messageBox" class="text-sm text-center text-red-400 mt-2"></div>
+        </div>
+
+        <p class="text-xs text-gray-400 mt-8 text-center">
+            *Fireworks Mode: Click anywhere on the black screen to launch a game image!
+        </p>
+    </div>
+
+    <!-- Credits Display Area -->
+    <div id="creditsArea" class="credits-container flex-grow cursor-pointer relative">
+        <div id="creditsContent" class="credits-content">
+            <!-- Game items will be injected here -->
+        </div>
+    </div>
+
+    <script>
+        // --- Game Data and State Management ---
+        const MOCK_GAMES = [
+            { id: 1, name: "Terraforming Mars", year: 2016, rating: 8.4, image: "https://placehold.co/100x100/10B981/ffffff?text=TM" },
+            { id: 2, name: "Gloomhaven", year: 2017, rating: 8.8, image: "https://placehold.co/100x100/F59E0B/ffffff?text=GH" },
+            { id: 3, name: "Catan", year: 1995, rating: 7.1, image: "https://placehold.co/100x100/EF4444/ffffff?text=Catan" },
+            { id: 4, name: "Root", year: 2018, rating: 8.0, image: "https://placehold.co/100x100/3B82F6/ffffff?text=Root" },
+            { id: 5, name: "Scythe", year: 2016, rating: 8.2, image: "https://placehold.co/100x100/8B5CF6/ffffff?text=Scythe" },
+            { id: 6, name: "7 Wonders", year: 2010, rating: 7.8, image: "https://placehold.co/100x100/EC4899/ffffff?text=7W" },
+            { id: 7, name: "Pandemic", year: 2008, rating: 7.6, image: "https://placehold.co/100x100/14B8A6/ffffff?text=Pndmc" },
+            { id: 8, name: "Azul", year: 2017, rating: 7.8, image: "https://placehold.co/100x100/FBBF24/ffffff?text=Azul" },
+            { id: 9, name: "Dominion", year: 2008, rating: 7.6, image: "https://placehold.co/100x100/6B7280/ffffff?text=Dmn" },
+            { id: 10, name: "Ticket to Ride", year: 2004, rating: 7.4, image: "https://placehold.co/100x100/6366F1/ffffff?text=TtR" },
+        ];
+
+        let gameData = [];
+        let isRunning = false;
+        let animationFrameId = null;
+
+        // --- DOM Elements ---
+        const creditsContentEl = document.getElementById('creditsContent');
+        const creditsAreaEl = document.getElementById('creditsArea');
+        const startButton = document.getElementById('startButton');
+        const stopButton = document.getElementById('stopButton');
+        const speedRange = document.getElementById('speedRange');
+        const speedValueEl = document.getElementById('speedValue');
+        const sortSelect = document.getElementById('sortSelect');
+        const modeSelect = document.getElementById('modeSelect');
+        const speedControlEl = document.getElementById('speedControl');
+        const messageBox = document.getElementById('messageBox');
+
+        // --- Utility Functions ---
+
+        // Mock function to simulate fetching data from an API with Authorization
+        async function fetchGameData() {
+            const token = document.getElementById('bearerToken').value;
+            if (!token) {
+                return false;
+            }
+
+            // In a real app, this would be an actual fetch request
+            // const response = await fetch('YOUR_API_ENDPOINT', {
+            //     headers: {
+            //         'Authorization': `Bearer ${token}`
+            //     }
+            // });
+
+            // Mocking a successful fetch after a delay
+            messageBox.textContent = "Fetching game data...";
+            await new Promise(resolve => setTimeout(resolve, 500)); 
+            messageBox.textContent = "";
+            return MOCK_GAMES.map(game => ({
+                ...game,
+                // Fallback image for safety
+                image: game.image || `https://placehold.co/100x100/000000/ffffff?text=${game.name.substring(0, 3)}`
+            }));
+        }
+
+        function sortGames(games, sortBy) {
+            if (sortBy === 'random') {
+                return games.sort(() => Math.random() - 0.5);
+            }
+            return games.sort((a, b) => {
+                switch (sortBy) {
+                    case 'name':
+                        return a.name.localeCompare(b.name);
+                    case 'rating':
+                        return b.rating - a.rating; // High to Low
+                    case 'year':
+                        return b.year - a.year; // Newest First
+                    default:
+                        return 0;
+                }
+            });
+        }
+
+        function renderCreditsContent(games) {
+            creditsContentEl.innerHTML = '';
+            // Render the list twice to ensure seamless looping without a gap
+            const fullList = [...games, ...games]; 
+
+            fullList.forEach(game => {
+                const div = document.createElement('div');
+                div.className = 'game-item flex items-center justify-center p-4 bg-gray-900 w-[300px] text-center';
+                div.innerHTML = `
+                    <img src="${game.image}" onerror="this.onerror=null;this.src='https://placehold.co/100x100/1F2937/ffffff?text=Error';" 
+                         class="game-image transition-all duration-300 transform hover:scale-110" alt="${game.name}">
+                    <div class="mt-2 text-xl text-yellow-300">${game.name}</div>
+                    <div class="text-sm text-gray-400">Rating: ${game.rating.toFixed(1)} | Year: ${game.year}</div>
+                `;
+                creditsContentEl.appendChild(div);
+            });
+
+            // Set the width of the content container (needs to be wide enough for items to be centered)
+            // This is just a visual alignment helper, vertical scrolling is key.
+            creditsContentEl.style.width = '300px'; 
+        }
+
+        // --- Mode Handlers ---
+
+        function startClassicRoll() {
+            if (isRunning) return;
+            isRunning = true;
+            stopButton.style.display = 'block';
+            startButton.style.display = 'none';
+
+            // 1. Sort and Render
+            const sortedGames = sortGames(gameData, sortSelect.value);
+            renderCreditsContent(sortedGames);
+            
+            // 2. Calculate height and duration
+            const totalContentHeight = creditsContentEl.scrollHeight;
+            const viewportHeight = creditsAreaEl.clientHeight;
+
+            // Since we duplicate the list, the actual distance to travel is (totalHeight / 2) + viewportHeight
+            // We use the total scroll height and set the `to` keyframe distance to ensure a smooth loop.
+            const duration = parseInt(speedRange.value, 10);
+            
+            // 3. Apply CSS Animation
+            creditsContentEl.style.animationDuration = `${duration}s`;
+            creditsContentEl.classList.add('roll-animation');
+            
+            // The keyframe definition must be updated dynamically if the height calculation was complex, 
+            // but for a simple bottom-to-top roll, the fixed percentages are fine if the content is duplicated.
+            // The browser's dynamic interpretation of 100% height makes this work for continuous scrolling.
+        }
+
+        function setupFireworksMode() {
+            if (isRunning) {
+                stopCredits();
+            }
+            messageBox.textContent = "Click anywhere on the black screen to launch fireworks!";
+            creditsContentEl.innerHTML = ''; // Clear roll content
+            creditsAreaEl.addEventListener('click', launchFirework);
+            stopButton.style.display = 'block';
+            startButton.style.display = 'none';
+        }
+
+        function stopFireworksMode() {
+            creditsAreaEl.removeEventListener('click', launchFirework);
+            messageBox.textContent = "";
+            // Remove any lingering firework elements
+            document.querySelectorAll('.firework').forEach(el => el.remove());
+        }
+        
+        // Function to handle the firework image launch
+        function launchFirework(event) {
+            if (!gameData.length) return;
+
+            const randomIndex = Math.floor(Math.random() * gameData.length);
+            const game = gameData[randomIndex];
+
+            const firework = document.createElement('img');
+            firework.src = game.image;
+            firework.className = 'firework';
+            
+            // Start position (where the user clicked)
+            firework.style.left = `${event.clientX}px`;
+            firework.style.top = `${event.clientY}px`;
+            firework.style.opacity = '1';
+            
+            creditsAreaEl.appendChild(firework);
+
+            // --- Randomize Trajectory and Duration ---
+            const duration = Math.random() * 2 + 1.5; // 1.5s to 3.5s
+            const finalY = Math.random() * -500 - 100; // Launch high above the screen
+            const finalX = (Math.random() - 0.5) * 400; // Launch left or right
+
+            // Apply transition styles
+            firework.style.transitionDuration = `${duration}s`;
+            firework.style.transitionTimingFunction = 'cubic-bezier(0.2, 0.8, 0.4, 1.2)';
+
+            // Use a slight delay to allow the element to be inserted before transition starts
+            setTimeout(() => {
+                firework.style.transform = `translate(${finalX}px, ${finalY}px) scale(1.5) rotate(${Math.random() * 360}deg)`;
+                firework.style.opacity = '0';
+            }, 10);
+
+            // Cleanup after animation
+            setTimeout(() => {
+                firework.remove();
+            }, duration * 1000 + 500); 
+        }
+
+        function stopCredits() {
+            isRunning = false;
+            stopButton.style.display = 'none';
+            startButton.style.display = 'block';
+            messageBox.textContent = "";
+
+            // Stop Classic Roll
+            creditsContentEl.classList.remove('roll-animation');
+            // Reset position explicitly to avoid lingering animation state
+            creditsContentEl.style.transform = 'translateX(-50%) translateY(100%)'; 
+            
+            // Stop Fireworks Mode
+            stopFireworksMode();
+        }
+
+        // --- Event Listeners and Initialization ---
+
+        startButton.addEventListener('click', async () => {
+            if (!gameData || gameData.length === 0) {
+                gameData = await fetchGameData();
+                if (!gameData || gameData.length === 0) {
+                    messageBox.textContent = "❌ Error: Invalid Token or failed to fetch data.";
+                    return;
+                }
+            }
+
+            const selectedMode = modeSelect.value;
+            if (selectedMode === 'classic') {
+                stopFireworksMode(); // Ensure firework listeners are gone
+                startClassicRoll();
+            } else if (selectedMode === 'fireworks') {
+                stopCredits(); // Reset state
+                setupFireworksMode();
+            }
+        });
+
+        stopButton.addEventListener('click', stopCredits);
+        
+        speedRange.addEventListener('input', (e) => {
+            const duration = e.target.value;
+            speedValueEl.textContent = `${duration}`;
+            // If running in classic mode, update speed instantly
+            if (isRunning && modeSelect.value === 'classic') {
+                creditsContentEl.style.animationDuration = `${duration}s`;
+            }
+        });
+        
+        modeSelect.addEventListener('change', (e) => {
+            // Toggle visibility of the speed control based on mode
+            speedControlEl.style.display = e.target.value === 'classic' ? 'block' : 'none';
+            // Stop any running animation when changing modes
+            stopCredits();
+        });
+
+        // Initialize display state
+        window.addEventListener('load', () => {
+            speedControlEl.style.display = modeSelect.value === 'classic' ? 'block' : 'none';
+            // Pre-load data on page load so the start is faster
+            fetchGameData().then(data => {
+                if (data) {
+                    gameData = data;
+                    renderCreditsContent(sortGames(gameData, 'random'));
+                }
+            });
+        });
+    </script>
+</body>
+</html>
