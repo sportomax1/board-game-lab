@@ -308,12 +308,22 @@
     </style>
 </head>
 <body class="bg-gray-100">
-    <!-- Progress Bar -->
+    <!-- Progress Bars -->
     <div class="progress-container" id="progressContainer">
         <div id="progressText">Loading games...</div>
         <div class="progress-bar">
             <div class="progress-fill" id="progressFill" style="width: 0%"></div>
         </div>
+        <div id="progressStats" style="font-size: 0.85rem; margin-top: 0.25rem; color: #666;"></div>
+    </div>
+
+    <!-- API Progress Bar -->
+    <div class="progress-container" id="apiProgressContainer" style="display: none;">
+        <div id="apiProgressText">Loading BGG API data...</div>
+        <div class="progress-bar">
+            <div class="progress-fill" id="apiProgressFill" style="width: 0%"></div>
+        </div>
+        <div id="apiProgressStats" style="font-size: 0.85rem; margin-top: 0.25rem; color: #666;"></div>
     </div>
 
     <!-- Header -->
@@ -435,18 +445,33 @@
                 </select>
             </div>
 
-            <!-- Sportomax Only Toggle -->
+            <!-- Sportomax Only Toggle (DEFAULT ON) -->
             <div class="mb-3 flex items-center gap-2">
                 <input 
                     type="checkbox" 
                     id="sportomaxOnlyToggle"
                     class="w-4 h-4 accent-blue-500 cursor-pointer"
                     onchange="applyFilters()"
+                    checked
                 />
                 <label for="sportomaxOnlyToggle" class="text-sm font-medium text-gray-700 cursor-pointer">
                     📚 Load Only My Collection (Sportomax)
                 </label>
                 <span class="text-xs text-gray-500 ml-auto">(Improves load performance)</span>
+            </div>
+
+            <!-- Verify Sportomax Has Record Toggle (DEFAULT ON) -->
+            <div class="mb-3 flex items-center gap-2">
+                <input 
+                    type="checkbox" 
+                    id="verifySportomaxToggle"
+                    class="w-4 h-4 accent-blue-500 cursor-pointer"
+                    checked
+                />
+                <label for="verifySportomaxToggle" class="text-sm font-medium text-gray-700 cursor-pointer">
+                    ✓ Only Load API Data for Games in Sportomax
+                </label>
+                <span class="text-xs text-gray-500 ml-auto">(Faster API processing)</span>
             </div>
 
             <!-- Stats -->
@@ -903,17 +928,19 @@
             renderGamesInBatches();
         }
 
-        // Render games in batches of 100 with progress bar
+        // Render games in batches of 100 with progress bar and time tracking
         async function renderGamesInBatches() {
             const progressContainer = document.getElementById('progressContainer');
             const progressText = document.getElementById('progressText');
             const progressFill = document.getElementById('progressFill');
+            const progressStats = document.getElementById('progressStats');
             const gameList = document.getElementById('gameList');
             
             progressContainer.classList.add('active');
             
             const batchSize = 100;
             const totalGames = allGames.length;
+            const startTime = Date.now();
             
             for (let i = 0; i < totalGames; i += batchSize) {
                 const endIdx = Math.min(i + batchSize, totalGames);
@@ -925,21 +952,37 @@
                     gameList.appendChild(card);
                 });
                 
+                // Calculate time metrics
+                const elapsed = Date.now() - startTime;
+                const elapsedSecs = (elapsed / 1000).toFixed(1);
+                const itemsPerSec = (endIdx / (elapsed / 1000)).toFixed(1);
+                const remainingItems = totalGames - endIdx;
+                const estimatedTotalSecs = (totalGames / (endIdx / (elapsed / 1000))).toFixed(1);
+                const estimatedRemainingSecs = (remainingItems / (endIdx / (elapsed / 1000))).toFixed(1);
+                
                 // Update progress
                 const progress = (endIdx / totalGames) * 100;
                 progressFill.style.width = progress + '%';
                 progressText.textContent = `Loading games... ${endIdx} of ${totalGames} rendered`;
+                progressStats.textContent = `${elapsedSecs}s elapsed | ${itemsPerSec} items/sec | ETA: ${estimatedRemainingSecs}s | Total: ${estimatedTotalSecs}s`;
                 
                 // Small delay to allow UI to update
                 await new Promise(resolve => setTimeout(resolve, 50));
             }
             
-            // Hide progress bar when done
-            progressContainer.classList.remove('active');
-            console.log(`[LIBRARY] ✅ All ${totalGames} games rendered`);
+            // Final time
+            const totalElapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+            progressText.textContent = `✅ Loaded ${totalGames} games in ${totalElapsed}s`;
+            progressStats.textContent = '';
             
-            // Apply filters after all games are rendered
-            applyFilters();
+            // Hide progress bar after a brief moment
+            setTimeout(() => {
+                progressContainer.classList.remove('active');
+                console.log(`[LIBRARY] ✅ All ${totalGames} games rendered in ${totalElapsed}s`);
+                
+                // Apply filters after all games are rendered
+                applyFilters();
+            }, 500);
         }
 
         // Parse individual game from XML item
@@ -1366,7 +1409,7 @@
             return card;
         }
 
-        // Load visible thumbnails in batches of 20
+        // Load visible thumbnails in batches of 20 with progress tracking
         function loadVisibleThumbnails() {
             const cards = document.querySelectorAll('.game-card');
             const objectIds = [];
@@ -1385,15 +1428,37 @@
             });
             
             if (objectIds.length > 0) {
+                // Check if we should verify Sportomax before loading API data
+                const verifySportomax = document.getElementById('verifySportomaxToggle').checked;
+                
+                // Filter IDs based on Sportomax verification toggle
+                let idsToFetch = objectIds;
+                if (verifySportomax) {
+                    idsToFetch = objectIds.filter(id => {
+                        const game = allGames.find(g => g.id === id);
+                        return game && game.inSportomax;
+                    });
+                    if (idsToFetch.length < objectIds.length) {
+                        console.log(`[LIBRARY] Filtered out ${objectIds.length - idsToFetch.length} non-Sportomax games from API calls`);
+                    }
+                }
+                
                 // Batch into groups of 20
-                for (let i = 0; i < objectIds.length; i += 20) {
-                    const batch = objectIds.slice(i, i + 20);
+                for (let i = 0; i < idsToFetch.length; i += 20) {
+                    const batch = idsToFetch.slice(i, i + 20);
                     fetchThumbnails(batch);
                 }
             }
         }
 
-        // Fetch thumbnails from BGG API
+        // Global API progress tracking
+        let apiProgressState = {
+            totalToFetch: 0,
+            fetched: 0,
+            startTime: 0
+        };
+
+        // Fetch thumbnails from BGG API with progress tracking
         async function fetchThumbnails(objectIds) {
             try {
                 // Check cache first
@@ -1407,7 +1472,17 @@
                     }
                     updateGameData(id, data);
                     pendingThumbnails.delete(id);
+                    
+                    // Track progress
+                    if (apiProgressState.totalToFetch > 0) {
+                        apiProgressState.fetched++;
+                    }
                 });
+                
+                // Update progress display
+                if (apiProgressState.totalToFetch > 0) {
+                    updateAPIProgress();
+                }
                 
                 // Reapply filters after batch loads (if quick filters active) to catch newly loaded weight/time/best player data
                 if (activeQuickFilters.size > 0) {
@@ -1416,6 +1491,15 @@
                 
                 // Fetch only uncached items
                 if (toFetch.length === 0) return;
+                
+                // Initialize progress tracking if this is the first batch
+                if (apiProgressState.totalToFetch === 0) {
+                    apiProgressState.totalToFetch = toFetch.length;
+                    apiProgressState.fetched = 0;
+                    apiProgressState.startTime = Date.now();
+                    document.getElementById('apiProgressContainer').style.display = 'block';
+                    console.log(`[LIBRARY] Starting BGG API calls for ${toFetch.length} games in batches of 20...`);
+                }
                 
                 const idsParam = toFetch.join(',');
                 const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&type=boardgame&stats=1`);
@@ -1527,6 +1611,10 @@
                     updateGameData(id, apiData)
                     
                     pendingThumbnails.delete(id);
+                    
+                    // Track progress
+                    apiProgressState.fetched++;
+                    updateAPIProgress();
                 });
                 
                 // Reapply filters after batch loads (if quick filters active) to catch newly loaded weight/time/best player data
@@ -1537,6 +1625,39 @@
             } catch (error) {
                 console.warn('[LIBRARY] Error fetching thumbnails:', error);
                 toFetch.forEach(id => pendingThumbnails.delete(id));
+                apiProgressState.fetched += toFetch.length;
+                updateAPIProgress();
+            }
+        }
+        
+        // Update API progress display
+        function updateAPIProgress() {
+            if (apiProgressState.totalToFetch === 0) return;
+            
+            const apiProgressContainer = document.getElementById('apiProgressContainer');
+            const apiProgressText = document.getElementById('apiProgressText');
+            const apiProgressFill = document.getElementById('apiProgressFill');
+            const apiProgressStats = document.getElementById('apiProgressStats');
+            
+            const elapsed = Date.now() - apiProgressState.startTime;
+            const elapsedSecs = (elapsed / 1000).toFixed(1);
+            const itemsPerSec = (apiProgressState.fetched / (elapsed / 1000)).toFixed(2);
+            const remaining = apiProgressState.totalToFetch - apiProgressState.fetched;
+            const estimatedRemainingSecs = remaining > 0 ? (remaining / (apiProgressState.fetched / (elapsed / 1000))).toFixed(1) : '0';
+            const estimatedTotalSecs = (apiProgressState.totalToFetch / (apiProgressState.fetched / (elapsed / 1000))).toFixed(1);
+            
+            const progress = (apiProgressState.fetched / apiProgressState.totalToFetch) * 100;
+            apiProgressFill.style.width = progress + '%';
+            apiProgressText.textContent = `Loading BGG API data... ${apiProgressState.fetched} of ${apiProgressState.totalToFetch} games`;
+            apiProgressStats.textContent = `${elapsedSecs}s elapsed | ${itemsPerSec} items/sec (batch of 20) | ETA: ${estimatedRemainingSecs}s | Total: ${estimatedTotalSecs}s`;
+            
+            // Hide when complete
+            if (apiProgressState.fetched >= apiProgressState.totalToFetch) {
+                setTimeout(() => {
+                    apiProgressContainer.style.display = 'none';
+                    console.log(`[LIBRARY] ✅ Loaded ${apiProgressState.totalToFetch} games from BGG API in ${elapsedSecs}s`);
+                    apiProgressState = { totalToFetch: 0, fetched: 0, startTime: 0 };
+                }, 1000);
             }
         }
         
