@@ -2490,6 +2490,141 @@
                 return;
             }
             
+            const currentPairing = tournamentPairings[pairingIndex];
+            if (!currentPairing) {
+                console.error(`[BRACKET] No pairing at index ${pairingIndex}`);
+                return;
+            }
+            
+            // Check if this is a loser bracket matchup (minor stage)
+            if (currentPairing.stage === 'minor') {
+                console.log(`[DOUBLE ELIM - MINOR] Recording loser bracket minor stage result`);
+                const lBracketRound = currentPairing.losersBracketRound;
+                const lBracketData = bracketState.losersBracketData[lBracketRound];
+                
+                if (!lBracketData) {
+                    console.error(`[DOUBLE ELIM] No L-bracket data for round ${lBracketRound}`);
+                    return;
+                }
+                
+                // Find the minor matchup this winner belongs to
+                const minorMatchup = lBracketData.minorMatchups.find(m => 
+                    (m.left.id === winnerId || (m.right && m.right.id === winnerId))
+                );
+                
+                if (!minorMatchup) {
+                    console.error(`[DOUBLE ELIM] Minor matchup not found for winner ${winnerId}`);
+                    return;
+                }
+                
+                const winnerGame = minorMatchup.left.id === winnerId ? minorMatchup.left : minorMatchup.right;
+                const loserGame = minorMatchup.left.id === winnerId ? minorMatchup.right : minorMatchup.left;
+                
+                minorMatchup.winner = winnerGame;
+                console.log(`[DOUBLE ELIM - MINOR] ${winnerGame.name} defeats ${loserGame.name} in minor stage!`);
+                
+                pairingIndex++;
+                
+                // Check if all minor matchups in this round are complete
+                const minorAllComplete = lBracketData.minorMatchups.every(m => m.winner !== null);
+                
+                if (minorAllComplete) {
+                    console.log(`[DOUBLE ELIM] L-bracket R${lBracketRound} Minor stage complete!`);
+                    
+                    // Collect minor winners for major stage
+                    const minorWinners = lBracketData.minorMatchups.map(m => m.winner).filter(w => w !== null);
+                    console.log(`[DOUBLE ELIM] ${minorWinners.length} minor winners advance to major stage`);
+                    
+                    // Get W-bracket losers from this round for major stage
+                    const winnersRoundData = bracketState.roundsData[lBracketRound];
+                    const wBracketLosers = winnersRoundData.matchups.map(m => m.loser).filter(l => l !== null);
+                    
+                    // Get previous L-bracket winner (if exists)
+                    let prevLBracketWinner = null;
+                    if (lBracketRound > 1 && bracketState.losersBracketData[lBracketRound - 1]) {
+                        prevLBracketWinner = bracketState.losersBracketData[lBracketRound - 1].majorWinner;
+                    }
+                    
+                    // Create major matchups: minor winners vs major bracket
+                    const majorMatchups = [];
+                    for (let i = 0; i < minorWinners.length; i++) {
+                        if (prevLBracketWinner && i === 0) {
+                            // First minor winner faces previous L-bracket champion
+                            majorMatchups.push({
+                                left: minorWinners[i],
+                                right: prevLBracketWinner,
+                                winner: null,
+                                stage: 'major'
+                            });
+                            console.log(`[DOUBLE ELIM] Major matchup: ${minorWinners[i].name} vs ${prevLBracketWinner.name} (L-bracket champ)`);
+                        } else if (i % 2 === 1) {
+                            // Remaining minor winners pair off
+                            majorMatchups.push({
+                                left: minorWinners[i - 1],
+                                right: minorWinners[i],
+                                winner: null,
+                                stage: 'major'
+                            });
+                            console.log(`[DOUBLE ELIM] Major matchup: ${minorWinners[i - 1].name} vs ${minorWinners[i].name}`);
+                        }
+                    }
+                    
+                    lBracketData.majorMatchups = majorMatchups;
+                    
+                    // Queue major matchups
+                    const majorMatchesToQueue = majorMatchups.filter(m => m.winner === null);
+                    for (const match of majorMatchesToQueue) {
+                        tournamentPairings.push({ left: match.left, right: match.right, losersBracketRound: lBracketRound, stage: 'major' });
+                    }
+                    
+                    if (majorMatchesToQueue.length > 0) {
+                        console.log(`[DOUBLE ELIM] 🎯 MAJOR STAGE MATCHUPS queued for L-bracket R${lBracketRound}`);
+                    }
+                }
+                return;  // Exit early - we've handled the loser bracket result
+            }
+            
+            // Handle major stage matchups
+            if (currentPairing.stage === 'major') {
+                console.log(`[DOUBLE ELIM - MAJOR] Recording loser bracket major stage result`);
+                const lBracketRound = currentPairing.losersBracketRound;
+                const lBracketData = bracketState.losersBracketData[lBracketRound];
+                
+                if (!lBracketData) {
+                    console.error(`[DOUBLE ELIM] No L-bracket data for round ${lBracketRound}`);
+                    return;
+                }
+                
+                // Find the major matchup this winner belongs to
+                const majorMatchup = lBracketData.majorMatchups.find(m => 
+                    (m.left.id === winnerId || (m.right && m.right.id === winnerId))
+                );
+                
+                if (!majorMatchup) {
+                    console.error(`[DOUBLE ELIM] Major matchup not found for winner ${winnerId}`);
+                    return;
+                }
+                
+                const winnerGame = majorMatchup.left.id === winnerId ? majorMatchup.left : majorMatchup.right;
+                const loserGame = majorMatchup.left.id === winnerId ? majorMatchup.right : majorMatchup.left;
+                
+                majorMatchup.winner = winnerGame;
+                console.log(`[DOUBLE ELIM - MAJOR] ${winnerGame.name} defeats ${loserGame.name} in major stage!`);
+                
+                pairingIndex++;
+                
+                // Check if all major matchups in this round are complete
+                const majorAllComplete = lBracketData.majorMatchups.every(m => m.winner !== null);
+                
+                if (majorAllComplete) {
+                    console.log(`[DOUBLE ELIM] L-bracket R${lBracketRound} Major stage complete!`);
+                    lBracketData.majorWinner = lBracketData.majorMatchups[0].winner;  // Champion of losers bracket this round
+                    console.log(`[DOUBLE ELIM] L-bracket R${lBracketRound} winner: ${lBracketData.majorWinner.name}`);
+                }
+                return;  // Exit early - we've handled the loser bracket result
+            }
+            
+            // Otherwise, handle winners bracket matchup normally
             const round = bracketState.currentRound;
             const currentRoundData = bracketState.roundsData[round];
             console.log(`[BRACKET WINNER] Round ${round}, Double Elim: ${bracketState.doubleElimination}`);
@@ -4096,8 +4231,8 @@
                     if (primarySort === 0) primarySort = b.wins - a.wins;
                 } else if (standingsSortMode === 'wins') {
                     primarySort = standingsSortOrder === 'desc' ? b.wins - a.wins : a.wins - b.wins;
-                    // Tiebreaker: appearances
-                    if (primarySort === 0) primarySort = b.total - a.total;
+                    // Tiebreaker: fewer losses
+                    if (primarySort === 0) primarySort = a.losses - b.losses;
                 } else if (standingsSortMode === 'winpct') {
                     primarySort = standingsSortOrder === 'desc' ? b.winPct - a.winPct : a.winPct - b.winPct;
                     // Tiebreaker: wins
@@ -5437,6 +5572,18 @@
                 alert('Error deleting matchup');
             }
         };
+
+        // Listen for matchup mode changes
+        document.getElementById('matchupMode')?.addEventListener('change', (e) => {
+            if (!games || games.length === 0) return; // Only if games are loaded
+            matchupMode = e.target.value;
+            console.log(`[MATCHUP MODE CHANGED] New mode: ${matchupMode}`);
+            // Reset used games and rebuild queue with new mode
+            usedGameIds.clear();
+            rebuildGamesQueue();
+            nextPair();
+        });
     </script>
 </body>
 </html>
+
