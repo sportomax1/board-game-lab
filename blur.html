@@ -31,7 +31,7 @@
         .blur-image {
             width: 100%;
             height: 100%;
-            object-fit: cover;
+            object-fit: contain;
             filter: blur(var(--blur-amount, 25px));
             transition: filter 0.3s ease;
         }
@@ -227,15 +227,29 @@
             </button>
         </div>
 
+        <!-- Blur Slider (adjustable during game) -->
+        <div class="bg-gray-800 rounded-lg p-3">
+            <label class="text-xs text-gray-400">Blur: <span id="gameBlurValue">25</span>px</label>
+            <input type="range" id="gameBlurSlider" min="5" max="50" value="25" class="w-full h-2 bg-gray-600 rounded accent-pink-500">
+        </div>
+
         <!-- Correct Answer Display (hidden until used) -->
         <div id="answerDisplay" class="text-center text-gray-400 text-sm" style="display: none;">
             Answer: <span id="correctAnswer" class="text-pink-400 font-bold"></span>
         </div>
 
-        <!-- Skip Button -->
-        <button id="skipButton" class="w-full py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-semibold rounded-lg transition-colors">
-            ⏭️ Skip
-        </button>
+        <!-- Action Buttons -->
+        <div class="grid grid-cols-3 gap-2">
+            <button id="revealButton" class="py-2 bg-yellow-600 hover:bg-yellow-700 text-white font-semibold rounded-lg transition-colors">
+                👁️ Reveal
+            </button>
+            <button id="manualCheckButton" class="py-2 bg-blue-600 hover:bg-blue-700 text-white font-semibold rounded-lg transition-colors" style="display: none;">
+                ✓ I'm Right
+            </button>
+            <button id="skipButton" class="py-2 bg-gray-700 hover:bg-gray-600 text-gray-300 font-semibold rounded-lg transition-colors">
+                ⏭️ Skip
+            </button>
+        </div>
     </div>
 
     <!-- Results Screen -->
@@ -248,6 +262,9 @@
             </div>
             <div class="text-xl text-gray-300">
                 Accuracy: <span id="accuracy" class="text-pink-400 font-bold">0%</span>
+            </div>
+            <div class="text-lg text-gray-300">
+                Time: <span id="finalTime" class="text-blue-400 font-bold">0:00</span>
             </div>
             <div id="resultDetails" class="text-sm text-gray-400 space-y-2 mt-4"></div>
         </div>
@@ -265,6 +282,10 @@
         let totalGames = 10;
         let isGameRunning = false;
         let useBGGCollection = false;
+        let sessionStartTime = 0;
+        let sessionTimeElapsed = 0;
+        let sessionTimer = null;
+        let gameRevealed = false;
 
         // --- DOM Elements ---
         const settingsPanel = document.getElementById('settingsPanel');
@@ -283,6 +304,10 @@
         const hintDisplay = document.getElementById('hintDisplay');
         const hintType = document.getElementById('hintType');
         const messageBox = document.getElementById('messageBox');
+        const gameBlurSlider = document.getElementById('gameBlurSlider');
+        const gameBlurValue = document.getElementById('gameBlurValue');
+        const revealButton = document.getElementById('revealButton');
+        const manualCheckButton = document.getElementById('manualCheckButton');
 
         const RAWG_URL = 'https://api.rawg.io/api/games?';
 
@@ -360,7 +385,8 @@
                         loadingIndicator.style.display = 'none';
                         return [];
                     }
-                    gameData = games;
+                    // Shuffle games randomly
+                    gameData = games.sort(() => Math.random() - 0.5);
                     messageBox.textContent = `✅ Loaded ${games.length} games from BGG collection.`;
                 } else {
                     useBGGCollection = false;
@@ -388,7 +414,8 @@
                         image: g.background_image
                     })).filter(g => g.image);
 
-                    gameData = games;
+                    // Shuffle games randomly
+                    gameData = games.sort(() => Math.random() - 0.5);
                     messageBox.textContent = `✅ Loaded ${games.length} games.`;
                 }
                 return gameData;
@@ -432,6 +459,9 @@
             guessInput.focus();
             document.getElementById('feedbackBadge').innerHTML = '';
             document.getElementById('answerDisplay').style.display = 'none';
+            gameRevealed = false;
+            revealButton.textContent = '👁️ Reveal';
+            manualCheckButton.style.display = 'none';
             displayHint();
 
             // Update progress
@@ -440,18 +470,34 @@
             document.getElementById('progressFill').style.width = `${(currentIndex / totalGames) * 100}%`;
         }
 
-        function checkGuess() {
+        function formatTime(seconds) {
+            const mins = Math.floor(seconds / 60);
+            const secs = seconds % 60;
+            return `${mins}:${String(secs).padStart(2, '0')}`;
+        }
+
+        function updateSessionTime() {
+            const elapsed = Math.floor((Date.now() - sessionStartTime) / 1000);
+            sessionTimeElapsed = elapsed;
+        }
+
+        function checkGuess(isManualCheck = false) {
             const guess = guessInput.value.trim().toLowerCase();
             const correct = gameData[currentIndex].name.toLowerCase();
 
             const badge = document.getElementById('feedbackBadge');
-            const isCorrect = guess === correct || guess === correct.split(':')[0].toLowerCase();
+            const isCorrect = guess === correct || guess === correct.split(':')[0].toLowerCase() || isManualCheck;
+
+            if (!guess && !isManualCheck) {
+                alert('Please enter a guess or click Reveal to see the answer');
+                return;
+            }
 
             if (isCorrect) {
                 badge.className = 'correct-badge';
                 badge.textContent = '✓ CORRECT!';
                 score++;
-            } else {
+            } else if (!isManualCheck) {
                 badge.className = 'wrong-badge';
                 badge.textContent = '✗ WRONG';
                 document.getElementById('answerDisplay').style.display = 'block';
@@ -461,6 +507,8 @@
             guessInput.disabled = true;
             submitGuess.disabled = true;
             skipButton.disabled = true;
+            revealButton.disabled = true;
+            manualCheckButton.disabled = true;
 
             setTimeout(() => {
                 currentIndex++;
@@ -470,9 +518,23 @@
                     guessInput.disabled = false;
                     submitGuess.disabled = false;
                     skipButton.disabled = false;
+                    revealButton.disabled = false;
+                    manualCheckButton.disabled = false;
                     displayGame();
                 }
             }, 1500);
+        }
+
+        function revealGameName() {
+            if (!gameRevealed) {
+                gameRevealed = true;
+                blurImage.style.filter = 'none';
+                document.getElementById('answerDisplay').style.display = 'block';
+                document.getElementById('correctAnswer').textContent = gameData[currentIndex].name;
+                revealButton.textContent = '✓ Revealed';
+                manualCheckButton.style.display = 'block';
+                guessInput.placeholder = 'Confirm your answer above...';
+            }
         }
 
         function skipGame() {
@@ -485,6 +547,7 @@
         }
 
         function endGame() {
+            clearInterval(sessionTimer);
             isGameRunning = false;
             gameArea.style.display = 'none';
             settingsPanel.style.display = 'none';
@@ -492,6 +555,7 @@
 
             document.getElementById('finalScore').textContent = score;
             document.getElementById('finalTotal').textContent = totalGames;
+            document.getElementById('finalTime').textContent = formatTime(sessionTimeElapsed);
             const accuracy = Math.round((score / totalGames) * 100);
             document.getElementById('accuracy').textContent = accuracy + '%';
         }
@@ -501,10 +565,17 @@
             score = 0;
             totalGames = parseInt(document.getElementById('gameCount').value);
             isGameRunning = true;
+            sessionStartTime = Date.now();
+            sessionTimeElapsed = 0;
+            gameRevealed = false;
 
             settingsPanel.style.display = 'none';
             resultsScreen.style.display = 'none';
             gameArea.style.display = 'flex';
+
+            // Start session timer
+            clearInterval(sessionTimer);
+            sessionTimer = setInterval(updateSessionTime, 100);
 
             displayGame();
         }
@@ -522,12 +593,21 @@
             startGame();
         });
 
-        submitGuess.addEventListener('click', checkGuess);
+        submitGuess.addEventListener('click', () => checkGuess(false));
         guessInput.addEventListener('keypress', (e) => {
-            if (e.key === 'Enter') checkGuess();
+            if (e.key === 'Enter') checkGuess(false);
         });
 
+        revealButton.addEventListener('click', revealGameName);
+        manualCheckButton.addEventListener('click', () => checkGuess(true));
+
         skipButton.addEventListener('click', skipGame);
+
+        gameBlurSlider.addEventListener('input', (e) => {
+            const value = e.target.value;
+            gameBlurValue.textContent = value;
+            blurImage.style.filter = gameRevealed ? 'none' : `blur(${value}px)`;
+        });
 
         document.getElementById('restartButton').addEventListener('click', () => {
             resultsScreen.style.display = 'none';
@@ -538,6 +618,12 @@
             const value = e.target.value;
             blurValue.textContent = value;
             blurImage.style.setProperty('--blur-amount', `${value}px`);
+            // Also update game blur slider
+            gameBlurSlider.value = value;
+            gameBlurValue.textContent = value;
+            if (isGameRunning && !gameRevealed) {
+                blurImage.style.filter = `blur(${value}px)`;
+            }
         });
 
         document.getElementById('gameCount').addEventListener('input', (e) => {
@@ -546,6 +632,11 @@
 
         window.addEventListener('load', () => {
             collectionFiltersDiv.style.display = 'none';
+            // Sync blur sliders
+            gameBlurSlider.value = blurSlider.value;
+            gameBlurValue.textContent = blurSlider.value;
+            blurImage.style.setProperty('--blur-amount', `${blurSlider.value}px`);
+            
             fetchGameData().then(data => {
                 if (data.length > 0) {
                     messageBox.textContent = '✅ Ready to play!';
