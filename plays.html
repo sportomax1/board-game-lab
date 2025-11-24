@@ -340,6 +340,60 @@
             flex: 1;
         }
 
+        /* Column Order List - Draggable */
+        .column-order-list {
+            display: flex;
+            flex-direction: column;
+            gap: 8px;
+        }
+        
+        .column-item {
+            display: flex;
+            align-items: center;
+            gap: 12px;
+            padding: 10px 12px;
+            background: white;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            cursor: grab;
+            user-select: none;
+            transition: all 0.2s;
+        }
+        
+        .column-item:active {
+            cursor: grabbing;
+            background: #e8f4ff;
+        }
+        
+        .column-item.dragging {
+            opacity: 0.5;
+        }
+        
+        .column-item.drag-over {
+            background: #fff3cd;
+            border-color: #ffc107;
+        }
+        
+        .drag-handle {
+            color: #999;
+            font-size: 16px;
+            flex-shrink: 0;
+        }
+        
+        .column-item input[type="checkbox"] {
+            width: 18px;
+            height: 18px;
+            cursor: pointer;
+            flex-shrink: 0;
+        }
+        
+        .column-item label {
+            font-size: 13px;
+            cursor: pointer;
+            flex: 1;
+            margin: 0;
+        }
+
         /* Action Buttons Row */
         .action-buttons {
             display: flex;
@@ -539,49 +593,20 @@
                 <div class="modal-title">Export Selection</div>
                 <button class="icon-btn" onclick="closeModal('exportModal')">Close</button>
             </div>
-            <label class="label">Select Fields to Include</label>
-            <div class="checkbox-grid">
+            
+            <!-- Settings -->
+            <div style="margin-bottom: 16px; padding: 12px; background: #f5f5f5; border-radius: 8px;">
                 <div class="checkbox-item">
-                    <input type="checkbox" id="field-name" checked>
-                    <label for="field-name">Game Name</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-date" checked>
-                    <label for="field-date">Date</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-location">
-                    <label for="field-location">Location</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-players">
-                    <label for="field-players">Players</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-objectid" checked>
-                    <label for="field-objectid">Object ID</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-rating" checked>
-                    <label for="field-rating">My Rating</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-average" checked>
-                    <label for="field-average">Avg Rating</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-bayes" checked>
-                    <label for="field-bayes">Bayes Avg</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-rank" checked>
-                    <label for="field-rank">BGG Rank</label>
-                </div>
-                <div class="checkbox-item">
-                    <input type="checkbox" id="field-idx">
-                    <label for="field-idx">Sort Index</label>
+                    <input type="checkbox" id="includeHeaders" checked>
+                    <label for="includeHeaders">Include Column Headers</label>
                 </div>
             </div>
+            
+            <label class="label">Select & Reorder Fields (drag to reorder)</label>
+            <div id="columnOrder" class="column-order-list" style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 8px; border: 1px solid #ddd;">
+                <!-- Populated by initColumnOrder() -->
+            </div>
+            
             <div class="action-buttons">
                 <button class="copy-text-btn" onclick="copyAsText()">📋 Copy as Text</button>
                 <button class="download-csv-btn" onclick="downloadAsCSV()">💾 Download CSV</button>
@@ -955,73 +980,123 @@
             };
         }
 
-        function buildExportData(config) {
+        function buildExportData() {
+            const columnOrder = getColumnOrder();
             const selected = state.filtered.filter(p => state.selected.has(p.index));
-            return selected.map(play => {
+            const includeHeaders = document.getElementById('includeHeaders').checked;
+            
+            let lines = [];
+            
+            // Add headers if enabled
+            if (includeHeaders) {
+                const headers = columnOrder
+                    .filter(col => col.checked)
+                    .map(col => {
+                        const labels = {
+                            idx: 'Index',
+                            name: 'Game Name',
+                            date: 'Date',
+                            location: 'Location',
+                            players: 'Players',
+                            objectid: 'Object ID',
+                            rating: 'My Rating',
+                            average: 'Avg Rating',
+                            bayes: 'Bayes Avg',
+                            rank: 'BGG Rank'
+                        };
+                        return labels[col.id];
+                    });
+                lines.push(headers.join('\t'));
+            }
+            
+            // Add data rows with 1-based indexing
+            selected.forEach((play, rowNum) => {
                 const stats = state.statsMap[play.gameId] || {};
                 const userRating = state.userRatings[play.gameId] || 'N/A';
                 
-                const parts = [];
-                if (config.idx) parts.push(play.index);
-                if (config.objectid) parts.push(play.gameId || '');
-                if (config.name) parts.push(play.gameName);
-                if (config.date) parts.push(play.dateStr);
-                if (config.location) parts.push(play.location);
-                if (config.players) parts.push(play.players.join('; '));
-                if (config.rating) parts.push(userRating);
-                if (config.average) parts.push(stats.avg || 'N/A');
-                if (config.bayes) parts.push(stats.bayes || 'N/A');
-                if (config.rank) parts.push(stats.rankDisp || 'N/A');
-                
-                return parts.join('\t');
+                const parts = columnOrder
+                    .filter(col => col.checked)
+                    .map(col => {
+                        switch(col.id) {
+                            case 'idx': return (rowNum + 1).toString();
+                            case 'name': return play.gameName;
+                            case 'date': return play.dateStr;
+                            case 'location': return play.location || '';
+                            case 'players': return play.players.join('; ');
+                            case 'objectid': return play.gameId || '';
+                            case 'rating': return userRating;
+                            case 'average': return stats.avg || 'N/A';
+                            case 'bayes': return stats.bayes || 'N/A';
+                            case 'rank': return stats.rankDisp || 'N/A';
+                            default: return '';
+                        }
+                    });
+                lines.push(parts.join('\t'));
             });
+            
+            return lines.join('\n');
         }
 
-        function buildCSVData(config) {
+        function buildCSVData() {
+            const columnOrder = getColumnOrder();
             const selected = state.filtered.filter(p => state.selected.has(p.index));
+            const includeHeaders = document.getElementById('includeHeaders').checked;
             
-            // Headers
-            const headers = [];
-            if (config.idx) headers.push('index');
-            if (config.objectid) headers.push('objectid');
-            if (config.name) headers.push('name');
-            if (config.date) headers.push('date');
-            if (config.location) headers.push('location');
-            if (config.players) headers.push('players');
-            if (config.rating) headers.push('rating');
-            if (config.average) headers.push('average');
-            if (config.bayes) headers.push('bayesaverage');
-            if (config.rank) headers.push('rank');
+            let lines = [];
             
-            const rows = [headers.map(h => `"${h}"`).join(',')];
-
-            // Data rows
-            selected.forEach(play => {
+            // Add headers if enabled
+            if (includeHeaders) {
+                const headers = columnOrder
+                    .filter(col => col.checked)
+                    .map(col => {
+                        const labels = {
+                            idx: 'Index',
+                            name: 'Game Name',
+                            date: 'Date',
+                            location: 'Location',
+                            players: 'Players',
+                            objectid: 'Object ID',
+                            rating: 'My Rating',
+                            average: 'Avg Rating',
+                            bayes: 'Bayes Avg',
+                            rank: 'BGG Rank'
+                        };
+                        return `"${labels[col.id]}"`;
+                    });
+                lines.push(headers.join(','));
+            }
+            
+            // Add data rows with 1-based indexing
+            selected.forEach((play, rowNum) => {
                 const stats = state.statsMap[play.gameId] || {};
                 const userRating = state.userRatings[play.gameId] || 'N/A';
                 
-                const parts = [];
-                if (config.idx) parts.push(`"${play.index}"`);
-                if (config.objectid) parts.push(`"${play.gameId || ''}"`);
-                if (config.name) parts.push(`"${play.gameName.replace(/"/g, '""')}"`);
-                if (config.date) parts.push(`"${play.dateStr}"`);
-                if (config.location) parts.push(`"${play.location.replace(/"/g, '""')}"`);
-                if (config.players) parts.push(`"${play.players.join('; ')}"`);
-                if (config.rating) parts.push(`"${userRating}"`);
-                if (config.average) parts.push(`"${stats.avg || 'N/A'}"`);
-                if (config.bayes) parts.push(`"${stats.bayes || 'N/A'}"`);
-                if (config.rank) parts.push(`"${stats.rankDisp || 'N/A'}"`);
-                
-                rows.push(parts.join(','));
+                const parts = columnOrder
+                    .filter(col => col.checked)
+                    .map(col => {
+                        let value = '';
+                        switch(col.id) {
+                            case 'idx': value = (rowNum + 1).toString(); break;
+                            case 'name': value = play.gameName; break;
+                            case 'date': value = play.dateStr; break;
+                            case 'location': value = play.location || ''; break;
+                            case 'players': value = play.players.join('; '); break;
+                            case 'objectid': value = play.gameId || ''; break;
+                            case 'rating': value = userRating; break;
+                            case 'average': value = stats.avg || 'N/A'; break;
+                            case 'bayes': value = stats.bayes || 'N/A'; break;
+                            case 'rank': value = stats.rankDisp || 'N/A'; break;
+                        }
+                        return `"${value.toString().replace(/"/g, '""')}"`;
+                    });
+                lines.push(parts.join(','));
             });
-
-            return rows.join('\n');
+            
+            return lines.join('\n');
         }
 
         function copyAsText() {
-            const config = getSelectedFieldsConfig();
-            const data = buildExportData(config);
-            const txt = data.join('\n');
+            const txt = buildExportData();
             
             if(navigator.clipboard) navigator.clipboard.writeText(txt);
             else {
@@ -1036,8 +1111,7 @@
         }
 
         function downloadAsCSV() {
-            const config = getSelectedFieldsConfig();
-            const csv = buildCSVData(config);
+            const csv = buildCSVData();
             
             const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
             const link = document.createElement('a');
@@ -1058,7 +1132,99 @@
         }
 
         function openExportModal() {
+            initColumnOrder();
             openModal('exportModal');
+        }
+
+        function initColumnOrder() {
+            const columns = [
+                { id: 'idx', label: 'Sort Index', checked: false },
+                { id: 'name', label: 'Game Name', checked: true },
+                { id: 'date', label: 'Date', checked: true },
+                { id: 'location', label: 'Location', checked: false },
+                { id: 'players', label: 'Players', checked: false },
+                { id: 'objectid', label: 'Object ID', checked: true },
+                { id: 'rating', label: 'My Rating', checked: true },
+                { id: 'average', label: 'Avg Rating', checked: true },
+                { id: 'bayes', label: 'Bayes Avg', checked: true },
+                { id: 'rank', label: 'BGG Rank', checked: true }
+            ];
+
+            const list = document.getElementById('columnOrder');
+            list.innerHTML = columns.map((col, idx) => `
+                <div class="column-item" draggable="true" data-column-id="${col.id}" data-index="${idx}">
+                    <span class="drag-handle">☰</span>
+                    <input type="checkbox" id="field-${col.id}" ${col.checked ? 'checked' : ''} onchange="updateColumnState()">
+                    <label for="field-${col.id}">${col.label}</label>
+                </div>
+            `).join('');
+
+            // Add drag event listeners
+            list.querySelectorAll('.column-item').forEach(item => {
+                item.addEventListener('dragstart', handleDragStart);
+                item.addEventListener('dragover', handleDragOver);
+                item.addEventListener('drop', handleDrop);
+                item.addEventListener('dragend', handleDragEnd);
+                item.addEventListener('dragleave', handleDragLeave);
+            });
+        }
+
+        let draggedElement = null;
+
+        function handleDragStart(e) {
+            draggedElement = this;
+            this.classList.add('dragging');
+            e.dataTransfer.effectAllowed = 'move';
+        }
+
+        function handleDragOver(e) {
+            e.preventDefault();
+            e.dataTransfer.dropEffect = 'move';
+            if (this !== draggedElement) {
+                this.classList.add('drag-over');
+            }
+        }
+
+        function handleDragLeave(e) {
+            if (e.target === this) {
+                this.classList.remove('drag-over');
+            }
+        }
+
+        function handleDrop(e) {
+            e.preventDefault();
+            if (this !== draggedElement) {
+                const list = document.getElementById('columnOrder');
+                const allItems = Array.from(list.querySelectorAll('.column-item'));
+                const draggedIdx = allItems.indexOf(draggedElement);
+                const targetIdx = allItems.indexOf(this);
+
+                if (draggedIdx < targetIdx) {
+                    this.parentNode.insertBefore(draggedElement, this.nextSibling);
+                } else {
+                    this.parentNode.insertBefore(draggedElement, this);
+                }
+            }
+            this.classList.remove('drag-over');
+        }
+
+        function handleDragEnd(e) {
+            this.classList.remove('dragging');
+            document.getElementById('columnOrder').querySelectorAll('.column-item').forEach(item => {
+                item.classList.remove('drag-over');
+            });
+        }
+
+        function updateColumnState() {
+            // Just update the checkbox state - order is maintained by DOM
+        }
+
+        function getColumnOrder() {
+            const list = document.getElementById('columnOrder');
+            return Array.from(list.querySelectorAll('.column-item')).map(item => ({
+                id: item.dataset.columnId,
+                checked: item.querySelector('input[type="checkbox"]').checked
+            }));
         }
 
         function showPlayDetail(playIndex) {
