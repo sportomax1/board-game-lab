@@ -80,6 +80,120 @@ def generate_html_index(output_file='index.html'):
             padding-bottom: 10px; 
         }}
         
+        /* --- About Section --- */
+        .about-section {{
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 30px;
+            border-radius: 10px;
+            margin-bottom: 30px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
+        }}
+        .about-section h2 {{
+            margin-top: 0;
+            font-size: 28px;
+            margin-bottom: 15px;
+        }}
+        .about-section p {{
+            margin: 12px 0;
+            font-size: 16px;
+            line-height: 1.6;
+        }}
+        .about-section .passion-highlight {{
+            font-weight: 600;
+            background: rgba(255,255,255,0.2);
+            padding: 2px 6px;
+            border-radius: 4px;
+        }}
+        .about-section .contact-info {{
+            margin-top: 20px;
+            padding-top: 20px;
+            border-top: 1px solid rgba(255,255,255,0.3);
+            font-size: 15px;
+        }}
+        .about-btn {{
+            display: inline-block;
+            margin-top: 15px;
+            padding: 10px 20px;
+            background: white;
+            color: #667eea;
+            text-decoration: none;
+            border-radius: 6px;
+            font-weight: 600;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .about-btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+        }}
+        .modal {{
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            background-color: rgba(0,0,0,0.4);
+        }}
+        .modal.open {{
+            display: flex;
+            align-items: center;
+            justify-content: center;
+        }}
+        .modal-content {{
+            background-color: #fefefe;
+            padding: 30px;
+            border-radius: 10px;
+            width: 90%;
+            max-width: 600px;
+            max-height: 80vh;
+            overflow-y: auto;
+            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
+        }}
+        .modal-header {{
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            margin-bottom: 20px;
+        }}
+        .modal-header h2 {{
+            margin: 0;
+            color: #667eea;
+        }}
+        .close-btn {{
+            background: none;
+            border: none;
+            font-size: 28px;
+            cursor: pointer;
+            color: #999;
+            transition: color 0.2s;
+        }}
+        .close-btn:hover {{
+            color: #333;
+        }}
+        .modal-body p {{
+            margin: 15px 0;
+            line-height: 1.7;
+            color: #555;
+        }}
+        .modal-body .project-section {{
+            margin-top: 25px;
+            padding-top: 20px;
+            border-top: 1px solid #eee;
+        }}
+        .modal-body .project-title {{
+            font-weight: 600;
+            color: #667eea;
+            font-size: 16px;
+            margin-bottom: 8px;
+        }}
+        .modal-body .project-desc {{
+            color: #777;
+            font-size: 14px;
+        }}
+        /* --- End About Section --- */
+        
         /* --- Search Bar Styles --- */
         .search-input {{
             width: 100%;
@@ -255,6 +369,63 @@ def generate_html_index(output_file='index.html'):
 <body>
     <div class="container">
         <h1>Available Applications</h1>
+        
+        <!-- About Section -->
+        <div class="about-section">
+            <h2>🎲 Board Game Data Tools & Visualization Suite</h2>
+            <p>A collection of interactive tools and pages exploring board game data, collection analytics, and play statistics through creative data visualization and analysis.</p>
+            <p><span class="passion-highlight">Passionate about:</span> Board games, data analysis, and building innovative tools to explore data in creative ways.</p>
+            <div class="contact-info">
+                📧 Contact: <strong>@sportomax</strong>
+            </div>
+            <button class="about-btn" onclick="openAboutModal()">Learn More →</button>
+        </div>
+        
+        <!-- About Modal -->
+        <div id="aboutModal" class="modal">
+            <div class="modal-content">
+                <div class="modal-header">
+                    <h2>About These Projects</h2>
+                    <button class="close-btn" onclick="closeAboutModal()">&times;</button>
+                </div>
+                <div class="modal-body">
+                    <p><strong>Welcome to the Board Game Data Analytics Suite!</strong> This is a curated collection of tools and interactive applications built around my passion for board games, data analysis, and creative problem-solving through data visualization.</p>
+                    
+                    <p>Each project in this suite represents a different approach to exploring board game data—from collection management and play tracking to statistical analysis and performance comparisons.</p>
+                    
+                    <div class="project-section">
+                        <div class="project-title">🎮 Collection Tools</div>
+                        <div class="project-desc">Browse, manage, and analyze your personal board game collection with integrated BGG (BoardGameGeek) data, library comparisons, and detailed statistics.</div>
+                    </div>
+                    
+                    <div class="project-section">
+                        <div class="project-title">📊 Play Statistics</div>
+                        <div class="project-desc">Track play history, view detailed statistics about your gaming sessions, and export data in multiple formats for further analysis or sharing.</div>
+                    </div>
+                    
+                    <div class="project-section">
+                        <div class="project-title">📈 Data Visualization</div>
+                        <div class="project-desc">Interactive visualizations including distribution charts, ranking comparisons, complexity analysis, and play time breakdowns across your collection.</div>
+                    </div>
+                    
+                    <div class="project-section">
+                        <div class="project-title">🔧 Built With</div>
+                        <div class="project-desc">Vanilla JavaScript, HTML5, CSS3, Python, and BGG API integration. All projects are optimized for mobile and desktop experiences.</div>
+                    </div>
+                    
+                    <div class="project-section">
+                        <div class="project-title">💡 My Passion</div>
+                        <div class="project-desc">I'm passionate about board games and discovering new insights through data analysis. These tools showcase different ways to transform raw data into meaningful, interactive experiences that help you understand your gaming habits and collection better.</div>
+                    </div>
+                    
+                    <div class="project-section">
+                        <div class="project-title">📮 Get in Touch</div>
+                        <div class="project-desc">Questions, suggestions, or want to collaborate? Find me at <strong>@sportomax</strong> on social media or GitHub.</div>
+                    </div>
+                </div>
+            </div>
+        </div>
+        
         <p>Click a file entry to open it. Filter by file type below.</p>
         
         <div class="filter-controls">
@@ -466,6 +637,22 @@ def generate_html_index(output_file='index.html'):
             // Initial setup: Sort and then apply the default filter
             sortItems('update'); 
             setFileTypeFilter(currentFilter); // *** CHANGE 2: Call to set initial filter/active button
+            
+            // About modal functions
+            window.openAboutModal = function() {
+                document.getElementById('aboutModal').classList.add('open');
+            };
+            
+            window.closeAboutModal = function() {
+                document.getElementById('aboutModal').classList.remove('open');
+            };
+            
+            // Close modal when clicking outside of it
+            document.getElementById('aboutModal').addEventListener('click', function(e) {
+                if (e.target === this) {
+                    this.classList.remove('open');
+                }
+            });
         });
     </script>
 """
