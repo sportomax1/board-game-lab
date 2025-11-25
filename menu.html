@@ -249,37 +249,14 @@
         let currentSortedGames = []; // Store current sorted games for print view
         let currentGameDetails = {}; // Store current game details for print view
 
-        // Initialize print view from URL parameter BEFORE clearing data
+        // Initialize - no longer need special print page handling
         window.addEventListener('DOMContentLoaded', () => {
             console.log('[INIT] DOMContentLoaded event fired');
-            const params = new URLSearchParams(window.location.search);
-            console.log('[INIT] URL params:', window.location.search);
-            console.log('[INIT] print param value:', params.get('print'));
-            
-            if (params.has('print') && params.get('print') === '1') {
-                console.log('[INIT] Print mode detected, calling displayPrintView()');
-                // Wait a moment for all elements to be ready
-                setTimeout(() => {
-                    console.log('[INIT] Executing displayPrintView after timeout');
-                    displayPrintView();
-                }, 100);
-                return; // Don't clear localStorage, we need it for print view
-            }
-            console.log('[INIT] Not in print mode');
         });
 
-        // Clear localStorage when NOT in print mode (after DOM is ready)
+        // Clear localStorage when page loads normally
         window.addEventListener('load', () => {
             console.log('[INIT] Window load event fired');
-            const params = new URLSearchParams(window.location.search);
-            if (!params.has('print') || params.get('print') !== '1') {
-                console.log('[INIT] Clearing localStorage (not in print mode)');
-                // Only clear localStorage when NOT in print mode
-                localStorage.removeItem('bgg_print_data');
-            } else {
-                console.log('[INIT] Preserving localStorage (in print mode)');
-            }
-        });
 
         // Function to fetch user's BGG collection
         // Function to fetch user's BGG collection
@@ -1141,7 +1118,7 @@
             console.log('[PRINT] First game sample:', gamesData[0]);
             console.log('[PRINT] First 3 games thumbnails:', gamesData.slice(0, 3).map(g => `${g.name}: ${g.thumbnail ? 'YES' : 'NO'}`));
             
-            // Store data in localStorage instead of URL
+            // Build print data - this time we'll display directly on same page
             const printData = {
                 username: username,
                 playerCount: playerCount,
@@ -1150,27 +1127,114 @@
                 timestamp: Date.now()
             };
             
-            try {
-                const jsonStr = JSON.stringify(printData);
-                console.log('[PRINT] JSON stringified, size:', jsonStr.length, 'bytes');
-                if (jsonStr.length > 5 * 1024 * 1024) {
-                    console.warn('[PRINT] WARNING: Data size exceeds 5MB');
-                }
-                localStorage.setItem('bgg_print_data', jsonStr);
-                console.log('[PRINT] Successfully saved to localStorage');
-                // Verify it was saved
-                const stored = localStorage.getItem('bgg_print_data');
-                console.log('[PRINT] Verification: stored data length:', stored ? stored.length : 0);
-            } catch (error) {
-                console.error('[PRINT] ERROR saving to localStorage:', error);
-                alert('Error saving print data: ' + error.message);
+            console.log('[PRINT] Building grid with', gamesData.length, 'games');
+            
+            // Store temporarily for reference
+            window.currentPrintData = printData;
+            
+            // Build the print view directly on current page
+            buildPrintGrid(printData);
+            
+            // Show print view, hide normal view
+            const normalView = document.getElementById('normalViewContainer');
+            const printView = document.getElementById('printViewContainer');
+            
+            if (normalView) {
+                normalView.style.display = 'none';
+                console.log('[PRINT] Hidden normalViewContainer');
+            }
+            if (printView) {
+                printView.classList.add('active');
+                console.log('[PRINT] Activated printViewContainer');
+            }
+            
+            // Trigger print after a short delay to ensure rendering
+            setTimeout(() => {
+                console.log('[PRINT] Calling window.print()');
+                window.print();
+            }, 500);
+        }
+
+        function buildPrintGrid(printData) {
+            const { username, playerCount, games, printOptions } = printData;
+            
+            // Clear existing content
+            const headerEl = document.getElementById('printHeader');
+            const gridEl = document.getElementById('printGrid');
+            
+            if (!headerEl || !gridEl) {
+                console.error('[PRINT] ERROR: Print container elements not found');
                 return;
             }
             
-            // Open print page with ?print=1 parameter
-            const printUrl = window.location.href.split('?')[0] + '?print=1';
-            console.log('[PRINT] Opening new window with URL:', printUrl);
-            window.open(printUrl, '_blank');
+            gridEl.innerHTML = '';
+            
+            headerEl.textContent = `${username} - ${playerCount} Players`;
+            console.log('[PRINT] Header set to:', headerEl.textContent);
+            
+            // Build tiles
+            for (let i = 0; i < 120; i++) {
+                const tile = document.createElement('div');
+                tile.className = 'print-tile';
+                
+                const game = games[i];
+                
+                if (game && game.thumbnail) {
+                    const img = document.createElement('img');
+                    img.src = game.thumbnail;
+                    img.alt = game.name;
+                    tile.appendChild(img);
+                    
+                    // Add rank
+                    const rankEl = document.createElement('div');
+                    rankEl.className = 'print-rank';
+                    rankEl.textContent = String(i + 1);
+                    tile.appendChild(rankEl);
+                    
+                    // Add category if applicable
+                    if (printOptions.topRight === 'category') {
+                        const catEl = document.createElement('div');
+                        catEl.className = `print-category category-${game.category}`;
+                        catEl.textContent = game.category.substring(0, 3).toUpperCase();
+                        tile.appendChild(catEl);
+                    }
+                    
+                    // Add bayes rating
+                    if (printOptions.bottomRight === 'bayes' && game.bayesAverage) {
+                        const bayesEl = document.createElement('div');
+                        bayesEl.className = 'print-bayes';
+                        bayesEl.style.backgroundColor = getBayesColor(game.bayesAverage);
+                        bayesEl.textContent = game.bayesAverage.toFixed(1);
+                        bayesEl.title = `Bayes: ${game.bayesAverage}`;
+                        tile.appendChild(bayesEl);
+                    }
+                    
+                    // Add player votes count
+                    if (printOptions.bottomLeft === 'playerVotes' && game.playerVotes && game.playerVotes.length > 0) {
+                        const votesEl = document.createElement('div');
+                        votesEl.className = 'print-votes';
+                        votesEl.textContent = game.playerVotes.length;
+                        votesEl.title = `${game.playerVotes.length} votes`;
+                        tile.appendChild(votesEl);
+                    }
+                    
+                    if (i < 3) console.log(`[PRINT] Tile ${i+1}: ${game.name} added to grid`);
+                } else {
+                    if (i < 3) console.log(`[PRINT] Tile ${i+1}: (empty)`);
+                }
+                
+                gridEl.appendChild(tile);
+            }
+            
+            console.log('[PRINT] Grid construction complete with', gridEl.children.length, 'tiles');
+        }
+
+        function getBayesColor(bayes) {
+            if (bayes >= 8.0) return '#4caf50';   // green - excellent
+            if (bayes >= 7.5) return '#8bc34a';   // light green - very good
+            if (bayes >= 7.0) return '#ffeb3b';   // yellow - good
+            if (bayes >= 6.0) return '#ff9800';   // orange - average
+            return '#f44336';                     // red - below average
         }
 
         // Event listeners
