@@ -6,116 +6,12 @@
     <title>Dice Creator Workshop</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load Firebase modules -->
     <script type="module">
-        // Firebase Imports
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { 
-            getAuth, 
-            signInAnonymously, 
-            signInWithCustomToken, 
-            onAuthStateChanged 
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { 
-            getFirestore, 
-            doc, 
-            setDoc, 
-            addDoc, 
-            collection, 
-            query, 
-            onSnapshot,
-            deleteDoc,
-            setLogLevel
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
+        // Pure localStorage-based dice creator
 
         // --- App State ---
-        let db;
-        let auth;
-        let userId;
-        let appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
-        
-        // { id: '...', collectionName: '...', dieName: '...', type: 'd6', faces: [...], ... }
-        let localDice = []; 
-        let cloudDice = [];
-        
-        // { collectionName: '...', dieName: '...', type: 'd6', faces: [...], ... }
+        let localDice = [];
         let rollTray = [];
-
-        // --- Firebase Init ---
-        async function initFirebase() {
-            try {
-                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-                if (!firebaseConfig.apiKey) {
-                    console.warn("Firebase config is missing or incomplete. Cloud features will be disabled.");
-                    showModal("Firebase config not found. Cloud features are disabled. Please sign in to the platform.", "error");
-                    document.getElementById('cloud-storage-options').classList.add('opacity-50', 'pointer-events-none');
-                    document.getElementById('cloud-dice-list').innerHTML = '<p class="text-xs text-gray-500">Cloud storage disabled.</p>';
-                    return;
-                }
-
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                setLogLevel('debug');
-
-                auth.onAuthStateChanged(async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        console.log("User authenticated:", userId);
-                        document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
-                        // Now that we are authenticated, attach Firestore listener
-                        attachFirestoreListener();
-                    } else {
-                        console.log("No user signed in, attempting auth...");
-                        try {
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await signInWithCustomToken(auth, __initial_auth_token);
-                                console.log("Signed in with custom token.");
-                            } else {
-                                await signInAnonymously(auth);
-                                console.log("Signed in anonymously.");
-                            }
-                        } catch (authError) {
-                            console.error("Authentication error:", authError);
-                            showModal(`Authentication Error: ${authError.message}`, "error");
-                        }
-                    }
-                });
-            } catch (e) {
-                console.error("Firebase initialization failed:", e);
-                showModal("Firebase initialization failed. Cloud features disabled.", "error");
-                document.getElementById('cloud-storage-options').classList.add('opacity-50', 'pointer-events-none');
-                document.getElementById('cloud-dice-list').innerHTML = '<p class="text-xs text-gray-500">Cloud storage disabled.</p>';
-            }
-        }
-
-        // --- Firestore Listener ---
-        function attachFirestoreListener() {
-            if (!db || !userId) {
-                console.warn("Firestore listener not attached: db or userId missing.");
-                return;
-            }
-            
-            const diceCollectionPath = `artifacts/${appId}/users/${userId}/customDice`;
-            const q = query(collection(db, diceCollectionPath));
-
-            try {
-                onSnapshot(q, (querySnapshot) => {
-                    cloudDice = [];
-                    querySnapshot.forEach((doc) => {
-                        cloudDice.push({ id: doc.id, ...doc.data() });
-                    });
-                    console.log("Cloud dice updated:", cloudDice);
-                    renderSavedDiceLists();
-                }, (error) => {
-                    console.error("Error with Firestore snapshot:", error);
-                    showModal(`Error loading cloud dice: ${error.message}`, "error");
-                });
-            } catch (error) {
-                console.error("Failed to create Firestore query:", error);
-                showModal(`Error setting up cloud listener: ${error.message}`, "error");
-            }
-        }
 
         // --- UI Logic ---
         function switchView(view) {
@@ -208,32 +104,6 @@
             renderSavedDiceLists();
             clearForm();
         }
-
-        async function saveToCloud() {
-            if (!db || !userId) {
-                showModal("Cannot save to cloud: Firebase is not initialized or user is not signed in.", "error");
-                return;
-            }
-
-            const dieData = getDieDataFromForm();
-            if (!dieData) return;
-            
-            const spinner = document.getElementById('cloud-spinner');
-            spinner.classList.remove('hidden');
-
-            try {
-                const diceCollectionPath = `artifacts/${appId}/users/${userId}/customDice`;
-                const docRef = await addDoc(collection(db, diceCollectionPath), dieData);
-                console.log("Document written with ID: ", docRef.id);
-                showModal(`Saved "${dieData.dieName}" to Cloud!`, "success");
-                clearForm();
-            } catch (e) {
-                console.error("Error adding document: ", e);
-                showModal(`Error saving to cloud: ${e.message}`, "error");
-            } finally {
-                spinner.classList.add('hidden');
-            }
-        }
         
         function loadFromLocal() {
             const saved = localStorage.getItem('customDice');
@@ -255,13 +125,12 @@
 
         function renderSavedDiceLists() {
             renderDiceList(document.getElementById('local-dice-list'), localDice, 'local');
-            renderDiceList(document.getElementById('cloud-dice-list'), cloudDice, 'cloud');
         }
 
         function renderDiceList(container, diceArray, type) {
             container.innerHTML = '';
             if (diceArray.length === 0) {
-                container.innerHTML = `<p class="text-xs text-gray-400 italic">No dice saved ${type === 'local' ? 'locally' : 'in the cloud'}.</p>`;
+                container.innerHTML = `<p class="text-xs text-gray-400 italic">No dice saved yet.</p>`;
                 return;
             }
 
@@ -307,26 +176,12 @@
             });
         }
         
-        async function deleteDie(dieId, type) {
+        function deleteDie(dieId, type) {
             if (type === 'local') {
                 localDice = localDice.filter(d => d.id !== dieId);
                 localStorage.setItem('customDice', JSON.stringify(localDice));
                 renderSavedDiceLists();
                 showModal("Deleted die from Local Storage.", "success");
-            } else if (type === 'cloud') {
-                if (!db || !userId) {
-                    showModal("Cannot delete: Firebase not connected.", "error");
-                    return;
-                }
-                try {
-                    const docPath = `artifacts/${appId}/users/${userId}/customDice/${dieId}`;
-                    await deleteDoc(doc(db, docPath));
-                    showModal("Deleted die from Cloud.", "success");
-                    // The onSnapshot listener will handle the UI update automatically.
-                } catch (e) {
-                    console.error("Error deleting document: ", e);
-                    showModal(`Error deleting from cloud: ${e.message}`, "error");
-                }
             }
         }
         
@@ -334,14 +189,13 @@
         function renderSavedDiceForRollSpace() {
             const container = document.getElementById('roll-space-dice-list');
             container.innerHTML = '';
-            const allDice = [...localDice, ...cloudDice];
 
-            if (allDice.length === 0) {
+            if (localDice.length === 0) {
                 container.innerHTML = '<p class="text-sm text-gray-400 italic">No saved dice. Go to the Workshop to create some!</p>';
                 return;
             }
 
-            const collections = allDice.reduce((acc, die) => {
+            const collections = localDice.reduce((acc, die) => {
                 (acc[die.collectionName] = acc[die.collectionName] || []).push(die);
                 return acc;
             }, {});
@@ -358,10 +212,7 @@
                 const gridEl = document.createElement('div');
                 gridEl.className = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2';
                 
-                // Use Set to avoid duplicates if same die is in local + cloud
-                const uniqueDice = new Map(dice.map(d => [d.dieName, d])).values();
-                
-                Array.from(uniqueDice).forEach(die => {
+                dice.forEach(die => {
                     const dieButton = document.createElement('button');
                     dieButton.className = 'p-2 rounded-lg shadow-md text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 transition-transform transform hover:scale-105';
                     dieButton.textContent = `${die.dieName} (${die.type})`;
@@ -520,7 +371,6 @@
 
         // --- Event Listeners ---
         window.onload = () => {
-            initFirebase();
             loadFromLocal();
             
             // View switching
@@ -532,7 +382,6 @@
             document.getElementById('die-color-bg').oninput = updatePreview;
             document.getElementById('die-color-text').oninput = updatePreview;
             document.getElementById('btn-save-local').onclick = saveToLocal;
-            document.getElementById('btn-save-cloud').onclick = saveToCloud;
             
             // Roll Space listeners
             document.getElementById('btn-roll').onclick = rollDice;
@@ -551,7 +400,6 @@
         window.updateFaceInputs = updateFaceInputs;
         window.updatePreview = updatePreview;
         window.saveToLocal = saveToLocal;
-        window.saveToCloud = saveToCloud;
         window.rollDice = rollDice;
         window.addDieToTray = addDieToTray;
         window.deleteDie = deleteDie;
@@ -640,11 +488,6 @@
                 </button>
             </div>
         </header>
-        
-        <!-- User ID Display -->
-        <div class="mb-4 text-right">
-            <span id="user-id-display" class="text-xs text-gray-400 italic">Connecting to Firebase...</span>
-        </div>
 
         <!-- === WORKSHOP VIEW === -->
         <main id="workshop-view" class="grid grid-cols-1 md:grid-cols-3 gap-6">
@@ -714,17 +557,6 @@
                     <button id="btn-save-local" class="w-full sm:w-auto px-6 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 focus:ring-offset-gray-800">
                         Save to Local
                     </button>
-                    
-                    <div id="cloud-storage-options" class="flex items-center justify-center w-full sm:w-auto">
-                        <button id="btn-save-cloud" class="w-full sm:w-auto px-6 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 focus:ring-offset-gray-800">
-                            Save to Cloud
-                        </button>
-                        <!-- Spinner -->
-                        <svg id="cloud-spinner" class="hidden animate-spin ml-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                    </div>
                 </div>
             </div>
             
@@ -732,17 +564,6 @@
             <aside class="md:col-span-1 bg-gray-800 p-6 rounded-lg shadow-xl max-h-[80vh] overflow-y-auto">
                 <h2 class="text-2xl font-semibold mb-4 text-white">My Collections</h2>
                 
-                <!-- Cloud Dice -->
-                <div class="mb-6">
-                    <h3 class="text-lg font-semibold mb-2 text-indigo-400 flex items-center">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-2-9.61V10a4 4 0 00-4-4H7a5 5 0 00-5 5v2zm9-3a3 3 0 00-3 3v0a3 3 0 003 3v0a3 3 0 003-3v0a3 3 0 00-3-3z"></path></svg>
-                        Cloud Storage
-                    </h3>
-                    <div id="cloud-dice-list" class="pl-2 space-y-2">
-                        <!-- Cloud dice list will be injected here -->
-                    </div>
-                </div>
-
                 <!-- Local Dice -->
                 <div>
                     <h3 class="text-lg font-semibold mb-2 text-green-400 flex items-center">
