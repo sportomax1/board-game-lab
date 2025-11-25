@@ -3,487 +3,306 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Dice Creator Workshop</title>
+    <title>Card Deck Builder</title>
     <!-- Load Tailwind CSS -->
     <script src="https://cdn.tailwindcss.com"></script>
-    <!-- Load Firebase modules -->
     <script type="module">
-        // Firebase Imports
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { 
-            getAuth, 
-            signInAnonymously, 
-            signInWithCustomToken, 
-            onAuthStateChanged 
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { 
-            getFirestore, 
-            doc, 
-            setDoc, 
-            addDoc, 
-            collection, 
-            query, 
-            onSnapshot,
-            deleteDoc,
-            setLogLevel
-        } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
+        // Pure localStorage-based card deck builder
+        
         // --- App State ---
-        let db;
-        let auth;
-        let userId;
-        let appId = typeof __app_id !== 'undefined' ? __app_id : 'default-app-id';
+        let currentDeck = {
+            name: 'My Deck',
+            cards: []
+        };
         
-        // { id: '...', collectionName: '...', dieName: '...', type: 'd6', faces: [...], ... }
-        let localDice = []; 
-        let cloudDice = [];
-        
-        // { collectionName: '...', dieName: '...', type: 'd6', faces: [...], ... }
-        let rollTray = [];
+        let cardPreviewData = {
+            content: '♠',
+            bgColor: '#ffffff',
+            textColor: '#000000',
+            borderColor: '#cccccc'
+        };
 
-        // --- Firebase Init ---
-        async function initFirebase() {
-            try {
-                const firebaseConfig = JSON.parse(typeof __firebase_config !== 'undefined' ? __firebase_config : '{}');
-                if (!firebaseConfig.apiKey) {
-                    console.warn("Firebase config is missing or incomplete. Cloud features will be disabled.");
-                    showModal("Firebase config not found. Cloud features are disabled. Please sign in to the platform.", "error");
-                    document.getElementById('cloud-storage-options').classList.add('opacity-50', 'pointer-events-none');
-                    document.getElementById('cloud-dice-list').innerHTML = '<p class="text-xs text-gray-500">Cloud storage disabled.</p>';
-                    return;
-                }
+        // --- localStorage Management ---
+        function saveDeckToStorage() {
+            const deckData = JSON.stringify(currentDeck);
+            localStorage.setItem('cardDeckData', deckData);
+            console.log('[SAVE] Deck saved to localStorage:', currentDeck.name, 'Cards:', currentDeck.cards.length);
+        }
 
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                setLogLevel('debug');
-
-                auth.onAuthStateChanged(async (user) => {
-                    if (user) {
-                        userId = user.uid;
-                        console.log("User authenticated:", userId);
-                        document.getElementById('user-id-display').textContent = `User ID: ${userId}`;
-                        // Now that we are authenticated, attach Firestore listener
-                        attachFirestoreListener();
-                    } else {
-                        console.log("No user signed in, attempting auth...");
-                        try {
-                            if (typeof __initial_auth_token !== 'undefined' && __initial_auth_token) {
-                                await signInWithCustomToken(auth, __initial_auth_token);
-                                console.log("Signed in with custom token.");
-                            } else {
-                                await signInAnonymously(auth);
-                                console.log("Signed in anonymously.");
-                            }
-                        } catch (authError) {
-                            console.error("Authentication error:", authError);
-                            showModal(`Authentication Error: ${authError.message}`, "error");
-                        }
-                    }
-                });
-            } catch (e) {
-                console.error("Firebase initialization failed:", e);
-                showModal("Firebase initialization failed. Cloud features disabled.", "error");
-                document.getElementById('cloud-storage-options').classList.add('opacity-50', 'pointer-events-none');
-                document.getElementById('cloud-dice-list').innerHTML = '<p class="text-xs text-gray-500">Cloud storage disabled.</p>';
+        function loadDeckFromStorage() {
+            const saved = localStorage.getItem('cardDeckData');
+            if (saved) {
+                currentDeck = JSON.parse(saved);
+                console.log('[LOAD] Deck loaded from localStorage:', currentDeck.name, 'Cards:', currentDeck.cards.length);
+                updateDeckDisplay();
+            } else {
+                console.log('[LOAD] No saved deck found, using default');
             }
         }
 
-        // --- Firestore Listener ---
-        function attachFirestoreListener() {
-            if (!db || !userId) {
-                console.warn("Firestore listener not attached: db or userId missing.");
-                return;
+        function clearAllData() {
+            if (confirm('Are you sure? This will delete all cards in your current deck.')) {
+                currentDeck = { name: 'My Deck', cards: [] };
+                localStorage.removeItem('cardDeckData');
+                updateDeckDisplay();
+                showModal('Deck cleared.', 'success');
             }
-            
-            const diceCollectionPath = `artifacts/${appId}/users/${userId}/customDice`;
-            const q = query(collection(db, diceCollectionPath));
+        }
 
-            try {
-                onSnapshot(q, (querySnapshot) => {
-                    cloudDice = [];
-                    querySnapshot.forEach((doc) => {
-                        cloudDice.push({ id: doc.id, ...doc.data() });
-                    });
-                    console.log("Cloud dice updated:", cloudDice);
-                    renderSavedDiceLists();
-                }, (error) => {
-                    console.error("Error with Firestore snapshot:", error);
-                    showModal(`Error loading cloud dice: ${error.message}`, "error");
-                });
-            } catch (error) {
-                console.error("Failed to create Firestore query:", error);
-                showModal(`Error setting up cloud listener: ${error.message}`, "error");
-            }
+        // --- Export/Import ---
+        function exportDeckAsJSON() {
+            const dataStr = JSON.stringify(currentDeck, null, 2);
+            const dataBlob = new Blob([dataStr], { type: 'application/json' });
+            const url = URL.createObjectURL(dataBlob);
+            const link = document.createElement('a');
+            link.href = url;
+            link.download = `${currentDeck.name.replace(/\s+/g, '_')}_deck.json`;
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+            URL.revokeObjectURL(url);
+            console.log('[EXPORT] Deck exported as JSON');
+            showModal('Deck exported as JSON!', 'success');
+        }
+
+        function importDeckFromJSON() {
+            const input = document.createElement('input');
+            input.type = 'file';
+            input.accept = '.json';
+            input.onchange = (e) => {
+                const file = e.target.files[0];
+                if (!file) return;
+                
+                const reader = new FileReader();
+                reader.onload = (event) => {
+                    try {
+                        const imported = JSON.parse(event.target.result);
+                        if (imported.name && Array.isArray(imported.cards)) {
+                            currentDeck = imported;
+                            saveDeckToStorage();
+                            updateDeckDisplay();
+                            showModal(`Imported deck: ${imported.name}`, 'success');
+                            console.log('[IMPORT] Deck imported from JSON:', imported.name);
+                        } else {
+                            showModal('Invalid deck format.', 'error');
+                        }
+                    } catch (err) {
+                        console.error('[IMPORT] Error parsing JSON:', err);
+                        showModal('Error importing deck. Invalid JSON format.', 'error');
+                    }
+                };
+                reader.readAsText(file);
+            };
+            input.click();
         }
 
         // --- UI Logic ---
         function switchView(view) {
             document.getElementById('workshop-view').classList.toggle('hidden', view !== 'workshop');
-            document.getElementById('roll-space-view').classList.toggle('hidden', view !== 'roll');
+            document.getElementById('play-view').classList.toggle('hidden', view !== 'play');
+            document.getElementById('manage-view').classList.toggle('hidden', view !== 'manage');
             
             document.getElementById('btn-workshop').classList.toggle('bg-indigo-600', view === 'workshop');
             document.getElementById('btn-workshop').classList.toggle('bg-gray-700', view !== 'workshop');
             
-            document.getElementById('btn-roll-space').classList.toggle('bg-indigo-600', view === 'roll');
-            document.getElementById('btn-roll-space').classList.toggle('bg-gray-700', view !== 'roll');
+            document.getElementById('btn-play').classList.toggle('bg-indigo-600', view === 'play');
+            document.getElementById('btn-play').classList.toggle('bg-gray-700', view !== 'play');
             
-            if (view === 'roll') {
-                renderRollTray();
-                renderSavedDiceForRollSpace();
+            document.getElementById('btn-manage').classList.toggle('bg-indigo-600', view === 'manage');
+            document.getElementById('btn-manage').classList.toggle('bg-gray-700', view !== 'manage');
+            
+            if (view === 'play') {
+                initPlayMode();
+            } else if (view === 'manage') {
+                updateManageView();
             }
         }
 
-        function updateFaceInputs() {
-            const dieType = document.getElementById('die-type').value;
-            const numFaces = parseInt(dieType.substring(1)); // "d6" -> 6
-            const container = document.getElementById('die-face-inputs');
-            container.innerHTML = '';
+        function updateCardPreview() {
+            const content = document.getElementById('card-content').value.trim() || '♠';
+            const bgColor = document.getElementById('card-bg-color').value;
+            const textColor = document.getElementById('card-text-color').value;
+            const borderColor = document.getElementById('card-border-color').value;
             
-            for (let i = 1; i <= numFaces; i++) {
-                const inputGroup = document.createElement('div');
-                inputGroup.className = 'flex items-center space-x-2';
-                inputGroup.innerHTML = `
-                    <label for="face-${i}" class="w-8 text-sm font-medium text-gray-300">F${i}:</label>
-                    <input type="text" id="face-${i}" name="face-${i}" class="block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm text-white placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="e.g., ${i} or 💀" value="${i}">
-                `;
-                container.appendChild(inputGroup);
-            }
-            updatePreview();
-        }
-
-        function updatePreview() {
-            const bgColor = document.getElementById('die-color-bg').value;
-            const textColor = document.getElementById('die-color-text').value;
-            const firstFace = document.getElementById('face-1')?.value || '1';
+            cardPreviewData = { content, bgColor, textColor, borderColor };
             
-            const previewDie = document.getElementById('preview-die');
-            previewDie.style.backgroundColor = bgColor;
-            previewDie.style.color = textColor;
-            previewDie.textContent = firstFace;
+            const preview = document.getElementById('preview-card');
+            preview.style.backgroundColor = bgColor;
+            preview.style.color = textColor;
+            preview.style.borderColor = borderColor;
+            preview.textContent = content;
         }
 
-        // --- Data Handling (Local & Cloud) ---
-        function getDieDataFromForm() {
-            const collectionName = document.getElementById('collection-name').value.trim();
-            const dieName = document.getElementById('die-name').value.trim();
-            const dieType = document.getElementById('die-type').value;
-            const numFaces = parseInt(dieType.substring(1));
-            const faces = [];
+        function addCard() {
+            const content = document.getElementById('card-content').value.trim();
+            const count = parseInt(document.getElementById('card-count').value) || 1;
             
-            for (let i = 1; i <= numFaces; i++) {
-                const faceValue = document.getElementById(`face-${i}`).value.trim();
-                if (!faceValue) {
-                    showModal(`Please fill out Face ${i}.`, "error");
-                    return null;
-                }
-                faces.push(faceValue);
-            }
-
-            if (!collectionName || !dieName) {
-                showModal("Please provide a Collection Name and a Die Name.", "error");
-                return null;
-            }
-            
-            return {
-                collectionName,
-                dieName,
-                type: dieType,
-                faces,
-                bgColor: document.getElementById('die-color-bg').value,
-                textColor: document.getElementById('die-color-text').value,
-            };
-        }
-        
-        function saveToLocal() {
-            const dieData = getDieDataFromForm();
-            if (!dieData) return;
-            
-            // Add a simple local ID
-            dieData.id = `local_${new Date().getTime()}`;
-            localDice.push(dieData);
-            localStorage.setItem('customDice', JSON.stringify(localDice));
-            
-            showModal(`Saved "${dieData.dieName}" to Local Storage!`, "success");
-            renderSavedDiceLists();
-            clearForm();
-        }
-
-        async function saveToCloud() {
-            if (!db || !userId) {
-                showModal("Cannot save to cloud: Firebase is not initialized or user is not signed in.", "error");
-                return;
-            }
-
-            const dieData = getDieDataFromForm();
-            if (!dieData) return;
-            
-            const spinner = document.getElementById('cloud-spinner');
-            spinner.classList.remove('hidden');
-
-            try {
-                const diceCollectionPath = `artifacts/${appId}/users/${userId}/customDice`;
-                const docRef = await addDoc(collection(db, diceCollectionPath), dieData);
-                console.log("Document written with ID: ", docRef.id);
-                showModal(`Saved "${dieData.dieName}" to Cloud!`, "success");
-                clearForm();
-            } catch (e) {
-                console.error("Error adding document: ", e);
-                showModal(`Error saving to cloud: ${e.message}`, "error");
-            } finally {
-                spinner.classList.add('hidden');
-            }
-        }
-        
-        function loadFromLocal() {
-            const saved = localStorage.getItem('customDice');
-            if (saved) {
-                localDice = JSON.parse(saved);
-            }
-            renderSavedDiceLists();
-        }
-        
-        function clearForm() {
-            document.getElementById('collection-name').value = '';
-            document.getElementById('die-name').value = '';
-            document.getElementById('die-type').value = 'd6';
-            updateFaceInputs();
-            document.getElementById('die-color-bg').value = '#ffffff';
-            document.getElementById('die-color-text').value = '#000000';
-            updatePreview();
-        }
-
-        function renderSavedDiceLists() {
-            renderDiceList(document.getElementById('local-dice-list'), localDice, 'local');
-            renderDiceList(document.getElementById('cloud-dice-list'), cloudDice, 'cloud');
-        }
-
-        function renderDiceList(container, diceArray, type) {
-            container.innerHTML = '';
-            if (diceArray.length === 0) {
-                container.innerHTML = `<p class="text-xs text-gray-400 italic">No dice saved ${type === 'local' ? 'locally' : 'in the cloud'}.</p>`;
-                return;
-            }
-
-            // Group dice by collection
-            const collections = diceArray.reduce((acc, die) => {
-                (acc[die.collectionName] = acc[die.collectionName] || []).push(die);
-                return acc;
-            }, {});
-
-            Object.entries(collections).forEach(([collectionName, dice]) => {
-                const collectionEl = document.createElement('div');
-                collectionEl.className = 'mb-3';
-                
-                const titleEl = document.createElement('h4');
-                titleEl.className = 'text-sm font-semibold text-indigo-300 mb-1';
-                titleEl.textContent = collectionName;
-                collectionEl.appendChild(titleEl);
-                
-                const ul = document.createElement('ul');
-                ul.className = 'list-disc list-inside space-y-1';
-                
-                dice.forEach(die => {
-                    const li = document.createElement('li');
-                    li.className = 'text-xs text-gray-300 flex justify-between items-center';
-                    li.innerHTML = `
-                        <span>${die.dieName} (${die.type})</span>
-                        <button data-die-id="${die.id}" data-type="${type}" class="delete-die-btn text-red-400 hover:text-red-300 text-xs px-1">&times;</button>
-                    `;
-                    ul.appendChild(li);
-                });
-                
-                collectionEl.appendChild(ul);
-                container.appendChild(collectionEl);
-            });
-            
-            // Add delete listeners
-            container.querySelectorAll('.delete-die-btn').forEach(btn => {
-                btn.addEventListener('click', (e) => {
-                    const dieId = e.currentTarget.getAttribute('data-die-id');
-                    const dieType = e.currentTarget.getAttribute('data-type');
-                    deleteDie(dieId, dieType);
-                });
-            });
-        }
-        
-        async function deleteDie(dieId, type) {
-            if (type === 'local') {
-                localDice = localDice.filter(d => d.id !== dieId);
-                localStorage.setItem('customDice', JSON.stringify(localDice));
-                renderSavedDiceLists();
-                showModal("Deleted die from Local Storage.", "success");
-            } else if (type === 'cloud') {
-                if (!db || !userId) {
-                    showModal("Cannot delete: Firebase not connected.", "error");
-                    return;
-                }
-                try {
-                    const docPath = `artifacts/${appId}/users/${userId}/customDice/${dieId}`;
-                    await deleteDoc(doc(db, docPath));
-                    showModal("Deleted die from Cloud.", "success");
-                    // The onSnapshot listener will handle the UI update automatically.
-                } catch (e) {
-                    console.error("Error deleting document: ", e);
-                    showModal(`Error deleting from cloud: ${e.message}`, "error");
-                }
-            }
-        }
-        
-        // --- Roll Space Logic ---
-        function renderSavedDiceForRollSpace() {
-            const container = document.getElementById('roll-space-dice-list');
-            container.innerHTML = '';
-            const allDice = [...localDice, ...cloudDice];
-
-            if (allDice.length === 0) {
-                container.innerHTML = '<p class="text-sm text-gray-400 italic">No saved dice. Go to the Workshop to create some!</p>';
-                return;
-            }
-
-            const collections = allDice.reduce((acc, die) => {
-                (acc[die.collectionName] = acc[die.collectionName] || []).push(die);
-                return acc;
-            }, {});
-
-            Object.entries(collections).forEach(([collectionName, dice]) => {
-                const collectionEl = document.createElement('div');
-                collectionEl.className = 'mb-4';
-                
-                const titleEl = document.createElement('h3');
-                titleEl.className = 'text-lg font-semibold text-indigo-300 mb-2';
-                titleEl.textContent = collectionName;
-                collectionEl.appendChild(titleEl);
-                
-                const gridEl = document.createElement('div');
-                gridEl.className = 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2';
-                
-                // Use Set to avoid duplicates if same die is in local + cloud
-                const uniqueDice = new Map(dice.map(d => [d.dieName, d])).values();
-                
-                Array.from(uniqueDice).forEach(die => {
-                    const dieButton = document.createElement('button');
-                    dieButton.className = 'p-2 rounded-lg shadow-md text-sm font-semibold focus:outline-none focus:ring-2 focus:ring-indigo-500 focus:ring-opacity-50 transition-transform transform hover:scale-105';
-                    dieButton.textContent = `${die.dieName} (${die.type})`;
-                    dieButton.style.backgroundColor = die.bgColor;
-                    dieButton.style.color = die.textColor;
-                    
-                    dieButton.onclick = () => addDieToTray(die);
-                    
-                    gridEl.appendChild(dieButton);
-                });
-                
-                collectionEl.appendChild(gridEl);
-                container.appendChild(collectionEl);
-            });
-        }
-        
-        function addDieToTray(die) {
-            rollTray.push(die);
-            renderRollTray();
-        }
-        
-        function renderRollTray() {
-            const container = document.getElementById('roll-tray');
-            container.innerHTML = '';
-            
-            if (rollTray.length === 0) {
-                container.innerHTML = '<p class="text-sm text-gray-400 italic">Add dice from your collections to roll.</p>';
+            if (!content) {
+                showModal('Please enter card content.', 'error');
                 return;
             }
             
-            rollTray.forEach((die, index) => {
-                const dieEl = document.createElement('div');
-                dieEl.className = 'p-2 w-16 h-16 rounded-lg shadow-md flex items-center justify-center text-lg font-bold relative transition-all';
-                dieEl.style.backgroundColor = die.bgColor;
-                dieEl.style.color = die.textColor;
-                dieEl.textContent = die.type;
+            for (let i = 0; i < count; i++) {
+                const card = {
+                    id: `card_${Date.now()}_${i}`,
+                    content: content,
+                    bgColor: cardPreviewData.bgColor,
+                    textColor: cardPreviewData.textColor,
+                    borderColor: cardPreviewData.borderColor
+                };
+                currentDeck.cards.push(card);
+            }
+            
+            saveDeckToStorage();
+            updateDeckDisplay();
+            clearCardForm();
+            showModal(`Added ${count} card(s) to deck!`, 'success');
+            console.log('[ADD] Added', count, 'card(s):', content);
+        }
+
+        function clearCardForm() {
+            document.getElementById('card-content').value = '';
+            document.getElementById('card-count').value = '1';
+            document.getElementById('card-bg-color').value = '#ffffff';
+            document.getElementById('card-text-color').value = '#000000';
+            document.getElementById('card-border-color').value = '#cccccc';
+            updateCardPreview();
+        }
+
+        function updateDeckDisplay() {
+            document.getElementById('deck-name-input').value = currentDeck.name;
+            document.getElementById('card-count-display').textContent = currentDeck.cards.length;
+            renderCardGrid();
+        }
+
+        function renderCardGrid() {
+            const grid = document.getElementById('card-grid');
+            grid.innerHTML = '';
+            
+            if (currentDeck.cards.length === 0) {
+                grid.innerHTML = '<p class="col-span-full text-center text-gray-400 italic">No cards yet. Add some cards to your deck!</p>';
+                return;
+            }
+            
+            currentDeck.cards.forEach((card, index) => {
+                const cardEl = document.createElement('div');
+                cardEl.className = 'aspect-video rounded-lg shadow-md p-3 flex items-center justify-center text-center font-bold relative group cursor-pointer transition-transform hover:scale-105 border-2';
+                cardEl.style.backgroundColor = card.bgColor;
+                cardEl.style.color = card.textColor;
+                cardEl.style.borderColor = card.borderColor;
+                
+                const content = document.createElement('div');
+                content.className = 'text-sm md:text-base break-words line-clamp-3';
+                content.textContent = card.content;
+                cardEl.appendChild(content);
                 
                 const removeBtn = document.createElement('button');
-                removeBtn.className = 'absolute -top-1 -right-1 w-5 h-5 bg-red-600 text-white text-xs rounded-full flex items-center justify-center font-bold shadow-md hover:bg-red-500';
+                removeBtn.className = 'absolute -top-2 -right-2 w-6 h-6 bg-red-600 text-white text-xs rounded-full flex items-center justify-center font-bold shadow-md hover:bg-red-500 opacity-0 group-hover:opacity-100 transition-opacity';
                 removeBtn.innerHTML = '&times;';
-                removeBtn.onclick = () => {
-                    rollTray.splice(index, 1);
-                    renderRollTray();
+                removeBtn.onclick = (e) => {
+                    e.stopPropagation();
+                    removeCard(index);
                 };
+                cardEl.appendChild(removeBtn);
                 
-                dieEl.appendChild(removeBtn);
-                container.appendChild(dieEl);
+                grid.appendChild(cardEl);
             });
         }
 
-        function rollDice() {
-            const resultsContainer = document.getElementById('roll-results-container');
-            const resultsDisplay = document.getElementById('roll-results');
-            const animationContainer = document.getElementById('roll-animation-container');
-            
-            if (rollTray.length === 0) {
-                showModal("Add some dice to the tray first!", "error");
+        function removeCard(index) {
+            currentDeck.cards.splice(index, 1);
+            saveDeckToStorage();
+            updateDeckDisplay();
+            showModal('Card removed.', 'success');
+            console.log('[REMOVE] Card removed at index', index);
+        }
+
+        function updateDeckName() {
+            const newName = document.getElementById('deck-name-input').value.trim() || 'My Deck';
+            currentDeck.name = newName;
+            saveDeckToStorage();
+            console.log('[RENAME] Deck renamed to:', newName);
+        }
+
+        // --- Play Mode ---
+        let playDeck = [];
+        let currentCardIndex = 0;
+
+        function initPlayMode() {
+            if (currentDeck.cards.length === 0) {
+                showModal('No cards in deck! Add cards in the Workshop first.', 'error');
+                switchView('workshop');
                 return;
             }
             
-            resultsContainer.classList.add('hidden');
-            animationContainer.innerHTML = '';
-            resultsDisplay.innerHTML = '';
-            
-            let finalResults = [];
-
-            rollTray.forEach((die, index) => {
-                const numFaces = die.faces.length;
-                
-                // Create animation die
-                const animDie = document.createElement('div');
-                animDie.className = 'w-24 h-24 rounded-lg shadow-xl flex items-center justify-center text-3xl font-bold m-2 animate-spin-slow';
-                animDie.style.backgroundColor = die.bgColor;
-                animDie.style.color = die.textColor;
-                animationContainer.appendChild(animDie);
-                
-                let spinCount = 0;
-                const maxSpins = 15 + Math.floor(Math.random() * 10); // 1.5 - 2.5s
-                
-                const spinInterval = setInterval(() => {
-                    // Show random face
-                    const randomFace = die.faces[Math.floor(Math.random() * numFaces)];
-                    animDie.textContent = randomFace;
-                    spinCount++;
-                    
-                    if (spinCount > maxSpins) {
-                        clearInterval(spinInterval);
-                        
-                        // Get final result
-                        const resultIndex = Math.floor(Math.random() * numFaces);
-                        const resultFace = die.faces[resultIndex];
-                        finalResults[index] = { face: resultFace, die: die };
-                        
-                        // Stop animation and show result
-                        animDie.classList.remove('animate-spin-slow');
-                        animDie.classList.add('scale-110'); // Pop effect
-                        animDie.textContent = resultFace;
-                        
-                        // Check if all dice are done
-                        if (finalResults.filter(r => r).length === rollTray.length) {
-                            displayFinalResults(finalResults);
-                        }
-                    }
-                }, 100);
-            });
+            playDeck = [...currentDeck.cards];
+            shuffleArray(playDeck);
+            currentCardIndex = 0;
+            displayPlayCard();
         }
-        
-        function displayFinalResults(results) {
-            const resultsContainer = document.getElementById('roll-results-container');
-            const resultsDisplay = document.getElementById('roll-results');
-            resultsDisplay.innerHTML = '';
+
+        function displayPlayCard() {
+            const container = document.getElementById('play-card-display');
             
-            results.forEach(result => {
-                const resultEl = document.createElement('div');
-                resultEl.className = 'p-3 w-20 h-20 rounded-lg shadow-md flex items-center justify-center text-2xl font-bold';
-                resultEl.style.backgroundColor = result.die.bgColor;
-                resultEl.style.color = result.die.textColor;
-                resultEl.textContent = result.face;
-                resultsDisplay.appendChild(resultEl);
-            });
+            if (currentCardIndex >= playDeck.length) {
+                container.innerHTML = '<div class="text-center text-gray-300"><p class="text-2xl mb-4">Deck Complete!</p><button onclick="window.initPlayMode()" class="px-6 py-3 bg-indigo-600 text-white rounded-lg hover:bg-indigo-700">Shuffle Again</button></div>';
+                return;
+            }
             
-            resultsContainer.classList.remove('hidden');
+            const card = playDeck[currentCardIndex];
+            container.innerHTML = '';
+            
+            const cardEl = document.createElement('div');
+            cardEl.className = 'aspect-video rounded-lg shadow-lg p-6 flex items-center justify-center text-center font-bold border-4 max-w-sm';
+            cardEl.style.backgroundColor = card.bgColor;
+            cardEl.style.color = card.textColor;
+            cardEl.style.borderColor = card.borderColor;
+            
+            const content = document.createElement('div');
+            content.className = 'text-3xl break-words';
+            content.textContent = card.content;
+            cardEl.appendChild(content);
+            
+            container.appendChild(cardEl);
+            
+            const progress = document.getElementById('play-progress');
+            progress.textContent = `${currentCardIndex + 1} / ${playDeck.length}`;
+        }
+
+        function nextCard() {
+            currentCardIndex++;
+            displayPlayCard();
+        }
+
+        function prevCard() {
+            if (currentCardIndex > 0) {
+                currentCardIndex--;
+                displayPlayCard();
+            }
+        }
+
+        function shuffleArray(arr) {
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+        }
+
+        // --- Manage View ---
+        function updateManageView() {
+            const stats = document.getElementById('manage-stats');
+            stats.innerHTML = `
+                <div class="grid grid-cols-2 gap-4">
+                    <div class="bg-gray-800 p-4 rounded-lg">
+                        <p class="text-gray-400 text-sm">Total Cards</p>
+                        <p class="text-3xl font-bold text-indigo-400">${currentDeck.cards.length}</p>
+                    </div>
+                    <div class="bg-gray-800 p-4 rounded-lg">
+                        <p class="text-gray-400 text-sm">Deck Name</p>
+                        <p class="text-lg font-bold text-green-400">${currentDeck.name}</p>
+                    </div>
+                </div>
+            `;
         }
 
         // --- Utility ---
@@ -494,7 +313,6 @@
             
             modalMessage.textContent = message;
             
-            // Reset colors
             modal.classList.remove('bg-red-600', 'bg-green-600', 'bg-blue-600');
             
             if (type === 'error') {
@@ -515,85 +333,65 @@
             };
 
             modalClose.onclick = close;
-            setTimeout(close, 4000); // Auto-dismiss
+            setTimeout(close, 4000);
         }
 
         // --- Event Listeners ---
         window.onload = () => {
-            initFirebase();
-            loadFromLocal();
+            loadDeckFromStorage();
+            clearCardForm();
             
-            // View switching
             document.getElementById('btn-workshop').onclick = () => switchView('workshop');
-            document.getElementById('btn-roll-space').onclick = () => switchView('roll');
+            document.getElementById('btn-play').onclick = () => switchView('play');
+            document.getElementById('btn-manage').onclick = () => switchView('manage');
             
-            // Workshop listeners
-            document.getElementById('die-type').onchange = updateFaceInputs;
-            document.getElementById('die-color-bg').oninput = updatePreview;
-            document.getElementById('die-color-text').oninput = updatePreview;
-            document.getElementById('btn-save-local').onclick = saveToLocal;
-            document.getElementById('btn-save-cloud').onclick = saveToCloud;
+            document.getElementById('card-content').oninput = updateCardPreview;
+            document.getElementById('card-bg-color').oninput = updateCardPreview;
+            document.getElementById('card-text-color').oninput = updateCardPreview;
+            document.getElementById('card-border-color').oninput = updateCardPreview;
             
-            // Roll Space listeners
-            document.getElementById('btn-roll').onclick = rollDice;
-            document.getElementById('btn-clear-tray').onclick = () => {
-                rollTray = [];
-                renderRollTray();
-            };
+            document.getElementById('btn-add-card').onclick = addCard;
+            document.getElementById('btn-export').onclick = exportDeckAsJSON;
+            document.getElementById('btn-import').onclick = importDeckFromJSON;
+            document.getElementById('btn-clear').onclick = clearAllData;
             
-            // Initial setup
-            updateFaceInputs();
+            document.getElementById('deck-name-input').onchange = updateDeckName;
+            
+            document.getElementById('btn-next-card').onclick = nextCard;
+            document.getElementById('btn-prev-card').onclick = prevCard;
+            
             switchView('workshop');
         };
 
-        // Make functions globally accessible for inline event handlers
+        // Make functions globally accessible
         window.switchView = switchView;
-        window.updateFaceInputs = updateFaceInputs;
-        window.updatePreview = updatePreview;
-        window.saveToLocal = saveToLocal;
-        window.saveToCloud = saveToCloud;
-        window.rollDice = rollDice;
-        window.addDieToTray = addDieToTray;
-        window.deleteDie = deleteDie;
-
+        window.updateCardPreview = updateCardPreview;
+        window.addCard = addCard;
+        window.nextCard = nextCard;
+        window.prevCard = prevCard;
+        window.initPlayMode = initPlayMode;
     </script>
-    
     <!-- Custom Styles -->
     <style>
         body {
             font-family: 'Inter', sans-serif;
-            background-color: #111827; /* dark gray-blue */
+            background-color: #111827;
         }
         
-        /* Custom scrollbar */
         ::-webkit-scrollbar {
             width: 8px;
         }
         ::-webkit-scrollbar-track {
-            background: #1f2937; /* gray-800 */
+            background: #1f2937;
         }
         ::-webkit-scrollbar-thumb {
-            background: #4f46e5; /* indigo-600 */
+            background: #4f46e5;
             border-radius: 4px;
         }
         ::-webkit-scrollbar-thumb:hover {
-            background: #6366f1; /* indigo-500 */
+            background: #6366f1;
         }
         
-        /* Custom animation */
-        @keyframes spin-slow {
-            from {
-                transform: rotate(0deg) scale(0.9);
-            }
-            to {
-                transform: rotate(360deg) scale(0.9);
-            }
-        }
-        .animate-spin-slow {
-            animation: spin-slow 1s linear infinite;
-        }
-        
-        /* Color input styling */
         input[type="color"] {
             -webkit-appearance: none;
             -moz-appearance: none;
@@ -601,7 +399,7 @@
             width: 40px;
             height: 40px;
             padding: 0;
-            border: 2px solid #4b5563; /* gray-600 */
+            border: 2px solid #4b5563;
             border-radius: 8px;
             cursor: pointer;
             background: transparent;
@@ -620,7 +418,7 @@
     <!-- Global Modal -->
     <div id="modal" class="hidden fixed top-4 left-1/2 -translate-x-1/2 w-full max-w-md p-4 rounded-lg shadow-lg text-white z-50 transition-all duration-300 transform opacity-0 -translate-y-full">
         <div class="flex justify-between items-center">
-            <p id="modal-message">This is a modal message.</p>
+            <p id="modal-message">Message</p>
             <button id="modal-close" class="text-xl font-bold">&times;</button>
         </div>
     </div>
@@ -630,183 +428,128 @@
         
         <!-- Header & View Toggler -->
         <header class="flex flex-col sm:flex-row justify-between items-center mb-6">
-            <h1 class="text-3xl font-bold text-white mb-4 sm:mb-0">Dice Creator</h1>
+            <h1 class="text-3xl font-bold text-white mb-4 sm:mb-0">Card Deck Builder</h1>
             <div class="flex space-x-2 bg-gray-800 p-1 rounded-lg">
-                <button id="btn-workshop" class="px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600 transition-colors">
+                <button id="btn-workshop" class="px-4 py-2 text-sm font-medium rounded-md text-white bg-indigo-600">
                     Workshop
                 </button>
-                <button id="btn-roll-space" class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gray-700 transition-colors">
-                    Roll Space
+                <button id="btn-play" class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gray-700">
+                    Play
+                </button>
+                <button id="btn-manage" class="px-4 py-2 text-sm font-medium rounded-md text-white bg-gray-700">
+                    Manage
                 </button>
             </div>
         </header>
-        
-        <!-- User ID Display -->
-        <div class="mb-4 text-right">
-            <span id="user-id-display" class="text-xs text-gray-400 italic">Connecting to Firebase...</span>
-        </div>
 
         <!-- === WORKSHOP VIEW === -->
         <main id="workshop-view" class="grid grid-cols-1 md:grid-cols-3 gap-6">
             
-            <!-- Column 1: Creator Form -->
+            <!-- Column 1: Card Creator Form -->
             <div class="md:col-span-2 bg-gray-800 p-6 rounded-lg shadow-xl">
-                <h2 class="text-2xl font-semibold mb-4 text-white">Create New Die</h2>
+                <h2 class="text-2xl font-semibold mb-4 text-white">Create Cards</h2>
                 
                 <div class="grid grid-cols-1 lg:grid-cols-2 gap-6">
-                    <!-- Left Side: Names & Type -->
+                    <!-- Left Side: Content & Count -->
                     <div class="space-y-4">
                         <div>
-                            <label for="collection-name" class="block text-sm font-medium text-gray-300">Collection Name</label>
-                            <input type="text" id="collection-name" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm text-white placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="e.g., Elemental Set">
+                            <label for="card-content" class="block text-sm font-medium text-gray-300">Card Content</label>
+                            <input type="text" id="card-content" maxlength="50" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm text-white placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="e.g., ♠, Attack, Question 1">
                         </div>
                         
                         <div>
-                            <label for="die-name" class="block text-sm font-medium text-gray-300">Die Name</label>
-                            <input type="text" id="die-name" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm text-white placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm" placeholder="e.g., Fire d6">
-                        </div>
-
-                        <div>
-                            <label for="die-type" class="block text-sm font-medium text-gray-300">Die Type</label>
-                            <select id="die-type" class="mt-1 block w-full pl-3 pr-10 py-2 bg-gray-700 border border-gray-600 rounded-md text-white focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
-                                <option value="d4">d4</option>
-                                <option value="d6" selected>d6</option>
-                                <option value="d8">d8</option>
-                                <option value="d10">d10</option>
-                                <option value="d12">d12</option>
-                                <option value="d20">d20</option>
-                            </select>
+                            <label for="card-count" class="block text-sm font-medium text-gray-300">Quantity</label>
+                            <input type="number" id="card-count" min="1" max="100" value="1" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md shadow-sm text-white placeholder-gray-400 focus:outline-none focus:ring-indigo-500 focus:border-indigo-500 sm:text-sm">
                         </div>
                         
-                        <!-- Colors & Preview -->
                         <div class="pt-2">
-                             <label class="block text-sm font-medium text-gray-300 mb-2">Colors & Preview</label>
+                            <label class="block text-sm font-medium text-gray-300 mb-2">Colors</label>
                             <div class="flex items-center space-x-4">
                                 <div>
-                                    <label for="die-color-bg" class="block text-xs font-medium text-gray-400">BG</label>
-                                    <input type="color" id="die-color-bg" value="#ffffff" class="mt-1">
+                                    <label for="card-bg-color" class="block text-xs font-medium text-gray-400">Background</label>
+                                    <input type="color" id="card-bg-color" value="#ffffff" class="mt-1">
                                 </div>
                                 <div>
-                                    <label for="die-color-text" class="block text-xs font-medium text-gray-400">Text</label>
-                                    <input type="color" id="die-color-text" value="#000000" class="mt-1">
+                                    <label for="card-text-color" class="block text-xs font-medium text-gray-400">Text</label>
+                                    <input type="color" id="card-text-color" value="#000000" class="mt-1">
                                 </div>
-                                <div class="flex-grow flex justify-center items-center">
-                                    <div id="preview-die" class="w-20 h-20 rounded-lg shadow-md flex items-center justify-center text-3xl font-bold transition-colors" style="background-color: rgb(255, 255, 255); color: rgb(0, 0, 0);">
-                                        1
-                                    </div>
+                                <div>
+                                    <label for="card-border-color" class="block text-xs font-medium text-gray-400">Border</label>
+                                    <input type="color" id="card-border-color" value="#cccccc" class="mt-1">
                                 </div>
                             </div>
                         </div>
-
                     </div>
                     
-                    <!-- Right Side: Faces -->
-                    <div class="space-y-3">
-                        <label class="block text-sm font-medium text-gray-300">Face Values (Text or Emoji)</label>
-                        <div id="die-face-inputs" class="space-y-2 max-h-80 overflow-y-auto pr-2">
-                            <!-- Dynamic inputs will be injected here -->
+                    <!-- Right Side: Preview -->
+                    <div class="space-y-3 flex flex-col justify-center items-center">
+                        <label class="block text-sm font-medium text-gray-300">Preview</label>
+                        <div id="preview-card" class="aspect-video w-32 rounded-lg shadow-md flex items-center justify-center text-2xl font-bold border-2 bg-white text-black border-gray-300">
+                            ♠
                         </div>
                     </div>
                 </div>
                 
-                <!-- Save Buttons -->
-                <div class="mt-8 pt-6 border-t border-gray-700 flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4">
-                    <button id="btn-save-local" class="w-full sm:w-auto px-6 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 focus:ring-offset-gray-800">
-                        Save to Local
+                <!-- Add Button -->
+                <div class="mt-8 pt-6 border-t border-gray-700">
+                    <button id="btn-add-card" class="w-full px-6 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-green-600 hover:bg-green-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-green-500 focus:ring-offset-gray-800">
+                        Add Cards to Deck
                     </button>
-                    
-                    <div id="cloud-storage-options" class="flex items-center justify-center w-full sm:w-auto">
-                        <button id="btn-save-cloud" class="w-full sm:w-auto px-6 py-3 border border-transparent rounded-md shadow-sm text-sm font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 focus:ring-offset-gray-800">
-                            Save to Cloud
-                        </button>
-                        <!-- Spinner -->
-                        <svg id="cloud-spinner" class="hidden animate-spin ml-3 h-5 w-5 text-white" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-                        </svg>
-                    </div>
                 </div>
             </div>
             
-            <!-- Column 2: Saved Dice -->
-            <aside class="md:col-span-1 bg-gray-800 p-6 rounded-lg shadow-xl max-h-[80vh] overflow-y-auto">
-                <h2 class="text-2xl font-semibold mb-4 text-white">My Collections</h2>
+            <!-- Column 2: Card Grid & Deck Info -->
+            <aside class="md:col-span-1 bg-gray-800 p-6 rounded-lg shadow-xl">
+                <h2 class="text-2xl font-semibold mb-2 text-white">Current Deck</h2>
                 
-                <!-- Cloud Dice -->
-                <div class="mb-6">
-                    <h3 class="text-lg font-semibold mb-2 text-indigo-400 flex items-center">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M3 15a4 4 0 004 4h9a5 5 0 10-2-9.61V10a4 4 0 00-4-4H7a5 5 0 00-5 5v2zm9-3a3 3 0 00-3 3v0a3 3 0 003 3v0a3 3 0 003-3v0a3 3 0 00-3-3z"></path></svg>
-                        Cloud Storage
-                    </h3>
-                    <div id="cloud-dice-list" class="pl-2 space-y-2">
-                        <!-- Cloud dice list will be injected here -->
-                    </div>
+                <div class="mb-4">
+                    <label for="deck-name-input" class="block text-sm font-medium text-gray-300">Deck Name</label>
+                    <input type="text" id="deck-name-input" value="My Deck" class="mt-1 block w-full px-3 py-2 bg-gray-700 border border-gray-600 rounded-md text-white text-sm">
                 </div>
-
-                <!-- Local Dice -->
-                <div>
-                    <h3 class="text-lg font-semibold mb-2 text-green-400 flex items-center">
-                        <svg class="w-5 h-5 mr-2" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 19a2 2 0 01-2-2V7a2 2 0 012-2h4l2 2h4a2 2 0 012 2v1M5 19h14a2 2 0 002-2v-5a2 2 0 00-2-2H9a2 2 0 00-2 2v5a2 2 0 002 2z"></path></svg>
-                        Local Storage
-                    </h3>
-                    <div id="local-dice-list" class="pl-2 space-y-2">
-                        <!-- Local dice list will be injected here -->
-                    </div>
+                
+                <div class="mb-6 bg-gray-900 p-4 rounded-lg">
+                    <p class="text-gray-400 text-sm">Total Cards</p>
+                    <p id="card-count-display" class="text-3xl font-bold text-indigo-400">0</p>
+                </div>
+                
+                <div id="card-grid" class="grid grid-cols-2 gap-2 max-h-96 overflow-y-auto mb-4">
+                    <!-- Card grid will be rendered here -->
+                </div>
+                
+                <div class="space-y-2 pt-4 border-t border-gray-700">
+                    <button id="btn-export" class="w-full px-4 py-2 text-sm bg-blue-600 hover:bg-blue-700 text-white rounded-lg">Export JSON</button>
+                    <button id="btn-import" class="w-full px-4 py-2 text-sm bg-purple-600 hover:bg-purple-700 text-white rounded-lg">Import JSON</button>
+                    <button id="btn-clear" class="w-full px-4 py-2 text-sm bg-red-600 hover:bg-red-700 text-white rounded-lg">Clear Deck</button>
                 </div>
             </aside>
 
         </main>
         
-        <!-- === ROLL SPACE VIEW === -->
-        <main id="roll-space-view" class="hidden">
-            <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
-                
-                <!-- Column 1: Rolling Area -->
-                <div class="lg:col-span-2 bg-gray-800 p-6 rounded-lg shadow-xl">
-                    <h2 class="text-2xl font-semibold mb-4 text-white">Let's Roll!</h2>
-                    
-                    <!-- Roll Tray -->
-                    <div>
-                        <div class="flex justify-between items-center mb-2">
-                            <h3 class="text-lg font-medium text-gray-300">Roll Tray</h3>
-                            <button id="btn-clear-tray" class="text-xs text-indigo-400 hover:text-indigo-300">Clear Tray</button>
-                        </div>
-                        <div id="roll-tray" class="min-h-20 bg-gray-900 p-3 rounded-lg flex flex-wrap gap-2 items-center">
-                            <!-- Dice in tray will be injected here -->
-                        </div>
-                    </div>
-                    
-                    <!-- Roll Button -->
-                    <div class="mt-6 text-center">
-                        <button id="btn-roll" class="w-full sm:w-1/2 px-8 py-4 border border-transparent rounded-lg shadow-sm text-lg font-medium text-white bg-indigo-600 hover:bg-indigo-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-indigo-500 focus:ring-offset-gray-800 transition-transform transform hover:scale-105">
-                            Roll Dice
-                        </button>
-                    </div>
-                    
-                    <!-- Animation & Results -->
-                    <div class="mt-6 min-h-40">
-                        <div id="roll-animation-container" class="flex flex-wrap justify-center items-center p-4">
-                            <!-- Animation appears here -->
-                        </div>
-                        
-                        <div id="roll-results-container" class="hidden mt-4">
-                            <h3 class="text-xl font-semibold text-center text-white mb-4">Results</h3>
-                            <div id="roll-results" class="flex flex-wrap justify-center gap-3 p-4 bg-gray-900 rounded-lg">
-                                <!-- Results appear here -->
-                            </div>
-                        </div>
-                    </div>
-                    
+        <!-- === PLAY VIEW === -->
+        <main id="play-view" class="hidden">
+            <div class="flex flex-col items-center justify-center min-h-96">
+                <div id="play-card-display" class="mb-8">
+                    <!-- Card will be displayed here -->
                 </div>
                 
-                <!-- Column 2: Saved Dice for Rolling -->
-                <aside class="lg:col-span-1 bg-gray-800 p-6 rounded-lg shadow-xl max-h-[80vh] overflow-y-auto">
-                    <h2 class="text-2xl font-semibold mb-4 text-white">Add to Tray</h2>
-                    <div id="roll-space-dice-list" class="space-y-4">
-                        <!-- Grouped dice buttons will be injected here -->
-                    </div>
-                </aside>
+                <div class="flex space-x-4 mb-6">
+                    <button id="btn-prev-card" class="px-6 py-3 bg-gray-700 hover:bg-gray-600 text-white rounded-lg font-medium">← Previous</button>
+                    <button id="btn-next-card" class="px-6 py-3 bg-indigo-600 hover:bg-indigo-700 text-white rounded-lg font-medium">Next →</button>
+                </div>
                 
+                <div class="text-center text-gray-400">
+                    <p>Progress: <span id="play-progress">0 / 0</span></p>
+                </div>
+            </div>
+        </main>
+        
+        <!-- === MANAGE VIEW === -->
+        <main id="manage-view" class="hidden">
+            <div class="bg-gray-800 p-8 rounded-lg shadow-xl max-w-2xl mx-auto">
+                <h2 class="text-2xl font-semibold mb-8 text-white">Deck Statistics</h2>
+                <div id="manage-stats">
+                    <!-- Stats will be rendered here -->
+                </div>
             </div>
         </main>
         
