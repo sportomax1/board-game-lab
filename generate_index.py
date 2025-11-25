@@ -81,45 +81,17 @@ def generate_html_index(output_file='index.html'):
         }}
         
         /* --- About Section --- */
-        .about-section {{
-            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
-            color: white;
-            padding: 30px;
-            border-radius: 10px;
-            margin-bottom: 30px;
-            box-shadow: 0 4px 6px rgba(0,0,0,0.1);
-        }}
-        .about-section h2 {{
-            margin-top: 0;
-            font-size: 28px;
-            margin-bottom: 15px;
-        }}
-        .about-section p {{
-            margin: 12px 0;
-            font-size: 16px;
-            line-height: 1.6;
-        }}
-        .about-section .passion-highlight {{
-            font-weight: 600;
-            background: rgba(255,255,255,0.2);
-            padding: 2px 6px;
-            border-radius: 4px;
-        }}
-        .about-section .contact-info {{
-            margin-top: 20px;
-            padding-top: 20px;
-            border-top: 1px solid rgba(255,255,255,0.3);
-            font-size: 15px;
-        }}
         .about-btn {{
             display: inline-block;
-            margin-top: 15px;
             padding: 10px 20px;
-            background: white;
-            color: #667eea;
+            background: #667eea;
+            color: white;
             text-decoration: none;
+            border: none;
             border-radius: 6px;
             font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
             transition: transform 0.2s, box-shadow 0.2s;
         }}
         .about-btn:hover {{
@@ -368,17 +340,9 @@ def generate_html_index(output_file='index.html'):
 </head>
 <body>
     <div class="container">
-        <h1>Available Applications</h1>
-        
-        <!-- About Section -->
-        <div class="about-section">
-            <h2>🎲 Board Game Data Tools & Visualization Suite</h2>
-            <p>A collection of interactive tools and pages exploring board game data, collection analytics, and play statistics through creative data visualization and analysis.</p>
-            <p><span class="passion-highlight">Passionate about:</span> Board games, data analysis, and building innovative tools to explore data in creative ways.</p>
-            <div class="contact-info">
-                📧 Contact: <strong>@sportomax</strong>
-            </div>
-            <button class="about-btn" onclick="openAboutModal()">Learn More →</button>
+        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
+            <h1 style="margin: 0;">Available Applications</h1>
+            <button class="about-btn" onclick="openAboutModal()" style="margin: 0;">About</button>
         </div>
         
         <!-- About Modal -->
@@ -389,6 +353,11 @@ def generate_html_index(output_file='index.html'):
                     <button class="close-btn" onclick="closeAboutModal()">&times;</button>
                 </div>
                 <div class="modal-body">
+                    <h3 style="color: #667eea; margin-top: 0;">🎲 Board Game Data Tools & Visualization Suite</h3>
+                    <p>A collection of interactive tools and pages exploring board game data, collection analytics, and play statistics through creative data visualization and analysis.</p>
+                    
+                    <p><strong>Passionate about:</strong> Board games, data analysis, and building innovative tools to explore data in creative ways.</p>
+                    
                     <p><strong>Welcome to the Board Game Data Analytics Suite!</strong> This is a curated collection of tools and interactive applications built around my passion for board games, data analysis, and creative problem-solving through data visualization.</p>
                     
                     <p>Each project in this suite represents a different approach to exploring board game data—from collection management and play tracking to statistical analysis and performance comparisons.</p>
