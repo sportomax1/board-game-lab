@@ -1005,88 +1005,125 @@
         // Fetch Game Images in Batches
         async function fetchGameImagesBatch() {
             const thumbnails = document.querySelectorAll('.game-thumbnail.loading');
-            const gamesToFetch = [];
+            const gameNamesAndIds = [];
+            const gameNameToThumb = new Map();
             
             // Collect unique game names that need images
             thumbnails.forEach(thumb => {
                 const gameName = thumb.dataset.gameName;
-                if (!gameImageCache[gameName] && !gamesToFetch.includes(gameName)) {
-                    gamesToFetch.push(gameName);
+                if (!gameImageCache[gameName] && !gameNameToThumb.has(gameName)) {
+                    gameNameToThumb.set(gameName, thumb);
+                    gameNamesAndIds.push({ name: gameName, id: null });
                 }
             });
             
-            if (gamesToFetch.length === 0) return;
+            if (gameNamesAndIds.length === 0) return;
             
-            // Process in batches of 20 to avoid overwhelming the API
-            const batchSize = 20;
-            for (let i = 0; i < gamesToFetch.length; i += batchSize) {
-                const batch = gamesToFetch.slice(i, i + batchSize);
-                await Promise.all(batch.map(gameName => fetchGameImage(gameName)));
+            // First pass: search for game IDs in batches of 20
+            const searchBatchSize = 20;
+            for (let i = 0; i < gameNamesAndIds.length; i += searchBatchSize) {
+                const batch = gameNamesAndIds.slice(i, i + searchBatchSize);
+                await Promise.all(batch.map(item => searchGameId(item)));
                 
                 // Small delay between batches
-                if (i + batchSize < gamesToFetch.length) {
-                    await new Promise(resolve => setTimeout(resolve, 500));
+                if (i + searchBatchSize < gameNamesAndIds.length) {
+                    await new Promise(resolve => setTimeout(resolve, 300));
+                }
+            }
+            
+            // Second pass: fetch game details in batches of 20 IDs
+            const idsToFetch = gameNamesAndIds
+                .filter(item => item.id !== null)
+                .map(item => item.id);
+            
+            if (idsToFetch.length === 0) {
+                // No games found, mark them as not available
+                gameNamesAndIds.forEach(item => {
+                    if (item.id === null) {
+                        gameImageCache[item.name] = null;
+                        updateThumbnail(item.name, null);
+                    }
+                });
+                return;
+            }
+            
+            const idBatchSize = 20;
+            for (let i = 0; i < idsToFetch.length; i += idBatchSize) {
+                const batch = idsToFetch.slice(i, i + idBatchSize);
+                const batchIds = batch.join(',');
+                
+                await fetchGameImagesBatch_Things(batchIds, gameNamesAndIds);
+                
+                // Small delay between batches
+                if (i + idBatchSize < idsToFetch.length) {
+                    await new Promise(resolve => setTimeout(resolve, 300));
                 }
             }
         }
 
-        // Fetch Single Game Image
-        async function fetchGameImage(gameName) {
-            if (gameImageCache[gameName]) return;
-            
+        // Search for game ID
+        async function searchGameId(gameItem) {
             try {
-                // Search for the game
                 const searchXML = await fetchBGG('search', {
-                    query: gameName,
+                    query: gameItem.name,
                     type: 'boardgame',
                     exact: '1'
                 });
                 
-                if (!searchXML) {
-                    gameImageCache[gameName] = null;
-                    updateThumbnail(gameName, null);
-                    return;
+                if (searchXML) {
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(searchXML, 'text/xml');
+                    const firstItem = doc.querySelector('item');
+                    
+                    if (firstItem) {
+                        gameItem.id = firstItem.getAttribute('id');
+                    }
                 }
-                
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(searchXML, 'text/xml');
-                const firstItem = doc.querySelector('item');
-                
-                if (!firstItem) {
-                    gameImageCache[gameName] = null;
-                    updateThumbnail(gameName, null);
-                    return;
-                }
-                
-                const gameId = firstItem.getAttribute('id');
-                
-                // Fetch game details for image
+            } catch (error) {
+                console.error(`Error searching for ${gameItem.name}:`, error);
+            }
+        }
+
+        // Fetch game details for a batch of IDs via proxy
+        async function fetchGameImagesBatch_Things(batchIds, gameNamesAndIds) {
+            try {
                 const thingXML = await fetchBGG('thing', {
-                    id: gameId
+                    id: batchIds
                 });
                 
-                if (!thingXML) {
-                    gameImageCache[gameName] = null;
-                    updateThumbnail(gameName, null);
-                    return;
-                }
+                if (!thingXML) return;
                 
-                const thingDoc = parser.parseFromString(thingXML, 'text/xml');
-                const thumbnailEl = thingDoc.querySelector('thumbnail');
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(thingXML, 'text/xml');
+                const items = doc.querySelectorAll('item');
                 
-                if (thumbnailEl && thumbnailEl.textContent) {
-                    const imageUrl = `${IMAGE_PROXY}${thumbnailEl.textContent}`;
-                    gameImageCache[gameName] = imageUrl;
-                    updateThumbnail(gameName, imageUrl);
-                } else {
-                    gameImageCache[gameName] = null;
-                    updateThumbnail(gameName, null);
-                }
+                items.forEach(item => {
+                    const itemId = item.getAttribute('id');
+                    const thumbnailEl = item.querySelector('thumbnail');
+                    
+                    if (thumbnailEl && thumbnailEl.textContent) {
+                        const imageUrl = `${IMAGE_PROXY}${thumbnailEl.textContent}`;
+                        
+                        // Find the game name(s) associated with this ID
+                        gameNamesAndIds.forEach(gameItem => {
+                            if (gameItem.id === itemId) {
+                                gameImageCache[gameItem.name] = imageUrl;
+                                updateThumbnail(gameItem.name, imageUrl);
+                            }
+                        });
+                    }
+                });
+                
+                // Mark games without images as fetched
+                gameNamesAndIds.forEach(gameItem => {
+                    if (!gameImageCache[gameItem.name] && gameItem.id !== null) {
+                        gameImageCache[gameItem.name] = null;
+                        updateThumbnail(gameItem.name, null);
+                    }
+                });
                 
             } catch (error) {
-                console.error(`Error fetching image for ${gameName}:`, error);
-                gameImageCache[gameName] = null;
-                updateThumbnail(gameName, null);
+                console.error('Error fetching batch of game images:', error);
             }
         }
 

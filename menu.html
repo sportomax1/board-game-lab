@@ -5,9 +5,47 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, viewport-fit=cover">
     <title>BGG Player Count Menu</title>
     <style>
+        @page { 
+            size: letter; 
+            margin: 0.5in;
+            @top-left { content: ""; }
+            @top-center { content: ""; }
+            @top-right { content: ""; }
+            @bottom-left { content: ""; }
+            @bottom-center { content: ""; }
+            @bottom-right { content: ""; }
+        }
+        
         body { margin: 0; padding: 0; font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif; background: #f7f7fa; color: #222; }
         .container { max-width: 430px; margin: 0 auto; padding: 2em 1em 1em 1em; box-sizing: border-box; min-height: 100vh; padding-bottom: env(safe-area-inset-bottom); }
         h1 { font-size: 1.7em; margin-bottom: 1em; text-align: center; }
+        
+        /* Print view hidden by default */
+        #printViewContainer { display: none; }
+        #printViewContainer.active { display: block; }
+        #normalViewContainer.hidden-print { display: none; }
+        
+        /* Print mode styles */
+        @media print {
+            #normalViewContainer { display: none !important; }
+            #printViewContainer { display: block !important; background: white !important; }
+            .no-print { display: none !important; }
+            body { background: white !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+        }
+        
+        /* Print grid styles */
+        .print-header { text-align: center; margin-bottom: 0.25in; font-size: 16px; font-weight: bold; color: #333; }
+        .print-grid { display: grid; grid-template-columns: repeat(10, 1fr); grid-template-rows: repeat(12, 1fr); gap: 2px; width: 7.5in; height: 9in; margin: 0 auto; border: 1px solid #ccc; }
+        .print-tile { position: relative; border: 1px solid #ddd; background: #f9f9f9; overflow: hidden; }
+        .print-tile img { width: 100%; height: 100%; object-fit: contain; display: block; background: #f5f5f5; }
+        .print-rank { position: absolute; top: 1px; left: 1px; background: rgba(0,0,0,0.8); color: white; font-size: 8px; padding: 1px 2px; border-radius: 2px; font-weight: bold; z-index: 10; }
+        .print-category { position: absolute; top: 1px; right: 1px; font-size: 8px; padding: 1px 3px; border-radius: 2px; font-weight: bold; z-index: 10; }
+        .category-perfect, .category-best { background: #4caf50; color: white; }
+        .category-recommended { background: #ffeb3b; color: black; }
+        .print-bayes { position: absolute; bottom: 1px; right: 1px; width: 16px; height: 16px; border-radius: 50%; display: flex; align-items: center; justify-content: center; font-size: 8px; font-weight: bold; color: black; text-shadow: 0 0 2px rgba(255,255,255,0.8); z-index: 10; }
+        .print-votes { position: absolute; bottom: 1px; left: 1px; background: rgba(0,0,0,0.8); color: white; font-size: 8px; padding: 1px 2px; border-radius: 2px; font-weight: bold; z-index: 10; line-height: 1.1; }
+        .custom-footer { position: fixed; bottom: 0.25in; right: 0.5in; font-size: 10px; color: #666; z-index: 1000; }
         
         .form-container { background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 1.5em; margin-bottom: 1.5em; }
         .form-group { margin-bottom: 1em; }
@@ -92,8 +130,9 @@
     </style>
 </head>
 <body>
-    <div class="container">
-        <h1>BGG Player Count Menu</h1>
+    <div id="normalViewContainer">
+        <div class="container">
+            <h1>BGG Player Count Menu</h1>
         
         <div class="form-container">
             <div class="form-group">
@@ -178,6 +217,13 @@
                 <button class="modal-btn btn-print" onclick="proceedToPrint()">Generate Print View</button>
             </div>
         </div>
+    </div>
+
+    <!-- Print View Container -->
+    <div id="printViewContainer">
+        <div class="print-header" id="printHeader"></div>
+        <div class="print-grid" id="printGrid"></div>
+        <div class="custom-footer" id="customFooter"></div>
     </div>
 
     <script>
@@ -776,6 +822,138 @@
         window.closePrintModal = closePrintModal;
         window.proceedToPrint = proceedToPrint;
 
+        // Initialize print view from URL parameter
+        function initializePrintViewIfNeeded() {
+            const params = new URLSearchParams(window.location.search);
+            if (params.has('print') && params.get('print') === '1') {
+                displayPrintView();
+            }
+        }
+
+        // Display print view
+        function displayPrintView() {
+            const printData = JSON.parse(localStorage.getItem('bgg_print_data') || 'null');
+            if (!printData) {
+                alert('No print data found');
+                window.history.back();
+                return;
+            }
+
+            const { username, playerCount, games, printOptions = {} } = printData;
+            
+            const options = {
+                topLeft: 'rank',
+                topRight: 'category',
+                bottomLeft: 'playerVotes',
+                bottomRight: 'bayes',
+                ...printOptions
+            };
+
+            // Set header
+            document.getElementById('printHeader').textContent = `BGG: ${username} - Top 120 Games (${playerCount} Players)`;
+
+            // Set footer
+            const now = new Date();
+            const timestamp = now.toLocaleDateString() + ' ' + now.toLocaleTimeString();
+            document.getElementById('customFooter').textContent = timestamp;
+
+            // Build grid
+            const grid = document.getElementById('printGrid');
+            const top120 = games.slice(0, 120);
+
+            for (let i = 0; i < 120; i++) {
+                const tile = document.createElement('div');
+                tile.className = 'print-tile';
+
+                if (i < top120.length && top120[i]) {
+                    const game = top120[i];
+
+                    // Add rank
+                    if (options.topLeft === 'rank') {
+                        const rank = document.createElement('div');
+                        rank.className = 'print-rank';
+                        rank.textContent = i + 1;
+                        tile.appendChild(rank);
+                    }
+
+                    // Add category
+                    if (options.topRight === 'category' && game.category !== 'supported') {
+                        const category = document.createElement('div');
+                        category.className = `print-category category-${game.category}`;
+                        const categoryMap = { 'perfect': 'P', 'best': 'B', 'recommended': 'R' };
+                        category.textContent = categoryMap[game.category];
+                        tile.appendChild(category);
+                    }
+
+                    // Add bayes
+                    if (options.bottomRight === 'bayes' && game.bayesAverage && game.bayesAverage > 0) {
+                        const bayes = document.createElement('div');
+                        bayes.className = 'print-bayes';
+                        const score = Math.max(0, Math.min(10, game.bayesAverage));
+                        let red, green, blue = 0;
+                        
+                        if (score < 2) {
+                            red = 200 + Math.round(55 * (score / 2));
+                            green = Math.round(20 * (score / 2));
+                        } else if (score < 4) {
+                            red = 255;
+                            green = Math.round(80 * ((score - 2) / 2));
+                        } else if (score < 5.5) {
+                            red = 255;
+                            green = 80 + Math.round(95 * ((score - 4) / 1.5));
+                        } else if (score < 7) {
+                            red = 255;
+                            green = 175 + Math.round(80 * ((score - 5.5) / 1.5));
+                        } else if (score < 8.5) {
+                            red = 255 - Math.round(100 * ((score - 7) / 1.5));
+                            green = 255;
+                        } else {
+                            red = 155 - Math.round(155 * ((score - 8.5) / 1.5));
+                            green = 255;
+                        }
+                        
+                        bayes.style.backgroundColor = `rgb(${red}, ${green}, ${blue})`;
+                        bayes.textContent = Math.ceil(game.bayesAverage * 10) / 10;
+                        tile.appendChild(bayes);
+                    }
+
+                    // Add player votes
+                    if (options.bottomLeft === 'playerVotes' && game.playerVotes && game.playerVotes.length > 0) {
+                        const votes = document.createElement('div');
+                        votes.className = 'print-votes';
+                        const currentPlayerVotes = game.playerVotes.find(v => v.playerCount === parseInt(playerCount));
+                        if (currentPlayerVotes) {
+                            votes.innerHTML = `B:${currentPlayerVotes.best || 0}<br>R:${currentPlayerVotes.recommended || 0}<br>N:${currentPlayerVotes.notRecommended || 0}`;
+                        } else {
+                            votes.innerHTML = 'B:0<br>R:0<br>N:0';
+                        }
+                        tile.appendChild(votes);
+                    }
+
+                    // Add image
+                    if (game.thumbnail) {
+                        const img = document.createElement('img');
+                        img.src = game.thumbnail;
+                        img.alt = game.name || 'Game';
+                        img.onerror = function() { this.style.display = 'none'; };
+                        tile.appendChild(img);
+                    }
+                }
+
+                grid.appendChild(tile);
+            }
+
+            // Show print view, hide normal view
+            document.getElementById('normalViewContainer').style.display = 'none';
+            document.getElementById('printViewContainer').classList.add('active');
+
+            // Auto-print
+            setTimeout(() => window.print(), 500);
+        }
+
+        // Check on page load
+        window.addEventListener('load', initializePrintViewIfNeeded);
+
         // Updated print function with options
         function createPrintView(printOptions = {}) {
             if (!currentSortedGames || currentSortedGames.length === 0) {
@@ -815,11 +993,8 @@
             
             localStorage.setItem('bgg_print_data', JSON.stringify(printData));
             
-            // Create simple URL
-            const baseUrl = window.location.href.replace('menu.html', 'menu-print.html');
-            const printUrl = baseUrl + '?t=' + Date.now(); // Add timestamp to prevent caching
-            
-            // Open print page in new window/tab
+            // Open print page with ?print=1 parameter
+            const printUrl = window.location.href.split('?')[0] + '?print=1';
             window.open(printUrl, '_blank');
         }
 
