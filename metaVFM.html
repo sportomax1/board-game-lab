@@ -403,6 +403,53 @@
                 return new DOMParser().parseFromString(xmlText, 'text/xml');
             }
 
+            function createMasterCard(item, rank, geeklistName) {
+                const objectid = item.getAttribute('objectid');
+                const objectname = item.querySelector('objectname')?.textContent || geeklistName;
+                const body = item.querySelector('body')?.textContent || '';
+
+                const card = document.createElement('div');
+                card.className = 'card';
+                card.style.opacity = '0.7';
+
+                const imageDiv = document.createElement('div');
+                imageDiv.className = 'card-image error';
+                imageDiv.innerHTML = '📋';
+
+                const content = document.createElement('div');
+                content.className = 'card-content';
+
+                const rankEl = document.createElement('div');
+                rankEl.className = 'card-rank';
+                rankEl.textContent = `Master #${rank}`;
+
+                const titleEl = document.createElement('h3');
+                titleEl.className = 'card-title';
+                titleEl.textContent = objectname;
+
+                const idEl = document.createElement('div');
+                idEl.style.fontSize = 'clamp(0.65rem, 1.5vw, 0.75rem)';
+                idEl.style.color = '#667eea';
+                idEl.style.fontWeight = '600';
+                idEl.textContent = `Geeklist ID: ${objectid}`;
+
+                content.appendChild(rankEl);
+                content.appendChild(titleEl);
+                content.appendChild(idEl);
+
+                if (body) {
+                    const bodyDiv = document.createElement('div');
+                    bodyDiv.className = 'card-body';
+                    bodyDiv.textContent = body;
+                    content.appendChild(bodyDiv);
+                }
+
+                card.appendChild(imageDiv);
+                card.appendChild(content);
+
+                return card;
+            }
+
             function extractPrice(bodyText) {
                 if (!bodyText) return null;
                 // Match patterns like "$19.99", "Price: $29.99", "$ 49.99", etc.
@@ -439,7 +486,7 @@
                 }
             }
 
-            function createCard(item, rank, gameData = {}) {
+            function createCard(item, rank, gameData = {}, geeklistName = '') {
                 const id = item.getAttribute('id');
                 const objectype = item.getAttribute('objecttype');
                 const subtype = item.getAttribute('subtype');
@@ -468,17 +515,18 @@
 
                 if (imageUrl) {
                     const img = document.createElement('img');
+                    // Use proxy to avoid CORS issues
                     img.src = imageUrl;
                     img.alt = gameName;
                     img.crossOrigin = 'anonymous';
                     img.onerror = () => {
-                        imageDiv.innerHTML = '🖼️';
+                        imageDiv.innerHTML = '🎲';
                         imageDiv.classList.add('error');
                     };
                     imageDiv.appendChild(img);
                 } else {
                     imageDiv.classList.add('error');
-                    imageDiv.innerHTML = 'No Image';
+                    imageDiv.innerHTML = '🎲';
                 }
 
                 // Add price badge if found
@@ -552,7 +600,7 @@
                 sourceInfo.style.marginTop = '0.25rem';
                 sourceInfo.style.borderTop = '1px solid #eee';
                 sourceInfo.style.paddingTop = '0.25rem';
-                sourceInfo.textContent = `From: ${item.getAttribute('_geeklist-source')}`;
+                sourceInfo.textContent = `From: ${geeklistName || item.getAttribute('_geeklist-source')}`;
                 content.appendChild(sourceInfo);
 
                 card.appendChild(imageDiv);
@@ -568,19 +616,19 @@
                 logEvent('=== STARTING META GEEKLIST LOAD ===', 'start');
 
                 try {
-                    // Step 1: Fetch the root geeklist to get all geeklist IDs
-                    logEvent('Step 1: Fetching master geeklist 66420', 'step');
-                    const xmlText = await fetchBGG('geeklist', { id: '66420' }, 5, 'Master 66420');
-                    const doc = parseXML(xmlText);
+                    // STEP 1: Fetch ONLY the master geeklist 66420 to get IDs
+                    logEvent('Step 1: Fetching master geeklist 66420 for IDs', 'step');
+                    const masterXML = await fetchBGG('geeklist', { id: '66420' }, 5, 'Master 66420');
+                    const masterDoc = parseXML(masterXML);
 
-                    if (doc.querySelector('error')) {
-                        throw new Error(doc.querySelector('error')?.textContent || 'API error');
+                    if (masterDoc.querySelector('error')) {
+                        throw new Error(masterDoc.querySelector('error')?.textContent || 'API error');
                     }
 
-                    const items = Array.from(doc.querySelectorAll('item'));
-                    logEvent(`Found ${items.length} items in master geeklist`, 'info');
+                    const masterItems = Array.from(masterDoc.querySelectorAll('item'));
+                    logEvent(`Found ${masterItems.length} geeklist IDs in master`, 'info');
 
-                    if (items.length === 0) {
+                    if (masterItems.length === 0) {
                         cardsContainer.innerHTML = '<div class="empty-state">No geeklists found.</div>';
                         hideStatus();
                         refreshBtn.disabled = false;
@@ -588,102 +636,91 @@
                         return;
                     }
 
-                    // Extract all geeklist IDs from objectid attributes
-                    allGeeklists = items.map((item, idx) => ({
-                        rank: idx + 1,
-                        id: item.getAttribute('objectid'),
-                        name: item.querySelector('objectname')?.textContent || `Geeklist ${item.getAttribute('objectid')}`
-                    })).filter(g => g.id);
+                    // Display master geeklist IDs immediately
+                    cardsContainer.innerHTML = '';
+                    const geeklistIds = [];
+                    
+                    // Create display for master IDs
+                    logEvent('Step 2: Displaying master geeklist entries', 'step');
+                    let masterRank = 1;
+                    
+                    for (const masterItem of masterItems) {
+                        const geeklistId = masterItem.getAttribute('objectid');
+                        const geeklistName = masterItem.querySelector('objectname')?.textContent || `Geeklist ${geeklistId}`;
+                        geeklistIds.push({ id: geeklistId, name: geeklistName });
+                        
+                        // Display geeklist ID entry immediately
+                        const masterCard = createMasterCard(masterItem, masterRank++, geeklistName);
+                        cardsContainer.appendChild(masterCard);
+                        logEvent(`Displayed master entry: ${geeklistName}`, 'card');
+                    }
 
-                    logEvent(`Extracted ${allGeeklists.length} geeklist IDs: ${allGeeklists.map(g => g.id).join(', ')}`, 'info');
-                    showStatus(`Found ${allGeeklists.length} geeklists. Fetching all items...`);
-                    updateProgress(0, allGeeklists.length);
+                    logEvent(`Displaying all ${geeklistIds.length} geeklist IDs from master`, 'info');
+                    showStatus(`Retrieved ${geeklistIds.length} geeklist IDs. Now fetching all items...`);
 
-                    // Step 2: Fetch each geeklist and collect all items
-                    logEvent('Step 2: Fetching all sub-geeklists', 'step');
-                    const allItems = [];
-                    for (let i = 0; i < allGeeklists.length; i++) {
-                        const geeklist = allGeeklists[i];
+                    // STEP 3: Stream individual geeklists and their items with game data
+                    logEvent('Step 3: Streaming individual geeklists with game data', 'step');
+                    const gameDataCache = {};
+                    let globalRank = 1;
+
+                    for (let i = 0; i < geeklistIds.length; i++) {
+                        const geeklist = geeklistIds[i];
+                        
                         try {
-                            logEvent(`Fetching geeklist ${geeklist.id} (${i + 1}/${allGeeklists.length}): ${geeklist.name}`, 'geeklist');
+                            logEvent(`Fetching geeklist ${geeklist.id} (${i + 1}/${geeklistIds.length}): ${geeklist.name}`, 'geeklist');
+                            showStatus(`[${i + 1}/${geeklistIds.length}] Fetching: ${geeklist.name}`);
+                            updateProgress(i, geeklistIds.length);
+
+                            // Fetch this single geeklist
                             const geeklistXML = await fetchBGG('geeklist', { id: geeklist.id }, 5, geeklist.name);
                             const geeklistDoc = parseXML(geeklistXML);
                             const geeklistItems = Array.from(geeklistDoc.querySelectorAll('item'));
-                            
+
                             logEvent(`Got ${geeklistItems.length} items from geeklist ${geeklist.id}`, 'info');
-                            
-                            geeklistItems.forEach(item => {
-                                item.setAttribute('_geeklist-source', geeklist.name);
-                                item.setAttribute('_geeklist-id', geeklist.id);
-                                allItems.push(item);
+
+                            // Sort items in this geeklist by postdate descending
+                            geeklistItems.sort((a, b) => {
+                                const dateA = a.querySelector('postdate')?.textContent || '';
+                                const dateB = b.querySelector('postdate')?.textContent || '';
+                                return dateB.localeCompare(dateA);
                             });
 
-                            showStatus(`Fetching geeklists... [${i + 1}/${allGeeklists.length}] ${geeklist.name}`);
-                            updateProgress(i + 1, allGeeklists.length);
-                        } catch (err) {
-                            logEvent(`Failed to fetch geeklist ${geeklist.id}: ${err.message}`, 'error');
-                            // Continue with next geeklist even if one fails
-                        }
-                    }
-
-                    logEvent(`Total items collected: ${allItems.length}`, 'info');
-
-                    // Step 3: Sort by postdate descending (most recent first)
-                    logEvent('Step 3: Sorting items by most recent postdate', 'step');
-                    allItems.sort((a, b) => {
-                        const dateA = a.querySelector('postdate')?.textContent || '';
-                        const dateB = b.querySelector('postdate')?.textContent || '';
-                        return dateB.localeCompare(dateA); // Descending order: newest first
-                    });
-
-                    logEvent(`Sorted ${allItems.length} items by postdate (newest first)`, 'info');
-                    const newestDate = allItems[0]?.querySelector('postdate')?.textContent?.split('T')[0];
-                    const oldestDate = allItems[allItems.length - 1]?.querySelector('postdate')?.textContent?.split('T')[0];
-                    logEvent(`Date range: ${newestDate} to ${oldestDate}`, 'info');
-
-                    // Step 4: Stream results and fetch game thumbnails
-                    logEvent('Step 4: Streaming cards and fetching game data', 'step');
-                    if (allItems.length === 0) {
-                        cardsContainer.innerHTML = '<div class="empty-state">No items found in any geeklist.</div>';
-                    } else {
-                        cardsContainer.innerHTML = '';
-                        const gameDataCache = {}; // Cache game data by objectid
-                        const cardsPerBatch = 3; // Render 3 cards at a time
-                        let globalRank = 1;
-
-                        for (let i = 0; i < allItems.length; i += cardsPerBatch) {
-                            const batch = allItems.slice(i, i + cardsPerBatch);
-                            logEvent(`Processing batch ${Math.floor(i / cardsPerBatch) + 1}/${Math.ceil(allItems.length / cardsPerBatch)}`, 'batch');
-
-                            for (const item of batch) {
+                            // IMMEDIATELY display items from this geeklist, fetching game data as we go
+                            for (const item of geeklistItems) {
                                 const objectid = item.getAttribute('objectid');
                                 
-                                // Fetch game data if not cached
+                                // Fetch game data if not cached (with retry logic)
                                 if (objectid && !gameDataCache[objectid]) {
+                                    logEvent(`Fetching game data for objectid ${objectid}`, 'game-fetch');
                                     const gameData = await fetchGameThumbAndName(objectid);
                                     gameDataCache[objectid] = gameData;
                                     
                                     // Small delay to avoid rate limiting
-                                    await new Promise(resolve => setTimeout(resolve, 200));
+                                    await new Promise(resolve => setTimeout(resolve, 150));
+                                } else if (objectid) {
+                                    logEvent(`Using cached game data for objectid ${objectid}`, 'cache');
                                 }
 
-                                const card = createCard(item, globalRank++, gameDataCache);
+                                // Create and display card IMMEDIATELY
+                                const card = createCard(item, globalRank++, gameDataCache, geeklist.name);
                                 cardsContainer.appendChild(card);
                                 logEvent(`Rendered card #${globalRank - 1}: ${item.querySelector('objectname')?.textContent}`, 'card');
+
+                                // Let UI breathe
+                                await new Promise(resolve => setTimeout(resolve, 50));
                             }
 
-                            // Update progress
-                            const processedCount = Math.min(i + cardsPerBatch, allItems.length);
-                            showStatus(`Loading cards... [${processedCount}/${allItems.length}]`);
-                            updateProgress(processedCount, allItems.length);
+                            updateProgress(i + 1, geeklistIds.length);
 
-                            // Yield to browser to prevent UI blocking
-                            await new Promise(resolve => setTimeout(resolve, 100));
+                        } catch (err) {
+                            logEvent(`✗ Failed to fetch geeklist ${geeklist.id}: ${err.message}`, 'error');
+                            showStatus(`Error fetching ${geeklist.name}: ${err.message}`);
+                            // Continue with next geeklist even if one fails
                         }
                     }
 
-                    logEvent(`=== COMPLETED: Loaded ${allItems.length} total items from ${allGeeklists.length} geeklists ===`, 'complete');
-                    showStatus(`Loaded ${allItems.length} total items from ${allGeeklists.length} geeklists`, false);
+                    logEvent(`=== COMPLETED: Streamed all items ===`, 'complete');
+                    showStatus(`Completed!`, false);
                 } catch (err) {
                     logEvent(`Fatal error: ${err.message}`, 'fatal');
                     console.error('Error:', err);
