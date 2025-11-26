@@ -1,499 +1,447 @@
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Board Game Credits Viewer</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&family=Oswald:wght@500;700&display=swap');
+import React, { useState, useEffect, useRef, useMemo } from 'react';
+import { 
+  Play, 
+  Pause, 
+  RotateCcw, 
+  Settings, 
+  Filter, 
+  ArrowUpAz, 
+  Star, 
+  Calendar, 
+  Brain,
+  Search,
+  Loader2,
+  Film
+} from 'lucide-react';
+
+export default function App() {
+  // --- State ---
+  // Default username set to 'sportomax' as requested
+  const [username, setUsername] = useState('sportomax'); 
+  const [loading, setLoading] = useState(false);
+  const [error, setError] = useState(null);
+  const [rawGames, setRawGames] = useState([]);
+  
+  // Settings
+  const [excludeExpansions, setExcludeExpansions] = useState(false);
+  const [sortBy, setSortBy] = useState('rating'); // 'name', 'rating', 'year', 'weight'
+  const [scrollSpeed, setScrollSpeed] = useState(1.5); // pixels per frame
+  const [isPlaying, setIsPlaying] = useState(false);
+  const [showUI, setShowUI] = useState(true);
+
+  // Animation State
+  const [scrollY, setScrollY] = useState(-1000); // Start off screen
+  const containerRef = useRef(null);
+  const contentRef = useRef(null);
+  const animationRef = useRef(null);
+
+  // --- Data Fetching (BoardGameGeek with Proxy) ---
+  const fetchCollection = async (userToFetch) => {
+    if (!userToFetch) return;
+    
+    setLoading(true);
+    setError(null);
+    setIsPlaying(false);
+    setScrollY(-window.innerHeight); // Reset scroll to below screen
+
+    // Configuration for CORS proxy
+    const BGG_API_URL = 'https://boardgamegeek.com/xmlapi2/collection';
+    const PROXY_URL = 'https://api.allorigins.win/get?url=';
+    const targetUrl = `${BGG_API_URL}?username=${userToFetch}&own=1&stats=1`;
+    const urlWithProxy = `${PROXY_URL}${encodeURIComponent(targetUrl)}`;
+
+    try {
+      // Fetch via proxy to avoid CORS issues
+      const response = await fetch(urlWithProxy);
+      
+      if (!response.ok) throw new Error('Failed to fetch data via proxy.');
+      
+      // The proxy returns JSON, so we extract the XML string from the 'contents' field
+      const json = await response.json();
+      const text = json.contents; 
+
+      if (!text) {
+         throw new Error('Proxy returned empty content. Check username or BGG API status.');
+      }
+      
+      // Pre-parse check for BGG error messages (e.g., 'Invalid username' or 'unavailable')
+      if (text.includes("Invalid username") || text.includes("unavailable")) {
+        throw new Error('Invalid BGG username, collection is private, or server is busy.');
+      }
+
+      // Use text and DOMParser to handle XML response
+      const parser = new DOMParser();
+      const xml = parser.parseFromString(text, 'text/xml');
+      
+      // Check if BGG returned an error message in XML structure (e.g., status 202)
+      if (xml.querySelector('errors, error')) {
+        throw new Error('BGG is processing the request, try again in a few seconds, or invalid user.');
+      }
+
+      const items = Array.from(xml.querySelectorAll('item'));
+      
+      if (items.length === 0) {
+        throw new Error(`No games found for user ${userToFetch}.`);
+      }
+
+      const parsedGames = items.map(item => {
+        const name = item.querySelector('name')?.textContent || 'Unknown';
+        const year = item.querySelector('yearpublished')?.textContent || '----';
+        const image = item.querySelector('image')?.textContent || item.querySelector('thumbnail')?.textContent;
+        const thumbnail = item.querySelector('thumbnail')?.textContent;
+        const stats = item.querySelector('stats');
+        // Extract rating and weight data from the XML structure
+        const rating = stats?.querySelector('rating')?.getAttribute('value') || 'N/A';
+        const averageRating = stats?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || '0';
+        const weight = stats?.querySelector('averageweight')?.getAttribute('value') || '0';
+        const subtype = item.getAttribute('subtype'); // boardgame or boardgameexpansion
         
-        body {
-            font-family: 'Inter', sans-serif;
-            background-color: #0f172a; /* Slate 900 */
-            color: white;
-            min-height: 100vh;
-        }
+        return {
+          id: item.getAttribute('objectid'),
+          name,
+          year: parseInt(year) || 0,
+          image: image || thumbnail,
+          rating: parseFloat(averageRating) || 0,
+          weight: parseFloat(weight) || 0,
+          isExpansion: subtype === 'boardgameexpansion'
+        };
+      });
 
-        /* --- Custom Scroll Animation Styles --- */
-        .credits-container {
-            position: fixed;
-            top: 0;
-            left: 0;
-            width: 100vw;
-            height: 100vh;
-            overflow: hidden;
-            display: none;
-            background: rgba(0, 0, 0, 0.95);
-            perspective: 800px; /* For a slight 3D cinematic feel */
-            z-index: 100;
-        }
+      setRawGames(parsedGames);
+      // Start the credits text below the viewport
+      setScrollY(window.innerHeight); 
 
-        .credits-content {
-            position: absolute;
-            left: 0;
-            width: 100%;
-            display: flex;
-            flex-direction: column;
-            align-items: center;
-            /* Start position: fully below the viewport */
-            transform: translateY(100vh) rotateX(10deg); 
-            transform-origin: center bottom;
-        }
+    } catch (err) {
+      setError(err.message);
+    } finally {
+      setLoading(false);
+    }
+  };
 
-        /* Keyframes for the continuous scrolling effect */
-        @keyframes creditsScroll {
-            to {
-                /* End position: fully above the viewport */
-                transform: translateY(-100%) rotateX(10deg);
-            }
-        }
-        
-        .scrolling {
-            animation-name: creditsScroll;
-            animation-timing-function: linear;
-            animation-iteration-count: 1; /* Run once */
-            animation-fill-mode: forwards; /* Stay at the end state */
-        }
-        
-        .credits-item {
-            padding: 1rem 0;
-            opacity: 0.9;
-            transition: opacity 0.5s;
-        }
+  // Load a sample user collection for demonstration
+  const loadSample = () => {
+    setUsername('rahdo');
+    fetchCollection('rahdo');
+  };
 
-        .credits-item:hover {
-            opacity: 1;
-        }
+  // --- Filtering & Sorting (Memoized) ---
+  const processedGames = useMemo(() => {
+    let games = [...rawGames];
 
-        .game-title {
-            font-family: 'Oswald', sans-serif;
-            font-size: 2.5rem; /* Larger font for titles */
-            text-shadow: 2px 2px 4px #000;
-        }
-        
-        .game-subtitle {
-            font-family: 'Inter', sans-serif;
-            font-size: 1rem;
-            color: #94a3b8; /* Slate 400 */
-        }
+    // Filter expansions if setting is enabled
+    if (excludeExpansions) {
+      games = games.filter(g => !g.isExpansion);
+    }
 
-        .image-wrapper {
-            width: 100%;
-            height: 200px;
-            overflow: hidden;
-            display: flex;
-            justify-content: center;
-            align-items: center;
-            margin-bottom: 0.5rem;
-            border-radius: 0.5rem;
-            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.5);
-        }
+    // Sort games based on the selected criteria
+    games.sort((a, b) => {
+      switch (sortBy) {
+        case 'name':
+          return a.name.localeCompare(b.name);
+        case 'rating':
+          return b.rating - a.rating; // Descending
+        case 'year':
+          return b.year - a.year; // Descending (newest first)
+        case 'weight':
+          return b.weight - a.weight; // Descending (heaviest first)
+        default:
+          return 0;
+      }
+    });
 
-        .game-image {
-            width: auto;
-            max-height: 100%;
-            border-radius: 0.25rem;
-        }
+    return games;
+  }, [rawGames, excludeExpansions, sortBy]);
 
-    </style>
-</head>
-<body class="p-4 md:p-8">
+  // --- Animation Loop (RequestAnimationFrame) ---
+  useEffect(() => {
+    const animate = () => {
+      if (isPlaying) {
+        setScrollY(prev => {
+          const contentHeight = contentRef.current?.clientHeight || 0;
+          const containerHeight = containerRef.current?.clientHeight || 0;
 
-    <!-- Configuration Panel -->
-    <div id="config-panel" class="max-w-xl mx-auto bg-slate-800 p-6 rounded-xl shadow-2xl space-y-4">
-        <h1 class="text-3xl font-extrabold text-center text-indigo-400 font-oswald">Cinematic Game Credits</h1>
-        <p class="text-slate-300 text-center text-sm">Configure your collection and watch the credits roll!</p>
+          // Calculate where the content must stop (when the top edge of the content 
+          // hits the top of the screen, plus a little margin for the header)
+          const stopPoint = -contentHeight - 200; 
 
-        <div class="space-y-4">
-            <!-- Username Input -->
-            <label class="block">
-                <span class="text-slate-300 font-semibold">BGG Username:</span>
-                <input type="text" id="username" value="sportomax" placeholder="Enter BGG Username" class="mt-1 block w-full rounded-md bg-slate-700 border-transparent focus:border-indigo-500 focus:ring-indigo-500 text-white p-2">
-            </label>
+          if (prev < stopPoint) {
+            // Loop the content back to the bottom for an endless credit roll effect
+            return containerHeight; 
+          }
+          
+          return prev - scrollSpeed; // Move up by scrollSpeed pixels
+        });
+        animationRef.current = requestAnimationFrame(animate);
+      }
+    };
 
-            <!-- Exclude Expansions -->
-            <div class="flex items-center space-x-2 p-2 bg-slate-700 rounded-md">
-                <input type="checkbox" id="exclude-expansions" checked class="h-4 w-4 text-indigo-600 border-gray-300 rounded focus:ring-indigo-500">
-                <label for="exclude-expansions" class="text-slate-300">Exclude Expansions</label>
+    if (isPlaying) {
+      animationRef.current = requestAnimationFrame(animate);
+    } else {
+      cancelAnimationFrame(animationRef.current);
+    }
+
+    return () => cancelAnimationFrame(animationRef.current);
+  }, [isPlaying, scrollSpeed]);
+
+  // --- Handlers ---
+  const handleRestart = () => {
+    // Reset scroll position to the bottom of the screen
+    setScrollY(window.innerHeight); 
+    setIsPlaying(true);
+  };
+
+  // Toggle UI visibility when clicking the background
+  const toggleUI = () => setShowUI(prev => !prev);
+
+  // Styling: Using Tailwind for cinematic/dark theme
+  return (
+    <div className="relative w-full h-screen bg-black overflow-hidden font-sans text-white select-none">
+      
+      {/* Background Ambience / Grain Effect */}
+      <div className="absolute inset-0 opacity-10 pointer-events-none z-0" 
+           style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg viewBox=\'0 0 200 200\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'noiseFilter\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.65\' numOctaves=\'3\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23noiseFilter)\'/%3E%3C/svg%3E")' }}>
+      </div>
+
+      {/* --- The Credits Scroll Layer --- */}
+      <div 
+        ref={containerRef}
+        className="absolute inset-0 flex justify-center z-10"
+        onClick={toggleUI} // Click background to toggle UI
+      >
+        <div 
+          ref={contentRef}
+          style={{ transform: `translateY(${scrollY}px)` }}
+          className="flex flex-col items-center w-full max-w-2xl px-4 pb-96 transition-transform duration-75 ease-linear will-change-transform" // Apply transform via style, but keep a tiny ease for smoothness
+        >
+          {/* Header of the Credits */}
+          {processedGames.length > 0 && (
+            <div className="text-center mb-32 pt-20">
+              <h1 className="text-6xl font-serif text-yellow-500 tracking-widest uppercase mb-4 drop-shadow-md">
+                The Collection
+              </h1>
+              <p className="text-gray-400 text-xl tracking-[0.3em] uppercase">
+                {username ? `${username.toUpperCase()}'s Library` : 'Board Game Library'}
+              </p>
+            </div>
+          )}
+
+          {/* Game List Items */}
+          {processedGames.map((game, index) => (
+            <div key={game.id} className="mb-32 flex flex-col items-center text-center opacity-90 hover:opacity-100 transition-opacity duration-500">
+              
+              {/* Role / Category */}
+              <div className="text-gray-500 text-sm tracking-[0.2em] uppercase mb-4">
+                #{index + 1} &bull; {game.year > 0 ? game.year : 'Unknown Year'}
+              </div>
+
+              {/* Title */}
+              <h2 className="text-4xl md:text-5xl font-bold mb-8 text-white tracking-wide max-w-4xl leading-tight">
+                {game.name}
+              </h2>
+
+              {/* Image & Stats Layout */}
+              <div className="flex flex-col md:flex-row items-center gap-8 md:gap-12">
+                {/* Poster */}
+                {game.image ? (
+                  <div className="relative group">
+                    <div className="absolute inset-0 bg-yellow-500 blur opacity-20 group-hover:opacity-40 transition-opacity duration-1000"></div>
+                    <img 
+                      src={game.image} 
+                      alt={game.name}
+                      className="relative w-48 h-auto rounded-sm shadow-2xl border border-gray-800"
+                      // Error handler for broken BGG images
+                      onError={(e) => {
+                        e.target.onerror = null; 
+                        e.target.src = "https://placehold.co/200x200/222/999?text=No+Cover";
+                      }}
+                    />
+                  </div>
+                ) : (
+                  <div className="w-48 h-48 bg-gray-900 rounded-sm flex items-center justify-center border border-gray-800 shadow-2xl">
+                    <span className="text-gray-600">No Image</span>
+                  </div>
+                )}
+
+                {/* Stats Block */}
+                <div className="flex flex-col items-center md:items-start space-y-3">
+                  
+                  {/* Rating */}
+                  <div className="flex items-center space-x-3">
+                    <div className="bg-gray-900 p-2 rounded-full border border-gray-700">
+                      <Star className="w-5 h-5 text-yellow-500 fill-current" />
+                    </div>
+                    <div className="flex flex-col text-left">
+                      <span className="text-xs text-gray-500 uppercase tracking-wider">Rating</span>
+                      <span className="text-xl font-mono text-yellow-100">{game.rating.toFixed(1)} <span className="text-sm text-gray-600">/ 10</span></span>
+                    </div>
+                  </div>
+
+                  {/* Complexity */}
+                  <div className="flex items-center space-x-3">
+                    <div className="bg-gray-900 p-2 rounded-full border border-gray-700">
+                      <Brain className="w-5 h-5 text-blue-400" />
+                    </div>
+                    <div className="flex flex-col text-left">
+                      <span className="text-xs text-gray-500 uppercase tracking-wider">Complexity</span>
+                      <span className="text-xl font-mono text-blue-100">{game.weight.toFixed(2)} <span className="text-sm text-gray-600">/ 5</span></span>
+                    </div>
+                  </div>
+
+                  {/* Expansion Badge */}
+                  {game.isExpansion && (
+                    <span className="mt-2 px-3 py-1 bg-gray-800 text-gray-300 text-xs uppercase tracking-widest border border-gray-700 rounded-full">
+                      Expansion
+                    </span>
+                  )}
+                </div>
+              </div>
+            </div>
+          ))}
+
+          {/* End of List */}
+          {processedGames.length > 0 && (
+             <div className="text-center pt-20 pb-40">
+               <Film className="w-12 h-12 text-gray-700 mx-auto mb-4" />
+               <p className="text-gray-600 uppercase tracking-[0.4em] text-sm">Fin</p>
+             </div>
+          )}
+        </div>
+      </div>
+
+      {/* --- Control UI Overlay --- */}
+      {/* Use Tailwind's transition and translate-y class to slide the UI in and out */}
+      <div className={`absolute top-0 left-0 w-full p-6 z-50 transition-transform duration-500 ease-in-out ${showUI ? 'translate-y-0' : '-translate-y-full'}`}>
+        <div className="max-w-5xl mx-auto">
+          {/* Main Card for Controls */}
+          <div className="bg-gray-900/95 backdrop-blur-md border border-gray-800 text-gray-200 rounded-xl shadow-2xl p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
+            
+            {/* Left: Search/Load */}
+            <div className="lg:col-span-4 space-y-2 border-b lg:border-b-0 lg:border-r border-gray-700 pb-4 lg:pb-0 lg:pr-6">
+              <label className="text-xs font-bold text-gray-500 uppercase tracking-wider">Source (BGG Username)</label>
+              <div className="flex gap-2">
+                <input 
+                  type="text" 
+                  value={username}
+                  onChange={(e) => setUsername(e.target.value)}
+                  placeholder="Enter username (e.g. rahdo)"
+                  className="flex-1 bg-gray-800 border border-gray-700 text-white px-3 py-2 rounded focus:outline-none focus:border-yellow-500 transition-colors"
+                  onKeyDown={(e) => e.key === 'Enter' && fetchCollection(username)}
+                />
+                <button 
+                  onClick={() => fetchCollection(username)}
+                  disabled={loading}
+                  className="bg-yellow-600 hover:bg-yellow-500 text-black px-4 py-2 rounded font-bold transition-colors disabled:opacity-50"
+                >
+                  {loading ? <Loader2 className="animate-spin w-5 h-5"/> : <Search className="w-5 h-5"/>}
+                </button>
+              </div>
+              <button onClick={loadSample} className="text-xs text-blue-400 hover:text-blue-300 hover:underline">
+                Or load sample data
+              </button>
+              {error && <p className="text-red-400 text-xs mt-1">{error}</p>}
             </div>
 
-            <!-- Sort By -->
-            <label class="block">
-                <span class="text-slate-300 font-semibold">Sort By:</span>
-                <select id="sort-by" class="mt-1 block w-full rounded-md bg-slate-700 border-transparent focus:border-indigo-500 focus:ring-indigo-500 text-white p-2">
-                    <option value="name">Name (Alphabetical)</option>
-                    <option value="rank">BGG Rank</option>
-                    <option value="rating">Average Rating</option>
-                    <option value="year">Year Published</option>
-                    <option value="complexity">Weight/Complexity</option>
-                </select>
-            </label>
-            
-            <!-- Scroll Speed Slider -->
-            <label class="block">
-                <div class="flex justify-between items-center">
-                    <span class="text-slate-300 font-semibold">Scroll Speed:</span>
-                    <span id="speed-display" class="font-mono text-indigo-400">100</span>
+            {/* Middle: Controls & Settings */}
+            <div className="lg:col-span-5 grid grid-cols-2 gap-4 lg:px-4">
+              
+              {/* Sort & Filter */}
+              <div className="space-y-3">
+                <div className="flex items-center justify-between">
+                  <label className="text-xs font-bold text-gray-500 uppercase flex items-center gap-2">
+                    <ArrowUpAz className="w-3 h-3" /> Sort By
+                  </label>
                 </div>
-                <input type="range" id="scroll-speed" min="10" max="200" value="100" class="mt-2 w-full h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer range-lg">
-            </label>
+                <select 
+                  value={sortBy} 
+                  onChange={(e) => setSortBy(e.target.value)}
+                  className="w-full bg-gray-800 border border-gray-700 text-white px-3 py-1.5 rounded text-sm focus:outline-none"
+                >
+                  <option value="rating">Rating (Highest)</option>
+                  <option value="name">Name (A-Z)</option>
+                  <option value="year">Year (Newest)</option>
+                  <option value="weight">Complexity</option>
+                </select>
+
+                <div className="flex items-center gap-2 pt-1">
+                  <input 
+                    type="checkbox" 
+                    id="excludeExp" 
+                    checked={excludeExpansions}
+                    onChange={(e) => setExcludeExpansions(e.target.checked)}
+                    className="w-4 h-4 rounded border-gray-600 text-yellow-500 focus:ring-yellow-500 bg-gray-700"
+                  />
+                  <label htmlFor="excludeExp" className="text-sm text-gray-300 cursor-pointer select-none">Exclude Expansions</label>
+                </div>
+              </div>
+
+              {/* Playback Controls */}
+              <div className="space-y-3 border-l border-gray-700 pl-4">
+                <label className="text-xs font-bold text-gray-500 uppercase">Speed: {scrollSpeed.toFixed(1)}x</label>
+                <input 
+                  type="range" 
+                  min="0.5" 
+                  max="5.0" 
+                  step="0.1" 
+                  value={scrollSpeed}
+                  onChange={(e) => setScrollSpeed(parseFloat(e.target.value))}
+                  className="w-full h-1 bg-gray-700 rounded-lg appearance-none cursor-pointer accent-yellow-500"
+                />
+                
+                <div className="flex items-center gap-2 pt-1">
+                  <button 
+                    onClick={() => setIsPlaying(!isPlaying)}
+                    className={`flex-1 flex items-center justify-center gap-2 px-3 py-1.5 rounded text-sm font-bold transition-colors ${isPlaying ? 'bg-gray-700 text-white hover:bg-gray-600' : 'bg-green-600 text-white hover:bg-green-500'}`}
+                  >
+                    {isPlaying ? <><Pause className="w-3 h-3" /> Pause</> : <><Play className="w-3 h-3" /> Play</>}
+                  </button>
+                  <button 
+                    onClick={handleRestart}
+                    className="px-3 py-1.5 bg-gray-700 hover:bg-gray-600 rounded text-gray-200 transition-colors"
+                    title="Restart from Bottom"
+                  >
+                    <RotateCcw className="w-4 h-4" />
+                  </button>
+                </div>
+              </div>
+
+            </div>
+
+            {/* Right: Stats Summary */}
+            <div className="lg:col-span-3 border-t lg:border-t-0 lg:border-l border-gray-700 pt-4 lg:pt-0 lg:pl-6 text-center lg:text-right flex flex-row lg:flex-col justify-between items-center lg:items-end">
+              <div>
+                <span className="block text-3xl font-bold text-white">{processedGames.length}</span>
+                <span className="text-xs text-gray-500 uppercase tracking-widest">Titles Loaded</span>
+              </div>
+              <div className="hidden lg:block mt-4 text-xs text-gray-600 italic">
+                Click anywhere to <br/> toggle this menu.
+              </div>
+            </div>
+
+          </div>
         </div>
+      </div>
 
-        <!-- Start Button -->
-        <button id="start-credits-btn" class="w-full bg-indigo-600 hover:bg-indigo-700 text-white font-bold py-3 px-4 rounded-lg transition duration-150 ease-in-out shadow-lg shadow-indigo-500/50 flex items-center justify-center">
-            <svg id="loading-spinner" class="animate-spin -ml-1 mr-3 h-5 w-5 text-white hidden" xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24">
-                <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-                <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path>
-            </svg>
-            <span id="button-text">Start The Credits</span>
-        </button>
-        
-        <div id="error-message" class="text-red-400 text-sm text-center mt-3 hidden"></div>
-        
-    </div>
-
-    <!-- Credits Viewer -->
-    <div id="credits-viewer" class="credits-container">
-        <div id="credits-content" class="credits-content p-4">
-            <!-- Credits items will be injected here -->
+      {/* Start Prompt (if no games) */}
+      {processedGames.length === 0 && !loading && !error && (
+        <div className="absolute inset-0 flex items-center justify-center z-0">
+          <div className="text-center text-gray-600">
+            <Film className="w-16 h-16 mx-auto mb-4 opacity-50" />
+            <p className="text-xl font-light">Enter a BGG username to roll credits.</p>
+          </div>
         </div>
-        
-        <!-- Controls to stop/exit credits -->
-        <button id="exit-credits-btn" class="fixed top-4 right-4 bg-red-600 hover:bg-red-700 text-white p-2 rounded-full shadow-lg z-20 transition duration-150 ease-in-out hidden">
-            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M6 18L18 6M6 6l12 12" />
-            </svg>
+      )}
+
+      {/* Floating Toggle Button (visible when UI is hidden) */}
+      {!showUI && (
+        <button 
+          onClick={() => setShowUI(true)}
+          className="absolute top-4 right-4 z-50 bg-gray-900/50 hover:bg-gray-900 text-white p-2 rounded-full backdrop-blur transition-colors border border-gray-700"
+        >
+          <Settings className="w-5 h-5" />
         </button>
+      )}
+
     </div>
-
-
-    <script type="module">
-        import { initializeApp } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-app.js";
-        import { getAuth, signInAnonymously, signInWithCustomToken } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-auth.js";
-        import { getFirestore } from "https://www.gstatic.com/firebasejs/11.6.1/firebase-firestore.js";
-
-        // Global Canvas Environment Variables
-        const appId = typeof __app_id !== 'undefined' ? __app_id : 'default-credits-viewer-id';
-        const firebaseConfig = typeof __firebase_config !== 'undefined' ? JSON.parse(__firebase_config) : {};
-        const initialAuthToken = typeof __initial_auth_token !== 'undefined' ? __initial_auth_token : null;
-
-        // HTML Elements
-        const usernameInput = document.getElementById('username');
-        const excludeExpansionsCheckbox = document.getElementById('exclude-expansions');
-        const sortBySelect = document.getElementById('sort-by');
-        const scrollSpeedInput = document.getElementById('scroll-speed');
-        const speedDisplay = document.getElementById('speed-display');
-        const startCreditsBtn = document.getElementById('start-credits-btn');
-        const buttonText = document.getElementById('button-text');
-        const loadingSpinner = document.getElementById('loading-spinner');
-        const errorMessage = document.getElementById('error-message');
-        const configPanel = document.getElementById('config-panel');
-        const creditsViewer = document.getElementById('credits-viewer');
-        const creditsContent = document.getElementById('credits-content');
-        const exitCreditsBtn = document.getElementById('exit-credits-btn');
-        
-        // State variables
-        let db, auth;
-        let gameCollection = [];
-
-        // --- Firebase Initialization (Required for Canvas Environment) ---
-        if (Object.keys(firebaseConfig).length > 0) {
-            try {
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                auth = getAuth(app);
-                
-                // Sign in with custom token or anonymously
-                if (initialAuthToken) {
-                    signInWithCustomToken(auth, initialAuthToken).catch(e => {
-                        console.error("Custom token sign-in failed, trying anonymous.", e);
-                        signInAnonymously(auth);
-                    });
-                } else {
-                    signInAnonymously(auth);
-                }
-            } catch (error) {
-                console.error("Firebase initialization failed:", error);
-            }
-        }
-        
-        // Update speed display in real-time
-        scrollSpeedInput.addEventListener('input', (e) => {
-            speedDisplay.textContent = e.target.value;
-        });
-
-        // --- Utility Functions ---
-
-        /**
-         * Generic fetch wrapper with exponential backoff for API calls.
-         * @param {string} url - The URL to fetch.
-         * @param {number} maxRetries - Maximum number of retries.
-         * @param {number} delay - Initial delay in milliseconds.
-         */
-        async function fetchWithRetry(url, maxRetries = 5, delay = 1000) {
-            for (let i = 0; i < maxRetries; i++) {
-                try {
-                    const response = await fetch(url);
-                    if (response.status === 200) {
-                        return response.text();
-                    } else if (response.status === 202) { // 202 Accepted, BGG is building the list
-                        throw new Error("BGG is preparing the list (Status 202), retrying...");
-                    } else {
-                        throw new Error(`HTTP error! status: ${response.status}`);
-                    }
-                } catch (error) {
-                    console.warn(`Fetch attempt ${i + 1} failed for ${url}: ${error.message}`);
-                    if (i === maxRetries - 1) throw error;
-                    await new Promise(resolve => setTimeout(resolve, delay * Math.pow(2, i)));
-                }
-            }
-        }
-
-        /**
-         * Parses BGG XML for a collection list.
-         * @param {string} xmlText - The raw XML string from the BGG API.
-         * @returns {Array} - Array of game objects.
-         */
-        function parseBggXml(xmlText) {
-            const parser = new DOMParser();
-            const xmlDoc = parser.parseFromString(xmlText, "application/xml");
-            const items = xmlDoc.getElementsByTagName('item');
-            const games = [];
-
-            for (let i = 0; i < items.length; i++) {
-                const item = items[i];
-                const subtype = item.getAttribute('subtype');
-                const isExpansion = subtype === 'boardgameexpansion';
-                
-                // Extract game details
-                const nameNode = item.getElementsByTagName('name')[0];
-                const imageNode = item.getElementsByTagName('image')[0];
-                const rankNode = item.querySelector('rank[name="boardgame"]');
-
-                const game = {
-                    id: item.getAttribute('objectid'),
-                    name: nameNode ? nameNode.textContent : 'Unknown Title',
-                    isExpansion: isExpansion,
-                    image: imageNode ? imageNode.textContent : 'https://placehold.co/100x100/334155/E2E8F0?text=NO+IMG',
-                    year: parseInt(item.getElementsByTagName('yearpublished')[0]?.textContent) || 0,
-                    rating: parseFloat(item.getElementsByTagName('stats')[0]?.getAttribute('averageweight')) || 0, // Using weight for complexity
-                    rank: rankNode ? parseInt(rankNode.getAttribute('value')) : Infinity,
-                    avgRating: parseFloat(item.getElementsByTagName('stats')[0]?.getAttribute('rating')) || 0,
-                };
-
-                // Use the average weight as the "complexity" metric for sorting
-                game.complexity = game.rating; 
-                games.push(game);
-            }
-            return games;
-        }
-
-        /**
-         * Fetches, filters, and sorts the BGG collection.
-         */
-        async function loadCollection() {
-            const username = usernameInput.value.trim();
-            if (!username) {
-                throw new Error("Please enter a BGG username.");
-            }
-            
-            const excludeExpansions = excludeExpansionsCheckbox.checked;
-            const sortBy = sortBySelect.value;
-            
-            // Note: A proxy is used here to avoid CORS issues with the BGG XML API.
-            // This URL is a conceptual placeholder and must point to a real proxy
-            // in a production environment, but for demonstration, we use the standard BGG format.
-            const bggApiUrl = `https://boardgamegeek.com/xmlapi2/collection?username=${username}&stats=1`;
-            
-            // To run this in an actual environment without a proxy, you would need
-            // to run a server-side component or use a public CORS-enabled proxy.
-            // Since this is a self-contained HTML app, we'll try to fetch directly
-            // knowing it might fail in some sandbox environments, but it shows intent.
-            // We use the retry mechanism to handle BGG's 202 status.
-            
-            const xmlText = await fetchWithRetry(bggApiUrl);
-            let games = parseBggXml(xmlText);
-
-            // 1. Filtering
-            if (excludeExpansions) {
-                games = games.filter(g => !g.isExpansion);
-            }
-
-            // 2. Sorting
-            games.sort((a, b) => {
-                const sortKey = sortBy;
-                let valA = a[sortKey];
-                let valB = b[sortKey];
-
-                // Special handling for rank (lower is better, so it's ascending)
-                if (sortKey === 'rank') {
-                    // Infinity (unranked) should go last
-                    if (valA === Infinity) return 1;
-                    if (valB === Infinity) return -1;
-                    return valA - valB; // Ascending
-                } 
-                
-                // Special handling for name (string comparison)
-                if (sortKey === 'name') {
-                     return valA.localeCompare(valB); // Ascending
-                }
-
-                // Default: descending for numeric values (rating, year, complexity)
-                return valB - valA; 
-            });
-            
-            // Remove games with rank Infinity if sorting by rank
-            if (sortBy === 'rank') {
-                 games = games.filter(g => g.rank !== Infinity);
-            }
-            
-            // Store the processed collection
-            gameCollection = games;
-            
-            if (gameCollection.length === 0) {
-                throw new Error("No games found in the collection after filtering.");
-            }
-        }
-        
-        /**
-         * Generates and starts the cinematic credits sequence.
-         */
-        function startCredits() {
-            creditsContent.innerHTML = '';
-            
-            // Add a leading title card
-            const titleCard = document.createElement('div');
-            titleCard.className = 'text-center p-10 mt-[80vh] mb-20'; // Push title card high
-            titleCard.innerHTML = `
-                <h2 class="text-6xl font-extrabold text-indigo-400 mb-4 tracking-wider">GAME LIBRARY</h2>
-                <h3 class="text-3xl text-slate-300">FEATURING: ${usernameInput.value.toUpperCase()}</h3>
-            `;
-            creditsContent.appendChild(titleCard);
-
-            // Generate credits items
-            gameCollection.forEach(game => {
-                const item = document.createElement('div');
-                item.className = 'credits-item text-center w-full max-w-sm mx-auto mb-16';
-
-                // Game Title & Metadata
-                let metadata = `Year: ${game.year}`;
-                if (sortBySelect.value === 'rank' && game.rank !== Infinity) {
-                    metadata = `BGG Rank: ${game.rank}`;
-                } else if (sortBySelect.value === 'rating') {
-                    metadata = `Avg Rating: ${game.avgRating.toFixed(2)}`;
-                } else if (sortBySelect.value === 'complexity') {
-                    metadata = `Complexity: ${game.complexity.toFixed(2)}`;
-                }
-
-                // Image with error fallback
-                const imageUrl = game.image;
-                const placeholderUrl = `https://placehold.co/150x150/334155/E2E8F0?text=${game.name.substring(0, 5)}`;
-                
-                item.innerHTML = `
-                    <div class="image-wrapper">
-                        <img src="${imageUrl}" class="game-image" alt="${game.name} Cover" 
-                            onerror="this.onerror=null; this.src='${placeholderUrl}';"
-                        />
-                    </div>
-                    <div class="game-title">${game.name}</div>
-                    <div class="game-subtitle">${metadata}</div>
-                `;
-                
-                creditsContent.appendChild(item);
-            });
-            
-            // Add a final "The End" card
-            const endCard = document.createElement('div');
-            endCard.className = 'text-center p-10 mt-20 mb-[80vh]'; // Leave space for final viewing
-            endCard.innerHTML = `
-                <h2 class="text-6xl font-extrabold text-indigo-400 mb-4 tracking-wider">FIN</h2>
-                <h3 class="text-xl text-slate-300">Thank you for playing!</h3>
-            `;
-            creditsContent.appendChild(endCard);
-
-
-            // Calculate Animation Duration
-            // The content's height is variable. We need to measure it once the items are added.
-            const contentHeight = creditsContent.offsetHeight;
-            const scrollSpeedValue = parseInt(scrollSpeedInput.value, 10); // 10 (fast) to 200 (slow)
-            
-            // Base duration calculation: A rough estimate to normalize speed.
-            // We use a factor (e.g., 50) and scale it by the content height and inverted speed.
-            // Smaller 'scrollSpeedValue' means faster scroll, thus smaller duration factor.
-            // The total duration is based on the content height and the user setting.
-            // Example: 10000ms per 1000px of content at speed 100.
-            const durationSeconds = (contentHeight / 100) * (scrollSpeedValue / 10); 
-            
-            
-            // Set up and start the animation
-            creditsContent.style.animationDuration = `${durationSeconds}s`;
-            creditsContent.style.animationPlayState = 'paused'; // Start paused to set properties
-
-            // Show the viewer, hide config
-            configPanel.classList.add('hidden');
-            creditsViewer.classList.remove('hidden');
-            exitCreditsBtn.classList.remove('hidden');
-            
-            // Force reflow and start the animation
-            void creditsContent.offsetWidth; // Trigger reflow
-            creditsContent.classList.add('scrolling');
-            creditsContent.style.animationPlayState = 'running';
-
-            // Set a timer to show the exit button when the animation is almost done
-            setTimeout(() => {
-                exitCreditsBtn.classList.add('animate-pulse');
-            }, (durationSeconds - 5) * 1000); // 5 seconds before the end
-        }
-
-        // --- Main Controller Function ---
-        async function handleStartCredits() {
-            errorMessage.classList.add('hidden');
-            startCreditsBtn.disabled = true;
-            loadingSpinner.classList.remove('hidden');
-            buttonText.textContent = "Loading Collection...";
-
-            try {
-                // 1. Fetch, Filter, and Sort Data
-                await loadCollection();
-                
-                // 2. Generate and Start Credits
-                startCredits();
-
-            } catch (error) {
-                console.error("Credits generation failed:", error);
-                errorMessage.textContent = error.message;
-                errorMessage.classList.remove('hidden');
-                
-                // Reset state
-                loadingSpinner.classList.add('hidden');
-                buttonText.textContent = "Start The Credits";
-                startCreditsBtn.disabled = false;
-            }
-        }
-        
-        // --- Event Listeners ---
-        startCreditsBtn.addEventListener('click', handleStartCredits);
-
-        exitCreditsBtn.addEventListener('click', () => {
-            // Stop animation and reset view
-            creditsContent.classList.remove('scrolling');
-            creditsContent.style.animationPlayState = 'paused';
-            
-            creditsViewer.classList.add('hidden');
-            exitCreditsBtn.classList.add('hidden');
-            exitCreditsBtn.classList.remove('animate-pulse');
-
-            // Reset config panel
-            configPanel.classList.remove('hidden');
-            loadingSpinner.classList.add('hidden');
-            buttonText.textContent = "Start The Credits";
-            startCreditsBtn.disabled = false;
-        });
-
-        // Initial update for speed display
-        speedDisplay.textContent = scrollSpeedInput.value;
-        
-    </script>
-</body>
-</html>
+  );
+}
