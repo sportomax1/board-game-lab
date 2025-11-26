@@ -55,6 +55,12 @@ def generate_html_index(output_file='index.html'):
     and generates an index file with file type filtering, client-side sorting and search controls.
     """
     
+    # Capture the generation time
+    generation_time_utc = datetime.now(timezone.utc)
+    MTN_OFFSET = timedelta(hours=-7)
+    generation_time_mtn = generation_time_utc + MTN_OFFSET
+    generation_time_str = generation_time_mtn.strftime('%Y-%m-%d %H:%M:%S MST/MDT')
+    
     # Directories to exclude from scanning
     EXCLUDE_DIRS = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api'}
     
@@ -396,6 +402,21 @@ def generate_html_index(output_file='index.html'):
         .badge-md {{ background-color: #083fa1; color: white; }}
         .badge-txt {{ background-color: #888; color: white; }}
         .badge-other {{ background-color: #6c757d; color: white; }}
+        
+        /* --- Generation Time Display --- */
+        .generation-time {{
+            background-color: #f0f9ff;
+            border: 1px solid #bae6fd;
+            border-radius: 6px;
+            padding: 12px 16px;
+            margin-bottom: 20px;
+            font-size: 14px;
+            color: #0c4a6e;
+        }}
+        .generation-time strong {{
+            color: #075985;
+        }}
+        /* --- End Generation Time Display --- */
     </style>
 </head>
 <body>
@@ -403,6 +424,11 @@ def generate_html_index(output_file='index.html'):
         <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
             <h1 style="margin: 0;">Available Applications</h1>
             <button class="about-btn" onclick="openAboutModal()" style="margin: 0;">About</button>
+        </div>
+        
+        <!-- Generation Time Info -->
+        <div class="generation-time">
+            <strong>Index Generated:</strong> {generation_time_str} <span id="timeSince"></span>
         </div>
         
         <!-- About Modal -->
@@ -692,9 +718,15 @@ def generate_html_index(output_file='index.html'):
                     return;
                 }
                 
+                // Add .html extension if no extension is provided
+                let finalFilename = filename;
+                if (!filename.includes('.')) {
+                    finalFilename = filename + '.html';
+                }
+                
                 // Construct the URL
                 const baseUrl = 'https://vercel-one-phi-42.vercel.app/';
-                const url = baseUrl + filename;
+                const url = baseUrl + finalFilename;
                 
                 // Open in current window
                 window.location.href = url;
@@ -725,6 +757,34 @@ def generate_html_index(output_file='index.html'):
             // Initial setup: Sort and then apply the default filter
             sortItems('update'); 
             setFileTypeFilter(currentFilter); // *** CHANGE 2: Call to set initial filter/active button
+            
+            // Update time since generation
+            function updateTimeSince() {
+                const generationTime = new Date('{generation_time_utc.isoformat()}');
+                const now = new Date();
+                const diffMs = now - generationTime;
+                const diffSeconds = Math.floor(diffMs / 1000);
+                
+                let timeSinceText = '';
+                if (diffSeconds < 60) {
+                    timeSinceText = '(Just now)';
+                } else if (diffSeconds < 3600) {
+                    const minutes = Math.floor(diffSeconds / 60);
+                    timeSinceText = `(${{minutes}} minute${{minutes > 1 ? 's' : ''}} ago)`;
+                } else if (diffSeconds < 86400) {
+                    const hours = Math.floor(diffSeconds / 3600);
+                    timeSinceText = `(${{hours}} hour${{hours > 1 ? 's' : ''}} ago)`;
+                } else {
+                    const days = Math.floor(diffSeconds / 86400);
+                    timeSinceText = `(${{days}} day${{days > 1 ? 's' : ''}} ago)`;
+                }
+                
+                document.getElementById('timeSince').textContent = timeSinceText;
+            }
+            
+            updateTimeSince();
+            // Update every minute
+            setInterval(updateTimeSince, 60000);
             
             // About modal functions
             window.openAboutModal = function() {
