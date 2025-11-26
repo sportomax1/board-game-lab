@@ -386,6 +386,10 @@
             <div class="control-group">
                 <label for="sortBy">Sort By</label>
                 <select id="sortBy">
+                    <option value="hybrid-desc">Highest Hybrid Rating</option>
+                    <option value="hybrid-asc">Lowest Hybrid Rating</option>
+                    <option value="score-desc">Highest Score</option>
+                    <option value="score-asc">Lowest Score</option>
                     <option value="bayesaverage-desc">Highest Rated (Bayes)</option>
                     <option value="bayesaverage-asc">Lowest Rated (Bayes)</option>
                     <option value="average-desc">Highest Rated (Community)</option>
@@ -420,7 +424,7 @@
         let settings = {
             username: 'sportomax',
             statuses: { own: true, wishlist: false, prevowned: false, wanttoplay: false, wanttobuy: false, fortrade: false },
-            sortBy: 'bayesaverage-desc',
+            sortBy: 'hybrid-desc',
             minRating: 0,
             maxRating: 10
         };
@@ -557,6 +561,26 @@
                     const average = rating?.querySelector('average')?.getAttribute('value') || 0;
                     const bayesaverage = rating?.querySelector('bayesaverage')?.getAttribute('value') || 0;
 
+                    // Calculate hybrid rating (average of available ratings)
+                    const ratings = [];
+                    if (parseFloat(myRating) > 0) ratings.push(parseFloat(myRating));
+                    if (parseFloat(bayesaverage) > 0) ratings.push(parseFloat(bayesaverage));
+                    if (parseFloat(average) > 0) ratings.push(parseFloat(average));
+                    const hybridRating = ratings.length > 0 ? ratings.reduce((a, b) => a + b, 0) / ratings.length : 0;
+
+                    // Calculate score: 5 points for wishlist/wanttoplay/wanttobuy + inverted wishlistpriority
+                    let score = 0;
+                    if (wishlist === '1' || wanttoplay === 1 || wanttobuy === 1) {
+                        score += 5;
+                    }
+                    // Add inverted wishlistpriority (1=5, 2=4, 3=3, 4=2, 5=1)
+                    if (wishlistpriority && parseInt(wishlistpriority) > 0) {
+                        const priority = parseInt(wishlistpriority);
+                        if (priority >= 1 && priority <= 5) {
+                            score += (6 - priority);
+                        }
+                    }
+
                     games.push({
                         objectid,
                         name,
@@ -570,7 +594,9 @@
                         wishlistpriority,
                         myRating: parseFloat(myRating),
                         average: parseFloat(average),
-                        bayesaverage: parseFloat(bayesaverage)
+                        bayesaverage: parseFloat(bayesaverage),
+                        hybridRating,
+                        score
                     });
                 });
 
@@ -617,6 +643,14 @@
                 let aVal, bVal;
                 
                 switch(sortField) {
+                    case 'hybrid':
+                        aVal = a.hybridRating || 0;
+                        bVal = b.hybridRating || 0;
+                        break;
+                    case 'score':
+                        aVal = a.score || 0;
+                        bVal = b.score || 0;
+                        break;
                     case 'bayesaverage':
                         aVal = a.bayesaverage || 0;
                         bVal = b.bayesaverage || 0;
@@ -637,11 +671,21 @@
                         return 0;
                 }
                 
+                let primarySort;
                 if (typeof aVal === 'string') {
-                    return sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                    primarySort = sortDir === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                } else {
+                    primarySort = sortDir === 'asc' ? aVal - bVal : bVal - aVal;
                 }
                 
-                return sortDir === 'asc' ? aVal - bVal : bVal - aVal;
+                // Tiebreaker: always sort by average descending
+                if (primarySort === 0) {
+                    const aAvg = a.average || 0;
+                    const bAvg = b.average || 0;
+                    return bAvg - aAvg; // Always descending for average
+                }
+                
+                return primarySort;
             });
         }
 
@@ -688,10 +732,27 @@
             title.textContent = game.name;
             content.appendChild(title);
 
+            // Hybrid Rating
+            if (game.hybridRating > 0) {
+                const hybridRating = document.createElement('div');
+                hybridRating.className = 'card-rating';
+                hybridRating.textContent = `🎯 Hybrid: ${game.hybridRating.toFixed(2)}`;
+                content.appendChild(hybridRating);
+            }
+
+            // Score (if any)
+            if (game.score > 0) {
+                const scoreStat = document.createElement('div');
+                scoreStat.className = 'card-rating';
+                scoreStat.style.color = '#764ba2';
+                scoreStat.textContent = `📌 Score: ${game.score}`;
+                content.appendChild(scoreStat);
+            }
+
             // My Rating
             if (game.myRating > 0) {
                 const myRating = document.createElement('div');
-                myRating.className = 'card-rating';
+                myRating.className = 'card-stat';
                 myRating.textContent = `⭐ My Rating: ${game.myRating}`;
                 content.appendChild(myRating);
             }
