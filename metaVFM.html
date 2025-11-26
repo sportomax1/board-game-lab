@@ -355,24 +355,46 @@
                 pageTitle.textContent = navigationStack[navigationStack.length - 1].name;
             }
 
-            async function fetchBGG(endpoint, params = {}, retries = 5) {
+            function logEvent(message, type = 'info') {
+                const timestamp = new Date().toLocaleTimeString();
+                const prefix = `[${timestamp}] [${type.toUpperCase()}]`;
+                console.log(`${prefix} ${message}`);
+            }
+
+            async function fetchBGG(endpoint, params = {}, retries = 5, label = '') {
                 const queryParams = new URLSearchParams(params).toString();
                 const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
+                const attemptLabel = label ? ` (${label})` : '';
+                
+                logEvent(`Fetching ${endpoint}${attemptLabel}: ${queryParams}`, 'fetch');
                 
                 while (retries > 0) {
-                    const response = await fetch(fullUrl);
-                    
-                    if (response.status === 202 && retries > 0) {
-                        await new Promise(r => setTimeout(r, 3000));
-                        retries--;
-                        continue;
-                    }
+                    try {
+                        const response = await fetch(fullUrl);
+                        
+                        if (response.status === 202) {
+                            logEvent(`Got 202 Processing${attemptLabel}, retrying in 3s... (${6 - retries} attempt)`, 'retry');
+                            await new Promise(r => setTimeout(r, 3000));
+                            retries--;
+                            continue;
+                        }
 
-                    if (!response.ok) {
-                        throw new Error(`API failed: ${response.status}`);
-                    }
+                        if (!response.ok) {
+                            throw new Error(`HTTP ${response.status}`);
+                        }
 
-                    return response.text();
+                        const text = await response.text();
+                        logEvent(`✓ Fetched ${endpoint}${attemptLabel} successfully (${text.length} bytes)`, 'success');
+                        return text;
+                    } catch (err) {
+                        logEvent(`✗ Fetch error${attemptLabel}: ${err.message}`, 'error');
+                        if (retries > 1) {
+                            retries--;
+                            await new Promise(r => setTimeout(r, 3000));
+                        } else {
+                            throw err;
+                        }
+                    }
                 }
                 throw new Error('Max retries exceeded');
             }
@@ -386,23 +408,38 @@
                 // Match patterns like "$19.99", "Price: $29.99", "$ 49.99", etc.
                 const priceMatch = bodyText.match(/\$[\s]?(\d+(?:\.\d{2})?)/);
                 if (priceMatch) {
+                    logEvent(`Extracted price: $${priceMatch[1]}`, 'price');
                     return '$' + priceMatch[1];
                 }
                 return null;
             }
 
-            async function fetchGameImage(objectid) {
+            async function fetchGameThumbAndName(objectid) {
+                if (!objectid) return { name: null, thumbnail: null };
+                
                 try {
-                    const xmlText = await fetchBGG('thing', { id: objectid, stats: '1' });
+                    logEvent(`Fetching game details for objectid: ${objectid}`, 'game-fetch');
+                    const xmlText = await fetchBGG('thing', { id: objectid, stats: '1' }, 5, `Game #${objectid}`);
                     const doc = parseXML(xmlText);
-                    const imageEl = doc.querySelector('image');
-                    return imageEl?.textContent || null;
+                    const item = doc.querySelector('item');
+                    
+                    if (!item) {
+                        logEvent(`No game found for objectid: ${objectid}`, 'warn');
+                        return { name: null, thumbnail: null };
+                    }
+
+                    const name = item.querySelector('name')?.textContent || null;
+                    const thumbnail = item.querySelector('thumbnail')?.textContent || null;
+                    
+                    logEvent(`✓ Got game: "${name}" with thumbnail`, 'game-success');
+                    return { name, thumbnail };
                 } catch (err) {
-                    return null;
+                    logEvent(`✗ Failed to fetch game details for ${objectid}: ${err.message}`, 'error');
+                    return { name: null, thumbnail: null };
                 }
             }
 
-            function createCard(item, rank) {
+            function createCard(item, rank, gameData = {}) {
                 const id = item.getAttribute('id');
                 const objectype = item.getAttribute('objecttype');
                 const subtype = item.getAttribute('subtype');
@@ -416,6 +453,8 @@
                 const body = item.querySelector('body')?.textContent || '';
 
                 const price = extractPrice(body);
+                const gameThumb = gameData[objectid]?.thumbnail || null;
+                const gameName = gameData[objectid]?.name || objectname;
 
                 const card = document.createElement('div');
                 card.className = 'card';
@@ -424,14 +463,13 @@
                 imageDiv.className = 'card-image';
                 imageDiv.style.position = 'relative';
 
-                // Try to get image URL - use game image from objectid
-                const imageEl = item.querySelector('image');
-                let imageUrl = imageEl?.textContent || '';
+                // Prefer game thumbnail from thing API, fallback to item image
+                let imageUrl = gameThumb || item.querySelector('image')?.textContent || '';
 
                 if (imageUrl) {
                     const img = document.createElement('img');
                     img.src = imageUrl;
-                    img.alt = objectname;
+                    img.alt = gameName;
                     img.crossOrigin = 'anonymous';
                     img.onerror = () => {
                         imageDiv.innerHTML = '🖼️';
@@ -460,7 +498,7 @@
 
                 const titleEl = document.createElement('h3');
                 titleEl.className = 'card-title';
-                titleEl.textContent = objectname;
+                titleEl.textContent = gameName;
 
                 const detailsDiv = document.createElement('div');
                 detailsDiv.className = 'card-details';
@@ -527,10 +565,12 @@
                 refreshBtn.disabled = true;
                 cardsContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
                 showStatus('Fetching meta geeklist 66420...');
+                logEvent('=== STARTING META GEEKLIST LOAD ===', 'start');
 
                 try {
                     // Step 1: Fetch the root geeklist to get all geeklist IDs
-                    const xmlText = await fetchBGG('geeklist', { id: '66420' });
+                    logEvent('Step 1: Fetching master geeklist 66420', 'step');
+                    const xmlText = await fetchBGG('geeklist', { id: '66420' }, 5, 'Master 66420');
                     const doc = parseXML(xmlText);
 
                     if (doc.querySelector('error')) {
@@ -538,10 +578,13 @@
                     }
 
                     const items = Array.from(doc.querySelectorAll('item'));
+                    logEvent(`Found ${items.length} items in master geeklist`, 'info');
+
                     if (items.length === 0) {
                         cardsContainer.innerHTML = '<div class="empty-state">No geeklists found.</div>';
                         hideStatus();
                         refreshBtn.disabled = false;
+                        logEvent('No items found in master geeklist', 'warn');
                         return;
                     }
 
@@ -552,17 +595,22 @@
                         name: item.querySelector('objectname')?.textContent || `Geeklist ${item.getAttribute('objectid')}`
                     })).filter(g => g.id);
 
+                    logEvent(`Extracted ${allGeeklists.length} geeklist IDs: ${allGeeklists.map(g => g.id).join(', ')}`, 'info');
                     showStatus(`Found ${allGeeklists.length} geeklists. Fetching all items...`);
                     updateProgress(0, allGeeklists.length);
 
                     // Step 2: Fetch each geeklist and collect all items
+                    logEvent('Step 2: Fetching all sub-geeklists', 'step');
                     const allItems = [];
                     for (let i = 0; i < allGeeklists.length; i++) {
                         const geeklist = allGeeklists[i];
                         try {
-                            const geeklistXML = await fetchBGG('geeklist', { id: geeklist.id });
+                            logEvent(`Fetching geeklist ${geeklist.id} (${i + 1}/${allGeeklists.length}): ${geeklist.name}`, 'geeklist');
+                            const geeklistXML = await fetchBGG('geeklist', { id: geeklist.id }, 5, geeklist.name);
                             const geeklistDoc = parseXML(geeklistXML);
                             const geeklistItems = Array.from(geeklistDoc.querySelectorAll('item'));
+                            
+                            logEvent(`Got ${geeklistItems.length} items from geeklist ${geeklist.id}`, 'info');
                             
                             geeklistItems.forEach(item => {
                                 item.setAttribute('_geeklist-source', geeklist.name);
@@ -573,32 +621,55 @@
                             showStatus(`Fetching geeklists... [${i + 1}/${allGeeklists.length}] ${geeklist.name}`);
                             updateProgress(i + 1, allGeeklists.length);
                         } catch (err) {
-                            console.error(`Failed to fetch geeklist ${geeklist.id}:`, err);
+                            logEvent(`Failed to fetch geeklist ${geeklist.id}: ${err.message}`, 'error');
                             // Continue with next geeklist even if one fails
                         }
                     }
 
+                    logEvent(`Total items collected: ${allItems.length}`, 'info');
+
                     // Step 3: Sort by postdate descending (most recent first)
+                    logEvent('Step 3: Sorting items by most recent postdate', 'step');
                     allItems.sort((a, b) => {
                         const dateA = a.querySelector('postdate')?.textContent || '';
                         const dateB = b.querySelector('postdate')?.textContent || '';
                         return dateB.localeCompare(dateA); // Descending order: newest first
                     });
 
-                    // Step 4: Stream results - display items as cards in batches
+                    logEvent(`Sorted ${allItems.length} items by postdate (newest first)`, 'info');
+                    const newestDate = allItems[0]?.querySelector('postdate')?.textContent?.split('T')[0];
+                    const oldestDate = allItems[allItems.length - 1]?.querySelector('postdate')?.textContent?.split('T')[0];
+                    logEvent(`Date range: ${newestDate} to ${oldestDate}`, 'info');
+
+                    // Step 4: Stream results and fetch game thumbnails
+                    logEvent('Step 4: Streaming cards and fetching game data', 'step');
                     if (allItems.length === 0) {
                         cardsContainer.innerHTML = '<div class="empty-state">No items found in any geeklist.</div>';
                     } else {
                         cardsContainer.innerHTML = '';
-                        const cardsPerBatch = 5; // Render 5 cards at a time for smooth streaming
+                        const gameDataCache = {}; // Cache game data by objectid
+                        const cardsPerBatch = 3; // Render 3 cards at a time
                         let globalRank = 1;
 
                         for (let i = 0; i < allItems.length; i += cardsPerBatch) {
                             const batch = allItems.slice(i, i + cardsPerBatch);
+                            logEvent(`Processing batch ${Math.floor(i / cardsPerBatch) + 1}/${Math.ceil(allItems.length / cardsPerBatch)}`, 'batch');
 
                             for (const item of batch) {
-                                const card = createCard(item, globalRank++);
+                                const objectid = item.getAttribute('objectid');
+                                
+                                // Fetch game data if not cached
+                                if (objectid && !gameDataCache[objectid]) {
+                                    const gameData = await fetchGameThumbAndName(objectid);
+                                    gameDataCache[objectid] = gameData;
+                                    
+                                    // Small delay to avoid rate limiting
+                                    await new Promise(resolve => setTimeout(resolve, 200));
+                                }
+
+                                const card = createCard(item, globalRank++, gameDataCache);
                                 cardsContainer.appendChild(card);
+                                logEvent(`Rendered card #${globalRank - 1}: ${item.querySelector('objectname')?.textContent}`, 'card');
                             }
 
                             // Update progress
@@ -611,8 +682,10 @@
                         }
                     }
 
+                    logEvent(`=== COMPLETED: Loaded ${allItems.length} total items from ${allGeeklists.length} geeklists ===`, 'complete');
                     showStatus(`Loaded ${allItems.length} total items from ${allGeeklists.length} geeklists`, false);
                 } catch (err) {
+                    logEvent(`Fatal error: ${err.message}`, 'fatal');
                     console.error('Error:', err);
                     cardsContainer.innerHTML = '<div class="empty-state">❌ Error loading geeklists. Check console.</div>';
                     statusEl.style.background = 'rgba(255, 107, 107, 0.2)';
