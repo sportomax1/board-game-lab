@@ -44,12 +44,14 @@ export default function App() {
     setScrollY(-window.innerHeight); // Reset scroll to below screen
 
     try {
+      // BGG API URL for collection with stats and ownership filter
       const response = await fetch(
         `https://boardgamegeek.com/xmlapi2/collection?username=${userToFetch}&own=1&stats=1`
       );
       
       if (!response.ok) throw new Error('Failed to fetch data');
       
+      // Use text and DOMParser to handle XML response
       const text = await response.text();
       const parser = new DOMParser();
       const xml = parser.parseFromString(text, 'text/xml');
@@ -66,6 +68,7 @@ export default function App() {
         const image = item.querySelector('image')?.textContent || item.querySelector('thumbnail')?.textContent;
         const thumbnail = item.querySelector('thumbnail')?.textContent;
         const stats = item.querySelector('stats');
+        // Extract rating and weight data from the XML structure
         const rating = stats?.querySelector('rating')?.getAttribute('value') || 'N/A';
         const averageRating = stats?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || '0';
         const weight = stats?.querySelector('averageweight')?.getAttribute('value') || '0';
@@ -83,7 +86,7 @@ export default function App() {
       });
 
       setRawGames(parsedGames);
-      // Determine start position (push it down below the viewport)
+      // Start the credits text below the viewport
       setScrollY(window.innerHeight); 
 
     } catch (err) {
@@ -93,21 +96,22 @@ export default function App() {
     }
   };
 
+  // Load a sample user collection for demonstration
   const loadSample = () => {
     setUsername('rahdo');
     fetchCollection('rahdo');
   };
 
-  // --- Filtering & Sorting ---
+  // --- Filtering & Sorting (Memoized) ---
   const processedGames = useMemo(() => {
     let games = [...rawGames];
 
-    // Filter
+    // Filter expansions if setting is enabled
     if (excludeExpansions) {
       games = games.filter(g => !g.isExpansion);
     }
 
-    // Sort
+    // Sort games based on the selected criteria
     games.sort((a, b) => {
       switch (sortBy) {
         case 'name':
@@ -126,18 +130,24 @@ export default function App() {
     return games;
   }, [rawGames, excludeExpansions, sortBy]);
 
-  // --- Animation Loop ---
+  // --- Animation Loop (RequestAnimationFrame) ---
   useEffect(() => {
     const animate = () => {
       if (isPlaying) {
         setScrollY(prev => {
           const contentHeight = contentRef.current?.clientHeight || 0;
-          // If we've scrolled past the entire content, loop or stop? Let's loop for credits feel
-          // The content "ends" when the bottom of the content text hits the top of the screen (-contentHeight)
-          if (prev < -contentHeight) {
-            return window.innerHeight; // Reset to bottom
+          const containerHeight = containerRef.current?.clientHeight || 0;
+
+          // Calculate where the content must stop (when the top edge of the content 
+          // hits the top of the screen, plus a little margin for the header)
+          const stopPoint = -contentHeight - 200; 
+
+          if (prev < stopPoint) {
+            // Loop the content back to the bottom for an endless credit roll effect
+            return containerHeight; 
           }
-          return prev - scrollSpeed;
+          
+          return prev - scrollSpeed; // Move up by scrollSpeed pixels
         });
         animationRef.current = requestAnimationFrame(animate);
       }
@@ -154,17 +164,19 @@ export default function App() {
 
   // --- Handlers ---
   const handleRestart = () => {
-    setScrollY(window.innerHeight);
+    // Reset scroll position to the bottom of the screen
+    setScrollY(window.innerHeight); 
     setIsPlaying(true);
   };
 
-  // Toggle UI visibility when clicking the background (optional interaction)
+  // Toggle UI visibility when clicking the background
   const toggleUI = () => setShowUI(prev => !prev);
 
+  // Styling: Using Tailwind for cinematic/dark theme
   return (
     <div className="relative w-full h-screen bg-black overflow-hidden font-sans text-white select-none">
       
-      {/* Background Ambience / Grain (Optional Cinematic feel) */}
+      {/* Background Ambience / Grain Effect */}
       <div className="absolute inset-0 opacity-10 pointer-events-none z-0" 
            style={{ backgroundImage: 'url("data:image/svg+xml,%3Csvg viewBox=\'0 0 200 200\' xmlns=\'http://www.w3.org/2000/svg\'%3E%3Cfilter id=\'noiseFilter\'%3E%3CfeTurbulence type=\'fractalNoise\' baseFrequency=\'0.65\' numOctaves=\'3\' stitchTiles=\'stitch\'/%3E%3C/filter%3E%3Crect width=\'100%25\' height=\'100%25\' filter=\'url(%23noiseFilter)\'/%3E%3C/svg%3E")' }}>
       </div>
@@ -178,7 +190,7 @@ export default function App() {
         <div 
           ref={contentRef}
           style={{ transform: `translateY(${scrollY}px)` }}
-          className="flex flex-col items-center w-full max-w-2xl px-4 pb-96"
+          className="flex flex-col items-center w-full max-w-2xl px-4 pb-96 transition-transform duration-75 ease-linear will-change-transform" // Apply transform via style, but keep a tiny ease for smoothness
         >
           {/* Header of the Credits */}
           {processedGames.length > 0 && (
@@ -192,11 +204,11 @@ export default function App() {
             </div>
           )}
 
-          {/* Game List */}
+          {/* Game List Items */}
           {processedGames.map((game, index) => (
             <div key={game.id} className="mb-32 flex flex-col items-center text-center opacity-90 hover:opacity-100 transition-opacity duration-500">
               
-              {/* Role / Category (Cinematic Touch) */}
+              {/* Role / Category */}
               <div className="text-gray-500 text-sm tracking-[0.2em] uppercase mb-4">
                 #{index + 1} &bull; {game.year > 0 ? game.year : 'Unknown Year'}
               </div>
@@ -216,6 +228,7 @@ export default function App() {
                       src={game.image} 
                       alt={game.name}
                       className="relative w-48 h-auto rounded-sm shadow-2xl border border-gray-800"
+                      // Error handler for broken BGG images
                       onError={(e) => {
                         e.target.onerror = null; 
                         e.target.src = "https://placehold.co/200x200/222/999?text=No+Cover";
@@ -228,7 +241,7 @@ export default function App() {
                   </div>
                 )}
 
-                {/* Stats Block (Right of image) */}
+                {/* Stats Block */}
                 <div className="flex flex-col items-center md:items-start space-y-3">
                   
                   {/* Rating */}
@@ -275,9 +288,10 @@ export default function App() {
       </div>
 
       {/* --- Control UI Overlay --- */}
+      {/* Use Tailwind's transition and translate-y class to slide the UI in and out */}
       <div className={`absolute top-0 left-0 w-full p-6 z-50 transition-transform duration-500 ease-in-out ${showUI ? 'translate-y-0' : '-translate-y-full'}`}>
         <div className="max-w-5xl mx-auto">
-          {/* Main Card */}
+          {/* Main Card for Controls */}
           <div className="bg-gray-900/95 backdrop-blur-md border border-gray-800 text-gray-200 rounded-xl shadow-2xl p-4 md:p-6 grid grid-cols-1 lg:grid-cols-12 gap-6 items-center">
             
             {/* Left: Search/Load */}
@@ -372,7 +386,7 @@ export default function App() {
             </div>
 
             {/* Right: Stats Summary */}
-            <div className="lg:col-span-3 border-t lg:border-t-0 lg:border-l border-gray-700 pt-4 lg:pt-0 lg:pl-6 text-center lg:text-right flex flex-row lg:flex-col justify-between lg:justify-center items-center lg:items-end">
+            <div className="lg:col-span-3 border-t lg:border-t-0 lg:border-l border-gray-700 pt-4 lg:pt-0 lg:pl-6 text-center lg:text-right flex flex-row lg:flex-col justify-between items-center lg:items-end">
               <div>
                 <span className="block text-3xl font-bold text-white">{processedGames.length}</span>
                 <span className="text-xs text-gray-500 uppercase tracking-widest">Titles Loaded</span>
@@ -409,4 +423,3 @@ export default function App() {
     </div>
   );
 }
-
