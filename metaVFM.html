@@ -45,7 +45,12 @@
             text-shadow: 0 2px 4px rgba(0,0,0,0.2);
         }
 
-        .refresh-btn {
+        .header-buttons {
+            display: flex;
+            gap: 0.5rem;
+        }
+
+        .refresh-btn, .back-btn {
             background: rgba(255,255,255,0.2);
             border: 1px solid rgba(255,255,255,0.3);
             color: white;
@@ -58,14 +63,22 @@
             backdrop-filter: blur(10px);
         }
 
-        .refresh-btn:active {
+        .refresh-btn:active, .back-btn:active {
             background: rgba(255,255,255,0.3);
             transform: scale(0.98);
         }
 
-        .refresh-btn:disabled {
+        .refresh-btn:disabled, .back-btn:disabled {
             opacity: 0.5;
             cursor: not-allowed;
+        }
+
+        .back-btn {
+            display: none;
+        }
+
+        .back-btn.visible {
+            display: block;
         }
 
         .content {
@@ -251,8 +264,11 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>Meta VFM</h1>
-            <button class="refresh-btn" id="refresh-btn">🔄</button>
+            <h1 id="page-title">Meta VFM</h1>
+            <div class="header-buttons">
+                <button class="back-btn" id="back-btn">← Back</button>
+                <button class="refresh-btn" id="refresh-btn">🔄</button>
+            </div>
         </div>
 
         <div id="status" style="display: none;"></div>
@@ -267,6 +283,12 @@
             const statusEl = document.getElementById('status');
             const cardsContainer = document.getElementById('cards-container');
             const refreshBtn = document.getElementById('refresh-btn');
+            const backBtn = document.getElementById('back-btn');
+            const pageTitle = document.getElementById('page-title');
+
+            // Navigation state
+            let currentGeeklist = '66420'; // Root geeklist
+            let navigationStack = [{ id: '66420', name: 'Meta VFM' }];
 
             function showStatus(message, isError = false) {
                 statusEl.textContent = message;
@@ -280,6 +302,15 @@
 
             function hideStatus() {
                 statusEl.style.display = 'none';
+            }
+
+            function updateBackButton() {
+                if (navigationStack.length > 1) {
+                    backBtn.classList.add('visible');
+                } else {
+                    backBtn.classList.remove('visible');
+                }
+                pageTitle.textContent = navigationStack[navigationStack.length - 1].name;
             }
 
             async function fetchBGG(endpoint, params = {}, retries = 5) {
@@ -309,7 +340,7 @@
                 return new DOMParser().parseFromString(xmlText, 'text/xml');
             }
 
-            function createCard(item, rank) {
+            function createCard(item, rank, onCardClick) {
                 const id = item.getAttribute('id');
                 const objectype = item.getAttribute('objecttype');
                 const subtype = item.getAttribute('subtype');
@@ -410,16 +441,22 @@
                 card.appendChild(imageDiv);
                 card.appendChild(content);
 
+                // Add click handler to navigate to nested geeklist if objectid is another geeklist
+                card.addEventListener('click', (e) => {
+                    if (e.target.closest('.card-link')) return; // Don't navigate on BGG link click
+                    onCardClick(objectid, objectname);
+                });
+
                 return card;
             }
 
-            async function loadGeeklist() {
+            async function loadGeeklist(geeklistId) {
                 refreshBtn.disabled = true;
                 cardsContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
                 showStatus('Loading geeklist...');
 
                 try {
-                    const xmlText = await fetchBGG('geeklist', { id: '66420' });
+                    const xmlText = await fetchBGG('geeklist', { id: geeklistId });
                     const doc = parseXML(xmlText);
 
                     if (doc.querySelector('error')) {
@@ -428,15 +465,21 @@
 
                     const items = Array.from(doc.querySelectorAll('item'));
                     if (items.length === 0) {
-                        cardsContainer.innerHTML = '<div class="empty-state">No games found in geeklist.</div>';
+                        cardsContainer.innerHTML = '<div class="empty-state">No items found in geeklist.</div>';
                         hideStatus();
                     } else {
                         cardsContainer.innerHTML = '';
                         items.forEach((item, idx) => {
-                            const card = createCard(item, idx + 1);
+                            const card = createCard(item, idx + 1, (objectid, objectname) => {
+                                // Navigate to nested geeklist
+                                currentGeeklist = objectid;
+                                navigationStack.push({ id: objectid, name: objectname });
+                                updateBackButton();
+                                loadGeeklist(objectid);
+                            });
                             cardsContainer.appendChild(card);
                         });
-                        showStatus(`Loaded ${items.length} games from Meta VFM geeklist`);
+                        showStatus(`Loaded ${items.length} items from geeklist ${geeklistId}`);
                     }
                 } catch (err) {
                     console.error('Error:', err);
@@ -447,10 +490,22 @@
                 }
             }
 
-            refreshBtn.addEventListener('click', loadGeeklist);
+            refreshBtn.addEventListener('click', () => {
+                loadGeeklist(currentGeeklist);
+            });
+
+            backBtn.addEventListener('click', () => {
+                if (navigationStack.length > 1) {
+                    navigationStack.pop();
+                    currentGeeklist = navigationStack[navigationStack.length - 1].id;
+                    updateBackButton();
+                    loadGeeklist(currentGeeklist);
+                }
+            });
 
             // Load on page load
-            loadGeeklist();
+            updateBackButton();
+            loadGeeklist(currentGeeklist);
         });
     </script>
 </body>
