@@ -759,28 +759,28 @@ def generate_html_index(output_file='index.html'):
             setFileTypeFilter(currentFilter); // *** CHANGE 2: Call to set initial filter/active button
             
             // Update time since generation
-            function updateTimeSince() {
+            function updateTimeSince() {{
                 const generationTime = new Date('{generation_time_utc.isoformat()}');
                 const now = new Date();
                 const diffMs = now - generationTime;
                 const diffSeconds = Math.floor(diffMs / 1000);
                 
                 let timeSinceText = '';
-                if (diffSeconds < 60) {
+                if (diffSeconds < 60) {{
                     timeSinceText = '(Just now)';
-                } else if (diffSeconds < 3600) {
+                }} else if (diffSeconds < 3600) {{
                     const minutes = Math.floor(diffSeconds / 60);
                     timeSinceText = `(${{minutes}} minute${{minutes > 1 ? 's' : ''}} ago)`;
-                } else if (diffSeconds < 86400) {
+                }} else if (diffSeconds < 86400) {{
                     const hours = Math.floor(diffSeconds / 3600);
                     timeSinceText = `(${{hours}} hour${{hours > 1 ? 's' : ''}} ago)`;
-                } else {
+                }} else {{
                     const days = Math.floor(diffSeconds / 86400);
                     timeSinceText = `(${{days}} day${{days > 1 ? 's' : ''}} ago)`;
-                }
+                }}
                 
                 document.getElementById('timeSince').textContent = timeSinceText;
-            }
+            }}
             
             updateTimeSince();
             // Update every minute
