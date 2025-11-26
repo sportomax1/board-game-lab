@@ -166,6 +166,60 @@ def generate_html_index(output_file='index.html'):
         }}
         /* --- End About Section --- */
         
+        /* --- Random Button & Custom Launcher --- */
+        .action-buttons {{
+            display: flex;
+            gap: 10px;
+            margin-bottom: 20px;
+            flex-wrap: wrap;
+        }}
+        .random-btn {{
+            padding: 10px 20px;
+            background: #f59e0b;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .random-btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+            background: #d97706;
+        }}
+        .custom-launcher {{
+            display: flex;
+            gap: 5px;
+            flex: 1;
+            min-width: 250px;
+        }}
+        .custom-input {{
+            flex: 1;
+            padding: 10px;
+            border: 1px solid #ccc;
+            border-radius: 6px;
+            font-size: 14px;
+        }}
+        .launch-btn {{
+            padding: 10px 20px;
+            background: #10b981;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            font-weight: 600;
+            cursor: pointer;
+            font-size: 14px;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }}
+        .launch-btn:hover {{
+            transform: translateY(-2px);
+            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+            background: #059669;
+        }}
+        /* --- End Random Button & Custom Launcher --- */
+        
         /* --- Search Bar Styles --- */
         .search-input {{
             width: 100%;
@@ -324,6 +378,12 @@ def generate_html_index(output_file='index.html'):
                 margin-right: 0;
                 margin-left: 8px; /* Re-add small margin for flow */
             }}
+            .action-buttons {{
+                flex-direction: column;
+            }}
+            .custom-launcher {{
+                min-width: 100%;
+            }}
         }}
 
         /* Badge color map */
@@ -396,6 +456,15 @@ def generate_html_index(output_file='index.html'):
         </div>
         
         <p>Click a file entry to open it. Filter by file type below.</p>
+        
+        <!-- Random Button and Custom Launcher -->
+        <div class="action-buttons">
+            <button id="randomBtn" class="random-btn">🎲 Random File</button>
+            <div class="custom-launcher">
+                <input type="text" id="customFileInput" class="custom-input" placeholder="Enter filename (e.g., myfile.html)">
+                <button id="launchBtn" class="launch-btn">🚀 Launch</button>
+            </div>
+        </div>
         
         <div class="filter-controls">
             <button class="filter-btn" data-filter="all">All Files</button>
@@ -514,9 +583,9 @@ def generate_html_index(output_file='index.html'):
 """
 
     # End of the app list
-    html_content += "        </div> \n"
+    html_content += "        </div> \n"
     
-    # --- JavaScript for Sorting, Filtering, and File Type Filter ---
+    # --- JavaScript for Sorting, Filtering, Random, and Custom Launcher ---
     html_content += """
     <script>
         document.addEventListener('DOMContentLoaded', () => {
@@ -525,6 +594,9 @@ def generate_html_index(output_file='index.html'):
             const appListContainer = document.getElementById('app-list');
             const searchInput = document.getElementById('searchInput');
             const filterButtons = document.querySelectorAll('.filter-btn');
+            const randomBtn = document.getElementById('randomBtn');
+            const launchBtn = document.getElementById('launchBtn');
+            const customFileInput = document.getElementById('customFileInput');
             
             // *** CHANGE 1: Set default filter to HTML ***
             let currentFilter = '.html'; // Default to HTML
@@ -591,6 +663,42 @@ def generate_html_index(output_file='index.html'):
                 
                 applyFilters();
             }
+            
+            function getVisibleFiles() {
+                const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
+                return items.filter(item => item.style.display !== 'none');
+            }
+            
+            function openRandomFile() {
+                const visibleFiles = getVisibleFiles();
+                if (visibleFiles.length === 0) {
+                    alert('No files match the current filter!');
+                    return;
+                }
+                
+                const randomIndex = Math.floor(Math.random() * visibleFiles.length);
+                const randomFile = visibleFiles[randomIndex];
+                const fileLink = randomFile.querySelector('.file-link');
+                
+                if (fileLink && fileLink.href) {
+                    window.location.href = fileLink.href;
+                }
+            }
+            
+            function launchCustomFile() {
+                const filename = customFileInput.value.trim();
+                if (!filename) {
+                    alert('Please enter a filename!');
+                    return;
+                }
+                
+                // Construct the URL
+                const baseUrl = 'https://vercel-one-phi-42.vercel.app/';
+                const url = baseUrl + filename;
+                
+                // Open in current window
+                window.location.href = url;
+            }
 
             // Add event listeners
             btnSortUpdate.addEventListener('click', () => sortItems('update'));
@@ -601,6 +709,17 @@ def generate_html_index(output_file='index.html'):
                 btn.addEventListener('click', () => {
                     setFileTypeFilter(btn.dataset.filter);
                 });
+            });
+            
+            // Random button event listener
+            randomBtn.addEventListener('click', openRandomFile);
+            
+            // Custom launcher event listeners
+            launchBtn.addEventListener('click', launchCustomFile);
+            customFileInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') {
+                    launchCustomFile();
+                }
             });
 
             // Initial setup: Sort and then apply the default filter
