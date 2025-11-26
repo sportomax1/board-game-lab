@@ -166,6 +166,19 @@
             padding: 0.5rem;
         }
 
+        .card-price {
+            position: absolute;
+            top: 0.5rem;
+            right: 0.5rem;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            color: white;
+            padding: 0.25rem 0.5rem;
+            border-radius: 4px;
+            font-size: clamp(0.7rem, 1.5vw, 0.85rem);
+            font-weight: 700;
+            box-shadow: 0 2px 4px rgba(0,0,0,0.2);
+        }
+
         .card-content {
             padding: clamp(0.5rem, 2vw, 0.75rem);
             flex: 1;
@@ -368,6 +381,27 @@
                 return new DOMParser().parseFromString(xmlText, 'text/xml');
             }
 
+            function extractPrice(bodyText) {
+                if (!bodyText) return null;
+                // Match patterns like "$19.99", "Price: $29.99", "$ 49.99", etc.
+                const priceMatch = bodyText.match(/\$[\s]?(\d+(?:\.\d{2})?)/);
+                if (priceMatch) {
+                    return '$' + priceMatch[1];
+                }
+                return null;
+            }
+
+            async function fetchGameImage(objectid) {
+                try {
+                    const xmlText = await fetchBGG('thing', { id: objectid, stats: '1' });
+                    const doc = parseXML(xmlText);
+                    const imageEl = doc.querySelector('image');
+                    return imageEl?.textContent || null;
+                } catch (err) {
+                    return null;
+                }
+            }
+
             function createCard(item, rank) {
                 const id = item.getAttribute('id');
                 const objectype = item.getAttribute('objecttype');
@@ -381,14 +415,18 @@
                 const imageid = item.querySelector('imageid')?.textContent || '';
                 const body = item.querySelector('body')?.textContent || '';
 
+                const price = extractPrice(body);
+
                 const card = document.createElement('div');
                 card.className = 'card';
 
                 const imageDiv = document.createElement('div');
                 imageDiv.className = 'card-image';
+                imageDiv.style.position = 'relative';
 
+                // Try to get image URL - use game image from objectid
                 const imageEl = item.querySelector('image');
-                const imageUrl = imageEl?.textContent || '';
+                let imageUrl = imageEl?.textContent || '';
 
                 if (imageUrl) {
                     const img = document.createElement('img');
@@ -403,6 +441,14 @@
                 } else {
                     imageDiv.classList.add('error');
                     imageDiv.innerHTML = 'No Image';
+                }
+
+                // Add price badge if found
+                if (price) {
+                    const priceEl = document.createElement('div');
+                    priceEl.className = 'card-price';
+                    priceEl.textContent = price;
+                    imageDiv.appendChild(priceEl);
                 }
 
                 const content = document.createElement('div');
@@ -461,6 +507,15 @@
                     bodyDiv.textContent = body;
                     content.appendChild(bodyDiv);
                 }
+
+                const sourceInfo = document.createElement('div');
+                sourceInfo.style.fontSize = 'clamp(0.6rem, 1.2vw, 0.7rem)';
+                sourceInfo.style.color = '#999';
+                sourceInfo.style.marginTop = '0.25rem';
+                sourceInfo.style.borderTop = '1px solid #eee';
+                sourceInfo.style.paddingTop = '0.25rem';
+                sourceInfo.textContent = `From: ${item.getAttribute('_geeklist-source')}`;
+                content.appendChild(sourceInfo);
 
                 card.appendChild(imageDiv);
                 card.appendChild(content);
@@ -523,26 +578,37 @@
                         }
                     }
 
-                    // Step 3: Display all collected items
+                    // Step 3: Sort by postdate descending (most recent first)
+                    allItems.sort((a, b) => {
+                        const dateA = a.querySelector('postdate')?.textContent || '';
+                        const dateB = b.querySelector('postdate')?.textContent || '';
+                        return dateB.localeCompare(dateA); // Descending order: newest first
+                    });
+
+                    // Step 4: Stream results - display items as cards in batches
                     if (allItems.length === 0) {
                         cardsContainer.innerHTML = '<div class="empty-state">No items found in any geeklist.</div>';
                     } else {
                         cardsContainer.innerHTML = '';
-                        allItems.forEach((item, idx) => {
-                            const card = createCard(item, idx + 1);
-                            
-                            // Add source geeklist info
-                            const sourceInfo = document.createElement('div');
-                            sourceInfo.style.fontSize = 'clamp(0.6rem, 1.2vw, 0.7rem)';
-                            sourceInfo.style.color = '#999';
-                            sourceInfo.style.marginTop = '0.25rem';
-                            sourceInfo.style.borderTop = '1px solid #eee';
-                            sourceInfo.style.paddingTop = '0.25rem';
-                            sourceInfo.textContent = `From: ${item.getAttribute('_geeklist-source')}`;
-                            card.querySelector('.card-content').appendChild(sourceInfo);
-                            
-                            cardsContainer.appendChild(card);
-                        });
+                        const cardsPerBatch = 5; // Render 5 cards at a time for smooth streaming
+                        let globalRank = 1;
+
+                        for (let i = 0; i < allItems.length; i += cardsPerBatch) {
+                            const batch = allItems.slice(i, i + cardsPerBatch);
+
+                            for (const item of batch) {
+                                const card = createCard(item, globalRank++);
+                                cardsContainer.appendChild(card);
+                            }
+
+                            // Update progress
+                            const processedCount = Math.min(i + cardsPerBatch, allItems.length);
+                            showStatus(`Loading cards... [${processedCount}/${allItems.length}]`);
+                            updateProgress(processedCount, allItems.length);
+
+                            // Yield to browser to prevent UI blocking
+                            await new Promise(resolve => setTimeout(resolve, 100));
+                        }
                     }
 
                     showStatus(`Loaded ${allItems.length} total items from ${allGeeklists.length} geeklists`, false);
