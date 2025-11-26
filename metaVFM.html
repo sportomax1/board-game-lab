@@ -100,6 +100,22 @@
             backdrop-filter: blur(10px);
         }
 
+        .progress-bar {
+            width: 100%;
+            height: 4px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+            overflow: hidden;
+            margin-top: 0.5rem;
+        }
+
+        .progress-fill {
+            height: 100%;
+            background: linear-gradient(90deg, #4ade80, #60a5fa);
+            width: 0%;
+            transition: width 0.2s ease;
+        }
+
         .cards-grid {
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(clamp(150px, 40vw, 300px), 1fr));
@@ -271,7 +287,12 @@
             </div>
         </div>
 
-        <div id="status" style="display: none;"></div>
+        <div id="status" style="display: none;">
+            <div style="margin-bottom: 0.5rem;" id="status-text"></div>
+            <div class="progress-bar">
+                <div class="progress-fill" id="progress-fill"></div>
+            </div>
+        </div>
 
         <div class="content">
             <div id="cards-container" class="cards-grid"></div>
@@ -281,27 +302,35 @@
     <script>
         document.addEventListener('DOMContentLoaded', () => {
             const statusEl = document.getElementById('status');
+            const statusText = document.getElementById('status-text');
+            const progressFill = document.getElementById('progress-fill');
             const cardsContainer = document.getElementById('cards-container');
             const refreshBtn = document.getElementById('refresh-btn');
             const backBtn = document.getElementById('back-btn');
             const pageTitle = document.getElementById('page-title');
 
             // Navigation state
-            let currentGeeklist = '66420'; // Root geeklist
+            let allGeeklists = []; // Fetched from first call
+            let currentDisplaying = null; // Currently viewing a specific geeklist
             let navigationStack = [{ id: '66420', name: 'Meta VFM' }];
 
-            function showStatus(message, isError = false) {
-                statusEl.textContent = message;
+            function showStatus(message, showProgress = true) {
                 statusEl.style.display = 'block';
-                if (isError) {
-                    statusEl.style.background = 'rgba(255, 107, 107, 0.2)';
-                } else {
-                    statusEl.style.background = 'rgba(255,255,255,0.1)';
+                statusEl.style.background = 'rgba(255,255,255,0.1)';
+                statusText.textContent = message;
+                if (!showProgress) {
+                    progressFill.style.width = '0%';
                 }
+            }
+
+            function updateProgress(current, total) {
+                const percent = (current / total) * 100;
+                progressFill.style.width = percent + '%';
             }
 
             function hideStatus() {
                 statusEl.style.display = 'none';
+                progressFill.style.width = '0%';
             }
 
             function updateBackButton() {
@@ -321,7 +350,6 @@
                     const response = await fetch(fullUrl);
                     
                     if (response.status === 202 && retries > 0) {
-                        showStatus(`BGG processing... Retry (${retries} left) ⏳`);
                         await new Promise(r => setTimeout(r, 3000));
                         retries--;
                         continue;
@@ -340,7 +368,7 @@
                 return new DOMParser().parseFromString(xmlText, 'text/xml');
             }
 
-            function createCard(item, rank, onCardClick) {
+            function createCard(item, rank) {
                 const id = item.getAttribute('id');
                 const objectype = item.getAttribute('objecttype');
                 const subtype = item.getAttribute('subtype');
@@ -359,7 +387,6 @@
                 const imageDiv = document.createElement('div');
                 imageDiv.className = 'card-image';
 
-                // Try to get image URL - geeklist items may have images
                 const imageEl = item.querySelector('image');
                 const imageUrl = imageEl?.textContent || '';
 
@@ -392,7 +419,6 @@
                 const detailsDiv = document.createElement('div');
                 detailsDiv.className = 'card-details';
 
-                // Helper to create detail row
                 const createDetailRow = (label, value) => {
                     if (!value) return;
                     const row = document.createElement('div');
@@ -408,14 +434,13 @@
                     return row;
                 };
 
-                // Add all detail rows
                 if (id) detailsDiv.appendChild(createDetailRow('ID', id));
                 if (objectype) detailsDiv.appendChild(createDetailRow('Type', objectype));
                 if (subtype) detailsDiv.appendChild(createDetailRow('Subtype', subtype));
                 if (objectid) detailsDiv.appendChild(createDetailRow('ObjID', objectid));
                 if (username) detailsDiv.appendChild(createDetailRow('User', username));
-                if (postdate) detailsDiv.appendChild(createDetailRow('Posted', postdate.split('T')[0])); // Date only
-                if (editdate) detailsDiv.appendChild(createDetailRow('Edited', editdate.split('T')[0])); // Date only
+                if (postdate) detailsDiv.appendChild(createDetailRow('Posted', postdate.split('T')[0]));
+                if (editdate) detailsDiv.appendChild(createDetailRow('Edited', editdate.split('T')[0]));
                 if (thumbs) detailsDiv.appendChild(createDetailRow('👍', thumbs));
                 if (imageid) detailsDiv.appendChild(createDetailRow('ImgID', imageid));
 
@@ -430,7 +455,6 @@
                 content.appendChild(detailsDiv);
                 content.appendChild(linkEl);
 
-                // Add body/description if present
                 if (body) {
                     const bodyDiv = document.createElement('div');
                     bodyDiv.className = 'card-body';
@@ -441,22 +465,17 @@
                 card.appendChild(imageDiv);
                 card.appendChild(content);
 
-                // Add click handler to navigate to nested geeklist if objectid is another geeklist
-                card.addEventListener('click', (e) => {
-                    if (e.target.closest('.card-link')) return; // Don't navigate on BGG link click
-                    onCardClick(objectid, objectname);
-                });
-
                 return card;
             }
 
-            async function loadGeeklist(geeklistId) {
+            async function loadMetaGeeklist() {
                 refreshBtn.disabled = true;
                 cardsContainer.innerHTML = '<div class="loading"><div class="spinner"></div></div>';
-                showStatus('Loading geeklist...');
+                showStatus('Fetching meta geeklist 66420...');
 
                 try {
-                    const xmlText = await fetchBGG('geeklist', { id: geeklistId });
+                    // Step 1: Fetch the root geeklist to get all geeklist IDs
+                    const xmlText = await fetchBGG('geeklist', { id: '66420' });
                     const doc = parseXML(xmlText);
 
                     if (doc.querySelector('error')) {
@@ -465,47 +484,91 @@
 
                     const items = Array.from(doc.querySelectorAll('item'));
                     if (items.length === 0) {
-                        cardsContainer.innerHTML = '<div class="empty-state">No items found in geeklist.</div>';
+                        cardsContainer.innerHTML = '<div class="empty-state">No geeklists found.</div>';
                         hideStatus();
+                        refreshBtn.disabled = false;
+                        return;
+                    }
+
+                    // Extract all geeklist IDs from objectid attributes
+                    allGeeklists = items.map((item, idx) => ({
+                        rank: idx + 1,
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('objectname')?.textContent || `Geeklist ${item.getAttribute('objectid')}`
+                    })).filter(g => g.id);
+
+                    showStatus(`Found ${allGeeklists.length} geeklists. Fetching all items...`);
+                    updateProgress(0, allGeeklists.length);
+
+                    // Step 2: Fetch each geeklist and collect all items
+                    const allItems = [];
+                    for (let i = 0; i < allGeeklists.length; i++) {
+                        const geeklist = allGeeklists[i];
+                        try {
+                            const geeklistXML = await fetchBGG('geeklist', { id: geeklist.id });
+                            const geeklistDoc = parseXML(geeklistXML);
+                            const geeklistItems = Array.from(geeklistDoc.querySelectorAll('item'));
+                            
+                            geeklistItems.forEach(item => {
+                                item.setAttribute('_geeklist-source', geeklist.name);
+                                item.setAttribute('_geeklist-id', geeklist.id);
+                                allItems.push(item);
+                            });
+
+                            showStatus(`Fetching geeklists... [${i + 1}/${allGeeklists.length}] ${geeklist.name}`);
+                            updateProgress(i + 1, allGeeklists.length);
+                        } catch (err) {
+                            console.error(`Failed to fetch geeklist ${geeklist.id}:`, err);
+                            // Continue with next geeklist even if one fails
+                        }
+                    }
+
+                    // Step 3: Display all collected items
+                    if (allItems.length === 0) {
+                        cardsContainer.innerHTML = '<div class="empty-state">No items found in any geeklist.</div>';
                     } else {
                         cardsContainer.innerHTML = '';
-                        items.forEach((item, idx) => {
-                            const card = createCard(item, idx + 1, (objectid, objectname) => {
-                                // Navigate to nested geeklist
-                                currentGeeklist = objectid;
-                                navigationStack.push({ id: objectid, name: objectname });
-                                updateBackButton();
-                                loadGeeklist(objectid);
-                            });
+                        allItems.forEach((item, idx) => {
+                            const card = createCard(item, idx + 1);
+                            
+                            // Add source geeklist info
+                            const sourceInfo = document.createElement('div');
+                            sourceInfo.style.fontSize = 'clamp(0.6rem, 1.2vw, 0.7rem)';
+                            sourceInfo.style.color = '#999';
+                            sourceInfo.style.marginTop = '0.25rem';
+                            sourceInfo.style.borderTop = '1px solid #eee';
+                            sourceInfo.style.paddingTop = '0.25rem';
+                            sourceInfo.textContent = `From: ${item.getAttribute('_geeklist-source')}`;
+                            card.querySelector('.card-content').appendChild(sourceInfo);
+                            
                             cardsContainer.appendChild(card);
                         });
-                        showStatus(`Loaded ${items.length} items from geeklist ${geeklistId}`);
                     }
+
+                    showStatus(`Loaded ${allItems.length} total items from ${allGeeklists.length} geeklists`, false);
                 } catch (err) {
                     console.error('Error:', err);
-                    cardsContainer.innerHTML = '<div class="empty-state">❌ Error loading geeklist. Check console.</div>';
-                    showStatus(`Error: ${err.message}`, true);
+                    cardsContainer.innerHTML = '<div class="empty-state">❌ Error loading geeklists. Check console.</div>';
+                    statusEl.style.background = 'rgba(255, 107, 107, 0.2)';
+                    statusText.textContent = `Error: ${err.message}`;
                 } finally {
                     refreshBtn.disabled = false;
                 }
             }
 
-            refreshBtn.addEventListener('click', () => {
-                loadGeeklist(currentGeeklist);
-            });
+            refreshBtn.addEventListener('click', loadMetaGeeklist);
 
             backBtn.addEventListener('click', () => {
                 if (navigationStack.length > 1) {
                     navigationStack.pop();
-                    currentGeeklist = navigationStack[navigationStack.length - 1].id;
                     updateBackButton();
-                    loadGeeklist(currentGeeklist);
+                    loadMetaGeeklist();
                 }
             });
 
             // Load on page load
             updateBackButton();
-            loadGeeklist(currentGeeklist);
+            loadMetaGeeklist();
         });
     </script>
 </body>
