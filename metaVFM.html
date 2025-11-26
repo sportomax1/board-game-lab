@@ -468,17 +468,30 @@
                     logEvent(`Fetching game details for objectid: ${objectid}`, 'game-fetch');
                     const xmlText = await fetchBGG('thing', { id: objectid, stats: '1' }, 5, `Game #${objectid}`);
                     const doc = parseXML(xmlText);
+                    
+                    // Check for errors in response
+                    if (doc.querySelector('error')) {
+                        logEvent(`API error for game ${objectid}: ${doc.querySelector('error')?.textContent}`, 'warn');
+                        return { name: null, thumbnail: null };
+                    }
+                    
                     const item = doc.querySelector('item');
                     
                     if (!item) {
-                        logEvent(`No game found for objectid: ${objectid}`, 'warn');
+                        logEvent(`No game item found for objectid: ${objectid}`, 'warn');
                         return { name: null, thumbnail: null };
                     }
 
-                    const name = item.querySelector('name')?.textContent || null;
+                    const name = item.querySelector('name[type="primary"]')?.textContent || 
+                                item.querySelector('name')?.textContent || null;
                     const thumbnail = item.querySelector('thumbnail')?.textContent || null;
                     
-                    logEvent(`✓ Got game: "${name}" with thumbnail`, 'game-success');
+                    if (thumbnail) {
+                        logEvent(`✓ Got game: "${name}" with thumbnail`, 'game-success');
+                    } else {
+                        logEvent(`Got game "${name}" but no thumbnail available`, 'game-warn');
+                    }
+                    
                     return { name, thumbnail };
                 } catch (err) {
                     logEvent(`✗ Failed to fetch game details for ${objectid}: ${err.message}`, 'error');
@@ -515,8 +528,9 @@
 
                 if (imageUrl) {
                     const img = document.createElement('img');
-                    // Use proxy to avoid CORS issues
-                    img.src = imageUrl;
+                    // Route through image proxy to avoid CORS issues
+                    const proxiedUrl = `/api/image-proxy?url=${encodeURIComponent(imageUrl)}`;
+                    img.src = proxiedUrl;
                     img.alt = gameName;
                     img.crossOrigin = 'anonymous';
                     img.onerror = () => {
@@ -662,6 +676,8 @@
                     logEvent('Step 3: Streaming individual geeklists with game data', 'step');
                     const gameDataCache = {};
                     let globalRank = 1;
+                    let successCount = 0;
+                    let errorCount = 0;
 
                     for (let i = 0; i < geeklistIds.length; i++) {
                         const geeklist = geeklistIds[i];
@@ -672,8 +688,27 @@
                             updateProgress(i, geeklistIds.length);
 
                             // Fetch this single geeklist
-                            const geeklistXML = await fetchBGG('geeklist', { id: geeklist.id }, 5, geeklist.name);
+                            let geeklistXML;
+                            try {
+                                geeklistXML = await fetchBGG('geeklist', { id: geeklist.id }, 5, geeklist.name);
+                            } catch (fetchErr) {
+                                logEvent(`Network error fetching geeklist ${geeklist.id}: ${fetchErr.message}`, 'error');
+                                errorCount++;
+                                showStatus(`Error fetching ${geeklist.name}. Retrying...`);
+                                // Try once more
+                                await new Promise(r => setTimeout(r, 2000));
+                                geeklistXML = await fetchBGG('geeklist', { id: geeklist.id }, 3, `${geeklist.name} (retry)`);
+                            }
+                            
                             const geeklistDoc = parseXML(geeklistXML);
+                            
+                            // Check for XML parse errors
+                            if (geeklistDoc.documentElement.tagName === 'parsererror') {
+                                logEvent(`XML parse error in geeklist ${geeklist.id}`, 'error');
+                                errorCount++;
+                                continue;
+                            }
+                            
                             const geeklistItems = Array.from(geeklistDoc.querySelectorAll('item'));
 
                             logEvent(`Got ${geeklistItems.length} items from geeklist ${geeklist.id}`, 'info');
@@ -692,11 +727,16 @@
                                 // Fetch game data if not cached (with retry logic)
                                 if (objectid && !gameDataCache[objectid]) {
                                     logEvent(`Fetching game data for objectid ${objectid}`, 'game-fetch');
-                                    const gameData = await fetchGameThumbAndName(objectid);
-                                    gameDataCache[objectid] = gameData;
-                                    
-                                    // Small delay to avoid rate limiting
-                                    await new Promise(resolve => setTimeout(resolve, 150));
+                                    try {
+                                        const gameData = await fetchGameThumbAndName(objectid);
+                                        gameDataCache[objectid] = gameData;
+                                        
+                                        // Small delay to avoid rate limiting
+                                        await new Promise(resolve => setTimeout(resolve, 150));
+                                    } catch (gameErr) {
+                                        logEvent(`Game fetch failed for ${objectid}: ${gameErr.message}`, 'warn');
+                                        gameDataCache[objectid] = { name: null, thumbnail: null };
+                                    }
                                 } else if (objectid) {
                                     logEvent(`Using cached game data for objectid ${objectid}`, 'cache');
                                 }
@@ -710,23 +750,25 @@
                                 await new Promise(resolve => setTimeout(resolve, 50));
                             }
 
+                            successCount++;
                             updateProgress(i + 1, geeklistIds.length);
 
                         } catch (err) {
                             logEvent(`✗ Failed to fetch geeklist ${geeklist.id}: ${err.message}`, 'error');
-                            showStatus(`Error fetching ${geeklist.name}: ${err.message}`);
+                            errorCount++;
+                            showStatus(`Error: ${geeklist.name} - ${err.message}. Continuing...`);
                             // Continue with next geeklist even if one fails
                         }
                     }
 
-                    logEvent(`=== COMPLETED: Streamed all items ===`, 'complete');
-                    showStatus(`Completed!`, false);
+                    logEvent(`=== COMPLETED: Streamed ${successCount} geeklists (${errorCount} errors) ===`, 'complete');
+                    showStatus(`Completed! ${successCount}/${geeklistIds.length} geeklists loaded`, false);
                 } catch (err) {
                     logEvent(`Fatal error: ${err.message}`, 'fatal');
                     console.error('Error:', err);
                     cardsContainer.innerHTML = '<div class="empty-state">❌ Error loading geeklists. Check console.</div>';
                     statusEl.style.background = 'rgba(255, 107, 107, 0.2)';
-                    statusText.textContent = `Error: ${err.message}`;
+                    statusText.textContent = `Fatal Error: ${err.message}`;
                 } finally {
                     refreshBtn.disabled = false;
                 }
