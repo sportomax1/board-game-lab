@@ -463,8 +463,9 @@
 
             <!-- Speed -->
             <div class="setting-group">
-                <label>Speed (seconds per game)</label>
+                <label>Speed (seconds per game, 1-60)</label>
                 <input type="number" id="speed" value="5" min="1" max="60">
+                <small>Lower = faster scrolling, Higher = slower scrolling</small>
             </div>
 
             <div id="statusMsg"></div>
@@ -559,10 +560,10 @@
             }
 
             const items = xml.querySelectorAll('item');
-            const games = Array.from(items).map(item => {
+            let games = Array.from(items).map(item => {
                 try {
+                    const objectid = item.getAttribute('objectid');
                     const name = item.querySelector('name')?.textContent || 'Unknown';
-                    const image = item.querySelector('image')?.textContent || item.querySelector('thumbnail')?.textContent || '';
                     const type = item.getAttribute('subtype') || '';
                     const year = item.querySelector('yearpublished')?.textContent || '';
                     const stats = item.querySelector('stats');
@@ -573,12 +574,12 @@
                     const numplays = parseInt(item.querySelector('numplays')?.textContent || '0') || 0;
 
                     return {
-                        name, image, type, year, minplayers, maxplayers, playingtime, rating, numplays
+                        objectid, name, type, year, minplayers, maxplayers, playingtime, rating, numplays, image: ''
                     };
                 } catch (e) {
                     return null;
                 }
-            }).filter(g => g && g.image && 
+            }).filter(g => g &&
                 !(g.type === 'boardgameexpansion' && !document.getElementById('filterExpansions').checked) &&
                 !(document.getElementById('filterPlayedOnly').checked && g.numplays < 1)
             );
@@ -586,20 +587,52 @@
             // Remove duplicates
             let unique = Array.from(new Map(games.map(g => [g.name, g])).values());
 
+            // Fetch images in batches of 20 using thing API v2
+            for (let i = 0; i < unique.length; i += 20) {
+                const batch = unique.slice(i, i + 20);
+                const ids = batch.map(g => g.objectid).join(',');
+                try {
+                    const thingResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids}`);
+                    if (thingResponse.ok) {
+                        const thingText = await thingResponse.text();
+                        const thingXml = parser.parseFromString(thingText, 'text/xml');
+                        const things = thingXml.querySelectorAll('item');
+                        
+                        things.forEach(thing => {
+                            const thingId = thing.getAttribute('id');
+                            const image = thing.querySelector('image')?.textContent || thing.querySelector('thumbnail')?.textContent || '';
+                            const game = batch.find(g => g.objectid === thingId);
+                            if (game && image) {
+                                game.image = image;
+                            }
+                        });
+                    }
+                } catch (e) {
+                    console.warn('Failed to fetch thing batch', e);
+                }
+                // Small delay between batches
+                await new Promise(r => setTimeout(r, 100));
+            }
+
+            // Filter out games without images
+            games = unique.filter(g => g.image);
+
+            console.log(`📊 Fetched ${games.length} games with images (from ${unique.length} unique games)`);
+
             // Apply sorting
             const sortBy = document.getElementById('sortBy').value;
             switch(sortBy) {
-                case 'name': unique.sort((a, b) => a.name.localeCompare(b.name)); break;
-                case 'name-desc': unique.sort((a, b) => b.name.localeCompare(a.name)); break;
-                case 'rating': unique.sort((a, b) => b.rating - a.rating); break;
-                case 'year': unique.sort((a, b) => (b.year || 0) - (a.year || 0)); break;
-                case 'plays': unique.sort((a, b) => b.numplays - a.numplays); break;
-                case 'random': unique.sort(() => Math.random() - 0.5); break;
+                case 'name': games.sort((a, b) => a.name.localeCompare(b.name)); break;
+                case 'name-desc': games.sort((a, b) => b.name.localeCompare(a.name)); break;
+                case 'rating': games.sort((a, b) => b.rating - a.rating); break;
+                case 'year': games.sort((a, b) => (b.year || 0) - (a.year || 0)); break;
+                case 'plays': games.sort((a, b) => b.numplays - a.numplays); break;
+                case 'random': games.sort(() => Math.random() - 0.5); break;
             }
 
             // Limit games
-            const limit = Math.min(parseInt(document.getElementById('gameCount').value) || 100, unique.length);
-            return unique.slice(0, limit);
+            const limit = Math.min(parseInt(document.getElementById('gameCount').value) || 100, games.length);
+            return games.slice(0, limit);
         }
 
         function generateAndScroll(games) {
@@ -633,7 +666,7 @@
                 
                 item.innerHTML = `
                     <div class="game-name">${escape(game.name)}</div>
-                    <img src="${escape(game.image)}" alt="${escape(game.name)}" class="game-image" onerror="this.style.display='none'">
+                    <img src="/api/image-proxy?url=${encodeURIComponent(game.image)}" alt="${escape(game.name)}" class="game-image" onerror="this.style.display='none'">
                     <div class="game-details">
                         <div class="detail-badge">⭐ ${ratingStr}</div>
                         <div class="detail-badge">👥 ${players}</div>
