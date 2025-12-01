@@ -26,15 +26,17 @@
         /* Game Card (Image) styling */
         .game-object {
             position: absolute;
-            bottom: -100px; /* Start below the screen */
             width: 80px;
-            height: 80px;
+            height: 100px;
             border-radius: 8px;
             overflow: hidden;
             cursor: pointer;
             border: 2px solid transparent;
             box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.5), 0 2px 4px -2px rgba(0, 0, 0, 0.5);
             transition: border-color 0.1s;
+            display: flex;
+            align-items: center;
+            justify-content: center;
         }
 
         .game-object img {
@@ -47,6 +49,7 @@
         /* Indicator for target games */
         .target-game {
             border-color: #f97316; /* Orange for target */
+            box-shadow: 0 0 12px rgba(249, 115, 22, 0.6), 0 4px 6px -1px rgba(0, 0, 0, 0.5);
         }
 
         /* Loading Spinner */
@@ -133,6 +136,12 @@
             <button id="settingsBtn" class="px-4 py-2 bg-blue-600 hover:bg-blue-500 rounded-full font-semibold transition-colors">⚙️ Settings</button>
         </div>
 
+        <div class="absolute bottom-4 right-4 flex items-center gap-3 bg-slate-800/70 backdrop-blur rounded-xl border border-slate-700 px-4 py-2 z-10">
+            <span class="text-xs font-bold text-slate-400 uppercase">Pace:</span>
+            <input type="range" id="gamePaceSlider" min="1" max="10" value="5" class="w-32 h-2 bg-slate-700 rounded-lg appearance-none cursor-pointer accent-red-500">
+            <span id="paceValue" class="text-sm font-bold text-red-400 w-8 text-center">5</span>
+        </div>
+
         <div id="gameOverModal" class="absolute inset-0 bg-black/80 flex items-center justify-center z-20 hidden">
             <div class="bg-slate-800 p-8 rounded-xl border border-slate-700 text-center space-y-4">
                 <h3 class="text-5xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-red-500 to-amber-400">GAME OVER!</h3>
@@ -153,6 +162,7 @@
         let spawnInterval = null;
         let gameIsPaused = true;
         let gameIsOver = false;
+        let currentSpawnRate = 1200; // ms between spawns
         
         // --- DOM Elements ---
         const settingsModal = document.getElementById('settingsModal');
@@ -165,6 +175,13 @@
         const restartBtn = document.getElementById('restartBtn');
         const settingsBtn = document.getElementById('settingsBtn');
         const gameOverModal = document.getElementById('gameOverModal');
+        const gamePaceSlider = document.getElementById('gamePaceSlider');
+        const paceValue = document.getElementById('paceValue');
+
+        // --- Physics Constants ---
+        const GRAVITY = 0.2;
+        const MAX_ROTATION = 720; // Full rotations during flight
+        const FRICTION = 0.99; // Air friction
 
         // --- BGG API Helper ---
         async function fetchWithRetry(url, maxRetries = 3, delay = 1500) {
@@ -196,7 +213,6 @@
             const filterStr = filters.length > 0 ? '&' + filters.join('&') : '&own=1';
             const safeUsername = encodeURIComponent(username);
             
-            // NOTE: This uses the /api/bgg-helper which is a proxy needed for BGG API calls
             const response = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${safeUsername}${filterStr}`);
             
             const text = await response.text();
@@ -215,7 +231,6 @@
                 const name = item.querySelector('name')?.textContent || 'Unknown';
                 const image = item.querySelector('image')?.textContent || item.querySelector('thumbnail')?.textContent || '';
                 
-                // Get status flags from the collection item
                 const statusNode = item.querySelector('status');
                 const status = {
                     own: statusNode?.getAttribute('own') === '1',
@@ -230,12 +245,10 @@
                     image: image,
                     status: status
                 };
-            }).filter(g => g.image); // Filter out games without an image
+            }).filter(g => g.image);
 
-            // Use a Set to ensure unique games by name, and then convert back to Array
             let uniqueGames = Array.from(new Map(games.map(g => [g.name, g])).values());
 
-            // Limit to a max of 100 for playability
             if (uniqueGames.length > 100) {
                  uniqueGames = uniqueGames.sort(() => Math.random() - 0.5).slice(0, 100);
             }
@@ -251,33 +264,27 @@
                 return;
             }
             
-            // Setup initial state
             score = 0;
             timeRemaining = 60;
             gameIsPaused = false;
             gameIsOver = false;
 
-            // Clear previous game objects and intervals
             clearGameIntervals();
             document.querySelectorAll('.game-object').forEach(obj => obj.remove());
             
-            // Get speed from slider (1-10)
             const speedSetting = parseInt(document.getElementById('gameSpeed').value) || 5;
-            // Map speed to game logic: faster = shorter interval = more spawns
-            const spawnRateMs = 1500 - (speedSetting * 100); // 1400ms (slowest) to 500ms (fastest)
+            currentSpawnRate = 1500 - (speedSetting * 100); // 1400ms (slowest) to 500ms (fastest)
+            updatePaceDisplay(speedSetting);
 
-            // Hide settings, show game area
             settingsModal.style.display = 'none';
             gameArea.classList.remove('hidden');
             gameOverModal.classList.add('hidden');
 
             updateScore(0);
             
-            // Start the main game loop
-            gameInterval = setInterval(updateGame, 50); // Frame rate
-            spawnInterval = setInterval(spawnGameObject, spawnRateMs); // Object spawn rate
+            gameInterval = setInterval(updateGame, 30); // 30ms frame rate for smooth physics
+            spawnInterval = setInterval(spawnGameObject, currentSpawnRate);
             
-            // Start the timer
             gameIntervals.timer = setInterval(updateTimer, 1000);
         }
 
@@ -291,6 +298,10 @@
             clearInterval(gameIntervals.main);
             clearInterval(gameIntervals.spawn);
             clearInterval(gameIntervals.timer);
+        }
+
+        function updatePaceDisplay(value) {
+            paceValue.textContent = value;
         }
 
         function updateTimer() {
@@ -307,11 +318,9 @@
         function spawnGameObject() {
             if (gameIsPaused || gameIsOver || allGamesData.length === 0) return;
 
-            // Pick a random game from the loaded collection
             const gameIndex = Math.floor(Math.random() * allGamesData.length);
             const game = allGamesData[gameIndex];
             
-            // Create the element
             const obj = document.createElement('div');
             obj.className = 'game-object';
             obj.dataset.gameId = game.id;
@@ -321,29 +330,39 @@
                  obj.classList.add('target-game');
             }
 
-            // Image
             const img = document.createElement('img');
-            img.src = game.image;
+            img.src = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
             img.alt = game.name;
             obj.appendChild(img);
 
-            // Set initial position (random X)
+            // Spawn from bottom with parabolic arc
             const gameAreaWidth = gameArea.offsetWidth;
+            const gameAreaHeight = gameArea.offsetHeight;
             const cardSize = 80;
-            const startX = Math.random() * (gameAreaWidth - cardSize);
-            obj.style.left = `${startX}px`;
             
-            // Set initial velocity (fixed Y, random X for diagonal)
-            const speedSetting = parseInt(document.getElementById('gameSpeed').value) || 5;
-            const baseVelocity = (speedSetting / 10) + 1; // 1.1 to 2.0
+            // Spawn from bottom, random horizontal position
+            const startX = Math.random() * (gameAreaWidth - cardSize);
+            const startY = gameAreaHeight - 20; // Start just below visible area
+            
+            obj.style.left = `${startX}px`;
+            obj.style.top = `${startY}px`;
+            
+            // Calculate launch velocity for arc (like Fruit Ninja)
+            const speedMultiplier = (parseInt(document.getElementById('gameSpeed').value) || 5) / 5;
+            const angle = 45 + (Math.random() - 0.5) * 30; // 30-60 degree launch angle
+            const speed = 8 * speedMultiplier; // Launch speed
+            
+            const radians = (angle * Math.PI) / 180;
             obj.velocity = {
-                y: baseVelocity + Math.random() * 0.5, // 1.1 to 2.5
-                x: (Math.random() - 0.5) * 0.5 // -0.25 to 0.25 for slight horizontal drift
+                x: speed * Math.cos(radians) * ((Math.random() - 0.5) < 0 ? -1 : 1), // Random left/right
+                y: -speed * Math.sin(radians) // Negative = upward
             };
             
-            // Set up click handler
+            // Rotation
+            obj.rotation = 0;
+            obj.rotationVelocity = (Math.random() - 0.5) * 15; // -7.5 to 7.5 deg/frame
+            
             obj.addEventListener('click', handleGameClick);
-
             gameArea.appendChild(obj);
         }
 
@@ -352,34 +371,43 @@
 
             const gameObjects = document.querySelectorAll('.game-object');
             const gameAreaHeight = gameArea.offsetHeight;
+            const gameAreaWidth = gameArea.offsetWidth;
 
             gameObjects.forEach(obj => {
-                // Get current Y position (bottom)
-                const currentY = parseFloat(obj.style.bottom || -100);
+                // Apply gravity
+                obj.velocity.y += GRAVITY;
                 
-                // Update position based on velocity
-                let newY = currentY + obj.velocity.y;
+                // Apply friction
+                obj.velocity.x *= FRICTION;
+                obj.velocity.y *= FRICTION;
+                
+                // Update position
                 let newX = parseFloat(obj.style.left) + obj.velocity.x;
-
-                // Simple wall bounce (horizontal)
-                if (newX < 0 || newX > gameArea.offsetWidth - 80) {
-                    obj.velocity.x *= -1; // Reverse X velocity
-                    newX = parseFloat(obj.style.left) + obj.velocity.x; // Re-calculate
+                let newY = parseFloat(obj.style.top) + obj.velocity.y;
+                
+                // Bounce off walls
+                if (newX < 0 || newX > gameAreaWidth - 80) {
+                    obj.velocity.x *= -0.8; // Dampen bounce
+                    newX = Math.max(0, Math.min(newX, gameAreaWidth - 80));
                 }
                 
-                obj.style.bottom = `${newY}px`;
+                // Bounce off bottom
+                if (newY > gameAreaHeight - 100) {
+                    obj.velocity.y *= -0.6; // Dampen bounce
+                    newY = gameAreaHeight - 100;
+                }
+                
+                // Update rotation
+                obj.rotation += obj.rotationVelocity;
+                
                 obj.style.left = `${newX}px`;
+                obj.style.top = `${newY}px`;
+                obj.style.transform = `rotate(${obj.rotation}deg)`;
 
-                // Check if the object went off the top of the screen
-                if (newY > gameAreaHeight) {
-                    // Check for missed target only if it was a target
+                // Check if object has left the screen
+                if (newY > gameAreaHeight + 50 || newX < -100 || newX > gameAreaWidth + 100) {
                     if (obj.dataset.isTarget === 'true') {
                         updateScore(-20, 'miss');
-                        // Add a simple visual flash for missing a target
-                        const flash = document.createElement('div');
-                        flash.className = 'absolute inset-0 bg-red-800/50 animate-pulse rounded-full pointer-events-none';
-                        gameArea.appendChild(flash);
-                        setTimeout(() => flash.remove(), 500);
                     }
                     obj.remove();
                 }
@@ -398,21 +426,20 @@
                 updateScore(-10, 'miss');
             }
             
-            // Remove the object and play a small animation
-            obj.style.transition = 'all 0.1s ease-out';
-            obj.style.transform = 'scale(1.2)';
+            // Fling away effect
+            obj.style.transition = 'all 0.3s ease-out';
+            obj.style.transform = 'scale(0.3) rotate(720deg)';
             obj.style.opacity = '0';
 
             setTimeout(() => {
                 obj.remove();
-            }, 100);
+            }, 300);
         }
         
         function updateScore(points, type = 'normal') {
             score += points;
             scoreDisplay.textContent = score;
 
-            // Simple visual feedback
             const feedback = document.createElement('span');
             feedback.textContent = (points > 0 ? '+' : '') + points;
             feedback.className = `absolute text-xl font-bold transition-all duration-500 opacity-0 transform translate-y-0 ${points > 0 ? 'text-green-400' : 'text-red-400'}`;
@@ -423,7 +450,6 @@
             
             document.body.appendChild(feedback);
 
-            // Animate
             setTimeout(() => {
                 feedback.style.opacity = '1';
                 feedback.style.transform = 'translateY(-30px)';
@@ -444,7 +470,6 @@
             gameIsOver = true;
             clearGameIntervals();
             
-            // Stop object movement
             document.querySelectorAll('.game-object').forEach(obj => {
                 obj.style.animationPlayState = 'paused';
             });
@@ -454,7 +479,6 @@
         }
         
         function restartGame() {
-            // Simply call startGame to reset and play again
             startGame();
         }
 
@@ -474,7 +498,6 @@
                 return;
             }
 
-            // 1. Get Filters from Settings Screen
             const playCheckboxes = document.querySelectorAll('#playFilters input:checked');
             const playFilters = Array.from(playCheckboxes).map(cb => cb.id.replace('playFilter', '').toLowerCase());
             
@@ -485,21 +508,17 @@
                 return;
             }
 
-            // Check if the target is in the play filters (optional but good sanity check)
             if (!playFilters.includes(targetFilter)) {
                  statusMsg.textContent = `Warning: Your target filter ('${targetFilter}') is not selected for 'Games to Put in Play'. You might only see non-targets!`;
             }
 
-            // 2. Start Loading
             startGameBtn.innerHTML = '<span class="loader"></span> Loading Games...';
             startGameBtn.disabled = true;
             statusMsg.textContent = "";
 
             try {
-                // 3. Fetch Data
                 const games = await fetchGameCollection(username, playFilters);
                 
-                // 4. Success: Set state and start game
                 allGamesData = games;
                 statusMsg.textContent = `Loaded ${games.length} games. Starting...`;
                 
@@ -507,12 +526,11 @@
                     startGame();
                     startGameBtn.innerHTML = '<span>Start Game</span>';
                     startGameBtn.disabled = false;
-                }, 1000); // Small delay to read message
+                }, 1000);
                 
             } catch (err) {
                 console.error(err);
                 
-                // 5. Failure: Display error
                 let msg = err.message;
                 if (msg.includes('HTTP error') || msg.includes('Failed to fetch')) msg = "Network or API Error. Check connection or username.";
                 
@@ -525,6 +543,25 @@
         pauseBtn.addEventListener('click', togglePause);
         restartBtn.addEventListener('click', restartGame);
         settingsBtn.addEventListener('click', showSettings);
+        
+        // Dynamic pace control during gameplay
+        gamePaceSlider.addEventListener('input', (e) => {
+            const newPace = parseInt(e.target.value);
+            updatePaceDisplay(newPace);
+            
+            if (!gameIsPaused && !gameIsOver) {
+                // Update spawn rate in real-time
+                clearInterval(spawnInterval);
+                currentSpawnRate = 1500 - (newPace * 100);
+                spawnInterval = setInterval(spawnGameObject, currentSpawnRate);
+                
+                // Update velocity of existing objects
+                document.querySelectorAll('.game-object').forEach(obj => {
+                    const speedMultiplier = newPace / 5;
+                    obj.velocity.x *= speedMultiplier / (parseInt(document.getElementById('gameSpeed').value) || 5 / 5);
+                });
+            }
+        });
 
     </script>
 </body>
