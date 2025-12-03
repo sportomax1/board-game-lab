@@ -225,11 +225,16 @@
             height: 100%;
             object-fit: cover;
             cursor: grab;
+            transition: none;
         }
 
         .game-cell img:active {
             cursor: grabbing;
             opacity: 0.8;
+        }
+
+        .game-cell.dragging {
+            opacity: 0.7;
         }
 
         .game-cell.drag-over {
@@ -383,15 +388,30 @@
 
         <div class="content">
             <div class="card search-section">
-                <h2>Find Games</h2>
+                <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1rem;">
+                    <h2 style="margin: 0;">Find Games</h2>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: clamp(0.875rem, 2vw, 1rem); margin: 0;">
+                        <input type="checkbox" id="setting-expansions" checked style="width: auto;">
+                        Include Expansions
+                    </label>
+                </div>
                 <div class="search-controls">
                     <input type="text" id="search-input" placeholder="Search game name..." autocomplete="off" value="Catan">
-                    <select id="search-type">
-                        <option value="default">Starts With</option>
-                        <option value="exact">Exact Match</option>
-                        <option value="substring">Contains</option>
-                    </select>
-                    <button class="btn-primary" id="search-btn">Search</button>
+                    <div style="display: flex; gap: 1rem; flex-wrap: wrap; align-items: center;">
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: clamp(0.875rem, 2vw, 1rem);">
+                            <input type="radio" name="search-type" value="default" checked style="width: auto;"> Starts With
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: clamp(0.875rem, 2vw, 1rem);">
+                            <input type="radio" name="search-type" value="exact" style="width: auto;"> Exact Match
+                        </label>
+                        <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-size: clamp(0.875rem, 2vw, 1rem);">
+                            <input type="radio" name="search-type" value="substring" style="width: auto;"> Contains
+                        </label>
+                    </div>
+                    <div style="display: flex; gap: 0.5rem;">
+                        <button class="btn-primary" id="search-btn" style="flex: 1;">Search</button>
+                        <button class="btn-secondary" id="clear-search-btn" style="flex: 0 1 auto; width: auto; min-width: 100px;">Clear</button>
+                    </div>
                 </div>
                 <div id="search-results-area" style="display: none;">
                     <div id="search-results"></div>
@@ -423,16 +443,6 @@
             </div>
             
             <div class="modal-section">
-                <h3>Search Preferences</h3>
-                <div class="checkbox-group">
-                    <div class="checkbox-item">
-                        <input type="checkbox" id="setting-expansions" checked>
-                        <label for="setting-expansions">Include Expansions</label>
-                    </div>
-                </div>
-            </div>
-
-            <div class="modal-section">
                 <h3>Info</h3>
                 <p style="font-size: 0.9rem; color: #666; margin: 0;">
                     Tap games to add to your 9-grid. Uses BoardGameGeek API to find games and generate collages.
@@ -447,7 +457,6 @@
         document.addEventListener('DOMContentLoaded', () => {
             // ========== ELEMENTS ==========
             const searchInput = document.getElementById('search-input');
-            const searchTypeSelect = document.getElementById('search-type');
             const searchBtn = document.getElementById('search-btn');
             const searchResultsArea = document.getElementById('search-results-area');
             const searchResultsDiv = document.getElementById('search-results');
@@ -482,6 +491,15 @@
                 if (e.target === settingsModal) {
                     settingsModal.classList.remove('active');
                 }
+            });
+
+            // ========== SEARCH CONTROLS ==========
+            const clearSearchBtn = document.getElementById('clear-search-btn');
+            clearSearchBtn.addEventListener('click', () => {
+                searchInput.value = '';
+                searchResultsDiv.innerHTML = '';
+                searchResultsArea.style.display = 'none';
+                status.textContent = 'Search cleared.';
             });
 
             // ========== API ==========
@@ -525,9 +543,12 @@
                 searchResultsDiv.innerHTML = '';
 
                 try {
-                    const searchType = searchTypeSelect.value;
+                    const searchType = document.querySelector('input[name="search-type"]:checked').value;
+                    const includeExpansions = !document.getElementById('setting-expansions').checked;
+                    
                     const params = { query: query };
                     if (searchType === 'exact') params.exact = '1';
+                    if (includeExpansions) params.exclude_expansions = '1';
 
                     const xmlText = await fetchBGG('search', params);
                     const doc = parseXML(xmlText);
@@ -536,12 +557,13 @@
                     if (items.length === 0) {
                         status.textContent = 'No games found.';
                     } else {
-                        status.textContent = `Found ${items.length} games. Tap to add.`;
+                        status.textContent = `Found ${items.length} games. Tap to add or double-click cell to remove.`;
                         searchResultsArea.style.display = 'block';
                         
                         items.forEach(item => {
                             const id = item.getAttribute('id');
-                            const name = item.querySelector('name')?.textContent || 'Unknown';
+                            const nameEl = item.querySelector('name:first-of-type');
+                            const name = nameEl?.textContent || 'Unknown';
                             const year = item.querySelector('yearpublished')?.textContent || '';
                             
                             const div = document.createElement('div');
@@ -593,6 +615,7 @@
                 const cell = document.createElement('div');
                 cell.className = 'game-cell';
                 cell.dataset.id = id;
+                cell.draggable = true;
                 
                 const img = document.createElement('img');
                 img.src = imageUrl;
@@ -601,11 +624,53 @@
                 
                 cell.appendChild(img);
                 
-                cell.addEventListener('click', () => {
+                // Double-click to remove
+                cell.addEventListener('dblclick', (e) => {
+                    e.stopPropagation();
                     const gameId = cell.dataset.id;
                     selectedGames = selectedGames.filter(g => g.id !== gameId);
                     cell.remove();
                     updateGridStatus();
+                });
+
+                // Drag start
+                cell.addEventListener('dragstart', (e) => {
+                    draggedCell = cell;
+                    cell.classList.add('dragging');
+                });
+
+                // Drag end
+                cell.addEventListener('dragend', (e) => {
+                    cell.classList.remove('dragging');
+                    draggedCell = null;
+                });
+
+                // Drag over
+                cell.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    if (draggedCell && draggedCell !== cell) {
+                        cell.classList.add('drag-over');
+                    }
+                });
+
+                // Drag leave
+                cell.addEventListener('dragleave', (e) => {
+                    cell.classList.remove('drag-over');
+                });
+
+                // Drop
+                cell.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    cell.classList.remove('drag-over');
+                    if (draggedCell && draggedCell !== cell) {
+                        // Swap cells
+                        const draggedId = draggedCell.dataset.id;
+                        const targetId = cell.dataset.id;
+                        const temp = draggedCell.innerHTML;
+                        draggedCell.innerHTML = cell.innerHTML;
+                        cell.innerHTML = temp;
+                        [draggedCell.dataset.id, cell.dataset.id] = [targetId, draggedId];
+                    }
                 });
 
                 grid.appendChild(cell);
