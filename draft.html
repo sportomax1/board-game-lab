@@ -365,70 +365,74 @@
         };
 
         async function unlockApp() {
-            const password = document.getElementById('appPassword').value;
             const username = document.getElementById('bggUsernameInput').value.trim() || 'sportomax';
             const btn = document.querySelector('#passwordScreen button');
-            const errorEl = document.getElementById('passwordError');
 
             btn.classList.add('opacity-50');
-            btn.textContent = 'Verifying...';
+            btn.textContent = 'Loading...';
 
-            try {
-                const correctPassword = await fetch('/api/get-password').then(r => r.text()).catch(() => '');
-                if (password !== correctPassword) throw new Error('Invalid password');
-
-                localStorage.setItem('draft_app_auth', 'true');
-                localStorage.setItem('draft_app_username', username);
-                
-                document.getElementById('passwordScreen').classList.add('hidden');
-                document.getElementById('loadingScreen').classList.remove('hidden');
-                await loadCollection(username);
-
-            } catch (e) {
-                errorEl.classList.remove('hidden');
-                btn.classList.remove('opacity-50');
-                btn.textContent = 'Enter Draft Room';
-            }
+            localStorage.setItem('draft_app_auth', 'true');
+            localStorage.setItem('draft_app_username', username);
+            
+            document.getElementById('passwordScreen').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+            await loadCollection(username);
         }
 
         async function loadCollection(username) {
             const statusEl = document.getElementById('loadingStatus');
             document.getElementById('headerUsername').textContent = username;
 
-            try {
-                statusEl.textContent = `Fetching collection for ${username}...`;
-                // Fetch owned games with stats
-                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1&stats=1`);
-                if (!response.ok) throw new Error('BGG API Error');
-                
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                const items = Array.from(xml.querySelectorAll('item'));
+            const delays = [1000, 3000, 5000, 10000];
+            let attempt = 0;
 
-                if (items.length === 0) throw new Error('No games found');
+            while (attempt <= delays.length) {
+                try {
+                    if (attempt > 0) {
+                        statusEl.textContent = `Retrying (${attempt}/${delays.length})...`;
+                        await new Promise(resolve => setTimeout(resolve, delays[attempt - 1]));
+                    } else {
+                        statusEl.textContent = `Fetching collection for ${username}...`;
+                    }
 
-                appState.allGames = items.map(item => ({
-                    id: item.getAttribute('objectid'),
-                    name: item.querySelector('name')?.textContent || 'Unknown',
-                    image: item.querySelector('thumbnail')?.textContent || 'https://via.placeholder.com/50',
-                    year: item.querySelector('yearpublished')?.textContent || '',
-                    rating: parseFloat(item.querySelector('rating')?.getAttribute('value') || 0).toFixed(1),
-                    subtype: item.getAttribute('subtype'), // boardgame or boardgameexpansion
-                    minPlayers: item.querySelector('stats')?.getAttribute('minplayers') || '?',
-                    maxPlayers: item.querySelector('stats')?.getAttribute('maxplayers') || '?'
-                }));
+                    const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1&stats=1`);
+                    if (!response.ok) throw new Error('BGG API Error');
+                    
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    const items = Array.from(xml.querySelectorAll('item'));
 
-                setTimeout(() => {
-                    document.getElementById('loadingScreen').classList.add('hidden');
-                    document.getElementById('app').classList.remove('hidden');
-                    initSetup();
-                }, 500);
+                    if (items.length === 0) throw new Error('No games found');
 
-            } catch (e) {
-                statusEl.textContent = `Error: ${e.message}`;
-                statusEl.classList.add('text-red-600');
-                localStorage.removeItem('draft_app_auth'); // Clear auth on failure
+                    appState.allGames = items.map(item => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent || 'Unknown',
+                        image: item.querySelector('thumbnail')?.textContent || 'https://via.placeholder.com/50',
+                        year: item.querySelector('yearpublished')?.textContent || '',
+                        rating: parseFloat(item.querySelector('rating')?.getAttribute('value') || 0).toFixed(1),
+                        subtype: item.getAttribute('subtype'),
+                        minPlayers: item.querySelector('stats')?.getAttribute('minplayers') || '?',
+                        maxPlayers: item.querySelector('stats')?.getAttribute('maxplayers') || '?'
+                    }));
+
+                    setTimeout(() => {
+                        document.getElementById('loadingScreen').classList.add('hidden');
+                        document.getElementById('app').classList.remove('hidden');
+                        initSetup();
+                    }, 500);
+
+                    return;
+
+                } catch (e) {
+                    attempt++;
+                    if (attempt > delays.length) {
+                        statusEl.textContent = `Error: ${e.message} - Failed after ${delays.length} retries`;
+                        statusEl.classList.add('text-red-600');
+                        localStorage.removeItem('draft_app_auth');
+                        return;
+                    }
+                }
             }
         }
 
@@ -883,30 +887,59 @@
             }
         }
 
+        function calculateDraftGrade(avgRating) {
+            if (avgRating >= 8.5) return { grade: 'A+', color: 'bg-green-600 text-white' };
+            if (avgRating >= 8.0) return { grade: 'A', color: 'bg-green-500 text-white' };
+            if (avgRating >= 7.75) return { grade: 'A-', color: 'bg-green-400 text-white' };
+            if (avgRating >= 7.5) return { grade: 'B+', color: 'bg-blue-500 text-white' };
+            if (avgRating >= 7.25) return { grade: 'B', color: 'bg-blue-400 text-white' };
+            if (avgRating >= 7.0) return { grade: 'B-', color: 'bg-blue-300 text-gray-800' };
+            if (avgRating >= 6.75) return { grade: 'C+', color: 'bg-yellow-400 text-gray-800' };
+            if (avgRating >= 6.5) return { grade: 'C', color: 'bg-yellow-300 text-gray-800' };
+            if (avgRating >= 6.25) return { grade: 'C-', color: 'bg-yellow-200 text-gray-800' };
+            if (avgRating >= 6.0) return { grade: 'D+', color: 'bg-orange-400 text-white' };
+            if (avgRating >= 5.5) return { grade: 'D', color: 'bg-orange-500 text-white' };
+            if (avgRating >= 5.0) return { grade: 'D-', color: 'bg-orange-600 text-white' };
+            return { grade: 'F', color: 'bg-red-600 text-white' };
+        }
+
         function toggleReviewScreen(force) {
             const modal = document.getElementById('reviewModal');
             const content = document.getElementById('reviewContent');
             if(force || modal.classList.contains('hidden')) {
                 modal.classList.remove('hidden');
-                content.innerHTML = appState.teams.map(team => `
+                content.innerHTML = appState.teams.map(team => {
+                    const avgRating = team.roster.length > 0 
+                        ? team.roster.reduce((sum, g) => sum + parseFloat(g.rating), 0) / team.roster.length 
+                        : 0;
+                    const gradeInfo = calculateDraftGrade(avgRating);
+                    
+                    return `
                     <div class="bg-white border rounded-lg overflow-hidden shadow-sm">
                         <div class="bg-gray-100 px-3 py-2 border-b flex justify-between items-center">
-                            <h3 class="font-bold text-sm text-gray-800">${team.name}</h3>
-                            ${appState.config.mode==='auction' ? `<span class="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded">Left: $${team.budget}</span>` : ''}
+                            <div>
+                                <h3 class="font-bold text-sm text-gray-800">${team.name}</h3>
+                                <div class="text-[10px] text-gray-500 mt-0.5">Avg: ${avgRating.toFixed(2)}</div>
+                            </div>
+                            <div class="flex items-center gap-2">
+                                <span class="text-xs font-bold px-2 py-1 rounded ${gradeInfo.color}">${gradeInfo.grade}</span>
+                                ${appState.config.mode==='auction' ? `<span class="text-[10px] bg-green-100 text-green-800 px-2 py-0.5 rounded">$${team.budget}</span>` : ''}
+                            </div>
                         </div>
                         <div class="divide-y divide-gray-100">
                             ${team.roster.map(g => `
                                 <div class="flex items-center gap-2 p-2">
                                     <img src="${g.image}" class="w-8 h-8 object-contain bg-gray-50 rounded">
-                                    <div class="min-w-0">
+                                    <div class="min-w-0 flex-1">
                                         <div class="font-bold text-xs text-gray-800 truncate">${g.name}</div>
                                         <div class="text-[10px] text-gray-500">${g.year}</div>
                                     </div>
+                                    <div class="text-[10px] font-bold text-gray-600">★${g.rating}</div>
                                 </div>
                             `).join('')}
                         </div>
                     </div>
-                `).join('');
+                `}).join('');
             } else {
                 modal.classList.add('hidden');
             }

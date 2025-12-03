@@ -318,14 +318,17 @@
             transform: translateX(-50%);
             display: flex;
             gap: 10px;
-            background: rgba(0,0,0,0.8);
+            background: rgba(0,0,0,0.9);
             padding: 12px 20px;
-            border-radius: 50px;
+            border-radius: 20px;
             border: 1px solid rgba(255,255,255,0.2);
             z-index: 99;
             opacity: 0;
             pointer-events: none;
             transition: opacity 0.3s;
+            align-items: center;
+            flex-wrap: wrap;
+            max-width: 90vw;
         }
 
         .controls.visible {
@@ -350,6 +353,54 @@
         .control-btn:hover {
             background: rgba(255,255,255,0.2);
             transform: scale(1.1);
+        }
+
+        .control-slider {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            padding: 0 10px;
+            border-left: 1px solid rgba(255,255,255,0.2);
+        }
+
+        .control-slider label {
+            font-size: 0.75rem;
+            color: #94a3b8;
+            white-space: nowrap;
+        }
+
+        .control-slider input[type="range"] {
+            width: 80px;
+            height: 4px;
+            background: rgba(255,255,255,0.2);
+            border-radius: 2px;
+            outline: none;
+            -webkit-appearance: none;
+        }
+
+        .control-slider input[type="range"]::-webkit-slider-thumb {
+            -webkit-appearance: none;
+            width: 14px;
+            height: 14px;
+            background: #fbbf24;
+            border-radius: 50%;
+            cursor: pointer;
+        }
+
+        .control-slider input[type="range"]::-moz-range-thumb {
+            width: 14px;
+            height: 14px;
+            background: #fbbf24;
+            border-radius: 50%;
+            cursor: pointer;
+            border: none;
+        }
+
+        .control-value {
+            font-size: 0.75rem;
+            color: #fbbf24;
+            min-width: 30px;
+            text-align: center;
         }
 
         .loader {
@@ -396,6 +447,16 @@
         <button class="control-btn" id="playPauseBtn" title="Play/Pause">⏸</button>
         <button class="control-btn" id="restartBtn" title="Restart">↻</button>
         <button class="control-btn" id="stopBtn" title="Stop">⏹</button>
+        <div class="control-slider">
+            <label>Speed:</label>
+            <input type="range" id="speedSlider" min="1" max="20" value="5" step="1">
+            <span class="control-value" id="speedValue">5s</span>
+        </div>
+        <div class="control-slider">
+            <label>Gap:</label>
+            <input type="range" id="gapSlider" min="50" max="200" value="100" step="10">
+            <span class="control-value" id="gapValue">100%</span>
+        </div>
     </div>
 
     <div class="modal active" id="modal">
@@ -538,6 +599,13 @@
             }
         });
 
+        // Helper to decode HTML entities and properly display names
+        function decodeHTML(html) {
+            const txt = document.createElement('textarea');
+            txt.innerHTML = html;
+            return txt.value;
+        }
+
         async function loadGames(username) {
             let filters = [];
             if (document.getElementById('filterOwn').checked) filters.push('own=1');
@@ -563,7 +631,8 @@
             let games = Array.from(items).map(item => {
                 try {
                     const objectid = item.getAttribute('objectid');
-                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    const rawName = item.querySelector('name')?.textContent || 'Unknown';
+                    const name = decodeHTML(rawName); // Decode HTML entities
                     const type = item.getAttribute('subtype') || '';
                     const year = item.querySelector('yearpublished')?.textContent || '';
                     const stats = item.querySelector('stats');
@@ -639,6 +708,7 @@
             creditsScroll.innerHTML = '';
             isPlaying = true;
             isPaused = false;
+            playPauseBtn.textContent = '⏸';
 
             // Opening
             const opening = document.createElement('div');
@@ -664,17 +734,30 @@
                 const time = game.playingtime !== 'N/A' ? `${game.playingtime} min` : 'Time N/A';
                 const ratingStr = game.rating > 0 ? game.rating.toFixed(2) : 'Not Rated';
                 
-                item.innerHTML = `
-                    <div class="game-name">${escape(game.name)}</div>
-                    <img src="/api/image-proxy?url=${encodeURIComponent(game.image)}" alt="${escape(game.name)}" class="game-image" onerror="this.style.display='none'">
-                    <div class="game-details">
-                        <div class="detail-badge">⭐ ${ratingStr}</div>
-                        <div class="detail-badge">👥 ${players}</div>
-                        <div class="detail-badge">⏱️ ${time}</div>
-                        <div class="detail-badge">📅 ${game.year || 'N/A'}</div>
-                        <div class="detail-badge">🎲 ${game.numplays} plays</div>
-                    </div>
+                // Create elements safely without escape() which adds % encoding
+                const nameDiv = document.createElement('div');
+                nameDiv.className = 'game-name';
+                nameDiv.textContent = game.name; // Uses textContent to avoid HTML injection
+                
+                const img = document.createElement('img');
+                img.src = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
+                img.alt = game.name;
+                img.className = 'game-image';
+                img.onerror = function() { this.style.display = 'none'; };
+                
+                const details = document.createElement('div');
+                details.className = 'game-details';
+                details.innerHTML = `
+                    <div class="detail-badge">⭐ ${ratingStr}</div>
+                    <div class="detail-badge">👥 ${players}</div>
+                    <div class="detail-badge">⏱️ ${time}</div>
+                    <div class="detail-badge">📅 ${game.year || 'N/A'}</div>
+                    <div class="detail-badge">🎲 ${game.numplays} plays</div>
                 `;
+                
+                item.appendChild(nameDiv);
+                item.appendChild(img);
+                item.appendChild(details);
                 creditsScroll.appendChild(item);
             });
 
@@ -684,44 +767,71 @@
             ending.innerHTML = '🎲<br>Thanks for Playing!';
             creditsScroll.appendChild(ending);
 
+            // Update slider values from settings
+            const speedSlider = document.getElementById('speedSlider');
+            const gapSlider = document.getElementById('gapSlider');
+            speedSlider.value = document.getElementById('speed').value;
+            document.getElementById('speedValue').textContent = speedSlider.value + 's';
+            gapSlider.value = 100;
+            document.getElementById('gapValue').textContent = '100%';
+
             controls.classList.add('visible');
-            autoScroll = startAutoScroll(games.length);
+            creditsScroll.scrollTop = 0;
+            autoScroll = startAutoScroll();
         }
 
-        function startAutoScroll(gameCount) {
-            const speed = parseInt(document.getElementById('speed').value) || 5;
-            const itemHeight = window.innerHeight;
-            const totalItems = gameCount + 3;
-            const totalHeight = itemHeight * totalItems;
-            const totalTime = speed * totalItems * 1000;
-            const pixelsPerMs = totalHeight / totalTime;
+        function startAutoScroll() {
+            const speedSlider = document.getElementById('speedSlider');
+            const gapSlider = document.getElementById('gapSlider');
+            const speedValue = document.getElementById('speedValue');
+            const gapValue = document.getElementById('gapValue');
 
-            let startTime = Date.now();
-            let lastTime = startTime;
+            let scrollSpeed = parseFloat(speedSlider.value) || 5;
+            let gapMultiplier = parseFloat(gapSlider.value) / 100;
+            let lastTimestamp = performance.now();
+            let accumulatedScroll = creditsScroll.scrollTop;
 
-            function scroll() {
+            // Update speed in real-time
+            speedSlider.addEventListener('input', () => {
+                scrollSpeed = parseFloat(speedSlider.value);
+                speedValue.textContent = scrollSpeed + 's';
+            });
+
+            // Update gap in real-time
+            gapSlider.addEventListener('input', () => {
+                gapMultiplier = parseFloat(gapSlider.value) / 100;
+                gapValue.textContent = gapSlider.value + '%';
+                // Update gap CSS
+                const items = creditsScroll.querySelectorAll('.credit-game, .credit-item');
+                items.forEach(item => {
+                    item.style.minHeight = `${100 * gapMultiplier}vh`;
+                });
+            });
+
+            function scroll(timestamp) {
                 if (!isPlaying) return;
 
-                const now = Date.now();
-                const elapsed = now - startTime;
+                if (!isPaused) {
+                    const delta = timestamp - lastTimestamp;
+                    // Base speed: pixels per second = viewport height / speed setting
+                    const pixelsPerSecond = window.innerHeight / scrollSpeed;
+                    const pixelsThisFrame = (pixelsPerSecond * delta) / 1000;
+                    
+                    accumulatedScroll += pixelsThisFrame;
+                    creditsScroll.scrollTop = accumulatedScroll;
 
-                if (isPaused) {
-                    startTime = now - elapsed;
-                    lastTime = now;
-                } else {
-                    const scrollPos = pixelsPerMs * elapsed;
-                    creditsScroll.scrollTop = scrollPos;
-
-                    if (scrollPos >= totalHeight) {
+                    // Check if we've reached the end
+                    if (creditsScroll.scrollTop + creditsScroll.clientHeight >= creditsScroll.scrollHeight - 10) {
                         stopScroll();
                         return;
                     }
                 }
 
+                lastTimestamp = timestamp;
                 requestAnimationFrame(scroll);
             }
 
-            scroll();
+            requestAnimationFrame(scroll);
             return { cancel: () => { isPlaying = false; } };
         }
 

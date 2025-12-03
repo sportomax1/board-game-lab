@@ -81,26 +81,15 @@
                 <input type="text" id="usernameInput" value="sportomax" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500 placeholder-slate-600 transition-all">
             </div>
 
-            <div class="grid grid-cols-2 gap-4">
-                <div class="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50">
-                    <label class="block text-xs font-bold text-slate-400 uppercase mb-3">Games to Put in Play</label>
-                    <div id="playFilters" class="space-y-2">
-                        <label class="flex items-center gap-3"><input type="checkbox" id="playFilterOwn" checked class="accent-violet-500"> <span class="text-sm">Own</span></label>
-                        <label class="flex items-center gap-3"><input type="checkbox" id="playFilterWantToPlay" class="accent-violet-500"> <span class="text-sm">Want to Play</span></label>
-                        <label class="flex items-center gap-3"><input type="checkbox" id="playFilterWantToBuy" class="accent-violet-500"> <span class="text-sm">Want to Buy</span></label>
-                        <label class="flex items-center gap-3"><input type="checkbox" id="playFilterPrevOwned" class="accent-violet-500"> <span class="text-sm">Prev. Owned</span></label>
-                    </div>
+            <div class="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50">
+                <label class="block text-xs font-bold text-slate-400 uppercase mb-3">Target Games (For Points)</label>
+                <div id="targetFilters" class="space-y-2">
+                     <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="own" checked class="accent-orange-500"> <span class="text-sm">Own (+10)</span></label>
+                    <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="wanttoplay" class="accent-orange-500"> <span class="text-sm">Want to Play (+10)</span></label>
+                    <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="wanttobuy" class="accent-orange-500"> <span class="text-sm">Want to Buy (+10)</span></label>
+                    <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="prevowned" class="accent-orange-500"> <span class="text-sm">Prev. Owned (+10)</span></label>
                 </div>
-
-                <div class="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50">
-                    <label class="block text-xs font-bold text-slate-400 uppercase mb-3">Target Games (For Points)</label>
-                    <div id="targetFilters" class="space-y-2">
-                         <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="own" checked class="accent-orange-500"> <span class="text-sm">Own (+10)</span></label>
-                        <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="wanttoplay" class="accent-orange-500"> <span class="text-sm">Want to Play (+10)</span></label>
-                        <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="wanttobuy" class="accent-orange-500"> <span class="text-sm">Want to Buy (+10)</span></label>
-                        <label class="flex items-center gap-3"><input type="radio" name="targetFilter" value="prevowned" class="accent-orange-500"> <span class="text-sm">Prev. Owned (+10)</span></label>
-                    </div>
-                </div>
+                <p class="text-xs text-slate-500 mt-3">All games will appear - slice targets for bonus points!</p>
             </div>
 
             <div class="bg-slate-900/50 rounded-xl p-4 border border-slate-700/50">
@@ -208,12 +197,11 @@
             }
         }
 
-        async function fetchGameCollection(username, playFilters) {
-            let filters = playFilters.map(f => `${f}=1`);
-            const filterStr = filters.length > 0 ? '&' + filters.join('&') : '&own=1';
+        async function fetchGameCollection(username) {
             const safeUsername = encodeURIComponent(username);
             
-            const response = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${safeUsername}${filterStr}`);
+            // Fetch ALL games - no filter limits
+            const response = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${safeUsername}&own=1&wanttoplay=1&wanttobuy=1&prevowned=1`);
             
             const text = await response.text();
             const parser = new DOMParser();
@@ -224,7 +212,7 @@
             if (items.length === 0) {
                 const errorNode = xml.querySelector('error');
                 if (errorNode) throw new Error(errorNode.textContent || 'BGG API returned an error');
-                throw new Error('No games found matching filters. Try checking more status flags.');
+                throw new Error('No games found in collection.');
             }
 
             const games = Array.from(items).map(item => {
@@ -247,11 +235,8 @@
                 };
             }).filter(g => g.image);
 
-            let uniqueGames = Array.from(new Map(games.map(g => [g.name, g])).values());
-
-            if (uniqueGames.length > 100) {
-                 uniqueGames = uniqueGames.sort(() => Math.random() - 0.5).slice(0, 100);
-            }
+            // Return ALL unique games - no 100 limit
+            const uniqueGames = Array.from(new Map(games.map(g => [g.name, g])).values());
             
             return uniqueGames;
         }
@@ -335,32 +320,57 @@
             img.alt = game.name;
             obj.appendChild(img);
 
-            // Spawn from bottom with parabolic arc
             const gameAreaWidth = gameArea.offsetWidth;
             const gameAreaHeight = gameArea.offsetHeight;
             const cardSize = 80;
             
-            // Spawn from bottom, random horizontal position
-            const startX = Math.random() * (gameAreaWidth - cardSize);
-            const startY = gameAreaHeight - 20; // Start just below visible area
+            // Fruit Ninja style: spawn from bottom OR sides
+            const spawnSide = Math.random();
+            let startX, startY, velocityX, velocityY;
+            
+            const speedMultiplier = (parseInt(document.getElementById('gameSpeed').value) || 5) / 5;
+            const baseSpeed = 12 + Math.random() * 8; // 12-20 speed variation
+            
+            if (spawnSide < 0.6) {
+                // Spawn from BOTTOM (60% chance) - like fruit ninja
+                startX = Math.random() * (gameAreaWidth - cardSize);
+                startY = gameAreaHeight + 50; // Start below screen
+                
+                // Launch upward at angle
+                const angle = 60 + Math.random() * 40; // 60-100 degrees (mostly vertical)
+                const radians = (angle * Math.PI) / 180;
+                velocityX = baseSpeed * speedMultiplier * Math.cos(radians) * (Math.random() > 0.5 ? 1 : -1);
+                velocityY = -baseSpeed * speedMultiplier * Math.sin(radians); // Negative = upward
+                
+            } else if (spawnSide < 0.8) {
+                // Spawn from LEFT side (20% chance)
+                startX = -100;
+                startY = gameAreaHeight * 0.3 + Math.random() * (gameAreaHeight * 0.4);
+                
+                const angle = 30 + Math.random() * 30; // 30-60 degrees upward
+                const radians = (angle * Math.PI) / 180;
+                velocityX = baseSpeed * speedMultiplier * Math.cos(radians);
+                velocityY = -baseSpeed * speedMultiplier * Math.sin(radians);
+                
+            } else {
+                // Spawn from RIGHT side (20% chance)
+                startX = gameAreaWidth + 100;
+                startY = gameAreaHeight * 0.3 + Math.random() * (gameAreaHeight * 0.4);
+                
+                const angle = 30 + Math.random() * 30; // 30-60 degrees upward
+                const radians = (angle * Math.PI) / 180;
+                velocityX = -baseSpeed * speedMultiplier * Math.cos(radians);
+                velocityY = -baseSpeed * speedMultiplier * Math.sin(radians);
+            }
             
             obj.style.left = `${startX}px`;
             obj.style.top = `${startY}px`;
             
-            // Calculate launch velocity for arc (like Fruit Ninja)
-            const speedMultiplier = (parseInt(document.getElementById('gameSpeed').value) || 5) / 5;
-            const angle = 45 + (Math.random() - 0.5) * 30; // 30-60 degree launch angle
-            const speed = 8 * speedMultiplier; // Launch speed
+            obj.velocity = { x: velocityX, y: velocityY };
             
-            const radians = (angle * Math.PI) / 180;
-            obj.velocity = {
-                x: speed * Math.cos(radians) * ((Math.random() - 0.5) < 0 ? -1 : 1), // Random left/right
-                y: -speed * Math.sin(radians) // Negative = upward
-            };
-            
-            // Rotation
-            obj.rotation = 0;
-            obj.rotationVelocity = (Math.random() - 0.5) * 15; // -7.5 to 7.5 deg/frame
+            // Spinning rotation like fruit ninja
+            obj.rotation = Math.random() * 360;
+            obj.rotationVelocity = (Math.random() - 0.5) * 20; // -10 to 10 deg/frame
             
             obj.addEventListener('click', handleGameClick);
             gameArea.appendChild(obj);
@@ -374,39 +384,27 @@
             const gameAreaWidth = gameArea.offsetWidth;
 
             gameObjects.forEach(obj => {
-                // Apply gravity
-                obj.velocity.y += GRAVITY;
+                // Apply gravity (Fruit Ninja physics)
+                obj.velocity.y += GRAVITY * 1.2; // Slightly stronger gravity
                 
-                // Apply friction
-                obj.velocity.x *= FRICTION;
-                obj.velocity.y *= FRICTION;
+                // Less friction for more arc-like motion
+                obj.velocity.x *= 0.995;
                 
                 // Update position
                 let newX = parseFloat(obj.style.left) + obj.velocity.x;
                 let newY = parseFloat(obj.style.top) + obj.velocity.y;
                 
-                // Bounce off walls
-                if (newX < 0 || newX > gameAreaWidth - 80) {
-                    obj.velocity.x *= -0.8; // Dampen bounce
-                    newX = Math.max(0, Math.min(newX, gameAreaWidth - 80));
-                }
-                
-                // Bounce off bottom
-                if (newY > gameAreaHeight - 100) {
-                    obj.velocity.y *= -0.6; // Dampen bounce
-                    newY = gameAreaHeight - 100;
-                }
-                
-                // Update rotation
+                // Update rotation (continuous spin)
                 obj.rotation += obj.rotationVelocity;
                 
                 obj.style.left = `${newX}px`;
                 obj.style.top = `${newY}px`;
                 obj.style.transform = `rotate(${obj.rotation}deg)`;
 
-                // Check if object has left the screen
-                if (newY > gameAreaHeight + 50 || newX < -100 || newX > gameAreaWidth + 100) {
-                    if (obj.dataset.isTarget === 'true') {
+                // Remove when off-screen (falls below or exits sides)
+                if (newY > gameAreaHeight + 100 || newX < -150 || newX > gameAreaWidth + 150 || newY < -150) {
+                    if (obj.dataset.isTarget === 'true' && newY > gameAreaHeight + 100) {
+                        // Only penalize targets that fall below (missed)
                         updateScore(-20, 'miss');
                     }
                     obj.remove();
@@ -426,14 +424,31 @@
                 updateScore(-10, 'miss');
             }
             
-            // Fling away effect
-            obj.style.transition = 'all 0.3s ease-out';
-            obj.style.transform = 'scale(0.3) rotate(720deg)';
-            obj.style.opacity = '0';
-
-            setTimeout(() => {
-                obj.remove();
-            }, 300);
+            // Fruit Ninja slice effect - split and fly away
+            const rect = obj.getBoundingClientRect();
+            
+            // Create two halves
+            for (let i = 0; i < 2; i++) {
+                const half = obj.cloneNode(true);
+                half.style.clipPath = i === 0 ? 'polygon(0 0, 100% 0, 50% 100%, 0 100%)' : 'polygon(50% 0, 100% 0, 100% 100%, 50% 100%)';
+                half.style.transition = 'all 0.6s cubic-bezier(0.25, 0.46, 0.45, 0.94)';
+                half.style.left = obj.style.left;
+                half.style.top = obj.style.top;
+                
+                gameArea.appendChild(half);
+                
+                // Animate halves flying apart
+                setTimeout(() => {
+                    const angle = i === 0 ? -30 : 30;
+                    half.style.transform = `translate(${i === 0 ? -100 : 100}px, 200px) rotate(${angle * 10}deg) scale(0.5)`;
+                    half.style.opacity = '0';
+                }, 10);
+                
+                setTimeout(() => half.remove(), 650);
+            }
+            
+            // Remove original
+            obj.remove();
         }
         
         function updateScore(points, type = 'normal') {
@@ -498,26 +513,14 @@
                 return;
             }
 
-            const playCheckboxes = document.querySelectorAll('#playFilters input:checked');
-            const playFilters = Array.from(playCheckboxes).map(cb => cb.id.replace('playFilter', '').toLowerCase());
-            
             targetFilter = document.querySelector('#targetFilters input:checked').value;
-            
-            if (playFilters.length === 0) {
-                statusMsg.textContent = "Please select at least one filter for 'Games to Put in Play'.";
-                return;
-            }
 
-            if (!playFilters.includes(targetFilter)) {
-                 statusMsg.textContent = `Warning: Your target filter ('${targetFilter}') is not selected for 'Games to Put in Play'. You might only see non-targets!`;
-            }
-
-            startGameBtn.innerHTML = '<span class="loader"></span> Loading Games...';
+            startGameBtn.innerHTML = '<span class="loader"></span> Loading All Games...';
             startGameBtn.disabled = true;
             statusMsg.textContent = "";
 
             try {
-                const games = await fetchGameCollection(username, playFilters);
+                const games = await fetchGameCollection(username);
                 
                 allGamesData = games;
                 statusMsg.textContent = `Loaded ${games.length} games. Starting...`;

@@ -57,6 +57,7 @@ def generate_html_index(output_file='index.html'):
     
     # Capture the generation time
     generation_time_utc = datetime.now(timezone.utc)
+    generation_time_iso = generation_time_utc.replace(microsecond=0).isoformat()
     MTN_OFFSET = timedelta(hours=-7)
     generation_time_mtn = generation_time_utc + MTN_OFFSET
     generation_time_str = generation_time_mtn.strftime('%Y-%m-%d %H:%M:%S MST/MDT')
@@ -759,28 +760,28 @@ def generate_html_index(output_file='index.html'):
             setFileTypeFilter(currentFilter); // *** CHANGE 2: Call to set initial filter/active button
             
             // Update time since generation
-            function updateTimeSince() {{
-                const generationTime = new Date('{generation_time_utc.isoformat()}');
+            function updateTimeSince() {
+                const generationTime = new Date('GENERATION_TIME_ISO_PLACEHOLDER');
                 const now = new Date();
                 const diffMs = now - generationTime;
                 const diffSeconds = Math.floor(diffMs / 1000);
                 
                 let timeSinceText = '';
-                if (diffSeconds < 60) {{
+                if (diffSeconds < 60) {
                     timeSinceText = '(Just now)';
-                }} else if (diffSeconds < 3600) {{
+                } else if (diffSeconds < 3600) {
                     const minutes = Math.floor(diffSeconds / 60);
                     timeSinceText = `(` + minutes + ` minute` + (minutes > 1 ? 's' : '') + ` ago)`;
-                }} else if (diffSeconds < 86400) {{
+                } else if (diffSeconds < 86400) {
                     const hours = Math.floor(diffSeconds / 3600);
                     timeSinceText = `(` + hours + ` hour` + (hours > 1 ? 's' : '') + ` ago)`;
-                }} else {{
+                } else {
                     const days = Math.floor(diffSeconds / 86400);
                     timeSinceText = `(` + days + ` day` + (days > 1 ? 's' : '') + ` ago)`;
-                }}
+                }
                 
                 document.getElementById('timeSince').textContent = timeSinceText;
-            }}
+            }
             
             updateTimeSince();
             // Update every minute
@@ -811,6 +812,9 @@ def generate_html_index(output_file='index.html'):
     </div> </body>
 </html>
 """
+
+    # Replace the timestamp placeholder
+    html_content = html_content.replace('GENERATION_TIME_ISO_PLACEHOLDER', generation_time_iso)
 
     # Write the content to the specified output file
     with open(output_file, 'w', encoding='utf-8') as f:
