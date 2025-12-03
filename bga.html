@@ -189,11 +189,6 @@
         <a href="index.html" class="back-button">← Back to Hub</a>
         <h1>👨‍👩‍👧‍👦 BGG Family Viewer</h1>
         
-        <div class="search-container">
-            <input type="number" id="familyIdInput" class="search-input" placeholder="Enter Family ID..." value="70360">
-            <button id="loadBtn">Load Family</button>
-        </div>
-
         <div id="debugConsole" class="debug-panel"></div>
 
         <div class="game-count" id="gameCount"></div>
@@ -238,15 +233,8 @@
 
         // Fetch family games from BGG Family API
         async function loadFamilyGames() {
-            const familyId = document.getElementById('familyIdInput').value.trim();
+            const familyId = 70360; // Hardcoded BGA family ID
             log(`=== STARTING LOAD FOR FAMILY ID: ${familyId} ===`);
-            
-            if (!familyId) {
-                log('ERROR: No Family ID entered', 'error');
-                document.getElementById('errorDiv').style.display = 'block';
-                document.getElementById('errorDiv').textContent = 'Please enter a Family ID.';
-                return;
-            }
             
             document.getElementById('loadingDiv').style.display = 'block';
             document.getElementById('errorDiv').style.display = 'none';
@@ -284,51 +272,65 @@
                 const rootTag = xml.documentElement.tagName;
                 log(`Root element: <${rootTag}>`);
                 
-                // Get items - they may be at root level or under a family element
-                let items = [];
+                // Get family info and extract game links
+                let familyName = `Family ${familyId}`;
+                let gameIds = [];
                 
                 // Try to find a family element first
                 let family = xml.querySelector('family');
                 if (family) {
                     log('Found <family> element');
-                    const familyType = family.getAttribute('type') || 'Family';
-                    const familyName = family.querySelector('name')?.textContent || `Family ${familyId}`;
-                    log(`Family type: "${familyType}", Family name: "${familyName}"`);
-                    document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 ${familyName}`;
-                    items = family.querySelectorAll('item');
+                    familyName = family.querySelector('name')?.textContent || familyName;
+                    // Extract game IDs from link elements
+                    const links = family.querySelectorAll('link[type="boardgamefamily"]');
+                    links.forEach(link => {
+                        const id = link.getAttribute('id');
+                        if (id) gameIds.push(id);
+                    });
                 } else if (rootTag === 'family') {
                     log('Root element IS family, using documentElement');
-                    const familyType = xml.documentElement.getAttribute('type') || 'Family';
-                    const familyName = xml.documentElement.querySelector('name')?.textContent || `Family ${familyId}`;
-                    log(`Family type: "${familyType}", Family name: "${familyName}"`);
-                    document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 ${familyName}`;
-                    items = xml.documentElement.querySelectorAll('item');
+                    familyName = xml.documentElement.querySelector('name')?.textContent || familyName;
+                    const links = xml.documentElement.querySelectorAll('link[type="boardgamefamily"]');
+                    links.forEach(link => {
+                        const id = link.getAttribute('id');
+                        if (id) gameIds.push(id);
+                    });
                 } else if (rootTag === 'items') {
-                    log('Root element is <items>, extracting item children');
-                    items = xml.documentElement.querySelectorAll('item');
-                    document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 Family ${familyId}`;
+                    log('Root element is <items>, looking for family item with links');
+                    const familyItem = xml.querySelector('item[type="boardgamefamily"]');
+                    if (familyItem) {
+                        familyName = familyItem.querySelector('name')?.getAttribute('value') || familyName;
+                        const links = familyItem.querySelectorAll('link[type="boardgamefamily"]');
+                        log(`Found ${links.length} <link> elements in family item`);
+                        links.forEach((link, idx) => {
+                            const id = link.getAttribute('id');
+                            const value = link.getAttribute('value');
+                            log(`  Link ${idx + 1}: id="${id}", value="${value}"`);
+                            if (id) gameIds.push(id);
+                        });
+                    }
                 } else {
-                    // Last resort: items might be at root level directly
-                    log(`Root is <${rootTag}>, checking if it has item children`);
-                    const childItems = Array.from(xml.documentElement.children).filter(c => c.tagName === 'item');
-                    if (childItems.length > 0) {
-                        log(`Found ${childItems.length} <item> children at root level`);
-                        items = childItems;
-                        document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 Family ${familyId}`;
+                    // Last resort: check for items with links
+                    log(`Root is <${rootTag}>, checking for items with link children`);
+                    const items = xml.documentElement.querySelectorAll('item');
+                    if (items.length > 0) {
+                        log(`Found ${items.length} item elements, checking for links`);
+                        items.forEach(item => {
+                            const links = item.querySelectorAll('link');
+                            links.forEach(link => {
+                                const id = link.getAttribute('id');
+                                if (id) gameIds.push(id);
+                            });
+                        });
                     } else {
                         log(`Available root children: ${Array.from(xml.documentElement.children).map(c => c.tagName).join(', ')}`, 'error');
                         throw new Error('No family data or items found in response');
                     }
                 }
                 
-                log(`Found ${items.length} <item> elements`);
-                
-                const gameIds = [];
-                items.forEach((item, idx) => {
-                    const id = item.getAttribute('id');
-                    log(`  Item ${idx + 1}: id="${id}"`);
-                    if (id) gameIds.push(id);
-                });
+                log(`Family name: "${familyName}"`);
+                document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 ${familyName}`;
+                log(`Extracted ${gameIds.length} game IDs from links`);
                 
                 log(`Extracted ${gameIds.length} game IDs total`);
                 
@@ -481,13 +483,13 @@
         }
 
         // Load button event listener
-        document.getElementById('loadBtn').addEventListener('click', () => {
+        document.getElementById('loadBtn')?.addEventListener('click', () => {
             logs.length = 0; // Clear logs on new load
             loadFamilyGames();
         });
         
         // Allow Enter key to load
-        document.getElementById('familyIdInput').addEventListener('keypress', function(e) {
+        document.getElementById('familyIdInput')?.addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
                 logs.length = 0; // Clear logs on new load
                 loadFamilyGames();
@@ -498,8 +500,9 @@
         window.addEventListener('load', () => {
             log('=== PAGE LOADED ===');
             log('BGG Family Viewer ready');
-            log('Enter a Family ID and click "Load Family" to start');
+            log('Loading Board Game Arena family (ID: 70360)...');
             updateDebugPanel();
+            loadFamilyGames();
         });
     </script>
 </body>
