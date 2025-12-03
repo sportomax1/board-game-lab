@@ -3,12 +3,13 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>BGG Family Viewer</title>
+    <title>BGG Family Viewer - Debug Edition</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>👨‍👩‍👧‍👦</text></svg>">
     <style>
         body {
             margin: 0;
             padding: 0;
-            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, Arial, sans-serif;
+            font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI', 'Courier New', monospace;
             background: #f7f7fa;
             color: #222;
         }
@@ -23,7 +24,7 @@
         }
         h1 {
             font-size: 1.7em;
-            margin-bottom: 1em;
+            margin-bottom: 0.5em;
             text-align: center;
             color: #1976d2;
         }
@@ -31,7 +32,7 @@
             background: #fff;
             border-radius: 12px;
             box-shadow: 0 2px 12px #0001;
-            margin-bottom: 1.5em;
+            margin-bottom: 1em;
             padding: 1em 1.2em;
         }
         .search-input {
@@ -44,6 +45,48 @@
             min-height: 44px;
             -webkit-appearance: none;
             appearance: none;
+        }
+        button {
+            width: 100%;
+            margin-top: 0.75em;
+            background: #007aff;
+            color: #fff;
+            border: none;
+            padding: 0.8em;
+            border-radius: 8px;
+            cursor: pointer;
+            font-size: 1em;
+            font-weight: 600;
+            -webkit-appearance: none;
+            appearance: none;
+            min-height: 44px;
+        }
+        button:active {
+            background: #0051d5;
+        }
+        .debug-panel {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            border-radius: 8px;
+            padding: 1em;
+            margin: 1em 0;
+            font-family: 'Courier New', monospace;
+            font-size: 0.85em;
+            max-height: 200px;
+            overflow-y: auto;
+            border: 2px solid #007aff;
+        }
+        .log-info {
+            color: #4ec9b0;
+            padding: 0.2em 0;
+        }
+        .log-warn {
+            color: #dcdcaa;
+            padding: 0.2em 0;
+        }
+        .log-error {
+            color: #f48771;
+            padding: 0.2em 0;
         }
         .game-count {
             text-align: center;
@@ -63,9 +106,12 @@
             display: flex;
             flex-direction: row;
             align-items: flex-start;
-            position: relative;
             cursor: pointer;
             transition: transform 0.2s ease;
+        }
+        .game-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 4px 20px #0002;
         }
         .game-thumbnail-container {
             display: flex;
@@ -82,17 +128,6 @@
             object-fit: cover;
             flex-shrink: 0;
         }
-        .status-emoji {
-            position: absolute;
-            top: 0.5em;
-            right: 0.5em;
-            font-size: 1.2em;
-            z-index: 1;
-        }
-        .game-card:hover {
-            transform: translateY(-2px);
-            box-shadow: 0 4px 20px #0002;
-        }
         .game-info {
             flex: 1;
         }
@@ -107,28 +142,6 @@
             font-size: 0.9em;
             color: #666;
             line-height: 1.4;
-        }
-        .bga-link {
-            background: #ff6b35;
-            color: #fff;
-            border: none;
-            border-radius: 6px;
-            padding: 0.3em 0.6em;
-            font-size: 0.75em;
-            font-weight: 600;
-            text-decoration: none;
-            display: inline-block;
-            cursor: pointer;
-            transition: background-color 0.2s ease;
-            -webkit-appearance: none;
-            appearance: none;
-            text-align: center;
-            min-width: 60px;
-            box-sizing: border-box;
-        }
-        .bga-link:hover {
-            background: #e55a2b;
-            text-decoration: none;
         }
         .loading {
             text-align: center;
@@ -178,12 +191,14 @@
         
         <div class="search-container">
             <input type="number" id="familyIdInput" class="search-input" placeholder="Enter Family ID..." value="70360">
-            <button id="loadBtn" style="width: 100%; margin-top: 0.75em; background: #007aff; color: #fff; border: none; padding: 0.8em; border-radius: 8px; cursor: pointer; font-size: 1em; font-weight: 600; -webkit-appearance: none; appearance: none; min-height: 44px;">Load Family</button>
+            <button id="loadBtn">Load Family</button>
         </div>
+
+        <div id="debugConsole" class="debug-panel"></div>
 
         <div class="game-count" id="gameCount"></div>
         
-        <div id="loadingDiv" class="loading">🎯 Loading Board Game Arena games...</div>
+        <div id="loadingDiv" class="loading">🎯 Loading family data...</div>
         <div id="errorDiv" class="error" style="display:none;"></div>
         <div id="gameList" class="game-list"></div>
     </div>
@@ -191,12 +206,43 @@
     <script>
         let allGames = [];
         let filteredGames = [];
+        const logs = [];
+
+        // Console logger that also displays on screen
+        function log(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logs.push({ message: logEntry, type });
+            
+            // Log to browser console
+            if (type === 'error') {
+                console.error(logEntry);
+            } else if (type === 'warn') {
+                console.warn(logEntry);
+            } else {
+                console.log(logEntry);
+            }
+            
+            // Update on-screen debug panel
+            updateDebugPanel();
+        }
+
+        function updateDebugPanel() {
+            const debugDiv = document.getElementById('debugConsole');
+            if (debugDiv) {
+                const logLines = logs.map(l => `<div class="log-${l.type}">${l.message}</div>`).join('');
+                debugDiv.innerHTML = logLines;
+                debugDiv.scrollTop = debugDiv.scrollHeight; // Auto-scroll to bottom
+            }
+        }
 
         // Fetch family games from BGG Family API
         async function loadFamilyGames() {
             const familyId = document.getElementById('familyIdInput').value.trim();
+            log(`=== STARTING LOAD FOR FAMILY ID: ${familyId} ===`);
             
             if (!familyId) {
+                log('ERROR: No Family ID entered', 'error');
                 document.getElementById('errorDiv').style.display = 'block';
                 document.getElementById('errorDiv').textContent = 'Please enter a Family ID.';
                 return;
@@ -209,37 +255,78 @@
             
             try {
                 // First, fetch the family data
-                const familyResponse = await fetch(`/api/bgg-helper?endpoint=family&id=${familyId}`);
+                const familyUrl = `/api/bgg-helper?endpoint=family&id=${familyId}`;
+                log(`Fetching: ${familyUrl}`);
+                
+                const familyResponse = await fetch(familyUrl);
+                log(`Response status: ${familyResponse.status}`);
+                
                 const familyText = await familyResponse.text();
+                log(`Received ${familyText.length} bytes`);
+                
+                // Log first 1000 chars of XML for debugging
+                log(`XML preview: ${familyText.substring(0, 1000)}`);
+                
                 const parser = new DOMParser();
                 const xml = parser.parseFromString(familyText, 'text/xml');
                 
                 // Check for parse errors
-                if (xml.getElementsByTagName('parsererror').length > 0) {
-                    throw new Error('Invalid XML response from family endpoint');
+                const parseErrors = xml.getElementsByTagName('parsererror');
+                if (parseErrors.length > 0) {
+                    const errorMsg = parseErrors[0].textContent;
+                    log(`XML Parse Error: ${errorMsg}`, 'error');
+                    throw new Error(`XML Parse Error: ${errorMsg}`);
                 }
                 
-                // Get family type header
-                const family = xml.querySelector('family');
+                log('XML parsed successfully');
+                
+                // Log available root elements
+                const rootTag = xml.documentElement.tagName;
+                log(`Root element: <${rootTag}>`);
+                
+                // Get family element - check various selectors
+                let family = xml.querySelector('family');
+                
                 if (!family) {
-                    throw new Error('No family data found for this ID');
+                    log('No <family> element found, checking root', 'warn');
+                    if (xml.documentElement.tagName === 'family') {
+                        family = xml.documentElement;
+                        log('Using documentElement as family');
+                    }
+                }
+                
+                if (!family) {
+                    log(`Available root children: ${Array.from(xml.documentElement.children).map(c => c.tagName).join(', ')}`, 'error');
+                    throw new Error('No family data found in response');
                 }
                 
                 const familyType = family.getAttribute('type') || 'Family';
                 const familyName = family.querySelector('name')?.textContent || `Family ${familyId}`;
+                log(`Family type: "${familyType}", Family name: "${familyName}"`);
                 document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 ${familyName}`;
                 
                 // Parse items to get game IDs
-                const items = xml.querySelectorAll('item');
-                const gameIds = Array.from(items).map(item => item.getAttribute('id')).filter(id => id);
+                const items = family.querySelectorAll('item');
+                log(`Found ${items.length} <item> elements in family`);
+                
+                const gameIds = [];
+                items.forEach((item, idx) => {
+                    const id = item.getAttribute('id');
+                    log(`  Item ${idx + 1}: id="${id}"`);
+                    if (id) gameIds.push(id);
+                });
+                
+                log(`Extracted ${gameIds.length} game IDs total`);
                 
                 if (gameIds.length === 0) {
+                    log('No games found in this family', 'warn');
                     document.getElementById('loadingDiv').style.display = 'none';
                     document.getElementById('errorDiv').style.display = 'block';
                     document.getElementById('errorDiv').textContent = 'No games found in this family.';
                     return;
                 }
                 
+                log(`Starting to fetch details for ${gameIds.length} games...`);
                 document.getElementById('gameCount').textContent = `Found ${gameIds.length} games. Loading details...`;
                 
                 // Fetch details for all games in batches (20 at a time to avoid timeouts)
@@ -249,24 +336,39 @@
                 for (let i = 0; i < gameIds.length; i += batchSize) {
                     const batch = gameIds.slice(i, i + batchSize);
                     const idsStr = batch.join(',');
+                    const batchNum = Math.floor(i / batchSize) + 1;
+                    const totalBatches = Math.ceil(gameIds.length / batchSize);
+                    
+                    log(`Batch ${batchNum}/${totalBatches}: Fetching games ${i + 1}-${Math.min(i + batchSize, gameIds.length)}`);
                     
                     try {
-                        const detailsResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsStr}&stats=1`);
+                        const thingUrl = `/api/bgg-helper?endpoint=thing&id=${idsStr}&stats=1`;
+                        const detailsResponse = await fetch(thingUrl);
+                        log(`  Response status: ${detailsResponse.status}`);
+                        
                         const detailsText = await detailsResponse.text();
+                        log(`  Received ${detailsText.length} bytes`);
+                        
                         const detailsXml = parser.parseFromString(detailsText, 'text/xml');
                         
                         // Check for parse errors
-                        if (detailsXml.getElementsByTagName('parsererror').length > 0) {
-                            console.error('Parse error in batch response');
+                        const batchParseErrors = detailsXml.getElementsByTagName('parsererror');
+                        if (batchParseErrors.length > 0) {
+                            log(`  Batch ${batchNum} XML Parse Error`, 'warn');
                             continue;
                         }
                         
                         const gameItems = detailsXml.querySelectorAll('item');
+                        log(`  Batch ${batchNum} contains ${gameItems.length} items`);
+                        
                         gameItems.forEach(item => {
                             const id = item.getAttribute('id');
-                            const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 
-                                         item.querySelector('name:first-of-type')?.getAttribute('value') || 
-                                         'Unknown Game';
+                            const nameElem = item.querySelector('name[type="primary"]');
+                            let name = nameElem ? nameElem.getAttribute('value') : null;
+                            if (!name) {
+                                const altName = item.querySelector('name');
+                                name = altName ? (altName.getAttribute('value') || altName.textContent) : 'Unknown';
+                            }
                             const thumbnail = item.querySelector('thumbnail')?.textContent || '';
                             
                             // Get average rating
@@ -274,7 +376,7 @@
                             const avgElement = item.querySelector('statistics > rating > average');
                             if (avgElement) {
                                 const value = avgElement.getAttribute('value');
-                                rating = value ? parseFloat(value).toFixed(1) : 'N/A';
+                                rating = value ? parseFloat(value).toFixed(1) : (avgElement.textContent || 'N/A');
                             }
                             
                             // Get BGG rank (boardgame subtype)
@@ -284,42 +386,42 @@
                                 rank = rankElement.getAttribute('rank') || 'Unranked';
                             }
                             
-                            allGames.push({
-                                id,
-                                name,
-                                thumbnail,
-                                rating,
-                                rank
-                            });
+                            allGames.push({ id, name, thumbnail, rating, rank });
+                            log(`    + ${name} (ID: ${id}, Rating: ⭐${rating}, Rank: #${rank})`);
                         });
                     } catch (batchError) {
-                        console.error(`Error loading batch ${Math.floor(i / batchSize) + 1}:`, batchError);
+                        log(`Batch ${batchNum} error: ${batchError.message}`, 'error');
                     }
                     
-                    // Small delay between batches
+                    // Small delay between batches to avoid overwhelming API
                     if (i + batchSize < gameIds.length) {
-                        await new Promise(resolve => setTimeout(resolve, 100));
+                        await new Promise(resolve => setTimeout(resolve, 200));
                     }
                 }
+                
+                log(`✅ Successfully loaded details for ${allGames.length} games`);
                 
                 // Sort by rating (highest first), then alphabetically
                 allGames.sort((a, b) => {
                     const ratingA = parseFloat(a.rating) || 0;
                     const ratingB = parseFloat(b.rating) || 0;
-                    
-                    if (ratingB !== ratingA) {
-                        return ratingB - ratingA;
-                    }
+                    if (ratingB !== ratingA) return ratingB - ratingA;
                     return a.name.localeCompare(b.name);
                 });
+                
+                log('Games sorted by rating (descending), then alphabetically');
                 
                 filteredGames = [...allGames];
                 displayGames();
                 document.getElementById('gameCount').textContent = `Showing ${filteredGames.length} games`;
                 document.getElementById('loadingDiv').style.display = 'none';
+                log('🎉 Family viewer loaded successfully!');
                 
             } catch (error) {
-                console.error('Error loading family games:', error);
+                log(`❌ FATAL ERROR: ${error.message}`, 'error');
+                if (error.stack) {
+                    log(`Stack trace: ${error.stack}`, 'error');
+                }
                 document.getElementById('loadingDiv').style.display = 'none';
                 document.getElementById('errorDiv').style.display = 'block';
                 document.getElementById('errorDiv').textContent = `Error: ${error.message}`;
@@ -327,10 +429,11 @@
         }
 
         function displayGames() {
+            log(`Rendering ${filteredGames.length} game cards...`);
             const gameList = document.getElementById('gameList');
             gameList.innerHTML = '';
             
-            filteredGames.forEach(game => {
+            filteredGames.forEach((game, idx) => {
                 const gameCard = document.createElement('div');
                 gameCard.className = 'game-card';
                 gameCard.setAttribute('data-game-id', game.id);
@@ -354,49 +457,35 @@
                 
                 // Make card clickable to open BGG page
                 gameCard.addEventListener('click', () => {
+                    log(`Opened: "${game.name}" (ID: ${game.id})`);
                     window.open(`https://boardgamegeek.com/boardgame/${game.id}`, '_blank');
                 });
                 
                 gameList.appendChild(gameCard);
             });
+            log(`Rendered ${filteredGames.length} cards`);
         }
-
-        function updateGameCount() {
-            const count = filteredGames.length;
-            const total = allGames.length;
-            document.getElementById('gameCount').textContent = 
-                `Showing ${count} of ${total} games`;
-        }
-
-        // Search functionality
-        document.getElementById('searchInput')?.addEventListener('input', function(e) {
-            const searchTerm = e.target.value.toLowerCase().trim();
-            
-            if (searchTerm === '') {
-                filteredGames = [...allGames];
-            } else {
-                filteredGames = allGames.filter(game => 
-                    game.name.toLowerCase().includes(searchTerm)
-                );
-            }
-            
-            displayGames();
-            updateGameCount();
-        });
 
         // Load button event listener
-        document.getElementById('loadBtn').addEventListener('click', loadFamilyGames);
+        document.getElementById('loadBtn').addEventListener('click', () => {
+            logs.length = 0; // Clear logs on new load
+            loadFamilyGames();
+        });
         
         // Allow Enter key to load
         document.getElementById('familyIdInput').addEventListener('keypress', function(e) {
             if (e.key === 'Enter') {
+                logs.length = 0; // Clear logs on new load
                 loadFamilyGames();
             }
         });
 
-        // Load default family on page load
+        // Initialize on page load
         window.addEventListener('load', () => {
-            loadFamilyGames();
+            log('=== PAGE LOADED ===');
+            log('BGG Family Viewer ready');
+            log('Enter a Family ID and click "Load Family" to start');
+            updateDebugPanel();
         });
     </script>
 </body>
