@@ -38,10 +38,6 @@
             <h1 class="text-3xl font-bold text-gray-900 mb-2 text-center">🎲 Fantasy BG Draft</h1>
             <p class="text-gray-500 text-center mb-6">Simulate a safe fantasy draft with your collection</p>
             
-            <div class="mb-4">
-                <label class="block text-sm font-medium text-gray-700 mb-2">App Password</label>
-                <input type="password" id="appPassword" class="w-full border rounded-lg px-4 py-3 text-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="Enter password">
-            </div>
             <div class="mb-6">
                 <label class="block text-sm font-medium text-gray-700 mb-2">BGG Username</label>
                 <input type="text" id="bggUsernameInput" class="w-full border rounded-lg px-4 py-3 text-lg focus:ring-2 focus:ring-indigo-500 outline-none" placeholder="BGG Username" value="sportomax">
@@ -50,7 +46,6 @@
             <button onclick="unlockApp()" class="w-full bg-indigo-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-indigo-700 transition shadow-lg">
                 Enter Draft Room
             </button>
-            <p id="passwordError" class="text-red-600 text-sm mt-3 hidden text-center font-medium">Incorrect password</p>
         </div>
     </div>
 
@@ -512,6 +507,7 @@
                 id: i,
                 name: input.value || `Team ${i+1}`,
                 roster: [],
+                pickGrades: [], // Store individual pick grades
                 budget: appState.config.auctionBudget,
                 spent: 0
             }));
@@ -695,6 +691,30 @@
             else draftGame(game);
         }
 
+        // Helper: Calculate pick grade based on percentile
+        function calculatePickGrade(game, availableGames) {
+            // Get ratings of all available games
+            const ratings = availableGames.map(g => parseFloat(g.rating)).sort((a, b) => b - a);
+            const gameRating = parseFloat(game.rating);
+            
+            // Find percentile (higher rating = better percentile)
+            const betterCount = ratings.filter(r => r > gameRating).length;
+            const percentile = (betterCount / ratings.length) * 100;
+            
+            // Grade scale
+            if (percentile <= 10) return 'A+';
+            if (percentile <= 20) return 'A';
+            if (percentile <= 30) return 'A-';
+            if (percentile <= 40) return 'B+';
+            if (percentile <= 50) return 'B';
+            if (percentile <= 60) return 'B-';
+            if (percentile <= 70) return 'C+';
+            if (percentile <= 80) return 'C';
+            if (percentile <= 90) return 'C-';
+            if (percentile <= 95) return 'D';
+            return 'F';
+        }
+
         function draftGame(game) {
             const teamIdx = appState.draftOrder[appState.currentTurn];
             const team = appState.teams[teamIdx];
@@ -707,8 +727,20 @@
                 return; 
             }
 
+            // Calculate available games (not yet drafted)
+            const availableGames = appState.draftPool.filter(g => !appState.draftedGames.includes(g.id));
+            const pickGrade = calculatePickGrade(game, availableGames);
+            const pickNumber = team.roster.length + 1;
+
             // Execute
             team.roster.push(game);
+            team.pickGrades.push({
+                pickNumber: pickNumber,
+                gameName: game.name,
+                rating: game.rating,
+                availableCount: availableGames.length,
+                grade: pickGrade
+            });
             appState.draftedGames.push(game.id);
             
             // History for Undo
@@ -763,9 +795,21 @@
             if (isNaN(bid) || bid < 0) return alert("Invalid bid");
             if (bid > team.budget) return document.getElementById('auctionError').classList.remove('hidden');
 
+            // Calculate available games and pick grade
+            const availableGames = appState.draftPool.filter(g => !appState.draftedGames.includes(g.id));
+            const pickGrade = calculatePickGrade(currentAuctionGame, availableGames);
+            const pickNumber = team.roster.length + 1;
+
             team.budget -= bid;
             team.spent += bid;
             team.roster.push(currentAuctionGame);
+            team.pickGrades.push({
+                pickNumber: pickNumber,
+                gameName: currentAuctionGame.name,
+                rating: currentAuctionGame.rating,
+                availableCount: availableGames.length,
+                grade: pickGrade
+            });
             appState.draftedGames.push(currentAuctionGame.id);
 
             // Undo History
@@ -795,13 +839,16 @@
             // 1. Remove from roster
             team.roster = team.roster.filter(g => g.id !== action.gameId);
             
-            // 2. Unmark as drafted
+            // 2. Remove pick grade
+            team.pickGrades.pop();
+            
+            // 3. Unmark as drafted
             appState.draftedGames = appState.draftedGames.filter(id => id !== action.gameId);
 
-            // 3. Restore turn
+            // 4. Restore turn
             appState.currentTurn = action.turn;
 
-            // 4. Specifics
+            // 5. Specifics
             if(action.type === 'auction') {
                 team.budget += action.cost;
                 team.spent -= action.cost;
@@ -887,19 +934,37 @@
             }
         }
 
-        function calculateDraftGrade(avgRating) {
-            if (avgRating >= 8.5) return { grade: 'A+', color: 'bg-green-600 text-white' };
-            if (avgRating >= 8.0) return { grade: 'A', color: 'bg-green-500 text-white' };
-            if (avgRating >= 7.75) return { grade: 'A-', color: 'bg-green-400 text-white' };
-            if (avgRating >= 7.5) return { grade: 'B+', color: 'bg-blue-500 text-white' };
-            if (avgRating >= 7.25) return { grade: 'B', color: 'bg-blue-400 text-white' };
-            if (avgRating >= 7.0) return { grade: 'B-', color: 'bg-blue-300 text-gray-800' };
-            if (avgRating >= 6.75) return { grade: 'C+', color: 'bg-yellow-400 text-gray-800' };
-            if (avgRating >= 6.5) return { grade: 'C', color: 'bg-yellow-300 text-gray-800' };
-            if (avgRating >= 6.25) return { grade: 'C-', color: 'bg-yellow-200 text-gray-800' };
-            if (avgRating >= 6.0) return { grade: 'D+', color: 'bg-orange-400 text-white' };
-            if (avgRating >= 5.5) return { grade: 'D', color: 'bg-orange-500 text-white' };
-            if (avgRating >= 5.0) return { grade: 'D-', color: 'bg-orange-600 text-white' };
+        function calculateDraftGrade(team) {
+            // Convert letter grades to numeric values for averaging
+            const gradeValues = {
+                'A+': 4.33, 'A': 4.0, 'A-': 3.67,
+                'B+': 3.33, 'B': 3.0, 'B-': 2.67,
+                'C+': 2.33, 'C': 2.0, 'C-': 1.67,
+                'D+': 1.33, 'D': 1.0, 'D-': 0.67,
+                'F': 0.0
+            };
+            
+            if (team.pickGrades.length === 0) {
+                return { grade: 'N/A', color: 'bg-gray-400 text-white' };
+            }
+            
+            // Calculate average of pick grades
+            const avgGradeValue = team.pickGrades.reduce((sum, pick) => 
+                sum + gradeValues[pick.grade], 0) / team.pickGrades.length;
+            
+            // Convert back to letter grade
+            if (avgGradeValue >= 4.2) return { grade: 'A+', color: 'bg-green-600 text-white' };
+            if (avgGradeValue >= 3.85) return { grade: 'A', color: 'bg-green-500 text-white' };
+            if (avgGradeValue >= 3.5) return { grade: 'A-', color: 'bg-green-400 text-white' };
+            if (avgGradeValue >= 3.15) return { grade: 'B+', color: 'bg-blue-500 text-white' };
+            if (avgGradeValue >= 2.85) return { grade: 'B', color: 'bg-blue-400 text-white' };
+            if (avgGradeValue >= 2.5) return { grade: 'B-', color: 'bg-blue-300 text-gray-800' };
+            if (avgGradeValue >= 2.15) return { grade: 'C+', color: 'bg-yellow-400 text-gray-800' };
+            if (avgGradeValue >= 1.85) return { grade: 'C', color: 'bg-yellow-300 text-gray-800' };
+            if (avgGradeValue >= 1.5) return { grade: 'C-', color: 'bg-yellow-200 text-gray-800' };
+            if (avgGradeValue >= 1.15) return { grade: 'D+', color: 'bg-orange-400 text-white' };
+            if (avgGradeValue >= 0.85) return { grade: 'D', color: 'bg-orange-500 text-white' };
+            if (avgGradeValue >= 0.5) return { grade: 'D-', color: 'bg-orange-600 text-white' };
             return { grade: 'F', color: 'bg-red-600 text-white' };
         }
 
@@ -912,14 +977,14 @@
                     const avgRating = team.roster.length > 0 
                         ? team.roster.reduce((sum, g) => sum + parseFloat(g.rating), 0) / team.roster.length 
                         : 0;
-                    const gradeInfo = calculateDraftGrade(avgRating);
+                    const gradeInfo = calculateDraftGrade(team);
                     
                     return `
                     <div class="bg-white border rounded-lg overflow-hidden shadow-sm">
                         <div class="bg-gray-100 px-3 py-2 border-b flex justify-between items-center">
                             <div>
                                 <h3 class="font-bold text-sm text-gray-800">${team.name}</h3>
-                                <div class="text-[10px] text-gray-500 mt-0.5">Avg: ${avgRating.toFixed(2)}</div>
+                                <div class="text-[10px] text-gray-500 mt-0.5">Avg Rating: ${avgRating.toFixed(2)} | Draft Grade: ${gradeInfo.grade}</div>
                             </div>
                             <div class="flex items-center gap-2">
                                 <span class="text-xs font-bold px-2 py-1 rounded ${gradeInfo.color}">${gradeInfo.grade}</span>
@@ -927,16 +992,31 @@
                             </div>
                         </div>
                         <div class="divide-y divide-gray-100">
-                            ${team.roster.map(g => `
+                            ${team.roster.map((g, idx) => {
+                                const pickInfo = team.pickGrades[idx];
+                                const pickGradeColors = {
+                                    'A+': 'bg-green-600 text-white', 'A': 'bg-green-500 text-white', 'A-': 'bg-green-400 text-white',
+                                    'B+': 'bg-blue-500 text-white', 'B': 'bg-blue-400 text-white', 'B-': 'bg-blue-300 text-gray-800',
+                                    'C+': 'bg-yellow-400 text-gray-800', 'C': 'bg-yellow-300 text-gray-800', 'C-': 'bg-yellow-200 text-gray-800',
+                                    'D+': 'bg-orange-400 text-white', 'D': 'bg-orange-500 text-white', 'D-': 'bg-orange-600 text-white',
+                                    'F': 'bg-red-600 text-white'
+                                };
+                                const pickGradeColor = pickInfo ? pickGradeColors[pickInfo.grade] : 'bg-gray-400 text-white';
+                                
+                                return `
                                 <div class="flex items-center gap-2 p-2">
+                                    <span class="text-[10px] font-bold px-1.5 py-0.5 rounded ${pickGradeColor}">#${pickInfo ? pickInfo.pickNumber : idx+1}</span>
                                     <img src="${g.image}" class="w-8 h-8 object-contain bg-gray-50 rounded">
                                     <div class="min-w-0 flex-1">
                                         <div class="font-bold text-xs text-gray-800 truncate">${g.name}</div>
                                         <div class="text-[10px] text-gray-500">${g.year}</div>
                                     </div>
-                                    <div class="text-[10px] font-bold text-gray-600">★${g.rating}</div>
+                                    <div class="flex items-center gap-1">
+                                        <span class="text-[10px] font-bold px-1.5 py-0.5 rounded ${pickGradeColor}">${pickInfo ? pickInfo.grade : 'N/A'}</span>
+                                        <div class="text-[10px] font-bold text-gray-600">★${g.rating}</div>
+                                    </div>
                                 </div>
-                            `).join('')}
+                            `}).join('')}
                         </div>
                     </div>
                 `}).join('');

@@ -42,7 +42,7 @@ module.exports = async (req, res) => {
     delete params.endpoint; // Remove endpoint from params
 
     if (!endpoint) {
-        const errorMsg = 'E-400: Missing endpoint parameter. Supported: collection, thing, user, hot, geeklist';
+        const errorMsg = 'E-400: Missing endpoint parameter. Supported: collection, thing, search, user, hot, geeklist, plays';
         console.error(errorMsg);
         console.log('--- END: BGG Helper Failed (400) ---');
         return res.status(400).json({ 
@@ -64,6 +64,9 @@ module.exports = async (req, res) => {
         case 'thing':
             bggUrl = `https://boardgamegeek.com/xmlapi2/thing?${paramString}&wait=1`;
             break;
+        case 'search':
+            bggUrl = `https://boardgamegeek.com/xmlapi2/search?${paramString}`;
+            break;
         case 'user':
             bggUrl = `https://boardgamegeek.com/xmlapi2/user?${paramString}`;
             break;
@@ -83,7 +86,7 @@ module.exports = async (req, res) => {
             bggUrl = `https://boardgamegeek.com/xmlapi2/plays?${paramString}`;
             break;
         default:
-            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, user, hot, geeklist, plays`;
+            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays`;
             console.error(errorMsg);
             console.log('--- END: BGG Helper Failed (400) ---');
             return res.status(400).json({ 
