@@ -3,7 +3,7 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
-    <title>Board Game Arena Games</title>
+    <title>BGG Family Viewer</title>
     <style>
         body {
             margin: 0;
@@ -174,14 +174,11 @@
 <body>
     <div class="container">
         <a href="index.html" class="back-button">← Back to Hub</a>
-        <h1>🎲 Board Game Arena Games</h1>
+        <h1>👨‍👩‍👧‍👦 BGG Family Viewer</h1>
         
         <div class="search-container">
-            <input type="text" id="searchInput" class="search-input" placeholder="Search BGA games...">
-            <div style="margin-top: 0.75em; display: grid; grid-template-columns: 1fr 1fr; gap: 0.5em;">
-                <button id="sortAlpha" class="sort-btn" style="background: #007aff; color: #fff; border: none; padding: 0.5em; border-radius: 8px; cursor: pointer;">A-Z</button>
-                <button id="sortRating" class="sort-btn" style="background: #f0f0f0; color: #222; border: none; padding: 0.5em; border-radius: 8px; cursor: pointer;">⭐ Rating</button>
-            </div>
+            <input type="number" id="familyIdInput" class="search-input" placeholder="Enter Family ID..." value="70360">
+            <button id="loadBtn" style="width: 100%; margin-top: 0.75em; background: #007aff; color: #fff; border: none; padding: 0.8em; border-radius: 8px; cursor: pointer; font-size: 1em; font-weight: 600; -webkit-appearance: none; appearance: none; min-height: 44px;">Load Family</button>
         </div>
 
         <div class="game-count" id="gameCount"></div>
@@ -194,220 +191,138 @@
     <script>
         let allGames = [];
         let filteredGames = [];
-        let userCollection = {};
-        let sortMode = 'rating'; // 'alpha' or 'rating'
 
-        // Load user collection for status emojis and play counts
-        async function loadUserCollection() {
-            const username = localStorage.getItem('bggUsername') || 'sportomax';
-            try {
-                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&stats=1`);
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                
-                const items = xml.querySelectorAll('item');
-                items.forEach(item => {
-                    const objectid = item.getAttribute('objectid');
-                    const owned = item.querySelector('status')?.getAttribute('own') === '1';
-                    const fortrade = item.querySelector('status')?.getAttribute('fortrade') === '1';
-                    const want = item.querySelector('status')?.getAttribute('want') === '1';
-                    const wanttoplay = item.querySelector('status')?.getAttribute('wanttoplay') === '1';
-                    const wanttobuy = item.querySelector('status')?.getAttribute('wanttobuy') === '1';
-                    const prevowned = item.querySelector('status')?.getAttribute('prevowned') === '1';
-                    const wishlist = item.querySelector('status')?.getAttribute('wishlist') === '1';
-                    const numplays = parseInt(item.querySelector('numplays')?.textContent || '0');
-                    
-                    userCollection[objectid] = {
-                        owned, fortrade, want, wanttoplay, wanttobuy, prevowned, wishlist, numplays
-                    };
-                });
-            } catch (error) {
-                console.error('Error loading user collection:', error);
+        // Fetch family games from BGG Family API
+        async function loadFamilyGames() {
+            const familyId = document.getElementById('familyIdInput').value.trim();
+            
+            if (!familyId) {
+                document.getElementById('errorDiv').style.display = 'block';
+                document.getElementById('errorDiv').textContent = 'Please enter a Family ID.';
+                return;
             }
-        }
-
-        // Get collection status emoji
-        function getStatusEmoji(gameId) {
-            const status = userCollection[gameId];
-            if (!status) return '';
             
-            let emojis = [];
-            if (status.owned) emojis.push('✅');
-            if (status.wanttoplay) emojis.push('🎮');
-            if (status.wanttobuy) emojis.push('🛒');
-            if (status.want) emojis.push('🔄');
-            if (status.prevowned) emojis.push('⏪');
-            if (status.fortrade) emojis.push('📤');
-            if (status.wishlist) emojis.push('⭐');
+            document.getElementById('loadingDiv').style.display = 'block';
+            document.getElementById('errorDiv').style.display = 'none';
+            document.getElementById('gameList').innerHTML = '';
+            document.getElementById('gameCount').textContent = '';
             
-            return emojis.join('');
-        }
-
-        // Get play count from user collection
-        function getPlayCount(gameId) {
-            const status = userCollection[gameId];
-            return status ? status.numplays : 0;
-        }
-
-        // Sort games by BGG rating (descending), then alphabetically
-        function sortGamesByRating(games) {
-            return games.sort((a, b) => {
-                const ratingA = parseFloat(a.rating) || 0;
-                const ratingB = parseFloat(b.rating) || 0;
+            try {
+                // First, fetch the family data
+                const familyResponse = await fetch(`/api/bgg-helper?endpoint=family&id=${familyId}`);
+                const familyText = await familyResponse.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(familyText, 'text/xml');
                 
-                // First sort by rating (descending)
-                if (ratingB !== ratingA) {
-                    return ratingB - ratingA;
+                // Check for parse errors
+                if (xml.getElementsByTagName('parsererror').length > 0) {
+                    throw new Error('Invalid XML response from family endpoint');
                 }
                 
-                // If ratings are equal, sort alphabetically
-                return a.name.localeCompare(b.name);
-            });
-        }
-
-        // Fetch game details from BGG Thing API
-        async function fetchGameDetails(gameId) {
-            try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&stats=1`);
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
+                // Get family type header
+                const family = xml.querySelector('family');
+                if (!family) {
+                    throw new Error('No family data found for this ID');
+                }
                 
-                const item = xml.querySelector('item');
-                const thumbnail = item?.querySelector('thumbnail')?.textContent || '';
-                const rank = item?.querySelector('statistics ranks rank[name="boardgame"]')?.getAttribute('value') || 'Unranked';
+                const familyType = family.getAttribute('type') || 'Family';
+                const familyName = family.querySelector('name')?.textContent || `Family ${familyId}`;
+                document.querySelector('h1').textContent = `👨‍👩‍👧‍👦 ${familyName}`;
                 
-                // Extract average rating from statistics > rating > average
-                let rating = 'N/A';
-                const ratingElement = item?.querySelector('statistics > rating > average');
-                if (ratingElement) {
-                    const ratingValue = ratingElement.getAttribute('value');
-                    if (ratingValue) {
-                        rating = parseFloat(ratingValue).toFixed(1);
-                    } else {
-                        rating = ratingElement.textContent || 'N/A';
-                        if (rating !== 'N/A') {
-                            rating = parseFloat(rating).toFixed(1);
+                // Parse items to get game IDs
+                const items = xml.querySelectorAll('item');
+                const gameIds = Array.from(items).map(item => item.getAttribute('id')).filter(id => id);
+                
+                if (gameIds.length === 0) {
+                    document.getElementById('loadingDiv').style.display = 'none';
+                    document.getElementById('errorDiv').style.display = 'block';
+                    document.getElementById('errorDiv').textContent = 'No games found in this family.';
+                    return;
+                }
+                
+                document.getElementById('gameCount').textContent = `Found ${gameIds.length} games. Loading details...`;
+                
+                // Fetch details for all games in batches (20 at a time to avoid timeouts)
+                allGames = [];
+                const batchSize = 20;
+                
+                for (let i = 0; i < gameIds.length; i += batchSize) {
+                    const batch = gameIds.slice(i, i + batchSize);
+                    const idsStr = batch.join(',');
+                    
+                    try {
+                        const detailsResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsStr}&stats=1`);
+                        const detailsText = await detailsResponse.text();
+                        const detailsXml = parser.parseFromString(detailsText, 'text/xml');
+                        
+                        // Check for parse errors
+                        if (detailsXml.getElementsByTagName('parsererror').length > 0) {
+                            console.error('Parse error in batch response');
+                            continue;
                         }
+                        
+                        const gameItems = detailsXml.querySelectorAll('item');
+                        gameItems.forEach(item => {
+                            const id = item.getAttribute('id');
+                            const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 
+                                         item.querySelector('name:first-of-type')?.getAttribute('value') || 
+                                         'Unknown Game';
+                            const thumbnail = item.querySelector('thumbnail')?.textContent || '';
+                            
+                            // Get average rating
+                            let rating = 'N/A';
+                            const avgElement = item.querySelector('statistics > rating > average');
+                            if (avgElement) {
+                                const value = avgElement.getAttribute('value');
+                                rating = value ? parseFloat(value).toFixed(1) : 'N/A';
+                            }
+                            
+                            // Get BGG rank (boardgame subtype)
+                            let rank = 'Unranked';
+                            const rankElement = item.querySelector('statistics > ratings > rank[type="subtype"][value="boardgame"]');
+                            if (rankElement) {
+                                rank = rankElement.getAttribute('rank') || 'Unranked';
+                            }
+                            
+                            allGames.push({
+                                id,
+                                name,
+                                thumbnail,
+                                rating,
+                                rank
+                            });
+                        });
+                    } catch (batchError) {
+                        console.error(`Error loading batch ${Math.floor(i / batchSize) + 1}:`, batchError);
+                    }
+                    
+                    // Small delay between batches
+                    if (i + batchSize < gameIds.length) {
+                        await new Promise(resolve => setTimeout(resolve, 100));
                     }
                 }
                 
-                return {
-                    thumbnail,
-                    rank: rank === 'Not Ranked' ? 'Unranked' : rank,
-                    rating: rating
-                };
-            } catch (error) {
-                console.error(`Error fetching details for game ${gameId}:`, error);
-                return { thumbnail: '', rank: 'Unranked', rating: 'N/A' };
-            }
-        }
-
-        // Load BGA games from BoardGameGeek geeklist
-        async function loadBGAGames() {
-            try {
-                // Load user collection first
-                await loadUserCollection();
-                
-                const response = await fetch('/api/bgg-helper?endpoint=geeklist&id=140673');
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                
-                // Parse geeklist info
-                const geeklist = xml.querySelector('geeklist');
-                if (geeklist) {
-                    const title = geeklist.querySelector('title')?.textContent;
+                // Sort by rating (highest first), then alphabetically
+                allGames.sort((a, b) => {
+                    const ratingA = parseFloat(a.rating) || 0;
+                    const ratingB = parseFloat(b.rating) || 0;
                     
-                    if (title) {
-                        document.querySelector('h1').textContent = `🎲 ${title}`;
+                    if (ratingB !== ratingA) {
+                        return ratingB - ratingA;
                     }
-                }
-                
-                // Parse geeklist items to find games with BGA links
-                const items = xml.querySelectorAll('item');
-                allGames = Array.from(items).map(item => {
-                    const id = item.getAttribute('objectid');
-                    const name = item.getAttribute('objectname');
-                    const body = item.querySelector('body')?.textContent || '';
-                    
-                    // Look for BGA URLs in the item body
-                    const bgaUrlMatch = body.match(/https:\/\/boardgamearena\.com\/gamepanel\?game=([a-zA-Z0-9_-]+)/);
-                    const bgaUrl = bgaUrlMatch ? bgaUrlMatch[0] : null;
-                    
-                    return {
-                        id: id,
-                        name: name,
-                        thumbnail: '', // Will be loaded later
-                        rank: 'Loading...', // Will be loaded later
-                        rating: 'Loading...', // Will be loaded later
-                        bgaUrl: bgaUrl,
-                        bgaGameName: bgaUrlMatch ? bgaUrlMatch[1] : null
-                    };
-                }).filter(game => game.name && game.name !== ''); // Include all games with names
-                
-                // Sort games by BGG average rating (highest first), then alphabetically
-                sortGamesByRating(allGames);
+                    return a.name.localeCompare(b.name);
+                });
                 
                 filteredGames = [...allGames];
                 displayGames();
-                updateGameCount();
-                
-                // Load details and thumbnails for visible games
-                loadDetailsForVisibleGames();
-                
+                document.getElementById('gameCount').textContent = `Showing ${filteredGames.length} games`;
                 document.getElementById('loadingDiv').style.display = 'none';
                 
             } catch (error) {
-                console.error('Error loading BGA games:', error);
+                console.error('Error loading family games:', error);
                 document.getElementById('loadingDiv').style.display = 'none';
                 document.getElementById('errorDiv').style.display = 'block';
-                document.getElementById('errorDiv').textContent = 'Error loading Board Game Arena games. Please try again later.';
-            }
-        }
-
-        // Load details for the first batch of visible games
-        async function loadDetailsForVisibleGames() {
-            const visibleGames = filteredGames.slice(0, 20); // Load first 20 games' details
-            let hasUpdates = false;
-            
-            for (const game of visibleGames) {
-                if (!game.thumbnail || game.rank === 'Loading...') {
-                    const details = await fetchGameDetails(game.id);
-                    game.thumbnail = details.thumbnail;
-                    game.rank = details.rank;
-                    game.rating = details.rating;
-                    hasUpdates = true;
-                    
-                    // Update the specific game card
-                    const gameCard = document.querySelector(`[data-game-id="${game.id}"]`);
-                    if (gameCard) {
-                        const img = gameCard.querySelector('.game-thumbnail');
-                        const rankSpan = gameCard.querySelector('.game-rank');
-                        const ratingSpan = gameCard.querySelector('.game-rating');
-                        
-                        if (img && game.thumbnail) {
-                            img.src = game.thumbnail;
-                            img.style.display = 'block';
-                        }
-                        if (rankSpan) {
-                            rankSpan.textContent = `Rank: ${game.rank}`;
-                        }
-                        if (ratingSpan) {
-                            ratingSpan.textContent = `Rating: ${game.rating}`;
-                        }
-                    }
-                }
-                // Small delay to avoid overwhelming the API
-                await new Promise(resolve => setTimeout(resolve, 100));
-            }
-            
-            // Re-sort and re-display games after loading ratings
-            if (hasUpdates) {
-                sortGamesByRating(allGames);
-                filteredGames = [...allGames];
-                displayGames();
+                document.getElementById('errorDiv').textContent = `Error: ${error.message}`;
             }
         }
 
@@ -420,36 +335,26 @@
                 gameCard.className = 'game-card';
                 gameCard.setAttribute('data-game-id', game.id);
                 
-                const statusEmoji = getStatusEmoji(game.id);
-                const playCount = getPlayCount(game.id);
-                const thumbnailDisplay = game.thumbnail ? 
-                    `<img src="${game.thumbnail}" alt="${game.name}" class="game-thumbnail">` :
-                    `<img src="" alt="${game.name}" class="game-thumbnail" style="display:none;">`;
-                
-                const bgaButton = game.bgaUrl ? `<a href="${game.bgaUrl}" target="_blank" class="bga-link">🎮 Play</a>` : '';
+                const thumbnailHtml = game.thumbnail ? 
+                    `<img src="${game.thumbnail}" alt="${game.name}" class="game-thumbnail" onerror="this.style.display='none';">` :
+                    '';
                 
                 gameCard.innerHTML = `
-                    ${statusEmoji ? `<div class="status-emoji">${statusEmoji}</div>` : ''}
                     <div class="game-thumbnail-container">
-                        ${thumbnailDisplay}
-                        ${bgaButton}
+                        ${thumbnailHtml}
                     </div>
                     <div class="game-info">
                         <div class="game-title">${game.name}</div>
                         <div class="game-details">
                             <span class="game-rating">⭐ ${game.rating}</span> | <span class="game-rank">Rank: ${game.rank}</span><br>
-                            ${playCount > 0 ? `<span class="play-count">Plays: ${playCount}</span><br>` : ''}
                             BGG ID: ${game.id}
                         </div>
                     </div>
                 `;
                 
-                // Make card clickable to open BGG page (but not the BGA button)
-                gameCard.addEventListener('click', (e) => {
-                    // Don't open BGG if clicking on the BGA button
-                    if (!e.target.classList.contains('bga-link')) {
-                        window.open(`https://boardgamegeek.com/boardgame/${game.id}`, '_blank');
-                    }
+                // Make card clickable to open BGG page
+                gameCard.addEventListener('click', () => {
+                    window.open(`https://boardgamegeek.com/boardgame/${game.id}`, '_blank');
                 });
                 
                 gameList.appendChild(gameCard);
@@ -460,11 +365,11 @@
             const count = filteredGames.length;
             const total = allGames.length;
             document.getElementById('gameCount').textContent = 
-                `Showing ${count} of ${total} games available on Board Game Arena`;
+                `Showing ${count} of ${total} games`;
         }
 
         // Search functionality
-        document.getElementById('searchInput').addEventListener('input', function(e) {
+        document.getElementById('searchInput')?.addEventListener('input', function(e) {
             const searchTerm = e.target.value.toLowerCase().trim();
             
             if (searchTerm === '') {
@@ -475,45 +380,24 @@
                 );
             }
             
-            // Apply sorting based on current mode
-            if (sortMode === 'alpha') {
-                filteredGames.sort((a, b) => a.name.localeCompare(b.name));
-            } else {
-                sortGamesByRating(filteredGames);
-            }
-            
             displayGames();
             updateGameCount();
-            
-            // Load details for newly filtered games
-            if (filteredGames.length <= 20) {
-                loadDetailsForVisibleGames();
+        });
+
+        // Load button event listener
+        document.getElementById('loadBtn').addEventListener('click', loadFamilyGames);
+        
+        // Allow Enter key to load
+        document.getElementById('familyIdInput').addEventListener('keypress', function(e) {
+            if (e.key === 'Enter') {
+                loadFamilyGames();
             }
         });
 
-        // Sort button event listeners
-        document.getElementById('sortAlpha').addEventListener('click', function() {
-            sortMode = 'alpha';
-            document.getElementById('sortAlpha').style.background = '#007aff';
-            document.getElementById('sortAlpha').style.color = '#fff';
-            document.getElementById('sortRating').style.background = '#f0f0f0';
-            document.getElementById('sortRating').style.color = '#222';
-            const searchInput = document.getElementById('searchInput');
-            searchInput.dispatchEvent(new Event('input')); // Trigger re-filter/re-sort
+        // Load default family on page load
+        window.addEventListener('load', () => {
+            loadFamilyGames();
         });
-
-        document.getElementById('sortRating').addEventListener('click', function() {
-            sortMode = 'rating';
-            document.getElementById('sortRating').style.background = '#007aff';
-            document.getElementById('sortRating').style.color = '#fff';
-            document.getElementById('sortAlpha').style.background = '#f0f0f0';
-            document.getElementById('sortAlpha').style.color = '#222';
-            const searchInput = document.getElementById('searchInput');
-            searchInput.dispatchEvent(new Event('input')); // Trigger re-filter/re-sort
-        });
-
-        // Load games when page loads
-        window.addEventListener('load', loadBGAGames);
     </script>
 </body>
 </html>
