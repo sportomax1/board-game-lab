@@ -103,6 +103,21 @@
             transform: scale(0.98);
         }
 
+        .settings-btn {
+            background: none;
+            border: 1px solid #ddd;
+            padding: 0.5rem 0.75rem;
+            font-size: 1.2rem;
+            border-radius: 8px;
+            cursor: pointer;
+            transition: all 0.2s;
+        }
+
+        .settings-btn:active {
+            background: #f0f0f0;
+            border-color: #999;
+        }
+
         .btn-secondary {
             background: #e5e7eb;
             color: #333;
@@ -522,13 +537,20 @@
 </head>
 <body>
     <div class="container">
-        <div class="header">
-            <h1>📦 Game Versions</h1>
+        <div class="header" style="display: flex; justify-content: space-between; align-items: center;">
+            <h1 style="margin: 0;">📦 Game Versions</h1>
+            <button class="settings-btn" id="settingsBtn" title="Settings">⚙️</button>
         </div>
 
         <div class="main-content">
-            <div class="search-bar">
-                <input type="text" id="searchInput" class="search-input" placeholder="Search games...">
+            <div class="search-bar" style="display: flex; gap: 0.5rem; align-items: center; padding: 1rem; border-bottom: 1px solid #eee;">
+                <input type="text" id="searchInput" class="search-input" placeholder="Search games..." style="flex: 1;">
+                <select id="sortSelect" style="padding: 0.5rem 0.75rem; border: 1px solid #ddd; border-radius: 8px; font-size: 0.9rem; background: white; cursor: pointer;">
+                    <option value="name">Sort: Name ↑</option>
+                    <option value="name-desc">Sort: Name ↓</option>
+                    <option value="volume">Sort: Volume ↑</option>
+                    <option value="volume-desc">Sort: Volume ↓</option>
+                </select>
             </div>
 
             <div class="games-list" id="gamesList"></div>
@@ -612,6 +634,9 @@
         const gamesList = document.getElementById('gamesList');
         const searchInput = document.getElementById('searchInput');
         const settingsModal = document.getElementById('settingsModal');
+        const settingsBtn = document.getElementById('settingsBtn');
+        const sortSelect = document.getElementById('sortSelect');
+        let currentSortOrder = 'name';
 
         // Show modal on load
         function showModal() {
@@ -620,6 +645,9 @@
             }
             settingsModal.classList.remove('hidden');
         }
+
+        // Settings button click handler
+        settingsBtn.addEventListener('click', showModal);
 
         // Hide modal
         function hideModal() {
@@ -647,6 +675,12 @@
 
         // Search
         searchInput.addEventListener('input', renderGames);
+
+        // Sort change
+        sortSelect.addEventListener('change', (e) => {
+            currentSortOrder = e.target.value;
+            renderGames();
+        });
 
         // Helper functions
         async function fetchWithRetry(url, maxRetries = 3) {
@@ -718,7 +752,7 @@
 
                     // Process games in batches
                     await processGameBatches();
-                    hideModal();
+                    setTimeout(() => hideModal(), 500);
                 }
 
             } catch (error) {
@@ -796,7 +830,9 @@
                                 width: calculateStats(widths),
                                 length: calculateStats(lengths),
                                 depth: calculateStats(depths),
-                                weight: calculateStats(weights)
+                                weight: calculateStats(weights),
+                                avgVolume: widths.length > 0 && lengths.length > 0 && depths.length > 0 ? 
+                                    (widths.reduce((a,b)=>a+b,0)/widths.length) * (lengths.reduce((a,b)=>a+b,0)/lengths.length) * (depths.reduce((a,b)=>a+b,0)/depths.length) : 0
                             }
                         };
                         batchVersions++;
@@ -855,6 +891,8 @@
 
             gamesList.innerHTML = games.map(([gameId, game]) => {
                 const stats = game.stats;
+                const avgSizes = getAverageSizes(game.versions);
+                const mostCommon = getMostCommonSize(game.versions);
                 return `
                     <div class="game-card" data-game-id="${gameId}">
                         <div class="game-card-main">
@@ -863,7 +901,11 @@
                             </div>
                             <div class="game-info">
                                 <div class="game-header">${escapeHtml(game.name)}</div>
-                                <span class="game-count">📦 ${stats.versionCount}</span>
+                                <div style="font-size: 0.8rem; color: #666; margin-top: 0.25rem;">
+                                    <div>📏 Avg: ${avgSizes.width}" × ${avgSizes.length}" × ${avgSizes.depth}"</div>
+                                    <div style="margin-top: 0.15rem;">🔁 Common: ${mostCommon.width}" × ${mostCommon.length}" × ${mostCommon.depth}"</div>
+                                </div>
+                                <span class="game-count" style="margin-top: 0.25rem;">📦 ${stats.versionCount} versions</span>
                             </div>
                         </div>
                     </div>
@@ -941,6 +983,56 @@
         // Close details modal
         function closeDetailsModal() {
             document.getElementById('detailsModal').classList.add('hidden');
+        }
+
+        // Calculate average sizes from versions (excluding blanks, preferring ENG)
+        function getAverageSizes(versions) {
+            const englishVersions = versions.filter(v => !v.language || v.language.includes('ENG') || v.language.includes('English'));
+            const vToUse = englishVersions.length > 0 ? englishVersions : versions;
+            
+            const validVersions = vToUse.filter(v => v.width > 0 && v.length > 0 && v.depth > 0);
+            if (validVersions.length === 0) {
+                return { width: '—', length: '—', depth: '—', volume: 0 };
+            }
+            
+            const avgWidth = validVersions.reduce((sum, v) => sum + v.width, 0) / validVersions.length;
+            const avgLength = validVersions.reduce((sum, v) => sum + v.length, 0) / validVersions.length;
+            const avgDepth = validVersions.reduce((sum, v) => sum + v.depth, 0) / validVersions.length;
+            const volume = avgWidth * avgLength * avgDepth;
+            
+            return {
+                width: avgWidth.toFixed(1),
+                length: avgLength.toFixed(1),
+                depth: avgDepth.toFixed(1),
+                volume
+            };
+        }
+
+        // Get most common size dimensions from versions (excluding blanks, preferring ENG)
+        function getMostCommonSize(versions) {
+            const englishVersions = versions.filter(v => !v.language || v.language.includes('ENG') || v.language.includes('English'));
+            const vToUse = englishVersions.length > 0 ? englishVersions : versions;
+            
+            const validVersions = vToUse.filter(v => v.width > 0 && v.length > 0 && v.depth > 0);
+            if (validVersions.length === 0) {
+                return { width: '—', length: '—', depth: '—' };
+            }
+            
+            // Group by dimension signatures
+            const dimensionSigs = {};
+            validVersions.forEach(v => {
+                const sig = `${v.width.toFixed(1)},${v.length.toFixed(1)},${v.depth.toFixed(1)}`;
+                dimensionSigs[sig] = (dimensionSigs[sig] || 0) + 1;
+            });
+            
+            // Find most common
+            let mostCommonSig = Object.entries(dimensionSigs).sort((a, b) => b[1] - a[1])[0][0];
+            const dims = mostCommonSig.split(',');
+            return {
+                width: dims[0],
+                length: dims[1],
+                depth: dims[2]
+            };
         }
 
         // Update cache info
