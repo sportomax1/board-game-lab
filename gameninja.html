@@ -185,23 +185,32 @@
         const FRICTION = 0.99; // Air friction
 
         // --- BGG API Helper ---
-        async function fetchWithRetry(url, maxRetries = 3, delay = 1500) {
+        async function fetchWithRetry(url, maxRetries = 4, delayStages = [1000, 3000, 5000, 10000]) {
             for (let i = 0; i < maxRetries; i++) {
                 try {
+                    const displayUrl = url.length > 80 ? url.substring(0, 77) + '...' : url;
+                    statusMsg.textContent = `🔗 API Call: ${displayUrl}`;
+                    console.log(`Attempt ${i+1}/${maxRetries}: ${url}`);
+                    
                     const response = await fetch(url);
                     if (response.status === 202) {
-                        console.log('BGG is processing (202), retrying...');
+                        const delaySeconds = delayStages[Math.min(i, delayStages.length - 1)] / 1000;
+                        statusMsg.textContent = `⏳ BGG Processing (202)... Retry in ${delaySeconds}s`;
+                        console.log(`BGG is processing (202), retrying in ${delaySeconds}s...`);
                         throw new Error('Collection is processing, please wait...');
                     }
                     if (!response.ok) {
                         throw new Error(`HTTP error! status: ${response.status}`);
                     }
+                    statusMsg.textContent = `✅ API Response received`;
                     return response;
                 } catch (error) {
                     console.warn(`Attempt ${i+1} failed: ${error.message}`);
                     if (i < maxRetries - 1) {
-                        statusMsg.textContent = `Retrying... (${i+1}/${maxRetries})`;
-                        await new Promise(resolve => setTimeout(resolve, delay * (i + 1)));
+                        const delay = delayStages[i];
+                        const delaySeconds = delay / 1000;
+                        statusMsg.textContent = `⚠️ Attempt ${i+1} failed. Retrying in ${delaySeconds}s... (${i+1}/${maxRetries})`;
+                        await new Promise(resolve => setTimeout(resolve, delay));
                     } else {
                         throw error;
                     }
@@ -214,21 +223,26 @@
             
             // Build filter string from selected collections
             let filterStr = '';
-            if (collectionFilters.includes('own')) filterStr += '&own=1';
-            if (collectionFilters.includes('wanttoplay')) filterStr += '&wanttoplay=1';
-            if (collectionFilters.includes('wanttobuy')) filterStr += '&wanttobuy=1';
-            if (collectionFilters.includes('prevowned')) filterStr += '&prevowned=1';
+            let filterNames = [];
+            if (collectionFilters.includes('own')) { filterStr += '&own=1'; filterNames.push('Own'); }
+            if (collectionFilters.includes('wanttoplay')) { filterStr += '&wanttoplay=1'; filterNames.push('Want to Play'); }
+            if (collectionFilters.includes('wanttobuy')) { filterStr += '&wanttobuy=1'; filterNames.push('Want to Buy'); }
+            if (collectionFilters.includes('prevowned')) { filterStr += '&prevowned=1'; filterNames.push('Prev. Owned'); }
             
             // If no filters selected, default to all
             if (!filterStr) {
                 filterStr = '&own=1&wanttoplay=1&wanttobuy=1&prevowned=1';
+                filterNames = ['Own', 'Want to Play', 'Want to Buy', 'Prev. Owned'];
             }
+            
+            statusMsg.textContent = `🔍 Fetching collections: ${filterNames.join(', ')}...`;
             
             const url = `/api/bgg-helper?endpoint=collection&username=${safeUsername}${filterStr}&stats=1`;
             console.log('Fetching collection URL:', url);
             
             const response = await fetchWithRetry(url);
             
+            statusMsg.textContent = `📦 Parsing XML response...`;
             const text = await response.text();
             console.log('Raw API Response:', text.substring(0, 500)); // Log first 500 chars
             
@@ -250,6 +264,7 @@
             // Get all items - subtype attribute may not always be present
             const items = xml.querySelectorAll('item');
             console.log('Found items:', items.length);
+            statusMsg.textContent = `✅ Found ${items.length} games, filtering...`;
             
             if (items.length === 0) {
                 throw new Error('No games found in collection. Try a different username or check your collection filters.');
@@ -278,6 +293,7 @@
             // Return ALL unique games - no 100 limit
             const uniqueGames = Array.from(new Map(games.map(g => [g.name, g])).values());
             console.log('Unique games with images:', uniqueGames.length);
+            statusMsg.textContent = `🎮 Loaded ${uniqueGames.length} unique games with images!`;
             
             return uniqueGames;
         }
@@ -571,15 +587,15 @@
                 return;
             }
 
-            startGameBtn.innerHTML = '<span class="loader"></span> Loading All Games...';
+            startGameBtn.innerHTML = '<span class="loader"></span> Initializing...';
             startGameBtn.disabled = true;
-            statusMsg.textContent = "";
+            statusMsg.textContent = `👤 Username: ${username}`;
 
             try {
                 const games = await fetchGameCollection(username);
                 
                 allGamesData = games;
-                statusMsg.textContent = `Loaded ${games.length} games. Starting...`;
+                statusMsg.textContent = `✨ Ready! ${games.length} games loaded. Starting in 1s...`;
                 
                 setTimeout(() => {
                     startGame();
@@ -593,7 +609,7 @@
                 let msg = err.message;
                 if (msg.includes('HTTP error') || msg.includes('Failed to fetch')) msg = "Network or API Error. Check connection or username.";
                 
-                statusMsg.textContent = msg;
+                statusMsg.textContent = `❌ ${msg}`;
                 startGameBtn.innerHTML = '<span>Try Again</span>';
                 startGameBtn.disabled = false;
             }
