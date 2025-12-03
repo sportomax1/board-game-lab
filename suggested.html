@@ -75,6 +75,15 @@
             appearance: none;
         }
 
+        .cache-info {
+            font-size: 0.75rem;
+            color: #999;
+            margin-top: 0.5rem;
+            padding: 0.5rem;
+            background: #f9f9f9;
+            border-radius: 4px;
+        }
+
         .setup-input:focus {
             outline: none;
             border-color: #6366f1;
@@ -415,10 +424,11 @@
 
         <div class="setup-section">
             <div class="input-group">
-                <input type="text" id="gameIdInput" class="setup-input" placeholder="Game ID or name" value="">
-                <button class="btn" id="loadBtn">🔍 Load</button>
+                <input type="text" id="usernameInput" class="setup-input" placeholder="BGG Username" value="sportomax">
+                <button class="btn" id="loadBtn">📦 Load</button>
                 <button class="btn btn-secondary" id="clearBtn" title="Clear cache">🗑️</button>
             </div>
+            <div class="cache-info" id="cacheInfo"></div>
             <div class="status" id="processingStatus"></div>
         </div>
 
@@ -445,33 +455,39 @@
     </div>
 
     <script>
-        const STORAGE_KEY_GAMES = 'bgg_suggested_games';
+        const STORAGE_KEY_COLLECTION = 'bgg_suggested_collection';
+        const STORAGE_KEY_POLL_DATA = 'bgg_suggested_polls';
         const STORAGE_KEY_TIMESTAMP = 'bgg_suggested_timestamp';
 
-        let allGames = {};
-        let playerCountData = {};
+        let allGames = [];
+        let gamePollData = {};
+        let currentUsername = 'sportomax';
 
-        const gameIdInput = document.getElementById('gameIdInput');
+        const usernameInput = document.getElementById('usernameInput');
         const loadBtn = document.getElementById('loadBtn');
         const clearBtn = document.getElementById('clearBtn');
         const processingStatus = document.getElementById('processingStatus');
+        const cacheInfo = document.getElementById('cacheInfo');
         const tabsContainer = document.getElementById('tabsContainer');
         const tabsContent = document.getElementById('tabsContent');
         const modalOverlay = document.getElementById('modalOverlay');
 
         // Load button
-        loadBtn.addEventListener('click', loadGame);
+        loadBtn.addEventListener('click', loadCollection);
 
         // Clear cache
         clearBtn.addEventListener('click', () => {
-            localStorage.removeItem(STORAGE_KEY_GAMES);
+            localStorage.removeItem(STORAGE_KEY_COLLECTION);
+            localStorage.removeItem(STORAGE_KEY_POLL_DATA);
             localStorage.removeItem(STORAGE_KEY_TIMESTAMP);
             processingStatus.textContent = 'Cache cleared';
-            allGames = {};
-            playerCountData = {};
+            processingStatus.classList.add('active');
+            allGames = [];
+            gamePollData = {};
             tabsContainer.innerHTML = '';
             tabsContent.innerHTML = '';
-            setTimeout(() => { processingStatus.textContent = ''; }, 2000);
+            cacheInfo.textContent = '';
+            setTimeout(() => { processingStatus.classList.remove('active'); }, 2000);
         });
 
         // Helper functions
@@ -492,88 +508,49 @@
             }
         }
 
-        // Search for game or use game ID
-        async function loadGame() {
-            let input = gameIdInput.value.trim();
-            if (!input) {
-                processingStatus.textContent = '❌ Please enter a game ID or name';
+        // Load collection
+        async function loadCollection() {
+            const username = usernameInput.value.trim();
+            if (!username) {
+                processingStatus.textContent = '❌ Please enter a username';
                 processingStatus.classList.add('active');
                 return;
             }
 
+            currentUsername = username;
+            localStorage.setItem('bgg_suggested_username', username);
+
             processingStatus.classList.add('active');
-            processingStatus.textContent = '🔍 Searching...';
+            processingStatus.textContent = '📦 Loading collection...';
 
             try {
-                let gameId = input;
+                // Check cache
+                const cached = localStorage.getItem(STORAGE_KEY_COLLECTION);
+                if (cached) {
+                    allGames = JSON.parse(cached);
+                    gamePollData = JSON.parse(localStorage.getItem(STORAGE_KEY_POLL_DATA) || '{}');
+                    processingStatus.textContent = `✅ Loaded ${allGames.length} games from cache`;
+                    updateCacheInfo();
+                    renderAllTabs();
+                } else {
+                    // Fetch collection
+                    const response = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                    const items = xml.querySelectorAll('item');
 
-                // If input is not numeric, search for it
-                if (isNaN(input)) {
-                    processingStatus.textContent = '🔍 Searching for game name...';
-                    const searchResp = await fetchWithRetry(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(input)}`);
-                    const searchXml = new DOMParser().parseFromString(await searchResp.text(), 'text/xml');
-                    const firstResult = searchXml.querySelector('item');
-                    if (!firstResult) {
-                        processingStatus.textContent = '❌ Game not found';
-                        return;
-                    }
-                    gameId = firstResult.getAttribute('id');
+                    allGames = Array.from(items).map(item => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent || 'Unknown',
+                        image: item.querySelector('image')?.textContent || ''
+                    })).filter(g => g.id);
+
+                    localStorage.setItem(STORAGE_KEY_COLLECTION, JSON.stringify(allGames));
+                    processingStatus.textContent = `✅ Loaded ${allGames.length} games`;
+                    updateCacheInfo();
+
+                    // Process games in batches
+                    await processGameBatches();
                 }
-
-                // Fetch game details
-                processingStatus.textContent = '📦 Loading game data...';
-                const response = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame&polls=1`);
-                const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                const item = xml.querySelector('item');
-
-                if (!item) {
-                    processingStatus.textContent = '❌ Game not found';
-                    return;
-                }
-
-                const gameName = item.querySelector('name[type="primary"]')?.textContent || 'Unknown';
-                const gameImage = item.querySelector('image')?.textContent || '';
-
-                allGames[gameId] = {
-                    id: gameId,
-                    name: gameName,
-                    image: gameImage
-                };
-
-                // Extract suggested numplayers poll
-                const poll = item.querySelector('poll[name="suggested_numplayers"]');
-                if (!poll) {
-                    processingStatus.textContent = '❌ No player count data found';
-                    return;
-                }
-
-                playerCountData = {};
-                const results = poll.querySelectorAll('results');
-                Array.from(results).forEach(result => {
-                    const numplayers = result.getAttribute('numplayers');
-                    const votes = {
-                        best: 0,
-                        recommended: 0,
-                        notRecommended: 0
-                    };
-
-                    result.querySelectorAll('result').forEach(r => {
-                        const value = r.getAttribute('value');
-                        const numvotes = parseInt(r.getAttribute('numvotes')) || 0;
-                        if (value === 'Best') votes.best = numvotes;
-                        else if (value === 'Recommended') votes.recommended = numvotes;
-                        else if (value === 'Not Recommended') votes.notRecommended = numvotes;
-                    });
-
-                    playerCountData[numplayers] = votes;
-                });
-
-                localStorage.setItem(STORAGE_KEY_GAMES, JSON.stringify(allGames));
-                localStorage.setItem(STORAGE_KEY_TIMESTAMP, new Date().toISOString());
-
-                renderTabs();
-                processingStatus.textContent = `✅ Loaded: ${gameName}`;
-                setTimeout(() => { processingStatus.classList.remove('active'); }, 2000);
 
             } catch (error) {
                 processingStatus.textContent = `❌ Error: ${error.message}`;
@@ -581,23 +558,101 @@
             }
         }
 
-        // Render tabs
-        function renderTabs() {
-            tabsContainer.innerHTML = '';
-            tabsContent.innerHTML = '';
+        // Process games in batches
+        async function processGameBatches() {
+            const batchSize = 20;
+            let processed = 0;
+            gamePollData = {};
 
-            const playerCounts = Object.keys(playerCountData).sort((a, b) => {
+            for (let i = 0; i < allGames.length; i += batchSize) {
+                const batch = allGames.slice(i, i + batchSize);
+                const ids = batch.map(g => g.id).join(',');
+
+                try {
+                    processingStatus.textContent = `🔗 Processing ${Math.min(processed + batch.length, allGames.length)}/${allGames.length} games...`;
+
+                    const response = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&polls=1`);
+                    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                    const items = xml.querySelectorAll('item');
+
+                    Array.from(items).forEach(item => {
+                        const gameId = item.getAttribute('id');
+                        const game = allGames.find(g => g.id === gameId);
+                        if (!game) return;
+
+                        // Extract suggested numplayers poll
+                        const poll = item.querySelector('poll[name="suggested_numplayers"]');
+                        if (poll) {
+                            const playerData = {};
+                            const results = poll.querySelectorAll('results');
+                            Array.from(results).forEach(result => {
+                                const numplayers = result.getAttribute('numplayers');
+                                const votes = {
+                                    best: 0,
+                                    recommended: 0,
+                                    notRecommended: 0
+                                };
+
+                                result.querySelectorAll('result').forEach(r => {
+                                    const value = r.getAttribute('value');
+                                    const numvotes = parseInt(r.getAttribute('numvotes')) || 0;
+                                    if (value === 'Best') votes.best = numvotes;
+                                    else if (value === 'Recommended') votes.recommended = numvotes;
+                                    else if (value === 'Not Recommended') votes.notRecommended = numvotes;
+                                });
+
+                                playerData[numplayers] = votes;
+                            });
+
+                            gamePollData[gameId] = {
+                                name: game.name,
+                                image: game.image,
+                                polls: playerData
+                            };
+                        }
+                    });
+
+                    processed += batch.length;
+                    renderAllTabs();
+
+                } catch (error) {
+                    console.error(`Error processing batch at ${i}:`, error);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+
+            localStorage.setItem(STORAGE_KEY_POLL_DATA, JSON.stringify(gamePollData));
+            localStorage.setItem(STORAGE_KEY_TIMESTAMP, new Date().toISOString());
+
+            processingStatus.textContent = `✅ Done! Processed ${Object.keys(gamePollData).length} games`;
+            setTimeout(() => { processingStatus.classList.remove('active'); }, 3000);
+        }
+
+        // Render all tabs
+        function renderAllTabs() {
+            if (Object.keys(gamePollData).length === 0) {
+                tabsContainer.innerHTML = '';
+                tabsContent.innerHTML = '';
+                return;
+            }
+
+            // Get all unique player counts
+            const playerCounts = new Set();
+            Object.values(gamePollData).forEach(game => {
+                Object.keys(game.polls).forEach(count => playerCounts.add(count));
+            });
+
+            const sorted = Array.from(playerCounts).sort((a, b) => {
                 const aNum = parseInt(a);
                 const bNum = parseInt(b);
                 return aNum - bNum;
             });
 
-            if (playerCounts.length === 0) return;
+            tabsContainer.innerHTML = '';
+            tabsContent.innerHTML = '';
 
-            // Create summary
-            const summary = generateSummary();
-
-            playerCounts.forEach((playerCount, index) => {
+            sorted.forEach((playerCount, index) => {
                 const tab = document.createElement('button');
                 tab.className = `tab ${index === 0 ? 'active' : ''}`;
                 tab.textContent = `${playerCount}P`;
@@ -608,85 +663,65 @@
                 const content = document.createElement('div');
                 content.className = `tab-content ${index === 0 ? 'active' : ''}`;
                 content.id = `player-${playerCount}-tab`;
-                content.innerHTML = renderPlayerTab(playerCount, summary);
+                content.innerHTML = renderPlayerTab(playerCount);
                 tabsContent.appendChild(content);
             });
         }
 
-        // Generate summary
-        function generateSummary() {
-            const pollSummary = document.querySelector('poll-summary') ? 
-                document.querySelector('poll-summary') : null;
-            
-            // Find best player count
-            let bestCount = null;
-            let maxBest = 0;
-            Object.entries(playerCountData).forEach(([count, votes]) => {
-                if (votes.best > maxBest) {
-                    maxBest = votes.best;
-                    bestCount = count;
-                }
-            });
-
-            return {
-                best: bestCount,
-                maxBest: maxBest
-            };
-        }
-
         // Render player tab
-        function renderPlayerTab(playerCount, summary) {
-            const votes = playerCountData[playerCount];
-            const total = votes.best + votes.recommended + votes.notRecommended;
+        function renderPlayerTab(playerCount) {
+            // Aggregate votes for this player count across all games
+            const gamesForCount = Object.entries(gamePollData)
+                .filter(([_, game]) => game.polls[playerCount])
+                .map(([gameId, game]) => ({
+                    gameId,
+                    ...game,
+                    votes: game.polls[playerCount]
+                }))
+                .sort((a, b) => b.votes.best - a.votes.best);
 
-            const bestPercent = total > 0 ? Math.round((votes.best / total) * 100) : 0;
-            const recPercent = total > 0 ? Math.round((votes.recommended / total) * 100) : 0;
-            const notRecPercent = total > 0 ? Math.round((votes.notRecommended / total) * 100) : 0;
-
-            let html = '';
-
-            // Show summary if this is best count
-            if (summary.best === playerCount) {
-                html += `
-                    <div class="summary-section">
-                        <div class="summary-title">🏆 BEST WITH ${playerCount} PLAYER${playerCount === '1' ? '' : 'S'}</div>
-                        <div class="summary-item">${votes.best.toLocaleString()} votes for "Best"</div>
-                    </div>
-                `;
+            if (gamesForCount.length === 0) {
+                return '<div class="no-data">No games with this player count</div>';
             }
 
-            html += `
-                <div class="player-card" onclick="showVoteDetails('${playerCount}')">
-                    <div class="player-count">${playerCount} Player${playerCount === '1' ? '' : 's'}</div>
-                    <div class="votes-summary">
-                        <div class="vote-badge best">
-                            👍 Best<br><div class="vote-percent">${bestPercent}%</div>
-                        </div>
-                        <div class="vote-badge recommended">
-                            👌 Recommended<br><div class="vote-percent">${recPercent}%</div>
-                        </div>
-                        <div class="vote-badge not-recommended">
-                            👎 Not Rec.<br><div class="vote-percent">${notRecPercent}%</div>
+            let html = '';
+            gamesForCount.forEach(game => {
+                const votes = game.votes;
+                const total = votes.best + votes.recommended + votes.notRecommended;
+                const bestPercent = total > 0 ? Math.round((votes.best / total) * 100) : 0;
+
+                html += `
+                    <div class="player-card" onclick="showGameDetails('${game.gameId}', '${playerCount}')">
+                        <div class="player-count">${escapeHtml(game.name)}</div>
+                        <div class="votes-summary">
+                            <div class="vote-badge best">
+                                👍 ${votes.best.toLocaleString()}<br><div class="vote-percent">${bestPercent}%</div>
+                            </div>
+                            <div class="vote-badge recommended">
+                                👌 ${votes.recommended.toLocaleString()}<br><div class="vote-percent">${Math.round((votes.recommended / total) * 100)}%</div>
+                            </div>
+                            <div class="vote-badge not-recommended">
+                                👎 ${votes.notRecommended.toLocaleString()}<br><div class="vote-percent">${Math.round((votes.notRecommended / total) * 100)}%</div>
+                            </div>
                         </div>
                     </div>
-                    ${summary.best === playerCount ? '<div class="best-flag">★ BEST WITH ' + playerCount + '</div>' : ''}
-                </div>
-            `;
+                `;
+            });
 
             return html;
         }
 
-        // Show vote details in modal
-        function showVoteDetails(playerCount) {
-            const votes = playerCountData[playerCount];
+        // Show game details in modal
+        function showGameDetails(gameId, playerCount) {
+            const game = gamePollData[gameId];
+            const votes = game.polls[playerCount];
             const total = votes.best + votes.recommended + votes.notRecommended;
 
             const bestPercent = total > 0 ? Math.round((votes.best / total) * 100) : 0;
             const recPercent = total > 0 ? Math.round((votes.recommended / total) * 100) : 0;
             const notRecPercent = total > 0 ? Math.round((votes.notRecommended / total) * 100) : 0;
 
-            const gameName = Object.values(allGames)[0]?.name || 'Game';
-            document.getElementById('modalTitle').textContent = `${playerCount} Players - ${gameName}`;
+            document.getElementById('modalTitle').textContent = `${playerCount} Players - ${escapeHtml(game.name)}`;
 
             const content = `
                 <div class="vote-detail">
@@ -741,6 +776,22 @@
             modalOverlay.classList.remove('active');
         }
 
+        // Update cache info
+        function updateCacheInfo() {
+            const timestamp = localStorage.getItem(STORAGE_KEY_TIMESTAMP);
+            if (timestamp) {
+                const date = new Date(timestamp);
+                cacheInfo.textContent = `💾 Cached: ${date.toLocaleString()} | Games: ${allGames.length}`;
+            }
+        }
+
+        // Escape HTML
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
         // Close modal on overlay click
         modalOverlay.addEventListener('click', (e) => {
             if (e.target === modalOverlay) closeModal();
@@ -748,10 +799,11 @@
 
         // Initialize
         window.addEventListener('load', () => {
-            const saved = localStorage.getItem(STORAGE_KEY_GAMES);
-            if (saved) {
-                allGames = JSON.parse(saved);
+            const savedUsername = localStorage.getItem('bgg_suggested_username');
+            if (savedUsername) {
+                usernameInput.value = savedUsername;
             }
+            updateCacheInfo();
         });
     </script>
 </body>
