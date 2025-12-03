@@ -513,7 +513,6 @@
 
     <script>
         const STORAGE_KEY_COLLECTION = 'bgg_marketplace_collection';
-        const STORAGE_KEY_MARKET_DATA = 'bgg_marketplace_data';
         const STORAGE_KEY_TIMESTAMP = 'bgg_marketplace_timestamp';
 
         let allGames = [];
@@ -545,7 +544,6 @@
         // Clear cache
         clearBtn.addEventListener('click', () => {
             localStorage.removeItem(STORAGE_KEY_COLLECTION);
-            localStorage.removeItem(STORAGE_KEY_MARKET_DATA);
             localStorage.removeItem(STORAGE_KEY_TIMESTAMP);
             processingStatus.textContent = '✅ Cache cleared';
             processingStatus.classList.add('active');
@@ -611,12 +609,11 @@
                 const cached = localStorage.getItem(STORAGE_KEY_COLLECTION);
                 if (cached) {
                     allGames = JSON.parse(cached);
-                    gameListings = JSON.parse(localStorage.getItem(STORAGE_KEY_MARKET_DATA) || '{}');
-                    processingStatus.textContent = `✅ Loaded ${allGames.length} games from cache`;
-                    console.log('✅ Loaded from cache:', allGames.length, 'games');
+                    processingStatus.textContent = `✅ Loaded ${allGames.length} games from cache. Fetching marketplace data...`;
+                    console.log('✅ Loaded collection from cache:', allGames.length, 'games');
                     updateCacheInfo();
-                    renderGames();
-                    hideModal();
+                    // Still fetch marketplace data fresh
+                    await processGameBatches();
                 } else {
                     // Fetch collection
                     const statusParams = statuses.map(s => `&${s}=1`).join('');
@@ -676,14 +673,25 @@
 
                         const marketplaceEl = item.querySelector('marketplace');
                         if (marketplaceEl) {
-                            const listings = Array.from(marketplaceEl.querySelectorAll('listing')).map(l => ({
-                                date: l.querySelector('listdate')?.getAttribute('value') || '',
-                                price: parseFloat(l.querySelector('price')?.getAttribute('value') || 0),
-                                currency: l.querySelector('price')?.getAttribute('currency') || 'USD',
-                                condition: l.querySelector('condition')?.getAttribute('value') || 'unknown',
-                                notes: l.querySelector('notes')?.getAttribute('value') || '',
-                                link: l.querySelector('link')?.getAttribute('href') || ''
-                            }));
+                            const listingCount = marketplaceEl.querySelectorAll('listing').length;
+                            console.log(`Found marketplace element for game ${gameId} with ${listingCount} listings`);
+                            
+                            const listings = Array.from(marketplaceEl.querySelectorAll('listing')).map(l => {
+                                const listdate = l.querySelector('listdate');
+                                const price = l.querySelector('price');
+                                const condition = l.querySelector('condition');
+                                const notes = l.querySelector('notes');
+                                const link = l.querySelector('link');
+                                
+                                return {
+                                    date: listdate?.getAttribute('value') || listdate?.textContent || '',
+                                    price: parseFloat(price?.getAttribute('value') || price?.textContent || 0),
+                                    currency: price?.getAttribute('currency') || 'USD',
+                                    condition: condition?.getAttribute('value') || condition?.textContent || 'unknown',
+                                    notes: notes?.getAttribute('value') || notes?.textContent || '',
+                                    link: link?.getAttribute('href') || link?.textContent || ''
+                                };
+                            });
 
                             if (listings.length > 0) {
                                 gameListings[gameId] = {
@@ -693,7 +701,10 @@
                                     stats: calculateListingStats(listings)
                                 };
                                 batchListings++;
+                                console.log(`✅ Added ${game.name} with ${listings.length} listings to gameListings`);
                             }
+                        } else {
+                            console.log(`⚠️ No marketplace data found for game ${gameId}`);
                         }
                     });
 
@@ -709,7 +720,6 @@
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
 
-            localStorage.setItem(STORAGE_KEY_MARKET_DATA, JSON.stringify(gameListings));
             localStorage.setItem(STORAGE_KEY_TIMESTAMP, new Date().toISOString());
 
             const resultText = `✅ Done! Found ${Object.keys(gameListings).length} games with listings`;
@@ -750,57 +760,66 @@
             const searchTerm = searchInput.value.toLowerCase();
             const selectedConditions = getSelectedConditions();
 
-            const games = Object.entries(gameListings)
-                .filter(([gameId, game]) => {
-                    if (!game.name.toLowerCase().includes(searchTerm)) return false;
-                    return game.listings.some(l => selectedConditions.includes(l.condition));
-                })
-                .sort((a, b) => a[1].name.localeCompare(b[1].name));
+            try {
+                const games = Object.entries(gameListings)
+                    .filter(([gameId, game]) => {
+                        if (!game || !game.name || !game.listings) {
+                            console.warn(`Invalid game data for ${gameId}:`, game);
+                            return false;
+                        }
+                        if (!game.name.toLowerCase().includes(searchTerm)) return false;
+                        return game.listings.some(l => selectedConditions.includes(l.condition));
+                    })
+                    .sort((a, b) => a[1].name.localeCompare(b[1].name));
 
-            if (games.length === 0) {
-                gamesList.innerHTML = '<div class="no-data">No games with listings found</div>';
-                return;
-            }
+                if (games.length === 0) {
+                    gamesList.innerHTML = '<div class="no-data">No games with listings found (checked ' + Object.keys(gameListings).length + ' games)</div>';
+                    return;
+                }
 
-            gamesList.innerHTML = games.map(([gameId, game]) => {
-                const stats = game.stats;
-                const filteredListings = game.listings.filter(l => selectedConditions.includes(l.condition));
+                gamesList.innerHTML = games.map(([gameId, game]) => {
+                    const stats = game.stats;
+                    const filteredListings = game.listings.filter(l => selectedConditions.includes(l.condition));
 
-                return `
-                    <div class="game-card">
-                        <div class="game-header">${escapeHtml(game.name)}</div>
-                        <div class="game-stats">
-                            <div class="stat-box">
-                                <div class="stat-label">📊 Listings</div>
-                                <div class="stat-value">${stats.count}</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-label">💵 Avg Price</div>
-                                <div class="stat-value">$${stats.avgPrice}</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-label">📉 Min</div>
-                                <div class="stat-value">$${stats.minPrice}</div>
-                            </div>
-                            <div class="stat-box">
-                                <div class="stat-label">📈 Max</div>
-                                <div class="stat-value">$${stats.maxPrice}</div>
-                            </div>
-                        </div>
-                        <div class="listings-list">
-                            ${filteredListings.map(listing => `
-                                <div class="listing-item">
-                                    <div class="listing-price">💰 $${listing.price.toFixed(2)}</div>
-                                    <div class="listing-condition ${listing.condition}">${capitalizeFirst(listing.condition)}</div>
-                                    <div class="listing-date">📅 ${formatDate(listing.date)}</div>
-                                    ${listing.notes ? `<div class="listing-notes">${escapeHtml(listing.notes)}</div>` : ''}
-                                    <a href="${listing.link}" target="_blank" class="listing-link">🔗 View Listing</a>
+                    return `
+                        <div class="game-card">
+                            <div class="game-header">${escapeHtml(game.name)}</div>
+                            <div class="game-stats">
+                                <div class="stat-box">
+                                    <div class="stat-label">📊 Listings</div>
+                                    <div class="stat-value">${stats.count}</div>
                                 </div>
-                            `).join('')}
+                                <div class="stat-box">
+                                    <div class="stat-label">💵 Avg Price</div>
+                                    <div class="stat-value">$${stats.avgPrice}</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-label">📉 Min</div>
+                                    <div class="stat-value">$${stats.minPrice}</div>
+                                </div>
+                                <div class="stat-box">
+                                    <div class="stat-label">📈 Max</div>
+                                    <div class="stat-value">$${stats.maxPrice}</div>
+                                </div>
+                            </div>
+                            <div class="listings-list">
+                                ${filteredListings.map(listing => `
+                                    <div class="listing-item">
+                                        <div class="listing-price">💰 $${listing.price.toFixed(2)}</div>
+                                        <div class="listing-condition ${listing.condition}">${capitalizeFirst(listing.condition)}</div>
+                                        <div class="listing-date">📅 ${formatDate(listing.date)}</div>
+                                        ${listing.notes ? `<div class="listing-notes">${escapeHtml(listing.notes)}</div>` : ''}
+                                        <a href="${listing.link}" target="_blank" class="listing-link">🔗 View Listing</a>
+                                    </div>
+                                `).join('')}
+                            </div>
                         </div>
-                    </div>
-                `;
-            }).join('');
+                    `;
+                }).join('');
+            } catch (error) {
+                console.error('❌ Error rendering games:', error);
+                gamesList.innerHTML = '<div class="no-data">Error rendering games: ' + error.message + '</div>';
+            }
         }
 
         // Format date
