@@ -221,79 +221,108 @@
         async function fetchGameCollection(username) {
             const safeUsername = encodeURIComponent(username);
             
-            // Build filter string from selected collections
-            let filterStr = '';
+            // Build array of selected collections
+            let selectedCollections = [];
             let filterNames = [];
-            if (collectionFilters.includes('own')) { filterStr += '&own=1'; filterNames.push('Own'); }
-            if (collectionFilters.includes('wanttoplay')) { filterStr += '&wanttoplay=1'; filterNames.push('Want to Play'); }
-            if (collectionFilters.includes('wanttobuy')) { filterStr += '&wanttobuy=1'; filterNames.push('Want to Buy'); }
-            if (collectionFilters.includes('prevowned')) { filterStr += '&prevowned=1'; filterNames.push('Prev. Owned'); }
+            if (collectionFilters.includes('own')) { selectedCollections.push('own'); filterNames.push('Own'); }
+            if (collectionFilters.includes('wanttoplay')) { selectedCollections.push('wanttoplay'); filterNames.push('Want to Play'); }
+            if (collectionFilters.includes('wanttobuy')) { selectedCollections.push('wanttobuy'); filterNames.push('Want to Buy'); }
+            if (collectionFilters.includes('prevowned')) { selectedCollections.push('prevowned'); filterNames.push('Prev. Owned'); }
             
             // If no filters selected, default to all
-            if (!filterStr) {
-                filterStr = '&own=1&wanttoplay=1&wanttobuy=1&prevowned=1';
+            if (selectedCollections.length === 0) {
+                selectedCollections = ['own', 'wanttoplay', 'wanttobuy', 'prevowned'];
                 filterNames = ['Own', 'Want to Play', 'Want to Buy', 'Prev. Owned'];
             }
             
             statusMsg.textContent = `🔍 Fetching collections: ${filterNames.join(', ')}...`;
             
-            const url = `/api/bgg-helper?endpoint=collection&username=${safeUsername}${filterStr}&stats=1`;
-            console.log('Fetching collection URL:', url);
+            // Fetch each collection separately and merge (OR logic)
+            const allGamesMap = new Map(); // Use Map to prevent duplicates
+            let totalFetched = 0;
             
-            const response = await fetchWithRetry(url);
-            
-            statusMsg.textContent = `📦 Parsing XML response...`;
-            const text = await response.text();
-            console.log('Raw API Response:', text.substring(0, 500)); // Log first 500 chars
-            
-            const parser = new DOMParser();
-            const xml = parser.parseFromString(text, 'text/xml');
-            
-            // Check for parse errors
-            if (xml.documentElement.nodeName === 'parsererror') {
-                console.error('XML Parse Error:', xml.documentElement.textContent);
-                throw new Error('API returned invalid XML. Username may be incorrect or collection is empty.');
-            }
-            
-            // Check for BGG error responses
-            const errorNode = xml.querySelector('error');
-            if (errorNode) {
-                throw new Error('BGG Error: ' + (errorNode.textContent || 'Unknown error'));
-            }
-            
-            // Get all items - subtype attribute may not always be present
-            const items = xml.querySelectorAll('item');
-            console.log('Found items:', items.length);
-            statusMsg.textContent = `✅ Found ${items.length} games, filtering...`;
-            
-            if (items.length === 0) {
-                throw new Error('No games found in collection. Try a different username or check your collection filters.');
-            }
-
-            const games = Array.from(items).map(item => {
-                const name = item.querySelector('name')?.textContent || 'Unknown';
-                const image = item.querySelector('image')?.textContent || item.querySelector('thumbnail')?.textContent || '';
+            for (let i = 0; i < selectedCollections.length; i++) {
+                const collectionType = selectedCollections[i];
+                const collectionName = filterNames[i];
                 
-                const statusNode = item.querySelector('status');
-                const status = {
-                    own: statusNode?.getAttribute('own') === '1',
-                    prevowned: statusNode?.getAttribute('prevowned') === '1',
-                    wanttoplay: statusNode?.getAttribute('wanttoplay') === '1',
-                    wanttobuy: statusNode?.getAttribute('wanttobuy') === '1',
-                };
+                try {
+                    statusMsg.textContent = `📡 Fetching ${collectionName}... (${i+1}/${selectedCollections.length})`;
+                    
+                    // Build URL for SINGLE collection type
+                    const url = `/api/bgg-helper?endpoint=collection&username=${safeUsername}&${collectionType}=1&stats=1`;
+                    console.log(`Fetching ${collectionName}:`, url);
+                    
+                    const response = await fetchWithRetry(url);
+                    const text = await response.text();
+                    console.log(`${collectionName} API Response:`, text.substring(0, 300));
+                    
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    
+                    // Check for parse errors
+                    if (xml.documentElement.nodeName === 'parsererror') {
+                        console.error(`XML Parse Error for ${collectionName}:`, xml.documentElement.textContent);
+                        continue; // Skip this collection and try the next
+                    }
+                    
+                    // Check for BGG error responses
+                    const errorNode = xml.querySelector('error');
+                    if (errorNode) {
+                        console.warn(`BGG Error for ${collectionName}:`, errorNode.textContent);
+                        continue; // Skip this collection and try the next
+                    }
+                    
+                    // Get all items from this collection
+                    const items = xml.querySelectorAll('item');
+                    console.log(`Found ${items.length} items in ${collectionName}`);
+                    
+                    // Add games to map (prevents duplicates across collections)
+                    Array.from(items).forEach(item => {
+                        const name = item.querySelector('name')?.textContent || 'Unknown';
+                        const image = item.querySelector('image')?.textContent || item.querySelector('thumbnail')?.textContent || '';
+                        
+                        if (image) { // Only keep games with images
+                            const statusNode = item.querySelector('status');
+                            const status = {
+                                own: statusNode?.getAttribute('own') === '1',
+                                prevowned: statusNode?.getAttribute('prevowned') === '1',
+                                wanttoplay: statusNode?.getAttribute('wanttoplay') === '1',
+                                wanttobuy: statusNode?.getAttribute('wanttobuy') === '1',
+                            };
+                            
+                            const gameKey = name; // Use name as unique key
+                            if (!allGamesMap.has(gameKey)) {
+                                allGamesMap.set(gameKey, {
+                                    id: item.getAttribute('objectid'),
+                                    name: name,
+                                    image: image,
+                                    status: status
+                                });
+                            }
+                        }
+                    });
+                    
+                    totalFetched += items.length;
+                    
+                } catch (err) {
+                    console.error(`Error fetching ${collectionName}:`, err);
+                    // Continue to next collection instead of failing
+                }
                 
-                return {
-                    id: item.getAttribute('objectid'),
-                    name: name,
-                    image: image,
-                    status: status
-                };
-            }).filter(g => g.image);
-
-            // Return ALL unique games - no 100 limit
-            const uniqueGames = Array.from(new Map(games.map(g => [g.name, g])).values());
-            console.log('Unique games with images:', uniqueGames.length);
-            statusMsg.textContent = `🎮 Loaded ${uniqueGames.length} unique games with images!`;
+                // Small delay between requests to avoid overwhelming API
+                if (i < selectedCollections.length - 1) {
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                }
+            }
+            
+            if (allGamesMap.size === 0) {
+                throw new Error('No games found in selected collections. Try different filters or check your username.');
+            }
+            
+            // Convert map to array
+            const uniqueGames = Array.from(allGamesMap.values());
+            console.log(`Fetched ${totalFetched} total items, ${uniqueGames.length} unique games with images`);
+            statusMsg.textContent = `🎮 Loaded ${uniqueGames.length} unique games from ${selectedCollections.length} collection(s)!`;
             
             return uniqueGames;
         }
