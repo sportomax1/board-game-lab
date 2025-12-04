@@ -1,0 +1,283 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGG Top Ranked</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .rank-badge { 
+            clip-path: polygon(0% 0%, 100% 0%, 100% 100%, 50% 85%, 0% 100%);
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen flex flex-col">
+
+    <!-- Setup Screen -->
+    <div id="setupScreen" class="fixed inset-0 bg-gradient-to-br from-indigo-900 to-purple-900 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-xl shadow-2xl p-8 max-w-md w-full">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2 text-center">🏆 BGG Rankings</h1>
+            <p class="text-gray-500 text-center mb-8">Explore the highest rated games</p>
+            
+            <div class="space-y-6">
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">List Type</label>
+                    <div class="grid grid-cols-3 gap-2">
+                        <button onclick="setMode('rank')" id="btnRank" class="py-3 px-2 rounded-lg border-2 border-purple-600 bg-purple-50 text-purple-700 font-bold text-sm">
+                            🏆 Top Ranked
+                        </button>
+                        <button onclick="setMode('hot')" id="btnHot" class="py-3 px-2 rounded-lg border-2 border-gray-200 text-gray-600 font-medium hover:border-purple-300 text-sm">
+                            🔥 Hotness
+                        </button>
+                        <button onclick="setMode('geeklist')" id="btnList" class="py-3 px-2 rounded-lg border-2 border-gray-200 text-gray-600 font-medium hover:border-purple-300 text-sm">
+                            📋 GeekList
+                        </button>
+                    </div>
+                </div>
+
+                <div id="geeklistInputGroup" class="hidden">
+                    <label class="block text-sm font-bold text-gray-700 mb-2">GeekList ID</label>
+                    <input type="number" id="geeklistId" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none transition" placeholder="e.g. 16467" value="342636">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Quantity</label>
+                    <input type="number" id="limitInput" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none transition" value="100" min="1" max="500">
+                    <p class="text-xs text-gray-500 mt-1" id="limitHelp">Fetch top X games (Max 500)</p>
+                </div>
+                
+                <button onclick="fetchGames()" class="w-full bg-purple-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-purple-700 transition shadow-lg transform hover:scale-[1.02]">
+                    Load Games
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="fixed inset-0 bg-white/90 z-40 flex flex-col items-center justify-center hidden backdrop-blur-sm">
+        <div class="animate-spin rounded-full h-16 w-16 border-4 border-purple-600 border-t-transparent mb-4"></div>
+        <h2 class="text-xl font-bold text-gray-800" id="loadingText">Connecting to BGG...</h2>
+        <div class="w-64 h-2 bg-gray-200 rounded-full mt-4 overflow-hidden">
+            <div id="progressBar" class="h-full bg-purple-600 w-0 transition-all duration-300"></div>
+        </div>
+    </div>
+
+    <!-- Main App -->
+    <div id="app" class="hidden flex-1 flex flex-col max-w-5xl mx-auto w-full">
+        <header class="bg-white shadow-sm sticky top-0 z-30 px-4 py-4">
+            <div class="flex flex-col md:flex-row md:items-center justify-between gap-4">
+                <div>
+                    <h1 class="font-bold text-2xl text-gray-900 flex items-center gap-2">
+                        <span id="headerIcon">🏆</span>
+                        <span id="headerTitle">Top Ranked</span>
+                    </h1>
+                    <p class="text-sm text-gray-500" id="headerSubtitle">BoardGameGeek's highest rated games</p>
+                </div>
+                
+                <div class="flex items-center gap-3">
+                    <select id="sortSelect" onchange="sortGames()" class="bg-gray-100 border-none rounded-lg px-4 py-2 font-medium text-gray-700 focus:ring-2 focus:ring-purple-500">
+                        <option value="rank">Sort by Rank</option>
+                        <option value="rating">Sort by Rating</option>
+                        <option value="weight">Sort by Weight</option>
+                        <option value="year">Sort by Year</option>
+                    </select>
+                    <button onclick="location.reload()" class="p-2 text-gray-400 hover:text-gray-600">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <main class="p-4 grid grid-cols-1 gap-4" id="gamesList">
+            <!-- Games injected here -->
+        </main>
+    </div>
+
+    <script>
+        let currentMode = 'rank';
+        let gamesData = [];
+
+        function setMode(mode) {
+            currentMode = mode;
+            
+            // Reset buttons
+            ['btnRank', 'btnHot', 'btnList'].forEach(id => {
+                document.getElementById(id).className = 'py-3 px-2 rounded-lg border-2 border-gray-200 text-gray-600 font-medium hover:border-purple-300 text-sm';
+            });
+
+            // Highlight active
+            const activeBtn = document.getElementById(mode === 'rank' ? 'btnRank' : mode === 'hot' ? 'btnHot' : 'btnList');
+            activeBtn.className = 'py-3 px-2 rounded-lg border-2 border-purple-600 bg-purple-50 text-purple-700 font-bold text-sm';
+
+            document.getElementById('geeklistInputGroup').classList.toggle('hidden', mode !== 'geeklist');
+            
+            // Update help text
+            const limitHelp = document.getElementById('limitHelp');
+            if (mode === 'hot') limitHelp.textContent = 'Max 50 for Hotness';
+            else limitHelp.textContent = 'Fetch top X games (Max 500)';
+        }
+
+        async function fetchGames() {
+            const limit = parseInt(document.getElementById('limitInput').value) || 100;
+            const geeklistId = document.getElementById('geeklistId').value;
+            
+            document.getElementById('setupScreen').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+            updateProgress(5, 'Initializing...');
+
+            try {
+                let ids = [];
+                
+                if (currentMode === 'rank') {
+                    // Calculate pages needed (100 items per page)
+                    const pages = Math.ceil(limit / 100);
+                    updateProgress(10, `Fetching ${pages} pages of rankings...`);
+                    
+                    for (let p = 1; p <= pages; p++) {
+                        const res = await fetch(`/api/bgg-helper?endpoint=browse&page=${p}`);
+                        const html = await res.text();
+                        
+                        // Parse HTML to find game IDs
+                        // Look for links like /boardgame/174430/gloomhaven
+                        const regex = /href="\/boardgame\/(\d+)\/[^"]*"/g;
+                        let match;
+                        while ((match = regex.exec(html)) !== null) {
+                            if (ids.length < limit) {
+                                // Avoid duplicates if any
+                                if (!ids.includes(match[1])) ids.push(match[1]);
+                            }
+                        }
+                        updateProgress(10 + (p/pages)*20, `Parsed page ${p}...`);
+                    }
+                    
+                    document.getElementById('headerIcon').textContent = '🏆';
+                    document.getElementById('headerTitle').textContent = 'Top Ranked';
+                    document.getElementById('headerSubtitle').textContent = `Top ${ids.length} Games on BGG`;
+
+                } else if (currentMode === 'hot') {
+                    const res = await fetch(`/api/bgg-helper?endpoint=hot&type=boardgame`);
+                    const text = await res.text();
+                    const xml = new DOMParser().parseFromString(text, 'text/xml');
+                    const items = Array.from(xml.querySelectorAll('item')).slice(0, limit);
+                    ids = items.map(item => item.getAttribute('id'));
+                    
+                    document.getElementById('headerIcon').textContent = '🔥';
+                    document.getElementById('headerTitle').textContent = 'The Hotness';
+                    document.getElementById('headerSubtitle').textContent = `Top ${ids.length} Trending Games`;
+
+                } else {
+                    const res = await fetch(`/api/bgg-helper?endpoint=geeklist&id=${geeklistId}`);
+                    const text = await res.text();
+                    const xml = new DOMParser().parseFromString(text, 'text/xml');
+                    const items = Array.from(xml.querySelectorAll('item')).slice(0, limit);
+                    ids = items.map(item => item.getAttribute('objectid'));
+
+                    const title = xml.querySelector('title')?.textContent || 'GeekList';
+                    document.getElementById('headerIcon').textContent = '📋';
+                    document.getElementById('headerTitle').textContent = title;
+                    document.getElementById('headerSubtitle').textContent = `Top ${ids.length} from GeekList #${geeklistId}`;
+                }
+
+                if (ids.length === 0) throw new Error('No games found.');
+
+                updateProgress(40, 'Fetching game details...');
+                
+                // Fetch details in chunks of 20
+                const chunkSize = 20;
+                const chunks = [];
+                for (let i = 0; i < ids.length; i += chunkSize) {
+                    chunks.push(ids.slice(i, i + chunkSize));
+                }
+
+                let allItems = [];
+                let processed = 0;
+
+                for (const chunk of chunks) {
+                    const res = await fetch(`/api/bgg-helper?endpoint=thing&id=${chunk.join(',')}&stats=1`);
+                    const text = await res.text();
+                    const xml = new DOMParser().parseFromString(text, 'text/xml');
+                    allItems = allItems.concat(Array.from(xml.querySelectorAll('item')));
+                    
+                    processed += chunk.length;
+                    updateProgress(40 + (processed / ids.length) * 60, `Loaded ${processed} / ${ids.length} games...`);
+                }
+
+                gamesData = allItems.map(item => {
+                    const stats = item.querySelector('statistics ratings');
+                    const rankObj = stats.querySelector('rank[name="boardgame"]');
+                    const rank = rankObj ? parseInt(rankObj.getAttribute('value')) : 999999;
+                    
+                    return {
+                        id: item.getAttribute('id'),
+                        name: item.querySelector('name[type="primary"]').getAttribute('value'),
+                        year: item.querySelector('yearpublished')?.getAttribute('value') || '?',
+                        image: item.querySelector('thumbnail')?.textContent || '',
+                        rating: parseFloat(stats.querySelector('average').getAttribute('value')).toFixed(1),
+                        rank: isNaN(rank) ? 999999 : rank,
+                        weight: parseFloat(stats.querySelector('averageweight').getAttribute('value')).toFixed(2),
+                        voters: parseInt(stats.querySelector('usersrated').getAttribute('value')),
+                        description: item.querySelector('description')?.textContent || ''
+                    };
+                });
+
+                // Initial sort by Rank
+                gamesData.sort((a, b) => a.rank - b.rank);
+                
+                renderGames();
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+
+            } catch (error) {
+                alert('Error: ' + error.message);
+                location.reload();
+            }
+        }
+
+        function updateProgress(percent, text) {
+            document.getElementById('progressBar').style.width = `${percent}%`;
+            document.getElementById('loadingText').textContent = text;
+        }
+
+        function sortGames() {
+            const criteria = document.getElementById('sortSelect').value;
+            
+            gamesData.sort((a, b) => {
+                if (criteria === 'rank') return a.rank - b.rank;
+                if (criteria === 'rating') return b.rating - a.rating;
+                if (criteria === 'weight') return b.weight - a.weight;
+                if (criteria === 'year') return b.year - a.year;
+            });
+            
+            renderGames();
+        }
+
+        function renderGames() {
+            const container = document.getElementById('gamesList');
+            container.innerHTML = gamesData.map((game, index) => `
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-4 flex gap-4 items-center hover:shadow-md transition-shadow group">
+                    <div class="relative flex-shrink-0">
+                        <div class="w-20 h-20 bg-gray-100 rounded-lg overflow-hidden">
+                            ${game.image ? `<img src="${game.image}" class="w-full h-full object-cover">` : '<span class="text-2xl flex items-center justify-center h-full">🎲</span>'}
+                        </div>
+                        <div class="absolute -top-2 -left-2 bg-gray-900 text-white text-xs font-bold w-8 h-8 flex items-center justify-center rounded-full border-2 border-white shadow-sm">
+                            ${game.rank === 999999 ? '-' : game.rank}
+                        </div>
+                    </div>
+                    
+                    <div class="flex-1 min-w-0">
+                        <div class="flex justify-between items-start">
+                            <h3 class="font-bold text-lg text-gray-900 truncate pr-2 group-hover:text-purple-600 transition-colors">${game.name}</h3>
+                            <span class="bg-purple-100 text-purple-800 text-xs font-bold px-2 py-1 rounded">${game.rating}</span>
+                        </div>
+                        <p class="text-sm text-gray-500 mb-2">${game.year} • ${game.weight} / 5 Weight</p>
+                        <div class="flex items-center gap-4 text-xs text-gray-400">
+                            <span>👥 ${game.voters.toLocaleString()} Ratings</span>
+                            <a href="https://boardgamegeek.com/boardgame/${game.id}" target="_blank" class="text-purple-500 hover:underline">View on BGG ↗</a>
+                        </div>
+                    </div>
+                </div>
+            `).join('');
+        }
+    </script>
+</body>
+</html>
