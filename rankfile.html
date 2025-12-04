@@ -1,0 +1,828 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Rank & File: Board Game Ranker</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap');
+        body {
+            font-family: 'Inter', sans-serif;
+            background-color: #f7f9fb;
+        }
+        .drag-item {
+            cursor: grab;
+            transition: transform 0.1s ease;
+            box-shadow: 0 4px 10px rgba(0, 0, 0, 0.2);
+            border-left: 8px solid #3b82f6; /* Blue grab indicator */
+        }
+        .drag-item:active {
+            cursor: grabbing;
+        }
+        .rank-slot {
+            min-height: 80px;
+            background-color: #ffffff;
+            border: 2px dashed #d1d5db;
+            transition: all 0.2s;
+            padding: 12px;
+        }
+        .rank-slot.occupied {
+            border: 2px solid #10b981; /* Green border when filled */
+            background-color: #f0fdf4;
+        }
+        .rank-slot.drag-over {
+            border-color: #3b82f6;
+            background-color: #eff6ff;
+        }
+        .modal {
+            transition: opacity 0.3s ease-in-out;
+        }
+        .modal-content {
+            max-height: 80vh;
+            overflow-y: auto;
+        }
+        /* Custom styles for mobile-friendly input */
+        input[type="number"] {
+            -moz-appearance: textfield;
+            text-align: center;
+        }
+        input::-webkit-outer-spin-button,
+        input::-webkit-inner-spin-button {
+            -webkit-appearance: none;
+            margin: 0;
+        }
+        .rank-button {
+            width: 32px;
+            height: 32px;
+            padding: 0;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 14px;
+            font-weight: 700;
+            border-radius: 8px;
+            transition: all 0.15s;
+        }
+        .rank-button.available {
+            background-color: #60a5fa; /* Blue */
+            color: white;
+            box-shadow: 0 2px 4px rgba(59, 130, 246, 0.5);
+        }
+        .rank-button.occupied {
+            background-color: #d1d5db; /* Gray */
+            color: #4b5563;
+            cursor: pointer; /* Still clickable for re-ranking */
+            box-shadow: none;
+        }
+        .rank-button.disabled {
+             background-color: #fca5a5; /* Reddish */
+             color: #991b1b;
+             cursor: not-allowed;
+        }
+        .game-thumbnail {
+            width: 50px;
+            height: 50px;
+            object-fit: cover;
+            border-radius: 4px;
+            background-color: #e5e7eb;
+        }
+        .game-card {
+            display: flex;
+            gap: 12px;
+            align-items: center;
+        }
+        .game-info {
+            flex: 1;
+            min-width: 0;
+        }
+        .game-name {
+            font-weight: 600;
+            font-size: 14px;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+        .current-game-card {
+            display: flex;
+            gap: 16px;
+            align-items: center;
+            padding: 16px;
+        }
+        .current-game-thumbnail {
+            width: 80px;
+            height: 80px;
+            object-fit: cover;
+            border-radius: 6px;
+            background-color: #e5e7eb;
+            flex-shrink: 0;
+        }
+    </style>
+</head>
+<body class="p-4 sm:p-8 flex items-center justify-center min-h-screen">
+
+    <div id="app" class="w-full max-w-2xl">
+        <header class="text-center mb-6">
+            <h1 class="text-3xl font-extrabold text-gray-900 mb-2">Rank & File</h1>
+            <p class="text-gray-600 font-semibold">Define your board game hierarchy with drag & drop or quick clicks.</p>
+        </header>
+
+        <!-- Settings Screen -->
+        <div id="settings-view" class="flex items-center justify-center min-h-screen">
+            <div class="bg-white p-8 rounded-xl shadow-lg max-w-md w-full">
+                <h2 class="text-2xl font-bold text-gray-800 mb-6 text-center">Rank & File Settings</h2>
+                
+                <div class="space-y-4">
+                    <div>
+                        <label for="username-input" class="block text-sm font-semibold text-gray-700 mb-2">BGG Username</label>
+                        <input 
+                            type="text" 
+                            id="username-input" 
+                            placeholder="e.g., sportomax"
+                            value="sportomax"
+                            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        >
+                        <p class="text-xs text-gray-500 mt-2">Enter your BoardGameGeek username to load your collection</p>
+                    </div>
+                    
+                    <div>
+                        <label for="slot-count-input" class="block text-sm font-semibold text-gray-700 mb-2">Number of Slots (3-20)</label>
+                        <input 
+                            type="number" 
+                            id="slot-count-input" 
+                            min="3" 
+                            max="20" 
+                            value="10"
+                            class="w-full p-3 border border-gray-300 rounded-lg focus:ring-2 focus:ring-blue-500 focus:border-transparent"
+                        >
+                    </div>
+                    
+                    <button id="load-collection-btn" class="w-full bg-blue-600 hover:bg-blue-700 text-white font-bold py-3 rounded-lg transition shadow-md">
+                        Load Collection & Start Ranking
+                    </button>
+                    
+                    <div id="loading-message" class="hidden text-center text-gray-600 py-4">
+                        <p class="text-sm">Loading your collection...</p>
+                    </div>
+                    
+                    <div id="error-message" class="hidden bg-red-50 border border-red-200 text-red-700 p-3 rounded-lg text-sm"></div>
+                </div>
+            </div>
+        </div>
+
+        <!-- Ranking View -->
+        <div id="ranking-view" class="hidden">
+            <!-- Ranking Settings -->
+            <div id="settings-box" class="mb-6 p-4 bg-gray-50 rounded-xl shadow-inner border border-gray-200">
+                <div class="flex items-center justify-between">
+                    <div>
+                        <p class="text-sm font-bold text-gray-600 mb-1">BGG User: <span id="current-username" class="text-blue-600">sportomax</span></p>
+                        <p class="text-sm font-semibold text-gray-600">Slots: <span id="current-slot-size">10</span></p>
+                    </div>
+                    <button id="back-to-settings-btn" class="bg-gray-500 hover:bg-gray-600 text-white text-sm font-semibold py-2 px-4 rounded-lg transition">
+                        Change Settings
+                    </button>
+                </div>
+            </div>
+
+            <!-- Unranked Game Zone (Drag Source & Quick Rank) -->
+            <div class="mb-6 p-4 bg-gray-100 rounded-xl shadow-lg border-b-4 border-gray-400">
+                <p class="text-sm font-bold text-gray-600 mb-2">Quick Rank Buttons (Click to assign current game)</p>
+                
+                <!-- Quick Rank Buttons Container -->
+                <div id="quick-rank-buttons" class="flex flex-wrap justify-center gap-2 mb-4">
+                    <!-- Buttons added dynamically -->
+                </div>
+                
+                <p class="text-sm font-bold text-gray-600 mb-2">Next Game to Rank (<span id="unranked-count"></span> remaining)</p>
+                <div id="unranked-game-zone" class="p-4 rounded-lg bg-white border border-gray-300 min-h-[100px] flex items-center justify-center">
+                    <div id="current-game-item" 
+                         class="drag-item w-full py-4 px-6 rounded-lg bg-gray-700 text-white font-bold text-center"
+                         draggable="true" 
+                         data-game-id=""
+                         data-game-name="">
+                        Loading games...
+                    </div>
+                </div>
+            </div>
+
+            <!-- Rank Slots (Drop Targets) -->
+            <div id="rank-slots-container" class="space-y-3">
+                <!-- Rank slots will be dynamically inserted here -->
+            </div>
+            
+            <!-- Action Buttons -->
+            <div class="flex flex-col space-y-3 sm:flex-row sm:space-y-0 sm:space-x-4 mt-6">
+                <button id="view-results-btn" class="w-full sm:w-1/2 bg-indigo-500 hover:bg-indigo-600 text-white font-semibold py-3 rounded-xl transition shadow-lg" disabled>
+                    View Final Ranking
+                </button>
+                <button id="reset-progress-btn" class="w-full sm:w-1/2 bg-red-400 hover:bg-red-500 text-white font-semibold py-3 rounded-xl transition shadow-lg">
+                    Start New Session
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Results Modal -->
+    <div id="results-modal" class="modal fixed inset-0 bg-gray-900 bg-opacity-75 flex items-center justify-center p-4 z-50 opacity-0 pointer-events-none">
+        <div class="modal-content bg-white p-6 rounded-xl shadow-2xl w-full max-w-xl transform scale-95 transition-transform duration-300">
+            <h3 class="text-2xl font-bold mb-4 text-gray-800 border-b pb-2">Your Game Hierarchy (<span id="modal-slot-size"></span> Slots)</h3>
+            <div id="results-list" class="space-y-3">
+                <!-- Results will be inserted here -->
+            </div>
+            <div class="flex space-x-3 mt-6">
+                <button id="share-results-btn" class="flex-1 bg-green-500 hover:bg-green-600 text-white font-semibold py-2 rounded-xl">
+                    Share Results
+                </button>
+                <button id="close-modal-btn" class="flex-1 bg-red-500 hover:bg-red-600 text-white font-semibold py-2 rounded-xl">
+                    Close
+                </button>
+            </div>
+        </div>
+    </div>
+
+
+    <script>
+        // --- BGG API Client Integration ---
+        
+        class BGGCollectionManager {
+            constructor() {
+                this.baseUrl = '/api/bgg-proxy';
+            }
+
+            async getCollection(username) {
+                try {
+                    const url = `${this.baseUrl}?username=${encodeURIComponent(username)}`;
+                    const response = await fetch(url);
+                    
+                    if (!response.ok) {
+                        const error = await response.json();
+                        throw new Error(error.message || `HTTP ${response.status}`);
+                    }
+                    
+                    return await response.text();
+                } catch (error) {
+                    console.error('Collection fetch error:', error);
+                    throw error;
+                }
+            }
+
+            parseCollectionXML(xmlText) {
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+                
+                if (xmlDoc.getElementsByTagName("parsererror").length > 0) {
+                    throw new Error("Failed to parse XML response");
+                }
+
+                const items = xmlDoc.getElementsByTagName("item");
+                const games = [];
+
+                for (let item of items) {
+                    const name = item.getElementsByTagName("name")[0]?.textContent || "Unknown Game";
+                    const gameId = item.getAttribute("objectid");
+                    const thumbnail = item.getElementsByTagName("thumbnail")[0]?.textContent || "";
+                    const image = item.getElementsByTagName("image")[0]?.textContent || thumbnail;
+
+                    games.push({
+                        id: gameId,
+                        name: name,
+                        thumbnail: image,
+                        yearPublished: item.getElementsByTagName("yearpublished")[0]?.textContent || ""
+                    });
+                }
+
+                return games;
+            }
+        }
+
+        // --- Core Application Logic ---
+
+        const bggManager = new BGGCollectionManager();
+        const MAX_SLOTS = 20;
+        const MIN_SLOTS = 3;
+        
+        // Storage Key
+        const STORAGE_KEY = 'rank_and_file_bgg_state'; 
+
+        // Application State
+        let allGames = []; // All games from collection
+        let sessionGames = []; // The selected games
+        let rankedGames = []; // Stores { id, name, thumbnail, rank }
+        let unrankedGames = []; // Stores remaining games
+        let sessionSlotSize = 10;
+        let currentUsername = 'sportomax';
+        
+        // DOM Elements
+        const app = document.getElementById('app');
+        const settingsView = document.getElementById('settings-view');
+        const rankingView = document.getElementById('ranking-view');
+        const usernameInput = document.getElementById('username-input');
+        const slotCountInput = document.getElementById('slot-count-input');
+        const loadCollectionBtn = document.getElementById('load-collection-btn');
+        const loadingMessage = document.getElementById('loading-message');
+        const errorMessage = document.getElementById('error-message');
+        const backToSettingsBtn = document.getElementById('back-to-settings-btn');
+        const currentUsernameDisplay = document.getElementById('current-username');
+        const currentSlotSizeDisplay = document.getElementById('current-slot-size');
+        const unrankedCountDisplay = document.getElementById('unranked-count');
+        const currentGameItem = document.getElementById('current-game-item');
+        const rankSlotsContainer = document.getElementById('rank-slots-container');
+        const viewResultsBtn = document.getElementById('view-results-btn');
+        const resetProgressBtn = document.getElementById('reset-progress-btn');
+        const resultsModal = document.getElementById('results-modal');
+        const resultsList = document.getElementById('results-list');
+        const shareResultsBtn = document.getElementById('share-results-btn');
+        const quickRankButtonsContainer = document.getElementById('quick-rank-buttons');
+        const modalSlotSizeDisplay = document.getElementById('modal-slot-size');
+
+        // --- Utility Functions ---
+
+        const shuffleArray = (array) => {
+            for (let i = array.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [array[i], array[j]] = [array[j], array[i]];
+            }
+            return array;
+        };
+
+        const selectRandomGames = (list, count) => {
+            const actualCount = Math.min(count, list.length);
+            const shuffled = shuffleArray([...list]);
+            return shuffled.slice(0, actualCount);
+        };
+
+        // --- Data Persistence ---
+
+        const saveStateToLocalStorage = () => {
+            const stateToSave = {
+                username: currentUsername,
+                sessionGames: sessionGames,
+                ranked: rankedGames,
+                unranked: unrankedGames,
+                sessionSlotSize: sessionSlotSize,
+                allGames: allGames
+            };
+            try {
+                localStorage.setItem(STORAGE_KEY, JSON.stringify(stateToSave));
+            } catch (error) {
+                console.error("Error saving state to localStorage:", error);
+            }
+        };
+
+        const loadStateFromLocalStorage = () => {
+            try {
+                const storedState = localStorage.getItem(STORAGE_KEY);
+                if (storedState) {
+                    const data = JSON.parse(storedState);
+                    allGames = data.allGames || [];
+                    currentUsername = data.username || 'sportomax';
+                    rankedGames = data.ranked || [];
+                    sessionGames = data.sessionGames || [];
+                    unrankedGames = data.unranked || [];
+                    sessionSlotSize = data.sessionSlotSize || 10;
+
+                    if (sessionGames.length === sessionSlotSize && allGames.length > 0) {
+                        return true; // Valid state
+                    }
+                }
+            } catch (error) {
+                console.error("Error loading state from localStorage:", error);
+            }
+            return false;
+        };
+
+        // --- Initialize Collection from BGG ---
+
+        const initializeCollectionAndStart = async () => {
+            const username = usernameInput.value.trim();
+            const slotCount = parseInt(slotCountInput.value) || 10;
+
+            if (!username) {
+                showError("Please enter a BGG username");
+                return;
+            }
+
+            if (slotCount < MIN_SLOTS || slotCount > MAX_SLOTS) {
+                showError(`Please enter a slot count between ${MIN_SLOTS} and ${MAX_SLOTS}`);
+                return;
+            }
+
+            loadingMessage.classList.remove('hidden');
+            errorMessage.classList.add('hidden');
+            loadCollectionBtn.disabled = true;
+
+            try {
+                const xmlResponse = await bggManager.getCollection(username);
+                allGames = bggManager.parseCollectionXML(xmlResponse);
+
+                if (allGames.length === 0) {
+                    showError("No games found in your collection. Make sure your collection is public on BGG.");
+                    loadCollectionBtn.disabled = false;
+                    loadingMessage.classList.add('hidden');
+                    return;
+                }
+
+                currentUsername = username;
+                sessionSlotSize = slotCount;
+                startNewSession(slotCount, false);
+                
+                currentUsernameDisplay.textContent = currentUsername;
+                currentSlotSizeDisplay.textContent = sessionSlotSize;
+                
+                settingsView.classList.add('hidden');
+                rankingView.classList.remove('hidden');
+                
+                renderRankSlots();
+                renderQuickRankButtons();
+                updateGameView();
+                saveStateToLocalStorage();
+
+            } catch (error) {
+                showError(`Failed to load collection: ${error.message}`);
+                loadCollectionBtn.disabled = false;
+                loadingMessage.classList.add('hidden');
+            }
+        };
+
+        const showError = (message) => {
+            errorMessage.textContent = message;
+            errorMessage.classList.remove('hidden');
+        };
+
+        const showBackToSettings = () => {
+            settingsView.classList.remove('hidden');
+            rankingView.classList.add('hidden');
+            usernameInput.value = currentUsername;
+            slotCountInput.value = sessionSlotSize;
+            errorMessage.classList.add('hidden');
+            loadCollectionBtn.disabled = false;
+            loadingMessage.classList.add('hidden');
+        };
+
+        const startNewSession = (slots, save = true) => {
+            sessionSlotSize = slots;
+            sessionGames = selectRandomGames(allGames, sessionSlotSize);
+            rankedGames = [];
+            unrankedGames = shuffleArray([...sessionGames]);
+            
+            if (save) {
+                saveStateToLocalStorage();
+            }
+        };
+
+        // --- Game Rendering with Thumbnails ---
+
+        const renderGameCardSmall = (game) => {
+            return `
+                <div class="game-card">
+                    <img src="${game.thumbnail}" alt="${game.name}" class="game-thumbnail" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2250%22 height=%2250%22%3E%3Crect fill=%22%23e5e7eb%22 width=%2250%22 height=%2250%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%23999%22 font-size=%2210%22 text-anchor=%22middle%22 dy=%22.3em%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                    <div class="game-info">
+                        <div class="game-name">${game.name}</div>
+                    </div>
+                </div>
+            `;
+        };
+
+        const renderGameCardLarge = (game) => {
+            return `
+                <div class="current-game-card drag-item w-full rounded-lg bg-gray-700 text-white">
+                    <img src="${game.thumbnail}" alt="${game.name}" class="current-game-thumbnail" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%23d1d5db%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%23666%22 font-size=%2212%22 text-anchor=%22middle%22 dy=%22.3em%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                    <div class="flex-1">
+                        <div class="text-lg font-bold text-white">${game.name}</div>
+                        <div class="text-xs text-gray-300 mt-1">Drag or use quick rank buttons</div>
+                    </div>
+                </div>
+            `;
+        };
+
+        // --- Rank Assignment ---
+
+        const handleRankAssignment = (rank) => {
+            if (unrankedGames.length === 0) {
+                alertUser("Ranking complete! View results or start a new session.");
+                return;
+            }
+
+            let gameToRank = unrankedGames[0];
+            let actionMessage = `Rank ${rank} assigned to "${gameToRank.name}".`;
+            
+            const existingGameIndex = rankedGames.findIndex(g => g.rank === rank);
+
+            if (existingGameIndex !== -1) {
+                const gameToUnrank = rankedGames.splice(existingGameIndex, 1)[0];
+                unrankedGames.unshift(gameToUnrank);
+                actionMessage = `"${gameToUnrank.name}" bumped. "${gameToRank.name}" now Rank ${rank}.`;
+            } else {
+                unrankedGames.shift();
+            }
+            
+            rankedGames.push({ ...gameToRank, rank: rank });
+            saveStateToLocalStorage();
+            updateGameView();
+            alertUser(actionMessage);
+        };
+
+        const handleDrop = (e) => {
+            e.preventDefault();
+            const slot = e.currentTarget;
+            const rank = parseInt(slot.dataset.rank);
+
+            if (rankedGames.find(g => g.rank === rank)) {
+                console.error(`Rank ${rank} is already taken.`);
+                slot.classList.remove('drag-over');
+                alertUser(`Rank ${rank} is already occupied. Click the slot or use quick buttons to swap.`);
+                return;
+            }
+            
+            const gameId = e.dataTransfer.getData('text/plain');
+            const game = unrankedGames.find(g => g.id === gameId);
+            
+            if (!game) return;
+            
+            unrankedGames = unrankedGames.filter(g => g.id !== gameId);
+            rankedGames.push({ ...game, rank: rank });
+
+            slot.classList.remove('drag-over');
+            saveStateToLocalStorage();
+            updateGameView();
+        };
+
+        // --- UI Rendering ---
+
+        const renderRankSlots = () => {
+            rankSlotsContainer.innerHTML = '';
+            for (let i = 1; i <= sessionSlotSize; i++) {
+                const rank = i;
+                const existingGame = rankedGames.find(g => g.rank === rank);
+                
+                let gameContent = '';
+                let slotClass = 'rank-slot';
+
+                if (existingGame) {
+                    gameContent = renderGameCardSmall(existingGame);
+                    slotClass += ' occupied';
+                } else {
+                    gameContent = `<p class="text-sm text-gray-400">Drop Game Here (Rank ${rank})</p>`;
+                }
+
+                const rankIndicator = (rank === 1) ? '🥇' : (rank === sessionSlotSize) ? '💩' : rank;
+
+                const slotHTML = `
+                    <div class="flex items-center space-x-4">
+                        <span class="text-xl font-extrabold text-gray-800 w-8 text-center">${rankIndicator}</span>
+                        <div id="slot-${rank}" class="${slotClass} flex-1 rounded-lg flex items-center justify-center cursor-pointer" data-rank="${rank}">
+                            ${gameContent}
+                        </div>
+                    </div>
+                `;
+                rankSlotsContainer.insertAdjacentHTML('beforeend', slotHTML);
+            }
+            attachDragDropListeners();
+        };
+
+        const renderQuickRankButtons = () => {
+            quickRankButtonsContainer.innerHTML = '';
+            const isRankingComplete = unrankedGames.length === 0;
+            
+            for (let i = 1; i <= sessionSlotSize; i++) {
+                const isOccupied = rankedGames.some(g => g.rank === i);
+                let buttonClass = 'bg-gray-300 text-gray-600';
+                
+                if (isRankingComplete) {
+                    buttonClass = 'disabled';
+                } else if (isOccupied) {
+                    buttonClass = 'occupied';
+                } else {
+                    buttonClass = 'available hover:bg-blue-400';
+                }
+                
+                const button = document.createElement('button');
+                button.textContent = i;
+                button.classList.add('rank-button', buttonClass);
+                button.dataset.rank = i;
+                button.disabled = isRankingComplete;
+                
+                if (!isRankingComplete) {
+                    button.addEventListener('click', () => handleRankAssignment(i));
+                }
+                
+                quickRankButtonsContainer.appendChild(button);
+            }
+        };
+
+        const attachDragDropListeners = () => {
+            currentGameItem.addEventListener('dragstart', (e) => {
+                const currentGame = unrankedGames[0];
+                if (currentGame) {
+                    e.dataTransfer.setData('text/plain', currentGame.id);
+                    currentGameItem.classList.add('opacity-50');
+                }
+            });
+
+            currentGameItem.addEventListener('dragend', (e) => {
+                currentGameItem.classList.remove('opacity-50');
+            });
+
+            document.querySelectorAll('.rank-slot').forEach(slot => {
+                const rank = parseInt(slot.dataset.rank);
+                
+                slot.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    slot.classList.add('drag-over');
+                });
+                
+                slot.addEventListener('dragleave', (e) => {
+                    slot.classList.remove('drag-over');
+                });
+
+                slot.addEventListener('drop', handleDrop);
+
+                slot.addEventListener('click', (e) => {
+                    if (unrankedGames.length > 0) {
+                        handleRankAssignment(rank);
+                    } else if (rankedGames.length === sessionSlotSize) {
+                        alertUser("Ranking complete! View results or start a new session.");
+                    }
+                });
+            });
+        };
+
+        const updateGameView = () => {
+            const rankedCount = rankedGames.length;
+            const remainingCount = sessionSlotSize - rankedCount;
+            const nextGame = unrankedGames[0];
+            
+            unrankedCountDisplay.textContent = remainingCount;
+
+            if (remainingCount > 0 && nextGame) {
+                currentGameItem.innerHTML = renderGameCardLarge(nextGame);
+                currentGameItem.dataset.gameId = nextGame.id;
+                currentGameItem.classList.remove('hidden', 'bg-green-500');
+                currentGameItem.classList.add('bg-gray-700');
+                currentGameItem.setAttribute('draggable', 'true');
+                viewResultsBtn.disabled = true;
+            } else {
+                currentGameItem.innerHTML = '<div class="text-white text-center"><p class="text-2xl font-bold">✓ Ranking Complete!</p><p class="text-sm text-gray-300 mt-2">View results or start new session</p></div>';
+                currentGameItem.setAttribute('draggable', 'false');
+                viewResultsBtn.disabled = false;
+            }
+            
+            renderRankSlots();
+            renderQuickRankButtons();
+        };
+
+        const handleReset = (newSlots) => {
+            let slotsToUse = newSlots;
+
+            if (newSlots === undefined) {
+                slotsToUse = sessionSlotSize;
+                if (!confirm(`Are you sure you want to discard your current progress and start a new ${slotsToUse}-game ranking session?`)) {
+                    return;
+                }
+            }
+            
+            startNewSession(slotsToUse);
+            renderRankSlots();
+            renderQuickRankButtons();
+            updateGameView();
+        };
+
+        const renderResults = () => {
+            const sortedGames = [...rankedGames].sort((a, b) => a.rank - b.rank);
+            
+            if (sortedGames.length !== sessionSlotSize) {
+                resultsList.innerHTML = `<p class="text-gray-500 text-center">The ranking is incomplete. Please rank all ${sessionSlotSize} games.</p>`;
+                return;
+            }
+
+            modalSlotSizeDisplay.textContent = sessionSlotSize;
+
+            resultsList.innerHTML = sortedGames.map((game) => {
+                let borderColor = 'border-blue-400';
+                if (game.rank === 1) borderColor = 'border-yellow-500';
+                else if (game.rank <= Math.ceil(sessionSlotSize / 3)) borderColor = 'border-yellow-400';
+                else if (game.rank >= Math.floor(sessionSlotSize * 2 / 3)) borderColor = 'border-red-400';
+                
+                const emoji = (game.rank === 1) ? '🥇' : (game.rank === sessionSlotSize) ? '💩' : '';
+
+                return `
+                    <div class="flex gap-4 items-center p-3 bg-white border-l-4 ${borderColor} rounded-lg shadow-md">
+                        <img src="${game.thumbnail}" alt="${game.name}" class="w-12 h-12 rounded object-cover">
+                        <div class="flex-1">
+                            <span class="font-semibold text-gray-800">${game.name}</span>
+                        </div>
+                        <span class="text-2xl font-extrabold text-gray-700 w-12 text-center">${game.rank}</span>
+                        <span class="text-xl">${emoji}</span>
+                    </div>
+                `;
+            }).join('');
+
+            resultsModal.classList.remove('pointer-events-none', 'opacity-0');
+            resultsModal.querySelector('.modal-content').classList.remove('scale-95');
+        };
+
+        const handleShareResults = async () => {
+            const sortedGames = [...rankedGames].sort((a, b) => a.rank - b.rank);
+            
+            if (sortedGames.length !== sessionSlotSize) {
+                alertUser("Please complete the ranking before sharing.");
+                return;
+            }
+
+            const title = `My Board Game Ranking (1-${sessionSlotSize} Slots)`;
+            const shareText = sortedGames.map(game => `#${game.rank}: ${game.name}`).join('\n');
+            const fullText = `${title}\n---\n${shareText}\n\nGenerated by Rank & File.`;
+
+            if (navigator.share) {
+                try {
+                    await navigator.share({
+                        title: title,
+                        text: fullText,
+                    });
+                } catch (error) {
+                    if (error.name !== 'AbortError') {
+                        copyTextToClipboard(fullText);
+                    }
+                }
+            } else {
+                copyTextToClipboard(fullText);
+            }
+        };
+
+        const copyTextToClipboard = (text) => {
+            try {
+                const textarea = document.createElement('textarea');
+                textarea.value = text;
+                document.body.appendChild(textarea);
+                textarea.select();
+                document.execCommand('copy');
+                document.body.removeChild(textarea);
+                alertUser(`Ranking copied to clipboard!`);
+            } catch (err) {
+                console.error('Failed to copy text: ', err);
+                alertUser("Failed to copy results.");
+            }
+        };
+
+        const alertUser = (message) => {
+            const feedback = document.createElement('div');
+            feedback.textContent = message;
+            feedback.className = "fixed top-4 left-1/2 transform -translate-x-1/2 bg-gray-800 text-white p-3 rounded-xl shadow-xl z-[100] transition duration-300 opacity-0";
+            document.body.appendChild(feedback);
+            
+            setTimeout(() => {
+                feedback.classList.add('opacity-100');
+            }, 10);
+
+            setTimeout(() => {
+                feedback.classList.remove('opacity-100');
+                setTimeout(() => feedback.remove(), 300);
+            }, 3000);
+        };
+
+        const closeModal = () => {
+            resultsModal.classList.add('pointer-events-none', 'opacity-0');
+            resultsModal.querySelector('.modal-content').classList.add('scale-95');
+        };
+
+        // --- Initialization ---
+
+        const init = () => {
+            // Try to load from localStorage
+            if (loadStateFromLocalStorage() && allGames.length > 0) {
+                // Valid saved state, show ranking view
+                currentUsernameDisplay.textContent = currentUsername;
+                currentSlotSizeDisplay.textContent = sessionSlotSize;
+                settingsView.classList.add('hidden');
+                rankingView.classList.remove('hidden');
+                renderRankSlots();
+                renderQuickRankButtons();
+                updateGameView();
+            } else {
+                // Show settings view
+                settingsView.classList.remove('hidden');
+                rankingView.classList.add('hidden');
+            }
+
+            // Event listeners
+            loadCollectionBtn.addEventListener('click', initializeCollectionAndStart);
+            usernameInput.addEventListener('keypress', (e) => {
+                if (e.key === 'Enter') initializeCollectionAndStart();
+            });
+            
+            backToSettingsBtn.addEventListener('click', showBackToSettings);
+            viewResultsBtn.addEventListener('click', renderResults);
+            resetProgressBtn.addEventListener('click', () => handleReset());
+            document.getElementById('close-modal-btn').addEventListener('click', closeModal);
+            shareResultsBtn.addEventListener('click', handleShareResults);
+
+            resultsModal.addEventListener('click', (e) => {
+                if (e.target === resultsModal) closeModal();
+            });
+        };
+
+        window.onload = init;
+    </script>
+</body>
+</html>
