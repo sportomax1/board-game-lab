@@ -433,15 +433,19 @@
                     const data = JSON.parse(storedState);
                     allGames = data.allGames || [];
                     currentUsername = data.username || 'sportomax';
-                    rankedGames = data.ranked || [];
-                    sessionGames = data.sessionGames || [];
-                    unrankedGames = data.unranked || [];
-                    skippedGames = data.skipped || [];
                     sessionSlotSize = data.sessionSlotSize || 10;
+                    // ONLY restore sequence number, not the session state
                     gameSequenceNumber = data.gameSequenceNumber || 0;
+                    console.log('📊 Loaded persistent sequence number:', gameSequenceNumber);
 
-                    if (sessionGames.length === sessionSlotSize && allGames.length > 0) {
-                        return true; // Valid state
+                    // Always start fresh session - don't restore old ranked/unranked games
+                    rankedGames = [];
+                    sessionGames = [];
+                    unrankedGames = [];
+                    skippedGames = [];
+
+                    if (allGames.length > 0) {
+                        return true; // Valid state (has games)
                     }
                 }
             } catch (error) {
@@ -558,22 +562,22 @@
 
         const renderGameCardLarge = (game) => {
             const statsDisplay = showStats && game.stats ? `
-                <div class="text-xs text-gray-200 mt-2 space-y-1 border-t border-gray-500 pt-2">
-                    <div>⭐ Avg: ${game.stats.average?.toFixed(2) || 'N/A'}/10</div>
-                    <div>🏄 Bayes: ${game.stats.bayesaverage?.toFixed(2) || 'N/A'}/10</div>
-                    <div>📊 Yours: ${game.stats.myRating > 0 ? game.stats.myRating : 'Not rated'}/10</div>
+                <div class="flex flex-col gap-1 text-right text-xs text-gray-100 flex-shrink-0">
+                    <div>⭐ ${game.stats.average?.toFixed(2) || 'N/A'}</div>
+                    <div>🏄 ${game.stats.bayesaverage?.toFixed(2) || 'N/A'}</div>
+                    <div>📊 ${game.stats.myRating > 0 ? game.stats.myRating : '-'}</div>
                 </div>
             ` : '';
-            const seqNum = game.sequenceNumber ? `<div class="text-xs text-gray-400">Game #${game.sequenceNumber} in ranking</div>` : '';
+            const seqNum = game.sequenceNumber ? `Game #${game.sequenceNumber}` : '';
             return `
-                <div class="current-game-card drag-item w-full rounded-lg bg-gray-700 text-white">
-                    <img src="${game.thumbnail}" alt="${game.name}" class="current-game-thumbnail" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%23d1d5db%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%23666%22 font-size=%2212%22 text-anchor=%22middle%22 dy=%22.3em%22%3ENo Image%3C/text%3E%3C/svg%3E'">
-                    <div class="flex-1">
+                <div class="current-game-card drag-item flex gap-4 items-start p-4 w-full rounded-lg bg-gray-700 text-white">
+                    <img src="${game.thumbnail}" alt="${game.name}" class="current-game-thumbnail flex-shrink-0 w-20 h-20 rounded" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2280%22 height=%2280%22%3E%3Crect fill=%22%23d1d5db%22 width=%2280%22 height=%2280%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 fill=%22%23666%22 font-size=%2212%22 text-anchor=%22middle%22 dy=%22.3em%22%3ENo Image%3C/text%3E%3C/svg%3E'">
+                    <div class="flex-1 min-w-0">
                         <div class="text-lg font-bold text-white">${game.name}</div>
-                        ${seqNum}
-                        <div class="text-xs text-gray-300 mt-1">Drag or use quick rank buttons</div>
-                        ${statsDisplay}
+                        <div class="text-xs text-gray-300 mt-1">${seqNum}</div>
+                        <div class="text-xs text-gray-400 mt-1">Drag or use quick rank buttons below</div>
                     </div>
+                    ${statsDisplay}
                 </div>
             `;
         };
@@ -593,9 +597,8 @@
             let sequenceNum = gameToRank.sequenceNumber; // Use existing sequence if bumping
             
             if (existingGameIndex === -1) {
-                // New game being ranked - increment sequence
-                gameSequenceNumber++;
-                sequenceNum = gameSequenceNumber;
+                // New game being ranked - increment BEFORE use (so first is #1)
+                sequenceNum = ++gameSequenceNumber;
             }
             
             let actionMessage = `Rank ${rank} assigned to "${gameToRank.name}" (Game #${sequenceNum} in sequence).`;
@@ -946,9 +949,12 @@
         // --- Initialization ---
 
         const init = () => {
-            // Try to load from localStorage
+            // Load persistent data from localStorage (sequence number, username, slot size)
+            // but always start a NEW session with fresh games
             if (loadStateFromLocalStorage() && allGames.length > 0) {
-                // Valid saved state, show ranking view
+                // Loaded collection data, start new session automatically
+                console.log('✅ Loaded collection with', allGames.length, 'games. Starting new session.');
+                startNewSession(sessionSlotSize, false);
                 currentUsernameDisplay.textContent = currentUsername;
                 currentSlotSizeDisplay.textContent = sessionSlotSize;
                 settingsView.classList.add('hidden');
@@ -957,7 +963,8 @@
                 renderQuickRankButtons();
                 updateGameView();
             } else {
-                // Show settings view
+                // No saved collection, show settings view
+                console.log('❌ No saved collection. Showing settings.');
                 settingsView.classList.remove('hidden');
                 rankingView.classList.add('hidden');
             }
