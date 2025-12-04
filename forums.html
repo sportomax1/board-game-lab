@@ -792,56 +792,68 @@
             }
         }
 
-        // Process games in batches
+        // Process games in batches (20 at a time like videos.html)
         async function processGameBatches() {
-            // For forums, we must fetch one by one as the API doesn't support comma-separated IDs for forumlist
-            const concurrency = 3; // Try 3 concurrent requests to be polite but faster
-            const queue = [...allGames];
+            const batchSize = 20;
             let processed = 0;
             gameForums = {};
 
-            async function worker() {
-                while (queue.length > 0) {
-                    const game = queue.shift();
-                    try {
-                        const url = `/api/bgg-helper?endpoint=forumlist&type=thing&id=${game.id}`;
-                        const response = await fetchWithRetry(url);
-                        const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                        const forums = Array.from(xml.querySelectorAll('forum')).map(f => ({
-                            id: f.getAttribute('id'),
-                            title: f.getAttribute('title'),
-                            numthreads: parseInt(f.getAttribute('numthreads') || 0),
-                            numposts: parseInt(f.getAttribute('numposts') || 0),
-                            lastpostdate: f.getAttribute('lastpostdate')
-                        }));
-                        
-                        if (forums.length > 0) {
-                            gameForums[game.id] = {
-                                name: game.name,
-                                image: game.image,
-                                forums: forums,
-                                totalThreads: forums.reduce((sum, f) => sum + f.numthreads, 0),
-                                totalPosts: forums.reduce((sum, f) => sum + f.numposts, 0)
-                            };
+            for (let i = 0; i < allGames.length; i += batchSize) {
+                const batch = allGames.slice(i, i + batchSize);
+
+                try {
+                    processingStatus.textContent = `💬 Fetching forums for ${Math.min(processed + batch.length, allGames.length)}/${allGames.length} games...`;
+                    console.log(`\n🔄 Batch ${Math.ceil((i + 1) / batchSize)}/${Math.ceil(allGames.length / batchSize)}: Fetching forums for ${batch.length} games`);
+
+                    // Fetch forums for each game in the batch
+                    for (const game of batch) {
+                        try {
+                            const url = `/api/bgg-helper?endpoint=forumlist&type=thing&id=${game.id}`;
+                            const response = await fetchWithRetry(url);
+                            const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                            const forums = Array.from(xml.querySelectorAll('forum')).map(f => ({
+                                id: f.getAttribute('id'),
+                                title: f.getAttribute('title'),
+                                numthreads: parseInt(f.getAttribute('numthreads') || 0),
+                                numposts: parseInt(f.getAttribute('numposts') || 0),
+                                lastpostdate: f.getAttribute('lastpostdate'),
+                                description: f.getAttribute('description') || ''
+                            }));
+                            
+                            if (forums.length > 0) {
+                                gameForums[game.id] = {
+                                    name: game.name,
+                                    image: game.image,
+                                    forums: forums,
+                                    totalThreads: forums.reduce((sum, f) => sum + f.numthreads, 0),
+                                    totalPosts: forums.reduce((sum, f) => sum + f.numposts, 0)
+                                };
+                                console.log(`  ✅ Found ${forums.length} forums for ${game.name} (${gameForums[game.id].totalThreads} threads)`);
+                            }
+                        } catch (e) {
+                            console.error(`  ⚠️ Error fetching forums for ${game.name}:`, e.message);
                         }
-                    } catch (e) {
-                        console.error(`Error fetching forums for ${game.name}:`, e);
+                        
+                        // Small delay between individual requests
+                        await new Promise(resolve => setTimeout(resolve, 100));
                     }
-                    processed++;
+
+                    processed += batch.length;
                     updateProgress(processed, allGames.length);
-                    statusMetric.textContent = `Processing ${processed}/${allGames.length}`;
+                    statusMetric.textContent = `Batch ${Math.ceil(processed / batchSize)}/${Math.ceil(allGames.length / batchSize)}`;
                     updateMetrics();
-                    
-                    // Update UI every 5 items
-                    if (processed % 5 === 0) renderGames();
-                    
-                    // Small delay to avoid hammering
-                    await new Promise(resolve => setTimeout(resolve, 200));
+                    renderGames();
+
+                } catch (error) {
+                    console.error(`❌ Error processing batch at ${i}:`, error);
+                    processingStatus.textContent = `⚠️ Error in batch: ${error.message}`;
                 }
+
+                await new Promise(resolve => setTimeout(resolve, 200));
             }
-            
-            processingStatus.textContent = `💬 Fetching forum data for ${allGames.length} games...`;
-            await Promise.all(Array(concurrency).fill().map(() => worker()));
+
+            // Now fetch thread details in batches
+            await fetchThreadDetailsBatches();
 
             localStorage.setItem(STORAGE_KEY_TIMESTAMP, new Date().toISOString());
 
@@ -854,6 +866,83 @@
             hideModal();
             setTimeout(() => { processingStatus.classList.remove('active'); }, 3000);
             renderGames();
+        }
+
+        // Fetch thread details in batches of 20
+        async function fetchThreadDetailsBatches() {
+            const threadsToFetch = [];
+
+            // Collect all thread IDs to fetch
+            Object.entries(gameForums).forEach(([gameId, game]) => {
+                game.forums.forEach(forum => {
+                    if (forum.numthreads > 0) {
+                        threadsToFetch.push({
+                            gameId: gameId,
+                            forumId: forum.id,
+                            forumTitle: forum.title
+                        });
+                    }
+                });
+            });
+
+            if (threadsToFetch.length === 0) {
+                console.log('No threads to fetch');
+                return;
+            }
+
+            console.log(`\n📋 Fetching thread details for ${threadsToFetch.length} threads...`);
+            processingStatus.textContent = `📋 Fetching thread details...`;
+
+            const threadBatchSize = 20;
+            let threadsFetched = 0;
+
+            for (let i = 0; i < threadsToFetch.length; i += threadBatchSize) {
+                const threadBatch = threadsToFetch.slice(i, i + threadBatchSize);
+                const threadIds = threadBatch.map(t => t.forumId).join(',');
+
+                try {
+                    console.log(`\n🔄 Thread Batch ${Math.ceil((i + 1) / threadBatchSize)}/${Math.ceil(threadsToFetch.length / threadBatchSize)}: Fetching ${threadBatch.length} thread forums`);
+                    
+                    const url = `/api/bgg-helper?endpoint=thread&id=${threadIds}`;
+                    const response = await fetchWithRetry(url);
+                    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                    const threads = xml.querySelectorAll('thread');
+
+                    Array.from(threads).forEach(thread => {
+                        const threadId = thread.getAttribute('id');
+                        const threadTitle = thread.querySelector('subject')?.textContent || 'Untitled';
+                        const authorName = thread.querySelector('author')?.textContent || 'Unknown';
+                        const postDate = thread.getAttribute('postdate');
+                        const numarticles = parseInt(thread.getAttribute('numarticles') || 0);
+
+                        // Find which forum this belongs to
+                        const threadInfo = threadBatch.find(t => t.forumId === threadId);
+                        if (threadInfo && gameForums[threadInfo.gameId]) {
+                            const forum = gameForums[threadInfo.gameId].forums.find(f => f.id === threadId);
+                            if (forum) {
+                                forum.recentThreads = forum.recentThreads || [];
+                                forum.recentThreads.push({
+                                    id: threadId,
+                                    title: threadTitle,
+                                    author: authorName,
+                                    postdate: postDate,
+                                    articles: numarticles
+                                });
+                            }
+                        }
+                    });
+
+                    threadsFetched += threadBatch.length;
+                    console.log(`📊 Thread batch processed: ${threadsFetched}/${threadsToFetch.length}`);
+
+                } catch (error) {
+                    console.error(`❌ Error fetching thread batch:`, error);
+                }
+
+                await new Promise(resolve => setTimeout(resolve, 300));
+            }
+
+            console.log(`✅ Thread details complete`);
         }
 
         // Render games
@@ -926,21 +1015,44 @@
                 <button class="modal-close" id="detailsCloseBtn">✕</button>
             `;
 
-            const forumDetails = game.forums.map(f => `
-                <div style="margin-bottom: 1rem; padding: 1rem; background: #f9f9f9; border-radius: 6px;">
-                    <div style="font-weight: 600; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
-                        <span>${escapeHtml(f.title)}</span>
-                        <span style="font-size: 0.8rem; background: #dbeafe; color: #1e40af; padding: 0.2rem 0.5rem; border-radius: 10px;">${f.numthreads} threads</span>
-                    </div>
-                    <div style="font-size: 0.9rem; color: #666; margin-bottom: 0.5rem;">
-                        📝 ${f.numposts} posts
-                        ${f.lastpostdate ? `<br>🕒 Last post: ${new Date(f.lastpostdate).toLocaleDateString()}` : ''}
-                    </div>
-                    <a href="https://boardgamegeek.com/boardgame/${gameId}/${encodeURIComponent(game.name)}/forums/${f.id}" target="_blank" style="display: inline-block; background: #6366f1; color: white; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9rem; width: 100%; text-align: center;">
+            const forumDetails = game.forums.map(f => {
+                let forumHtml = `
+                    <div style="margin-bottom: 1rem; padding: 1rem; background: #f9f9f9; border-radius: 6px;">
+                        <div style="font-weight: 600; margin-bottom: 0.5rem; display: flex; justify-content: space-between; align-items: center;">
+                            <span>${escapeHtml(f.title)}</span>
+                            <span style="font-size: 0.8rem; background: #dbeafe; color: #1e40af; padding: 0.2rem 0.5rem; border-radius: 10px;">${f.numthreads} threads</span>
+                        </div>
+                        <div style="font-size: 0.9rem; color: #666; margin-bottom: 0.75rem;">
+                            📝 ${f.numposts} posts
+                            ${f.lastpostdate ? `<br>🕒 Last post: ${new Date(f.lastpostdate).toLocaleDateString()}` : ''}
+                        </div>
+                `;
+
+                // Show recent threads if available
+                if (f.recentThreads && f.recentThreads.length > 0) {
+                    forumHtml += `
+                        <div style="margin-top: 0.75rem; padding-top: 0.75rem; border-top: 1px solid #ddd; font-size: 0.85rem;">
+                            <div style="font-weight: 600; margin-bottom: 0.5rem; color: #333;">Recent Threads:</div>
+                            <div style="max-height: 150px; overflow-y: auto; display: flex; flex-direction: column; gap: 0.5rem;">
+                                ${f.recentThreads.slice(0, 5).map(t => `
+                                    <div style="background: white; padding: 0.5rem; border-radius: 4px; border-left: 3px solid #6366f1;">
+                                        <div style="font-weight: 500; color: #333;">${escapeHtml(t.title)}</div>
+                                        <div style="color: #666; font-size: 0.75rem;">👤 ${escapeHtml(t.author)}</div>
+                                    </div>
+                                `).join('')}
+                            </div>
+                        </div>
+                    `;
+                }
+
+                forumHtml += `
+                    <a href="https://boardgamegeek.com/boardgame/${gameId}/${encodeURIComponent(game.name)}/forums/${f.id}" target="_blank" style="display: inline-block; background: #6366f1; color: white; padding: 0.5rem 1rem; border-radius: 6px; text-decoration: none; font-weight: 600; font-size: 0.9rem; width: 100%; text-align: center; margin-top: 0.75rem;">
                         View Forum ↗️
                     </a>
-                </div>
-            `).join('');
+                    </div>
+                `;
+                return forumHtml;
+            }).join('');
 
             modalBody.innerHTML = `
                 <div style="margin-bottom: 1rem;">

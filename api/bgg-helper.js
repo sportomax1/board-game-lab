@@ -91,6 +91,9 @@ module.exports = async (req, res) => {
         case 'forumlist':
             bggUrl = `https://boardgamegeek.com/xmlapi2/forumlist?${paramString}`;
             break;
+        case 'thread':
+            bggUrl = `https://boardgamegeek.com/xmlapi2/thread?${paramString}`;
+            break;
         case 'browse':
             // Scrape the browse page for top ranked games
             // Supports page parameter, e.g., page=1
@@ -98,7 +101,7 @@ module.exports = async (req, res) => {
             bggUrl = `https://boardgamegeek.com/browse/boardgame/page/${page}`;
             break;
         default:
-            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays, family`;
+            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays, family, forumlist, thread`;
             console.error(errorMsg);
             console.log('--- END: BGG Helper Failed (400) ---');
             return res.status(400).json({ 
