@@ -74,3 +74,30 @@ A fun customization tool allowing users to design their own "Meeple" avatar. The
 
 ## 📱 QR Code Generator
 A utility to modernize physical game boxes. It would generate printable QR code stickers that link directly to "How to Play" videos, official FAQs, or the digital scorepad app. Users could stick these inside the box lid for instant access to resources during setup.
+
+## 📍 Local Game Group Finder
+A social connector for finding players. It would map out local game stores, board game cafes, and public meetup groups. Users could set their preferences (e.g., "Heavy Euros", "Party Games") to find groups that match their gaming style.
+
+## 🚀 Kickstarter Tracker
+A dashboard specifically for crowdfunding backers. It would aggregate updates from Kickstarter, Gamefound, and BackerKit into a single timeline. It could track estimated delivery dates, pledge manager closing dates, and shipping status for all backed projects.
+
+## 🧩 Component Counter
+A reference utility for buying used games or verifying trades. It would list the exact component counts (cards, tokens, meeples) for games. Users could use it to inventory a game box to ensure it is 100% complete before purchasing or trading.
+
+## 🍷 Board Game Sommelier
+A thematic pairing engine. It would suggest food, drink (cocktails, beers, wines), and music playlists that match the theme and weight of a specific game. For example, pairing a heavy red wine and classical music with *Viticulture*, or tiki drinks with *Survive: Escape from Atlantis!*.
+
+## 📊 Stats vs. The World
+A comparative analytics tool. It would take the user's play statistics (win rates, high scores) and compare them against global averages from the BGG database. Users could see if they are performing above average in *Terraforming Mars* or if their group tends to score lower than the norm.
+
+## ✂️ Print & Play Manager
+A cataloging tool for PnP enthusiasts. It would track downloaded PnP files, their crafting status (Printed, Laminated, Cut, Boxed), and link to build instructions. It could also help manage the queue of "projects to build" and track material usage.
+
+## 🏆 Tournament Bracket Maker
+A specialized tournament manager for board game events. It would support Swiss pairings, Round Robin, and Single/Double Elimination brackets. It would handle tie-breakers specific to board games (e.g., victory points margin) and display live standings on a TV-friendly view.
+
+## 👾 Meeple Avatar Creator
+A fun customization tool allowing users to design their own "Meeple" avatar. They could choose colors, accessories, and facial expressions to create a vector image representing themselves, which could be used as a profile picture in other apps or printed on stickers.
+
+## 📱 QR Code Generator
+A utility to modernize physical game boxes. It would generate printable QR code stickers that link directly to "How to Play" videos, official FAQs, or the digital scorepad app. Users could stick these inside the box lid for instant access to resources during setup.

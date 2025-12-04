@@ -1,7 +1,10 @@
 # Application Summary
 
 ## 🎬 videos.html - Game Video Browser
-A dedicated tool for discovering video content related to your board game collection. It allows users to load their BGG collection and automatically fetches associated videos (reviews, instructional, previews, etc.) for each game. Features include a progress bar for API loading, search and sort functionality (by name or video count), and a responsive grid layout of game cards showing video counts.
+A dedicated tool for discovering video content related to your board game collection. It allows users to load their BGG collection and automatically fetches associated videos (reviews, instructional, previews, etc.) for each game. Features include a progress bar for API loading, search and sort functionality (by name or video count), category filtering, and a responsive grid layout showing video counts.
+
+## 💬 forums.html - Game Forums Explorer
+A comprehensive forum discovery tool that allows users to browse discussion threads for games in their collection. It uses batch processing to efficiently fetch forum data for up to 20 games at a time, then fetches detailed thread information in subsequent batches. Users can search forums by game name and sort by name or thread count. The details modal displays recent threads with author names, post dates, and direct links to BGG forums.
 
 ## 🏪 marketplace.html - Virtual Marketplace
 An interactive marketplace interface for browsing games available for sale or trade. Users can load listings, filter by various criteria, and view detailed information about each game. The app includes a settings modal for configuring data sources and preferences, with a clean, card-based layout for displaying game listings and their prices or trade status.
