@@ -1,0 +1,277 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Year Wrapped</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .slide { display: none; height: 100vh; width: 100vw; position: fixed; top: 0; left: 0; flex-direction: column; justify-content: center; align-items: center; padding: 2rem; text-align: center; }
+        .slide.active { display: flex; animation: fadeIn 0.5s ease-out; }
+        @keyframes fadeIn { from { opacity: 0; transform: translateY(20px); } to { opacity: 1; transform: translateY(0); } }
+        .bar-container { height: 200px; display: flex; align-items: flex-end; gap: 8px; }
+        .bar { width: 20px; background: rgba(255,255,255,0.8); border-radius: 4px 4px 0 0; transition: height 1s ease-out; }
+        .gradient-bg { background: linear-gradient(135deg, #1db954 0%, #191414 100%); color: white; }
+        .gradient-1 { background: linear-gradient(45deg, #ff0099, #493240); }
+        .gradient-2 { background: linear-gradient(45deg, #00dbde, #fc00ff); }
+        .gradient-3 { background: linear-gradient(45deg, #f857a6, #ff5858); }
+        .gradient-4 { background: linear-gradient(45deg, #4facfe, #00f2fe); }
+        .gradient-5 { background: linear-gradient(45deg, #fa709a, #fee140); }
+    </style>
+</head>
+<body class="bg-black text-white font-sans overflow-hidden">
+
+    <!-- Setup Screen -->
+    <div id="setupScreen" class="fixed inset-0 bg-black z-50 flex items-center justify-center p-4">
+        <div class="max-w-md w-full text-center">
+            <h1 class="text-5xl font-bold mb-2 text-green-500 tracking-tighter">WRAPPED</h1>
+            <p class="text-gray-400 mb-8 text-xl">Your Board Game Year in Review</p>
+            
+            <div class="space-y-4">
+                <input type="text" id="usernameInput" class="w-full bg-gray-800 border border-gray-700 rounded-full px-6 py-4 text-xl text-center focus:ring-2 focus:ring-green-500 outline-none text-white placeholder-gray-500" placeholder="BGG Username" value="sportomax">
+                
+                <select id="yearInput" class="w-full bg-gray-800 border border-gray-700 rounded-full px-6 py-4 text-xl text-center focus:ring-2 focus:ring-green-500 outline-none text-white appearance-none">
+                    <option value="2024">2024</option>
+                    <option value="2023">2023</option>
+                    <option value="2022">2022</option>
+                </select>
+
+                <button onclick="generateWrapped()" class="w-full bg-green-500 text-black py-4 rounded-full font-bold text-xl hover:bg-green-400 transition transform hover:scale-105">
+                    Let's Go
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading -->
+    <div id="loadingScreen" class="fixed inset-0 bg-black z-40 flex flex-col items-center justify-center hidden">
+        <div class="animate-spin rounded-full h-16 w-16 border-t-4 border-green-500 mb-4"></div>
+        <h2 class="text-xl font-bold text-gray-400">Crunching the numbers...</h2>
+    </div>
+
+    <!-- Slides Container -->
+    <div id="slidesContainer"></div>
+
+    <!-- Navigation -->
+    <div id="navControls" class="fixed bottom-8 left-0 right-0 flex justify-center gap-4 z-50 hidden">
+        <button onclick="prevSlide()" class="bg-white/10 hover:bg-white/20 p-3 rounded-full backdrop-blur-sm">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"></path></svg>
+        </button>
+        <button onclick="nextSlide()" class="bg-white/10 hover:bg-white/20 p-3 rounded-full backdrop-blur-sm">
+            <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"></path></svg>
+        </button>
+    </div>
+
+    <script>
+        let currentSlide = 0;
+        let totalSlides = 0;
+        let playsData = [];
+        let collectionData = [];
+        let year = 2023;
+
+        async function generateWrapped() {
+            const username = document.getElementById('usernameInput').value;
+            year = document.getElementById('yearInput').value;
+            
+            if (!username) return;
+
+            document.getElementById('setupScreen').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+
+            try {
+                // Fetch Plays
+                const playsRes = await fetch(`/api/bgg-helper?endpoint=plays&username=${username}&mindate=${year}-01-01&maxdate=${year}-12-31`);
+                const playsText = await playsRes.text();
+                const playsXml = new DOMParser().parseFromString(playsText, 'text/xml');
+                
+                // Parse Plays
+                playsData = Array.from(playsXml.querySelectorAll('play')).map(play => ({
+                    date: play.getAttribute('date'),
+                    quantity: parseInt(play.getAttribute('quantity')),
+                    gameName: play.querySelector('item').getAttribute('name'),
+                    gameId: play.querySelector('item').getAttribute('objectid'),
+                    location: play.getAttribute('location')
+                }));
+
+                // Fetch Collection (for images/metadata)
+                const colRes = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1`);
+                const colText = await colRes.text();
+                const colXml = new DOMParser().parseFromString(colText, 'text/xml');
+                
+                collectionData = Array.from(colXml.querySelectorAll('item')).map(item => ({
+                    id: item.getAttribute('objectid'),
+                    name: item.querySelector('name').textContent,
+                    image: item.querySelector('thumbnail')?.textContent || '',
+                    year: parseInt(item.querySelector('yearpublished')?.textContent || '0')
+                }));
+
+                buildSlides();
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('navControls').classList.remove('hidden');
+                showSlide(0);
+
+            } catch (error) {
+                alert('Error: ' + error.message);
+                location.reload();
+            }
+        }
+
+        function buildSlides() {
+            const container = document.getElementById('slidesContainer');
+            const slides = [];
+
+            // 1. Intro
+            slides.push(`
+                <div class="slide gradient-1 active">
+                    <h1 class="text-6xl font-bold mb-4">${year}</h1>
+                    <h2 class="text-3xl font-light opacity-90">Your Year in Gaming</h2>
+                    <div class="mt-8 text-xl">Tap to start</div>
+                </div>
+            `);
+
+            // 2. Total Plays
+            const totalPlays = playsData.reduce((sum, p) => sum + p.quantity, 0);
+            const uniqueGames = new Set(playsData.map(p => p.gameId)).size;
+            
+            slides.push(`
+                <div class="slide gradient-2">
+                    <h2 class="text-2xl font-bold mb-8 uppercase tracking-widest">The Numbers</h2>
+                    <div class="text-8xl font-black mb-2">${totalPlays}</div>
+                    <div class="text-2xl mb-12">Total Plays</div>
+                    
+                    <div class="grid grid-cols-2 gap-8 w-full max-w-md">
+                        <div>
+                            <div class="text-4xl font-bold">${uniqueGames}</div>
+                            <div class="text-sm opacity-75">Unique Games</div>
+                        </div>
+                        <div>
+                            <div class="text-4xl font-bold">${Math.round(totalPlays / 12)}</div>
+                            <div class="text-sm opacity-75">Avg / Month</div>
+                        </div>
+                    </div>
+                </div>
+            `);
+
+            // 3. Top Game
+            const gameCounts = {};
+            playsData.forEach(p => {
+                gameCounts[p.gameId] = (gameCounts[p.gameId] || 0) + p.quantity;
+            });
+            
+            const sortedGames = Object.entries(gameCounts)
+                .sort(([,a], [,b]) => b - a)
+                .slice(0, 5);
+            
+            const topGameId = sortedGames[0]?.[0];
+            const topGameCount = sortedGames[0]?.[1];
+            const topGameInfo = collectionData.find(g => g.id === topGameId) || { name: 'Unknown Game', image: '' };
+
+            slides.push(`
+                <div class="slide gradient-3">
+                    <h2 class="text-xl font-bold mb-4 uppercase tracking-widest">Most Played</h2>
+                    <div class="w-64 h-64 bg-black/20 rounded-lg shadow-2xl mb-6 overflow-hidden flex items-center justify-center">
+                        ${topGameInfo.image ? `<img src="${topGameInfo.image}" class="w-full h-full object-cover">` : '<span class="text-4xl">🎲</span>'}
+                    </div>
+                    <h1 class="text-4xl font-bold mb-2 px-4">${topGameInfo.name}</h1>
+                    <div class="text-2xl opacity-90">${topGameCount} Plays</div>
+                </div>
+            `);
+
+            // 4. Top 5 List
+            const listHtml = sortedGames.map(([id, count], i) => {
+                const g = collectionData.find(x => x.id === id);
+                const name = g ? g.name : playsData.find(p => p.gameId === id)?.gameName || 'Unknown';
+                return `
+                    <div class="flex items-center justify-between w-full max-w-md bg-white/10 p-4 rounded-lg mb-2">
+                        <div class="flex items-center gap-4">
+                            <span class="font-bold text-2xl w-6 text-center">${i + 1}</span>
+                            <span class="font-medium truncate max-w-[200px] text-left">${name}</span>
+                        </div>
+                        <span class="font-bold opacity-75">${count} plays</span>
+                    </div>
+                `;
+            }).join('');
+
+            slides.push(`
+                <div class="slide gradient-4">
+                    <h2 class="text-2xl font-bold mb-8 uppercase tracking-widest">Top 5 Games</h2>
+                    <div class="w-full flex flex-col items-center">
+                        ${listHtml}
+                    </div>
+                </div>
+            `);
+
+            // 5. Monthly Breakdown
+            const months = Array(12).fill(0);
+            playsData.forEach(p => {
+                const month = new Date(p.date).getMonth();
+                months[month] += p.quantity;
+            });
+            const maxMonth = Math.max(...months);
+
+            const barsHtml = months.map((count, i) => {
+                const height = maxMonth > 0 ? (count / maxMonth) * 100 : 0;
+                const monthName = new Date(2023, i, 1).toLocaleString('default', { month: 'narrow' });
+                return `
+                    <div class="flex flex-col items-center gap-1 flex-1">
+                        <div class="bar w-full bg-white/90" style="height: ${height}%"></div>
+                        <span class="text-xs uppercase">${monthName}</span>
+                    </div>
+                `;
+            }).join('');
+
+            slides.push(`
+                <div class="slide gradient-5">
+                    <h2 class="text-2xl font-bold mb-12 uppercase tracking-widest">Activity</h2>
+                    <div class="w-full max-w-lg h-64 flex items-end gap-2 px-4">
+                        ${barsHtml}
+                    </div>
+                    <p class="mt-8 opacity-75">Busiest Month: ${new Date(2023, months.indexOf(maxMonth), 1).toLocaleString('default', { month: 'long' })}</p>
+                </div>
+            `);
+
+            // 6. Outro
+            slides.push(`
+                <div class="slide bg-black">
+                    <h1 class="text-4xl font-bold mb-4">See you in ${parseInt(year) + 1}!</h1>
+                    <button onclick="location.reload()" class="bg-white text-black px-8 py-3 rounded-full font-bold hover:scale-105 transition">Start Over</button>
+                </div>
+            `);
+
+            container.innerHTML = slides.join('');
+            totalSlides = slides.length;
+        }
+
+        function showSlide(index) {
+            if (index < 0 || index >= totalSlides) return;
+            
+            document.querySelectorAll('.slide').forEach(s => {
+                s.classList.remove('active');
+                s.style.display = 'none';
+            });
+            
+            const next = document.querySelectorAll('.slide')[index];
+            next.style.display = 'flex';
+            // Force reflow
+            void next.offsetWidth;
+            next.classList.add('active');
+            
+            currentSlide = index;
+        }
+
+        function nextSlide() {
+            showSlide(currentSlide + 1);
+        }
+
+        function prevSlide() {
+            showSlide(currentSlide - 1);
+        }
+
+        // Keyboard nav
+        document.addEventListener('keydown', (e) => {
+            if (e.key === 'ArrowRight') nextSlide();
+            if (e.key === 'ArrowLeft') prevSlide();
+        });
+    </script>
+</body>
+</html>

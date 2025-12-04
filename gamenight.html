@@ -1,0 +1,235 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Game Night Menu</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @media print {
+            .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: white; color: black; }
+            #menuView { position: absolute; top: 0; left: 0; width: 100%; height: 100%; z-index: 100; }
+        }
+        
+        /* Themes */
+        .theme-classic { font-family: 'Georgia', serif; background-color: #fdfbf7; color: #2c2c2c; background-image: url("data:image/svg+xml,%3Csvg width='6' height='6' viewBox='0 0 6 6' xmlns='http://www.w3.org/2000/svg'%3E%3Cg fill='%239C92AC' fill-opacity='0.1' fill-rule='evenodd'%3E%3Cpath d='M5 0h1L0 6V5zM6 5v1H5z'/%3E%3C/g%3E%3C/svg%3E"); }
+        .theme-classic h1 { border-bottom: 2px solid #2c2c2c; padding-bottom: 1rem; }
+        
+        .theme-neon { font-family: 'Courier New', monospace; background-color: #111; color: #0ff; }
+        .theme-neon h1 { text-shadow: 0 0 10px #0ff, 0 0 20px #0ff; color: #fff; }
+        .theme-neon .section-title { color: #f0f; text-shadow: 0 0 5px #f0f; }
+        
+        .theme-modern { font-family: 'Helvetica Neue', sans-serif; background-color: #ffffff; color: #1a202c; }
+        .theme-modern h1 { font-weight: 900; letter-spacing: -0.05em; }
+        .theme-modern .menu-card { border: 1px solid #e2e8f0; border-radius: 1rem; }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+
+    <!-- Setup / Builder -->
+    <div id="builder" class="max-w-4xl mx-auto p-6 no-print">
+        <header class="mb-8 flex justify-between items-center">
+            <h1 class="text-3xl font-bold text-gray-900">🍽️ Game Night Menu</h1>
+            <button onclick="generateMenu()" class="bg-indigo-600 text-white px-6 py-2 rounded-lg font-bold hover:bg-indigo-700 transition shadow-lg">
+                Preview Menu
+            </button>
+        </header>
+
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-8">
+            <!-- Left Column: Details & Food -->
+            <div class="space-y-6">
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                    <h2 class="font-bold text-gray-700 mb-4">Event Details</h2>
+                    <div class="space-y-3">
+                        <input type="text" id="eventTitle" class="w-full border rounded p-2" placeholder="Event Title (e.g. Friday Night Gaming)" value="Game Night">
+                        <input type="text" id="eventDate" class="w-full border rounded p-2" placeholder="Date" value="Tonight">
+                        <select id="themeSelect" class="w-full border rounded p-2">
+                            <option value="theme-classic">Classic Theme</option>
+                            <option value="theme-modern">Modern Theme</option>
+                            <option value="theme-neon">Neon Arcade</option>
+                        </select>
+                    </div>
+                </div>
+
+                <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200">
+                    <h2 class="font-bold text-gray-700 mb-4">Food & Drinks</h2>
+                    <textarea id="foodInput" class="w-full border rounded p-2 h-32" placeholder="Enter items (one per line)"></textarea>
+                </div>
+            </div>
+
+            <!-- Right Column: Games -->
+            <div class="bg-white p-6 rounded-xl shadow-sm border border-gray-200 flex flex-col h-[600px]">
+                <h2 class="font-bold text-gray-700 mb-4">Select Games</h2>
+                
+                <div class="flex gap-2 mb-4">
+                    <input type="text" id="usernameInput" class="flex-1 border rounded p-2" placeholder="BGG Username" value="sportomax">
+                    <button onclick="loadCollection()" class="bg-gray-200 px-4 rounded hover:bg-gray-300">Load</button>
+                </div>
+
+                <input type="text" id="gameSearch" class="w-full border rounded p-2 mb-4" placeholder="Search collection..." onkeyup="filterGames()">
+                
+                <div id="gamesList" class="flex-1 overflow-y-auto space-y-2 border rounded p-2 bg-gray-50">
+                    <!-- Games loaded here -->
+                </div>
+
+                <div class="mt-4 pt-4 border-t">
+                    <h3 class="font-bold text-sm text-gray-500 mb-2">Selected Games</h3>
+                    <div id="selectedGames" class="flex flex-wrap gap-2">
+                        <!-- Selected chips -->
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <!-- Menu View -->
+    <div id="menuView" class="hidden min-h-screen p-8 flex flex-col items-center justify-center">
+        <div class="no-print fixed top-4 right-4 flex gap-2">
+            <button onclick="editMenu()" class="bg-gray-800 text-white px-4 py-2 rounded shadow">Edit</button>
+            <button onclick="window.print()" class="bg-blue-600 text-white px-4 py-2 rounded shadow">Print</button>
+        </div>
+
+        <div id="menuContent" class="max-w-2xl w-full p-12 rounded-xl shadow-2xl min-h-[800px] flex flex-col">
+            <!-- Content injected by JS -->
+        </div>
+    </div>
+
+    <script>
+        let allGames = [];
+        let selectedGameIds = new Set();
+
+        async function loadCollection() {
+            const username = document.getElementById('usernameInput').value;
+            if (!username) return;
+
+            const btn = document.querySelector('button[onclick="loadCollection()"]');
+            btn.textContent = '...';
+            
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                allGames = Array.from(xml.querySelectorAll('item')).map(item => ({
+                    id: item.getAttribute('objectid'),
+                    name: item.querySelector('name').textContent,
+                    image: item.querySelector('thumbnail')?.textContent || '',
+                    year: item.querySelector('yearpublished')?.textContent || ''
+                }));
+
+                allGames.sort((a, b) => a.name.localeCompare(b.name));
+                filterGames();
+                btn.textContent = 'Load';
+
+            } catch (error) {
+                alert('Error loading collection');
+                btn.textContent = 'Load';
+            }
+        }
+
+        function filterGames() {
+            const term = document.getElementById('gameSearch').value.toLowerCase();
+            const container = document.getElementById('gamesList');
+            
+            const filtered = allGames.filter(g => g.name.toLowerCase().includes(term));
+            
+            container.innerHTML = filtered.map(g => `
+                <div onclick="toggleGame('${g.id}')" class="p-2 hover:bg-indigo-50 cursor-pointer flex items-center gap-2 rounded ${selectedGameIds.has(g.id) ? 'bg-indigo-100 border-indigo-300 border' : ''}">
+                    <div class="w-8 h-8 bg-gray-200 rounded overflow-hidden flex-shrink-0">
+                        ${g.image ? `<img src="${g.image}" class="w-full h-full object-cover">` : ''}
+                    </div>
+                    <span class="text-sm font-medium truncate">${g.name}</span>
+                </div>
+            `).join('');
+        }
+
+        function toggleGame(id) {
+            if (selectedGameIds.has(id)) {
+                selectedGameIds.delete(id);
+            } else {
+                selectedGameIds.add(id);
+            }
+            filterGames(); // Re-render list to show selection state
+            renderSelectedChips();
+        }
+
+        function renderSelectedChips() {
+            const container = document.getElementById('selectedGames');
+            container.innerHTML = Array.from(selectedGameIds).map(id => {
+                const g = allGames.find(x => x.id === id);
+                return `
+                    <span class="bg-indigo-100 text-indigo-800 text-xs px-2 py-1 rounded-full flex items-center gap-1">
+                        ${g.name}
+                        <button onclick="toggleGame('${id}')" class="hover:text-indigo-900">×</button>
+                    </span>
+                `;
+            }).join('');
+        }
+
+        function generateMenu() {
+            const title = document.getElementById('eventTitle').value;
+            const date = document.getElementById('eventDate').value;
+            const food = document.getElementById('foodInput').value.split('\n').filter(x => x.trim());
+            const theme = document.getElementById('themeSelect').value;
+            
+            const menuView = document.getElementById('menuView');
+            const menuContent = document.getElementById('menuContent');
+            
+            // Apply theme
+            menuView.className = `min-h-screen p-8 flex flex-col items-center justify-center ${theme}`;
+            
+            // Build HTML
+            const gamesHtml = Array.from(selectedGameIds).map(id => {
+                const g = allGames.find(x => x.id === id);
+                return `
+                    <div class="flex items-center gap-4 mb-6 menu-card p-4">
+                        <div class="w-24 h-24 bg-gray-200 rounded-lg overflow-hidden shadow-md flex-shrink-0">
+                            ${g.image ? `<img src="${g.image}" class="w-full h-full object-cover">` : ''}
+                        </div>
+                        <div>
+                            <h3 class="text-xl font-bold">${g.name}</h3>
+                            <p class="opacity-75 text-sm">${g.year}</p>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+
+            const foodHtml = food.length ? `
+                <div class="mt-12 pt-8 border-t border-current opacity-80">
+                    <h2 class="text-2xl font-bold mb-6 section-title">Refreshments</h2>
+                    <ul class="space-y-2 text-lg">
+                        ${food.map(f => `<li>• ${f}</li>`).join('')}
+                    </ul>
+                </div>
+            ` : '';
+
+            menuContent.innerHTML = `
+                <div class="text-center mb-12">
+                    <h1 class="text-5xl font-bold mb-4">${title}</h1>
+                    <p class="text-xl opacity-75">${date}</p>
+                </div>
+
+                <div class="flex-1">
+                    <h2 class="text-2xl font-bold mb-6 section-title">On the Table</h2>
+                    <div class="grid grid-cols-1 gap-4">
+                        ${gamesHtml}
+                    </div>
+                </div>
+
+                ${foodHtml}
+            `;
+
+            document.getElementById('builder').classList.add('hidden');
+            menuView.classList.remove('hidden');
+        }
+
+        function editMenu() {
+            document.getElementById('builder').classList.remove('hidden');
+            document.getElementById('menuView').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>

@@ -1,0 +1,224 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Expansion Explorer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body class="bg-gray-100 min-h-screen">
+
+    <!-- Setup Screen -->
+    <div id="setupScreen" class="fixed inset-0 bg-gradient-to-br from-green-500 to-teal-600 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-2xl p-8 max-w-md w-full">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2 text-center">🌳 Expansion Explorer</h1>
+            <p class="text-gray-500 text-center mb-6">Find missing expansions for your games</p>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">BGG Username</label>
+                <input type="text" id="usernameInput" class="w-full border rounded-lg px-4 py-3 text-lg focus:ring-2 focus:ring-green-500 outline-none" placeholder="BGG Username" value="sportomax">
+            </div>
+            
+            <button onclick="loadCollection()" class="w-full bg-green-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-green-700 transition shadow-lg">
+                Load Collection
+            </button>
+        </div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="fixed inset-0 bg-white z-40 flex flex-col items-center justify-center hidden">
+        <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-green-600 mb-4"></div>
+        <h2 class="text-xl font-bold text-gray-800">Loading Collection...</h2>
+        <p id="loadingStatus" class="text-gray-500 mt-2">Fetching games...</p>
+    </div>
+
+    <!-- Main App -->
+    <div id="app" class="hidden">
+        <header class="bg-white shadow-sm sticky top-0 z-30">
+            <div class="max-w-7xl mx-auto px-4 py-4 flex items-center justify-between">
+                <h1 class="font-bold text-xl text-gray-900">🌳 Expansion Explorer</h1>
+                <button onclick="location.reload()" class="text-sm text-gray-600 hover:text-gray-900">Change User</button>
+            </div>
+        </header>
+
+        <main class="max-w-7xl mx-auto px-4 py-6">
+            <div class="mb-6">
+                <input type="text" id="searchInput" placeholder="Search your games..." class="w-full border rounded-lg px-4 py-3 focus:ring-2 focus:ring-green-500 outline-none" onkeyup="filterGames()">
+            </div>
+
+            <div id="gameList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
+                <!-- Games will be inserted here -->
+            </div>
+        </main>
+    </div>
+
+    <!-- Expansion Modal -->
+    <div id="expansionModal" class="fixed inset-0 bg-black bg-opacity-50 z-50 hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-xl max-w-2xl w-full max-h-[90vh] flex flex-col">
+            <div class="p-4 border-b flex justify-between items-center">
+                <h2 id="modalTitle" class="text-xl font-bold text-gray-900">Game Title</h2>
+                <button onclick="closeModal()" class="text-gray-500 hover:text-gray-700 text-2xl">&times;</button>
+            </div>
+            <div class="p-4 overflow-y-auto flex-1">
+                <div id="modalLoading" class="flex justify-center py-8">
+                    <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
+                </div>
+                <div id="modalContent" class="hidden space-y-6">
+                    <div>
+                        <h3 class="font-bold text-green-600 mb-2 flex items-center gap-2">
+                            <span>✅</span> Owned Expansions
+                        </h3>
+                        <div id="ownedExpansions" class="grid grid-cols-1 gap-2 text-sm"></div>
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-red-500 mb-2 flex items-center gap-2">
+                            <span>❌</span> Missing Expansions
+                        </h3>
+                        <div id="missingExpansions" class="grid grid-cols-1 gap-2 text-sm"></div>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        let ownedGameIds = new Set();
+        let allGames = [];
+
+        async function loadCollection() {
+            const username = document.getElementById('usernameInput').value;
+            if (!username) return;
+
+            document.getElementById('setupScreen').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+
+            try {
+                // Fetch owned games including expansions to build the "Owned" set
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1&stats=1`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const items = Array.from(xml.querySelectorAll('item'));
+                
+                items.forEach(item => {
+                    const id = item.getAttribute('objectid');
+                    ownedGameIds.add(id);
+                    
+                    // Only add base games to the display list (heuristic: no "expansion" subtype usually, but collection API doesn't always show subtype clearly without extra calls. 
+                    // We'll assume everything is a game for now, but we can filter if needed. 
+                    // Actually, let's just list everything and let the user click.)
+                    // Better: Filter out things that look like expansions if possible? 
+                    // BGG collection doesn't explicitly say "is expansion" easily in the simple list unless we check stats.
+                    // We'll just list all owned items.
+                    
+                    allGames.push({
+                        id: id,
+                        name: item.querySelector('name').textContent,
+                        image: item.querySelector('thumbnail')?.textContent || '',
+                        year: item.querySelector('yearpublished')?.textContent || ''
+                    });
+                });
+
+                // Sort by name
+                allGames.sort((a, b) => a.name.localeCompare(b.name));
+                
+                renderGames(allGames);
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+
+            } catch (error) {
+                alert('Error loading collection: ' + error.message);
+                location.reload();
+            }
+        }
+
+        function renderGames(games) {
+            const container = document.getElementById('gameList');
+            container.innerHTML = games.map(game => `
+                <div onclick="checkExpansions('${game.id}', '${game.name.replace(/'/g, "\\'")}')" 
+                     class="bg-white p-4 rounded-lg shadow hover:shadow-md transition cursor-pointer flex items-center gap-4 border border-gray-200">
+                    <div class="w-16 h-16 bg-gray-100 rounded flex-shrink-0 overflow-hidden">
+                        ${game.image ? `<img src="${game.image}" class="w-full h-full object-cover">` : ''}
+                    </div>
+                    <div>
+                        <h3 class="font-bold text-gray-900">${game.name}</h3>
+                        <p class="text-sm text-gray-500">${game.year}</p>
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function filterGames() {
+            const term = document.getElementById('searchInput').value.toLowerCase();
+            const filtered = allGames.filter(g => g.name.toLowerCase().includes(term));
+            renderGames(filtered);
+        }
+
+        async function checkExpansions(gameId, gameName) {
+            document.getElementById('modalTitle').textContent = gameName;
+            document.getElementById('expansionModal').classList.remove('hidden');
+            document.getElementById('modalLoading').classList.remove('hidden');
+            document.getElementById('modalContent').classList.add('hidden');
+
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const links = Array.from(xml.querySelectorAll('link[type="boardgameexpansion"]'));
+                
+                const owned = [];
+                const missing = [];
+
+                links.forEach(link => {
+                    const id = link.getAttribute('id');
+                    const name = link.getAttribute('value');
+                    // Basic filter: inbound vs outbound is not distinguished in simple link tags usually, 
+                    // but usually "boardgameexpansion" on a base game points to its expansions.
+                    // However, expansions also point back to base game with same tag.
+                    // We can't easily distinguish without checking the "inbound" attribute which isn't always there in simple API?
+                    // Actually, BGG API thing items usually have `inbound="true"` for the parent.
+                    
+                    const isInbound = link.getAttribute('inbound') === 'true';
+                    
+                    if (!isInbound) { // Only look at children (expansions of this game)
+                        if (ownedGameIds.has(id)) {
+                            owned.push({ id, name });
+                        } else {
+                            missing.push({ id, name });
+                        }
+                    }
+                });
+
+                const renderList = (items, emptyMsg) => {
+                    if (items.length === 0) return `<div class="text-gray-400 italic">${emptyMsg}</div>`;
+                    return items.map(i => `
+                        <div class="flex justify-between items-center bg-gray-50 p-2 rounded">
+                            <span>${i.name}</span>
+                            <a href="https://boardgamegeek.com/boardgame/${i.id}" target="_blank" class="text-blue-500 hover:underline text-xs">View</a>
+                        </div>
+                    `).join('');
+                };
+
+                document.getElementById('ownedExpansions').innerHTML = renderList(owned, "No owned expansions found");
+                document.getElementById('missingExpansions').innerHTML = renderList(missing, "No missing expansions found (or none exist)");
+
+                document.getElementById('modalLoading').classList.add('hidden');
+                document.getElementById('modalContent').classList.remove('hidden');
+
+            } catch (error) {
+                console.error(error);
+                document.getElementById('ownedExpansions').innerHTML = '<div class="text-red-500">Error loading data</div>';
+                document.getElementById('modalLoading').classList.add('hidden');
+                document.getElementById('modalContent').classList.remove('hidden');
+            }
+        }
+
+        function closeModal() {
+            document.getElementById('expansionModal').classList.add('hidden');
+        }
+    </script>
+</body>
+</html>

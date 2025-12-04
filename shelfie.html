@@ -1,0 +1,293 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Shelfie Organizer</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        .game-card { cursor: grab; }
+        .game-card:active { cursor: grabbing; }
+        .shelf { min-height: 150px; transition: background-color 0.2s; }
+        .shelf.drag-over { background-color: #f3f4f6; border-color: #8b5cf6; }
+        /* Hide scrollbar for horizontal scrolling shelves if we go that route, but let's stick to grid for now */
+    </style>
+</head>
+<body class="bg-gray-100 min-h-screen flex flex-col">
+
+    <!-- Setup Screen -->
+    <div id="setupScreen" class="fixed inset-0 bg-gradient-to-br from-blue-600 to-teal-500 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-lg shadow-2xl p-8 max-w-md w-full">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2 text-center">📚 Shelfie</h1>
+            <p class="text-gray-500 text-center mb-6">Organize your physical collection visually</p>
+            
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-gray-700 mb-2">BGG Username</label>
+                <input type="text" id="usernameInput" class="w-full border rounded-lg px-4 py-3 text-lg focus:ring-2 focus:ring-teal-500 outline-none" placeholder="BGG Username" value="sportomax">
+            </div>
+            
+            <button onclick="loadCollection()" class="w-full bg-teal-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-teal-700 transition shadow-lg">
+                Start Organizing
+            </button>
+        </div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="fixed inset-0 bg-white z-40 flex flex-col items-center justify-center hidden">
+        <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-teal-600 mb-4"></div>
+        <h2 class="text-xl font-bold text-gray-800">Loading Games...</h2>
+    </div>
+
+    <!-- Main App -->
+    <div id="app" class="hidden flex-1 flex flex-col h-screen overflow-hidden">
+        <!-- Header -->
+        <header class="bg-white shadow-sm z-30 flex-none">
+            <div class="max-w-full mx-auto px-4 py-3 flex items-center justify-between">
+                <h1 class="font-bold text-xl text-gray-900 flex items-center gap-2">
+                    📚 <span class="hidden sm:inline">Shelfie</span>
+                </h1>
+                <div class="flex gap-2">
+                    <button onclick="addShelf()" class="bg-gray-100 hover:bg-gray-200 text-gray-800 px-3 py-2 rounded-lg text-sm font-medium transition">
+                        + Add Shelf
+                    </button>
+                    <button onclick="saveLayout()" class="bg-teal-600 hover:bg-teal-700 text-white px-3 py-2 rounded-lg text-sm font-medium transition">
+                        Save
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Workspace -->
+        <div class="flex-1 flex overflow-hidden">
+            <!-- Unorganized Games Sidebar -->
+            <aside class="w-1/3 max-w-xs bg-white border-r border-gray-200 flex flex-col z-20 shadow-lg">
+                <div class="p-3 border-b border-gray-200 bg-gray-50">
+                    <h2 class="font-bold text-gray-700 text-sm uppercase tracking-wide mb-2">Unshelved Games</h2>
+                    <input type="text" id="searchInput" placeholder="Filter..." class="w-full border rounded px-2 py-1 text-sm focus:ring-1 focus:ring-teal-500 outline-none" onkeyup="filterUnshelved()">
+                </div>
+                <div id="unshelvedList" class="flex-1 overflow-y-auto p-2 space-y-2 bg-gray-100" ondrop="drop(event)" ondragover="allowDrop(event)">
+                    <!-- Draggable games go here -->
+                </div>
+            </aside>
+
+            <!-- Shelves Area -->
+            <main class="flex-1 overflow-y-auto p-4 bg-gray-200">
+                <div id="shelvesContainer" class="space-y-6 max-w-4xl mx-auto">
+                    <!-- Shelves go here -->
+                </div>
+            </main>
+        </div>
+    </div>
+
+    <script>
+        let allGames = [];
+        let shelves = []; // Array of { id: timestamp, name: "Shelf 1", games: [gameId, ...] }
+        let unshelvedGameIds = [];
+
+        // Load saved data
+        const savedLayout = localStorage.getItem('shelfie_layout');
+        if (savedLayout) {
+            const data = JSON.parse(savedLayout);
+            shelves = data.shelves || [];
+        } else {
+            // Default shelf
+            shelves = [{ id: Date.now(), name: "Kallax 1", games: [] }];
+        }
+
+        async function loadCollection() {
+            const username = document.getElementById('usernameInput').value;
+            if (!username) return;
+
+            document.getElementById('setupScreen').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1`);
+                const text = await response.text();
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                allGames = Array.from(xml.querySelectorAll('item')).map(item => ({
+                    id: item.getAttribute('objectid'),
+                    name: item.querySelector('name').textContent,
+                    image: item.querySelector('thumbnail')?.textContent || '',
+                    year: item.querySelector('yearpublished')?.textContent || ''
+                }));
+
+                // Determine which games are already on shelves
+                const shelvedIds = new Set();
+                shelves.forEach(shelf => {
+                    shelf.games.forEach(gid => shelvedIds.add(gid));
+                });
+
+                unshelvedGameIds = allGames.filter(g => !shelvedIds.has(g.id)).map(g => g.id);
+                
+                renderApp();
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+
+            } catch (error) {
+                alert('Error: ' + error.message);
+                location.reload();
+            }
+        }
+
+        function renderApp() {
+            renderUnshelved();
+            renderShelves();
+        }
+
+        function renderUnshelved() {
+            const term = document.getElementById('searchInput').value.toLowerCase();
+            const container = document.getElementById('unshelvedList');
+            
+            const filteredIds = unshelvedGameIds.filter(id => {
+                const game = allGames.find(g => g.id === id);
+                return game && game.name.toLowerCase().includes(term);
+            });
+
+            container.innerHTML = filteredIds.map(id => createGameCardHTML(id)).join('');
+        }
+
+        function renderShelves() {
+            const container = document.getElementById('shelvesContainer');
+            container.innerHTML = shelves.map(shelf => `
+                <div class="bg-white rounded-lg shadow-md overflow-hidden">
+                    <div class="bg-gray-800 text-white px-4 py-2 flex justify-between items-center">
+                        <input type="text" value="${shelf.name}" 
+                            class="bg-transparent border-none text-white font-bold focus:ring-0 p-0 w-full mr-2"
+                            onchange="updateShelfName(${shelf.id}, this.value)">
+                        <button onclick="deleteShelf(${shelf.id})" class="text-gray-400 hover:text-red-400" title="Delete Shelf">×</button>
+                    </div>
+                    <div class="shelf p-4 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 min-h-[120px]"
+                         id="shelf-${shelf.id}"
+                         ondrop="drop(event, ${shelf.id})" 
+                         ondragover="allowDrop(event)">
+                        ${shelf.games.map(gid => createGameCardHTML(gid)).join('')}
+                    </div>
+                </div>
+            `).join('');
+        }
+
+        function createGameCardHTML(id) {
+            const game = allGames.find(g => g.id === id);
+            if (!game) return '';
+            return `
+                <div id="game-${id}" draggable="true" ondragstart="drag(event)" 
+                     class="game-card bg-white border border-gray-200 rounded p-2 shadow-sm flex flex-col items-center text-center h-full relative group hover:shadow-md transition-shadow"
+                     data-game-id="${id}">
+                    <div class="w-full aspect-square bg-gray-100 rounded mb-2 overflow-hidden flex items-center justify-center">
+                        ${game.image ? `<img src="${game.image}" class="w-full h-full object-contain">` : '<span class="text-2xl">🎲</span>'}
+                    </div>
+                    <div class="text-xs font-medium text-gray-800 line-clamp-2 leading-tight">${game.name}</div>
+                </div>
+            `;
+        }
+
+        // Drag and Drop Logic
+        function allowDrop(ev) {
+            ev.preventDefault();
+            const shelf = ev.target.closest('.shelf') || ev.target.closest('#unshelvedList');
+            if (shelf) shelf.classList.add('drag-over');
+        }
+
+        function drag(ev) {
+            ev.dataTransfer.setData("text", ev.target.dataset.gameId);
+            // Add a small delay to visual effect
+            setTimeout(() => ev.target.classList.add('opacity-50'), 0);
+        }
+
+        // Clean up drag styles
+        document.addEventListener('dragend', (ev) => {
+            ev.target.classList.remove('opacity-50');
+            document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+        });
+        
+        document.addEventListener('dragleave', (ev) => {
+             const shelf = ev.target.closest('.shelf') || ev.target.closest('#unshelvedList');
+             if (shelf) shelf.classList.remove('drag-over');
+        });
+
+        function drop(ev, targetShelfId) {
+            ev.preventDefault();
+            const gameId = ev.dataTransfer.getData("text");
+            if (!gameId) return;
+
+            // Remove from source (either unshelved or another shelf)
+            removeFromCurrentLocation(gameId);
+
+            if (targetShelfId) {
+                // Add to target shelf
+                const shelf = shelves.find(s => s.id === targetShelfId);
+                if (shelf) shelf.games.push(gameId);
+            } else {
+                // Dropped back to unshelved list
+                unshelvedGameIds.push(gameId);
+                // Sort unshelved by name to keep it tidy
+                unshelvedGameIds.sort((a, b) => {
+                    const ga = allGames.find(g => g.id === a);
+                    const gb = allGames.find(g => g.id === b);
+                    return ga.name.localeCompare(gb.name);
+                });
+            }
+
+            saveLayout();
+            renderApp();
+        }
+
+        function removeFromCurrentLocation(gameId) {
+            // Check unshelved
+            const unshelvedIndex = unshelvedGameIds.indexOf(gameId);
+            if (unshelvedIndex > -1) {
+                unshelvedGameIds.splice(unshelvedIndex, 1);
+                return;
+            }
+
+            // Check shelves
+            shelves.forEach(shelf => {
+                const idx = shelf.games.indexOf(gameId);
+                if (idx > -1) {
+                    shelf.games.splice(idx, 1);
+                }
+            });
+        }
+
+        function addShelf() {
+            shelves.push({
+                id: Date.now(),
+                name: `Shelf ${shelves.length + 1}`,
+                games: []
+            });
+            saveLayout();
+            renderShelves();
+        }
+
+        function deleteShelf(id) {
+            if (!confirm('Delete this shelf? Games will be moved back to unshelved.')) return;
+            
+            const shelfIndex = shelves.findIndex(s => s.id === id);
+            if (shelfIndex > -1) {
+                const shelf = shelves[shelfIndex];
+                // Move games back to unshelved
+                unshelvedGameIds.push(...shelf.games);
+                shelves.splice(shelfIndex, 1);
+                saveLayout();
+                renderApp();
+            }
+        }
+
+        function updateShelfName(id, newName) {
+            const shelf = shelves.find(s => s.id === id);
+            if (shelf) {
+                shelf.name = newName;
+                saveLayout();
+            }
+        }
+
+        function saveLayout() {
+            const data = { shelves };
+            localStorage.setItem('shelfie_layout', JSON.stringify(data));
+        }
+    </script>
+</body>
+</html>
