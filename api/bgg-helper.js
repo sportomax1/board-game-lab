@@ -88,6 +88,15 @@ module.exports = async (req, res) => {
         case 'family':
             bggUrl = `https://boardgamegeek.com/xmlapi2/family?${paramString}`;
             break;
+        case 'forumlist':
+            bggUrl = `https://boardgamegeek.com/xmlapi2/forumlist?${paramString}`;
+            break;
+        case 'browse':
+            // Scrape the browse page for top ranked games
+            // Supports page parameter, e.g., page=1
+            const page = params.page || 1;
+            bggUrl = `https://boardgamegeek.com/browse/boardgame/page/${page}`;
+            break;
         default:
             const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays, family`;
             console.error(errorMsg);
