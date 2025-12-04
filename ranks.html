@@ -37,22 +37,24 @@
         </div>
     </div>
 
-    <!-- Loading Screen with Progress Bar at Top -->
-    <div id="loadingScreen" class="fixed inset-0 bg-white/95 z-40 flex flex-col hidden backdrop-blur-sm">
-        <div class="w-full h-1 bg-gray-200 fixed top-0 left-0 z-50 overflow-hidden">
-            <div id="progressBar" class="h-full bg-gradient-to-r from-purple-500 to-purple-600 w-0 transition-all duration-300"></div>
-        </div>
-        
-        <div class="flex-1 flex flex-col items-center justify-center px-4">
-            <div class="animate-spin rounded-full h-16 w-16 border-4 border-purple-600 border-t-transparent mb-4"></div>
-            <h2 class="text-xl font-bold text-gray-800 text-center" id="loadingText">Connecting to BGG...</h2>
-            <p class="text-sm text-gray-500 text-center mt-4 max-w-xs" id="loadingDetail">Please wait while we fetch your games</p>
-        </div>
-    </div>
-
     <!-- Main App -->
     <div id="app" class="hidden flex-1 flex flex-col w-full">
-        <header class="bg-white shadow-sm sticky top-0 z-30 px-3 md:px-4 py-3 md:py-4">
+        <!-- Progress Bar at Top -->
+        <div id="progressContainer" class="w-full h-1 bg-gray-200 sticky top-0 z-50 overflow-hidden hidden">
+            <div id="progressBar" class="h-full bg-gradient-to-r from-purple-500 to-purple-600 w-0 transition-all duration-300"></div>
+        </div>
+
+        <!-- Progress Info Bar -->
+        <div id="progressInfo" class="bg-purple-50 border-b border-purple-200 px-3 md:px-4 py-2 sticky top-1 z-40 hidden">
+            <div class="max-w-5xl mx-auto flex items-center justify-between">
+                <div>
+                    <p class="text-xs md:text-sm font-medium text-purple-900" id="progressText">Loading...</p>
+                </div>
+                <div class="text-xs text-purple-700" id="progressCount"></div>
+            </div>
+        </div>
+
+        <header class="bg-white shadow-sm sticky top-8 md:top-9 z-30 px-3 md:px-4 py-3 md:py-4">
             <div class="flex flex-col gap-3 md:gap-4 max-w-5xl mx-auto">
                 <div>
                     <h1 class="font-bold text-xl md:text-2xl text-gray-900 flex items-center gap-2">
@@ -84,22 +86,29 @@
     <script>
         let currentMode = 'rank';
         let gamesData = [];
+        let allGameIds = [];
 
         async function fetchGames() {
             const limit = parseInt(document.getElementById('limitInput').value) || 100;
             
+            console.log('🎮 Starting game fetch with limit:', limit);
             document.getElementById('setupScreen').classList.add('hidden');
-            document.getElementById('loadingScreen').classList.remove('hidden');
-            updateProgress(5, 'Initializing...');
+            document.getElementById('app').classList.remove('hidden');
+            
+            // Show progress bars
+            document.getElementById('progressContainer').classList.remove('hidden');
+            document.getElementById('progressInfo').classList.remove('hidden');
 
             try {
                 let ids = [];
                 
                 // Calculate pages needed (100 items per page)
                 const pages = Math.ceil(limit / 100);
-                updateProgress(10, `Fetching ${pages} pages of rankings...`);
+                console.log('📄 Fetching', pages, 'pages of rankings');
+                updateProgress(10, `Fetching ${pages} pages of rankings...`, '');
                 
                 for (let p = 1; p <= pages; p++) {
+                    console.log(`📖 Fetching page ${p}/${pages}...`);
                     const res = await fetch(`/api/bgg-helper?endpoint=browse&page=${p}`);
                     const html = await res.text();
                     
@@ -113,16 +122,21 @@
                             if (!ids.includes(match[1])) ids.push(match[1]);
                         }
                     }
-                    updateProgress(10 + (p/pages)*20, `Parsed page ${p}...`);
+                    const pagePercent = 10 + (p/pages)*20;
+                    console.log(`✓ Page ${p} parsed: found ${ids.length} total IDs so far`);
+                    updateProgress(pagePercent, `Parsed page ${p}/${pages}...`, `${ids.length} games found`);
                 }
                 
+                allGameIds = ids;
+                console.log('✅ ID collection complete. Total IDs:', ids.length);
+
                 document.getElementById('headerIcon').textContent = '🏆';
                 document.getElementById('headerTitle').textContent = 'Top Ranked';
                 document.getElementById('headerSubtitle').textContent = `Top ${ids.length} Games on BGG`;
 
                 if (ids.length === 0) throw new Error('No games found.');
 
-                updateProgress(40, 'Fetching game details...');
+                updateProgress(40, 'Fetching game details in batches...', `0 / ${ids.length}`);
                 
                 // Fetch details in chunks of 20
                 const chunkSize = 20;
@@ -131,57 +145,75 @@
                     chunks.push(ids.slice(i, i + chunkSize));
                 }
 
-                let allItems = [];
+                console.log('🔄 Processing', chunks.length, 'batches of', chunkSize, 'games each');
+
+                gamesData = [];
                 let processed = 0;
 
-                for (const chunk of chunks) {
+                for (let batchIdx = 0; batchIdx < chunks.length; batchIdx++) {
+                    const chunk = chunks[batchIdx];
+                    console.log(`📦 Batch ${batchIdx + 1}/${chunks.length}: Fetching games [${processed + 1}-${Math.min(processed + chunkSize, ids.length)}]...`);
+                    
                     const res = await fetch(`/api/bgg-helper?endpoint=thing&id=${chunk.join(',')}&stats=1`);
                     const text = await res.text();
                     const xml = new DOMParser().parseFromString(text, 'text/xml');
-                    allItems = allItems.concat(Array.from(xml.querySelectorAll('item')));
+                    const batchItems = Array.from(xml.querySelectorAll('item'));
                     
+                    console.log(`✓ Batch ${batchIdx + 1}: Received ${batchItems.length} items`);
+
+                    // Process this batch's items
+                    const batchGames = batchItems.map(item => {
+                        const stats = item.querySelector('statistics ratings');
+                        const rankObj = stats.querySelector('rank[name="boardgame"]');
+                        const rank = rankObj ? parseInt(rankObj.getAttribute('value')) : 999999;
+                        
+                        return {
+                            id: item.getAttribute('id'),
+                            name: item.querySelector('name[type="primary"]').getAttribute('value'),
+                            year: item.querySelector('yearpublished')?.getAttribute('value') || '?',
+                            image: item.querySelector('thumbnail')?.textContent || '',
+                            rating: parseFloat(stats.querySelector('average').getAttribute('value')).toFixed(1),
+                            rank: isNaN(rank) ? 999999 : rank,
+                            weight: parseFloat(stats.querySelector('averageweight').getAttribute('value')).toFixed(2),
+                            voters: parseInt(stats.querySelector('usersrated').getAttribute('value')),
+                            description: item.querySelector('description')?.textContent || ''
+                        };
+                    });
+
+                    gamesData = gamesData.concat(batchGames);
                     processed += chunk.length;
-                    updateProgress(40 + (processed / ids.length) * 60, `Loaded ${processed} / ${ids.length} games...`);
+                    
+                    // Sort current data and render immediately
+                    gamesData.sort((a, b) => a.rank - b.rank);
+                    renderGames();
+                    
+                    const progressPercent = 40 + (processed / ids.length) * 59;
+                    console.log(`📊 Progress: ${processed}/${ids.length} games loaded (${Math.round((processed/ids.length)*100)}%)`);
+                    updateProgress(progressPercent, `Loaded batch ${batchIdx + 1}/${chunks.length}...`, `${processed} / ${ids.length} games`);
                 }
 
-                gamesData = allItems.map(item => {
-                    const stats = item.querySelector('statistics ratings');
-                    const rankObj = stats.querySelector('rank[name="boardgame"]');
-                    const rank = rankObj ? parseInt(rankObj.getAttribute('value')) : 999999;
-                    
-                    return {
-                        id: item.getAttribute('id'),
-                        name: item.querySelector('name[type="primary"]').getAttribute('value'),
-                        year: item.querySelector('yearpublished')?.getAttribute('value') || '?',
-                        image: item.querySelector('thumbnail')?.textContent || '',
-                        rating: parseFloat(stats.querySelector('average').getAttribute('value')).toFixed(1),
-                        rank: isNaN(rank) ? 999999 : rank,
-                        weight: parseFloat(stats.querySelector('averageweight').getAttribute('value')).toFixed(2),
-                        voters: parseInt(stats.querySelector('usersrated').getAttribute('value')),
-                        description: item.querySelector('description')?.textContent || ''
-                    };
-                });
-
-                // Initial sort by Rank
-                gamesData.sort((a, b) => a.rank - b.rank);
+                console.log('✅ All batches complete! Total games:', gamesData.length);
+                updateProgress(100, '✅ Done! All games loaded.', `${gamesData.length} games ready`);
                 
-                updateProgress(100, 'Done!');
-                renderGames();
-                
+                // Keep progress visible briefly then fade
                 setTimeout(() => {
-                    document.getElementById('loadingScreen').classList.add('hidden');
-                    document.getElementById('app').classList.remove('hidden');
-                }, 500);
+                    document.getElementById('progressContainer').classList.add('hidden');
+                    document.getElementById('progressInfo').classList.add('hidden');
+                }, 2000);
 
             } catch (error) {
+                console.error('❌ Error:', error.message);
                 alert('Error: ' + error.message);
                 location.reload();
             }
         }
 
-        function updateProgress(percent, text) {
+        function updateProgress(percent, text, count) {
             document.getElementById('progressBar').style.width = `${percent}%`;
-            document.getElementById('loadingText').textContent = text;
+            document.getElementById('progressText').textContent = text;
+            if (count) {
+                document.getElementById('progressCount').textContent = count;
+            }
         }
 
         function sortGames() {
