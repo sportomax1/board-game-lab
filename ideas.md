@@ -1,52 +1,50 @@
-# App Ideas for Future Development
+# App Ideas for Future Development - 2025 Edition
 
-## 🎯 Challenge Tracker
-A dedicated dashboard for tracking popular board gaming challenges, such as the "10x10" (play 10 games 10 times each), "Alphabet Challenge" (play a game starting with every letter), or "365 Days of Gaming". This app would pull play data directly from BGG to automatically update progress bars and completion percentages, helping users stay motivated to play through their collection and visualize their gaming goals.
+## 🎯 BGG Achievement Hunter
+Track and visualize BGG badges and achievements across your collection. Show progress toward collection milestones (games owned by designer, publisher, mechanic coverage), play count achievements (Century Club for 100 plays of one game), and challenge completions (10x10, H-Index goals). Gamify your BGG experience with progress bars, unlockable achievements, and shareable trophy cases.
 
-## 📝 Digital Scorepad & Logger
-A universal scoring utility that replaces paper score sheets. It would support various scoring modes (simple sum, category-based, round-based) and allow users to log the final results directly to BGG as a play. Key features could include player history tracking, calculating average scores for specific games, and remembering the "last winner" for the next time a game hits the table.
+## 🗺️ Mechanic Map Explorer
+Interactive visualization of your collection organized by game mechanics. Display games as nodes in a network graph where connections represent shared mechanics. Click mechanics to filter, discover underrepresented mechanics in your collection, and get recommendations to fill gaps. Compare mechanic diversity scores with other users.
 
-## 🃏 Sleeve Manager
-A practical utility for collectors that analyzes the user's library to generate a comprehensive report of required card sleeves. By cross-referencing game data with sleeve size databases, it would produce a shopping list of specific sleeve sizes and pack counts needed to fully sleeve the collection, or just the "Want to Buy" list, making accessory shopping much easier.
+## 🎨 Custom Box Cover Generator
+AI-powered tool to create custom box covers for print-and-play games, prototypes, or replacement boxes. Choose from templates matching popular publishers' styles (stonemaier, CMON, etc.), upload component photos, and generate print-ready PDFs with spine text, barcode area, and proper bleed margins.
 
-## 🗺️ Campaign & Legacy Log
-A specialized tracker for campaign-driven and legacy games (like Gloomhaven, Pandemic Legacy, or Oath). Unlike standard play logging, this app would track scenario outcomes, unlocked content, character progression, and narrative choices. It would serve as a digital "save state" for gaming groups, ensuring no details are forgotten between sessions that might be weeks apart.
+## 📱 Quick Add Scanner
+Mobile-optimized app using device camera to scan barcodes/QR codes on game boxes. Instantly adds scanned games to BGG collection, marketplace listings, or trade lists. Includes offline mode to queue scans for later sync and bulk import/export capabilities for inventory audits at game stores or conventions.
 
-## 🌳 Expansion Explorer
-A visualization tool that maps out the "family tree" of games in the collection. It would display owned base games alongside their available expansions and promos, highlighting what the user owns versus what is missing. This visual gap analysis would help completionists see exactly what content they need to finish a set or discover expansions they didn't know existed.
+## 🎲 Dice Probability Calculator
+Visual calculator for complex dice mechanics across different games. Input dice pools, modifiers, and target numbers to see success probability distributions. Save common scenarios for frequently played games. Includes special modes for custom dice (Descent, Star Wars, etc.) and exploding/reroll mechanics.
 
-## 🍽️ Game Night Menu Generator
-An evolution of the current menu tool, designed specifically for hosting events. Users could select a curated list of games for a specific evening, and the app would generate a stylish, shareable digital "menu" or printable PDF. It would feature cover art, player counts, complexity ratings, and "flavor text" descriptions to help guests vote on or choose what to play before they arrive.
+## 🏆 Solo Campaign Tracker  
+Dedicated app for managing solo campaign progress across multiple legacy/campaign games. Track scenario wins/losses, unlocked content, permanent upgrades, and narrative choices. Calendar view shows last played dates to prioritize games. Export/import save states for sharing with online communities or backing up progress.
 
-## 📚 "Shelfie" Planner
-A drag-and-drop visualizer for organizing physical game shelves. Users could define their shelf dimensions (e.g., Kallax cubes) and drag game box images—scaled by their actual physical dimensions from BGG data—onto the virtual shelves. This would allow collectors to plan reorganizations or check if a new purchase will fit in a specific spot without moving a single heavy box.
+## 💬 Rules Chat Assistant
+AI-powered rules lookup that understands natural language questions. "In Wingspan, can I activate brown powers twice?" Returns relevant rulebook sections, BGG forum answers, and video timestamps. Learns from BGG Rules Forum to handle edge cases and errata. Works offline with cached rulesets.
 
-## 📅 BGG Year in Review
-A "Spotify Wrapped" style presentation for board gaming habits. It would analyze a user's play data from the previous year to generate animated, shareable infographics. Statistics could include total hours played, most played mechanics, "h-index", favorite days of the week to play, and "awards" for the most frequent players in the group.
+## 🎁 Secret Santa Game Matcher
+Enter budget and recipient's BGG profile to get AI-curated gift recommendations. Analyzes their collection, ratings, wishlist, and favorite mechanics to suggest games they'll love but don't own. Filters by price range, availability, and shipping location. Generates gift card message with personalized reasoning.
 
-## 📖 Rulebook Repository
-A centralized hub for accessing digital rulebooks. This app would link games in the user's collection to their official PDF rulebooks or community-created summaries (like Esoteric Order of Gamers). It could include a search feature to quickly find specific rules during gameplay without flipping through the physical booklet.
+## 📊 Collection Health Dashboard
+Medical checkup for your collection showing "vital signs": unplayed games percentage, acquisition rate vs play rate, shelf of shame growth, average rating drift over time. Predictive analytics warn when collection is growing unsustainably. Suggests culling candidates based on rating/play patterns and games to prioritize playing.
 
-## 👆 First Player Chooser
-A fun, interactive utility to determine who goes first. Instead of simple dice rolls, it could feature mini-games, reaction tests, or thematic selectors based on the game being played (e.g., "Who last visited a forest?" for Photosynthesis). It adds a moment of delight to the setup phase.
+## 🎮 Cross-Platform Play Logger
+Unified play tracking across physical board games, digital implementations (BGA, Tabletop Simulator, Steam), and mobile apps. Auto-sync plays from Steam achievements, BGA history, and manual entry. Smart duplicate detection prevents double-logging. Generates comprehensive play stats across all platforms with format-specific insights.
 
-## 📦 Box Insert Designer
-A helper tool for DIY organizers. Users could input box dimensions and component lists, and the app would suggest layout diagrams for foam core inserts or generate STL files for 3D printing. It could connect to a community database of shared designs for specific games.
+## 🌐 Translation Toolkit
+Help non-English gamers enjoy their collection. Upload component photos and get AI-translated labels, cards, and rulebooks. Community database shares translations for popular games. Generate printable overlays, sleevable card translations, and screen-reader friendly digital rulebooks. Supports 50+ languages with BGG community verification.
 
-## 🤝 Trade Optimizer
-A tool designed to facilitate local trades. It would compare the "For Trade" list of the user with the "Want in Trade" lists of other local gamers (filtered by radius). It could identify potential direct trades or even suggest 3-way trade loops to maximize value for everyone involved.
+## 🔔 Restock Alert Network
+Monitor availability and price drops for games on your wishlist across multiple retailers. Set target prices and get instant notifications when deals appear. Tracks Kickstarter campaigns for designers/publishers you follow. Historical price charts show best time to buy. Integrates with CamelCamelCamel for Amazon tracking.
 
-## ⏱️ Game Timer & Chess Clock
-A highly configurable timer app for board games. It would support simple countdowns, hourglass modes, and multi-player chess clocks (Fisher or Bronstein delay). It could track "thinking time" per player to settle arguments about who is causing analysis paralysis.
+## 🎯 Play Challenge Generator
+Creates custom gaming challenges based on your collection and play history. "Play 5 games rated 7+ that you haven't touched in 6 months" or "Try every game with the worker placement mechanic." Daily/weekly challenges with difficulty tiers (casual to hardcore). Leaderboards for community challenges and seasonal events.
 
-## 💰 Collection Value Estimator
-A financial dashboard for the collection. By scraping BGG GeekMarket history, eBay sold listings, or Noble Knight prices, it would provide an estimated current market value for the user's library. It could highlight rare out-of-print gems that have appreciated in value.
+## 🏠 Storage Space Calculator
+3D visualization tool for planning game storage. Input shelf dimensions (IKEA Kallax, custom units) and it arranges your collection accounting for actual box sizes. Drag-and-drop organization with color coding by category. Calculate how many more games fit before needing new furniture. Export shopping lists for exact shelving unit needs.
 
-## 🎲 "What Should We Play?" Decider
-An advanced decision engine for indecisive groups. Users input the number of players and available time, and the app filters the collection. It could use a "bracket tournament" style voting system where players vote on pairs of games until a winner is chosen for the night.
+## 📸 Condition Report Generator
+Document collection condition for insurance or sale purposes. Take photos of boxes, components, and damage. AI detects wear levels (mint, good, acceptable, poor) and generates detailed condition reports with timestamped photo evidence. Export to PDF for insurance claims or marketplace listings with professional formatting.
 
-## 🎟️ Convention Planner
-A companion app for major board game conventions (Gen Con, Essen, PAX). It would allow users to build a schedule of demos, tournaments, and meetups. It could also track booth locations for games on their "wishlist" to create an optimized walking route through the exhibit hall.
 
 ## 📍 Local Game Group Finder
 A social connector for finding players. It would map out local game stores, board game cafes, and public meetup groups. Users could set their preferences (e.g., "Heavy Euros", "Party Games") to find groups that match their gaming style.
