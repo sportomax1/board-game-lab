@@ -1,0 +1,426 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Board Games - BGG</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { padding: max(env(safe-area-inset-top), 0) max(env(safe-area-inset-right), 0) max(env(safe-area-inset-bottom), 0) max(env(safe-area-inset-left), 0); }
+        input, select, button { font-size: 16px; }
+        
+        .dropdown-results { max-height: 300px; overflow-y-auto; border: 2px solid #e5e7eb; border-radius: 8px; background: white; }
+        .dropdown-item { display: flex; align-items: center; gap: 12px; padding: 10px; border-bottom: 1px solid #f0f0f0; cursor: pointer; transition: background 0.2s; }
+        .dropdown-item:last-child { border-bottom: none; }
+        .dropdown-item:hover { background: #f9fafb; }
+        .dropdown-item img { width: 50px; height: 50px; object-fit: cover; border-radius: 4px; flex-shrink: 0; }
+        .dropdown-item-text { flex: 1; font-size: 14px; font-weight: 600; color: #333; }
+        
+        .board-grid { display: grid; gap: 4px; padding: 12px; background: #333; border-radius: 12px; }
+        .cell { aspect-ratio: 1; border-radius: 6px; border: 2px solid white; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; min-height: 50px; font-weight: bold; font-size: 18px; }
+        .cell img { width: 100%; height: 100%; object-fit: cover; }
+        .cell.empty { background: white; }
+        .cell.x { background: #e5e7eb; }
+        .cell.o { background: #f3f4f6; }
+        .cell.disabled { cursor: not-allowed; opacity: 0.6; }
+        .winning-cell { animation: pulse 0.6s infinite; }
+        @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+        
+        .game-button { padding: 12px 24px; border-radius: 8px; font-weight: bold; font-size: 14px; border: none; cursor: pointer; transition: all 0.2s; }
+        .game-button:hover { transform: scale(1.05); }
+        .game-button.active { ring: 3px; }
+    </style>
+</head>
+<body class="bg-gradient-to-b from-blue-900 to-blue-800 min-h-screen flex flex-col">
+    <div id="setupModal" class="fixed inset-0 bg-gradient-to-br from-purple-900 to-indigo-900 z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-w-md w-full my-4">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-2 text-center">🎮 BGG Games</h1>
+            <p class="text-gray-500 text-center text-base mb-6">Play with box art pieces!</p>
+            
+            <div class="space-y-4">
+                <!-- Game Selection -->
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Choose Game</label>
+                    <select id="gameSelect" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-blue-500 outline-none" onchange="updateGameDescription()">
+                        <option value="">Select a game...</option>
+                        <option value="connectfour">Connect Four</option>
+                        <option value="checkers">Checkers</option>
+                        <option value="tictactoe">Tic Tac Toe</option>
+                        <option value="ultimatetictactoe">Ultimate Tic Tac Toe</option>
+                        <option value="gomoku">Gomoku (5 in a row)</option>
+                    </select>
+                    <p id="gameDesc" class="text-xs text-gray-500 mt-2"></p>
+                </div>
+                
+                <!-- Player 1 Game -->
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Player 1 Game</label>
+                    <input type="text" id="player1Search" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-red-500 outline-none" placeholder="Search game...">
+                    <button onclick="searchPlayer1()" class="w-full bg-red-600 text-white py-2 rounded-lg font-bold hover:bg-red-700 transition mt-1 text-sm">Search</button>
+                    <div id="player1Results" class="hidden mt-2"></div>
+                </div>
+                
+                <!-- Player 2 Game -->
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Player 2 Game</label>
+                    <input type="text" id="player2Search" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-yellow-500 outline-none" placeholder="Search game...">
+                    <button onclick="searchPlayer2()" class="w-full bg-yellow-600 text-white py-2 rounded-lg font-bold hover:bg-yellow-700 transition mt-1 text-sm">Search</button>
+                    <div id="player2Results" class="hidden mt-2"></div>
+                </div>
+                
+                <button id="startBtn" onclick="startGame()" class="w-full bg-green-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-green-700 transition shadow-lg disabled:opacity-50 disabled:cursor-not-allowed" disabled>Start Game</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="infoModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full">
+            <h2 class="text-2xl font-bold text-gray-900 mb-4" id="infoTitle">Game Rules</h2>
+            <div class="space-y-3 text-gray-700 text-sm" id="infoContent"></div>
+            <button onclick="closeInfo()" class="w-full mt-6 bg-blue-600 text-white py-3 rounded-lg font-bold hover:bg-blue-700">Got it!</button>
+        </div>
+    </div>
+
+    <div id="app" class="hidden flex-1 flex flex-col">
+        <header class="bg-white shadow-sm sticky top-0 z-30 px-4 py-3">
+            <div class="max-w-2xl mx-auto flex items-center justify-between">
+                <h1 class="font-bold text-lg text-gray-900" id="gameTitle"></h1>
+                <div class="flex gap-2">
+                    <button onclick="showInfo()" class="p-2 text-blue-500 hover:bg-blue-50 rounded-lg">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><circle cx="12" cy="12" r="10" stroke-width="2"/><path stroke-linecap="round" d="M12 16v-4m0-4h.01"/></svg>
+                    </button>
+                    <button onclick="showSettings()" class="p-2 text-gray-500 hover:bg-gray-100 rounded-lg">
+                        <svg class="w-6 h-6" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10.325 4.317c.426-1.756 2.924-1.756 3.35 0a1.724 1.724 0 002.573 1.066c1.543-.94 3.31.826 2.37 2.37a1.724 1.724 0 001.065 2.572c1.756.426 1.756 2.924 0 3.35a1.724 1.724 0 00-1.066 2.573c.94 1.543-.826 3.31-2.37 2.37a1.724 1.724 0 00-2.572 1.065c-.426 1.756-2.924 1.756-3.35 0a1.724 1.724 0 00-2.573-1.066c-1.543.94-3.31-.826-2.37-2.37a1.724 1.724 0 00-1.065-2.572c-1.756-.426-1.756-2.924 0-3.35a1.724 1.724 0 001.066-2.573c-.94-1.543.826-3.31 2.37-2.37.996.608 2.296.07 2.572-1.065z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/></svg>
+                    </button>
+                </div>
+            </div>
+        </header>
+        <main class="flex-1 p-4 max-w-2xl mx-auto w-full flex flex-col justify-center">
+            <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
+                <div class="flex justify-between items-center">
+                    <div>
+                        <p class="text-sm text-gray-600">Current Turn</p>
+                        <p class="text-2xl font-bold" id="playerDisplay"></p>
+                    </div>
+                    <div class="text-center">
+                        <p class="text-sm text-gray-600">Status</p>
+                        <p class="text-lg font-bold text-gray-900" id="status">In Progress</p>
+                    </div>
+                </div>
+            </div>
+            <div id="boardContainer" class="mb-4"></div>
+            <button onclick="resetGame()" class="w-full bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600">🔄 New Game</button>
+        </main>
+    </div>
+
+    <script>
+        // Global variables
+        let gameType = '';
+        let player1Game = {};
+        let player2Game = {};
+        let currentPlayer = 1;
+        let gameOver = false;
+        let board = [];
+
+        const GAMES = {
+            connectfour: { name: '🔴🟡 Connect Four', cols: 7, rows: 6, desc: 'Drop pieces from top, first to connect 4 wins!' },
+            checkers: { name: '🏁 Checkers', cols: 8, rows: 8, desc: 'Jump pieces to capture, reach opposite side for king!' },
+            tictactoe: { name: '⭕❌ Tic Tac Toe', cols: 3, rows: 3, desc: '3 in a row wins!' },
+            ultimatetictactoe: { name: '🎯 Ultimate Tic Tac Toe', cols: 3, rows: 3, desc: 'Win 3x3 grids to win overall!' },
+            gomoku: { name: '⚫⚪ Gomoku', cols: 15, rows: 15, desc: '5 in a row wins!' }
+        };
+
+        function updateGameDescription() {
+            const game = document.getElementById('gameSelect').value;
+            const desc = game ? GAMES[game].desc : '';
+            document.getElementById('gameDesc').textContent = desc;
+            gameType = game;
+        }
+
+        async function searchPlayer1() {
+            const query = document.getElementById('player1Search').value.trim();
+            if (!query) return;
+            await displaySearchResults(query, 'player1Results', 'player1');
+        }
+
+        async function searchPlayer2() {
+            const query = document.getElementById('player2Search').value.trim();
+            if (!query) return;
+            await displaySearchResults(query, 'player2Results', 'player2');
+        }
+
+        async function displaySearchResults(query, resultsId, player) {
+            const resultsDiv = document.getElementById(resultsId);
+            resultsDiv.innerHTML = '<p class="text-center text-gray-600 text-sm py-2">Searching...</p>';
+            resultsDiv.classList.remove('hidden');
+            
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}`);
+                const xml = await res.text();
+                console.log('Search XML:', xml.substring(0, 500));
+                
+                const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                const items = Array.from(parser.querySelectorAll('item[id]'));
+                console.log('Found items:', items.length);
+                
+                const dropdownDiv = document.createElement('div');
+                dropdownDiv.className = 'dropdown-results';
+                
+                let count = 0;
+                for (const item of items) {
+                    if (count >= 15) break;
+                    const id = item.getAttribute('id');
+                    
+                    const nameEls = item.querySelectorAll('name');
+                    let name = 'Unknown';
+                    if (nameEls.length > 0) {
+                        name = nameEls[0].getAttribute('value')?.trim() || nameEls[0].textContent?.trim() || 'Unknown';
+                    }
+                    
+                    try {
+                        const thingRes = await fetch(`/api/bgg-helper?endpoint=thing&id=${id}`);
+                        const thingXml = await thingRes.text();
+                        const thingParser = new DOMParser().parseFromString(thingXml, 'text/xml');
+                        const thumbnail = thingParser.querySelector('thumbnail')?.textContent?.trim();
+                        const image = thingParser.querySelector('image')?.textContent?.trim();
+                        
+                        const imgUrl = thumbnail || image;
+                        console.log(`${name} - thumbnail: ${imgUrl ? 'yes' : 'no'}`);
+                        
+                        if (!imgUrl) continue;
+                        
+                        const dropdownItem = document.createElement('div');
+                        dropdownItem.className = 'dropdown-item';
+                        dropdownItem.innerHTML = `
+                            <img src="${imgUrl}" alt="${name}" onerror="this.src='https://via.placeholder.com/50'">
+                            <div class="dropdown-item-text">${name}</div>
+                        `;
+                        dropdownItem.onclick = () => selectGame(player, id, name, imgUrl);
+                        dropdownDiv.appendChild(dropdownItem);
+                        count++;
+                    } catch (innerError) {
+                        console.error(`Error fetching details for ${id}:`, innerError);
+                        continue;
+                    }
+                }
+                
+                resultsDiv.innerHTML = '';
+                if (count === 0) {
+                    resultsDiv.innerHTML = '<p class="text-center text-gray-600 text-sm py-2">No results with images</p>';
+                } else {
+                    resultsDiv.appendChild(dropdownDiv);
+                }
+            } catch (error) {
+                console.error('Search error:', error);
+                resultsDiv.innerHTML = '<p class="text-center text-red-600 text-sm py-2">Error searching</p>';
+            }
+        }
+
+        function selectGame(player, id, name, image) {
+            if (player === 'player1') {
+                player1Game = { name, image, id };
+                document.getElementById('player1Search').value = name;
+                document.getElementById('player1Results').classList.add('hidden');
+            } else {
+                player2Game = { name, image, id };
+                document.getElementById('player2Search').value = name;
+                document.getElementById('player2Results').classList.add('hidden');
+            }
+            
+            if (player1Game.id && player2Game.id && gameType) {
+                document.getElementById('startBtn').disabled = false;
+            }
+        }
+
+        function startGame() {
+            if (!gameType || !player1Game.id || !player2Game.id) {
+                alert('Select game and both player games');
+                return;
+            }
+            
+            document.getElementById('setupModal').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            
+            const game = GAMES[gameType];
+            document.getElementById('gameTitle').textContent = game.name;
+            
+            initializeBoard(game.rows, game.cols);
+            renderBoard();
+            updateDisplay();
+        }
+
+        function initializeBoard(rows, cols) {
+            board = [];
+            for (let i = 0; i < rows; i++) {
+                board[i] = [];
+                for (let j = 0; j < cols; j++) {
+                    board[i][j] = 0;
+                }
+            }
+            currentPlayer = 1;
+            gameOver = false;
+        }
+
+        function renderBoard() {
+            const container = document.getElementById('boardContainer');
+            const game = GAMES[gameType];
+            const cols = game.cols;
+            const rows = game.rows;
+            
+            container.innerHTML = '';
+            const boardDiv = document.createElement('div');
+            boardDiv.className = 'board-grid';
+            boardDiv.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+            
+            for (let row = 0; row < rows; row++) {
+                for (let col = 0; col < cols; col++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'cell';
+                    const piece = board[row][col];
+                    
+                    if (piece === 0) {
+                        cell.classList.add('empty');
+                        cell.onclick = () => makeMove(row, col);
+                    } else {
+                        const img = document.createElement('img');
+                        img.src = piece === 1 ? player1Game.image : player2Game.image;
+                        cell.appendChild(img);
+                    }
+                    
+                    boardDiv.appendChild(cell);
+                }
+            }
+            
+            container.appendChild(boardDiv);
+        }
+
+        function makeMove(row, col) {
+            if (gameOver) return;
+            
+            if (gameType === 'connectfour') {
+                dropPiece(col);
+            } else if (gameType === 'checkers') {
+                placePiece(row, col);
+            } else if (gameType === 'tictactoe') {
+                placePiece(row, col);
+            } else if (gameType === 'ultimatetictactoe') {
+                placePiece(row, col);
+            } else if (gameType === 'gomoku') {
+                placePiece(row, col);
+            }
+        }
+
+        function dropPiece(col) {
+            for (let row = GAMES[gameType].rows - 1; row >= 0; row--) {
+                if (board[row][col] === 0) {
+                    board[row][col] = currentPlayer;
+                    renderBoard();
+                    
+                    if (checkWin(row, col, currentPlayer)) {
+                        gameOver = true;
+                        const playerName = currentPlayer === 1 ? player1Game.name : player2Game.name;
+                        document.getElementById('status').textContent = `${playerName} Wins! 🎉`;
+                    } else if (isBoardFull()) {
+                        gameOver = true;
+                        document.getElementById('status').textContent = 'Draw!';
+                    } else {
+                        currentPlayer = currentPlayer === 1 ? 2 : 1;
+                        updateDisplay();
+                    }
+                    return;
+                }
+            }
+        }
+
+        function placePiece(row, col) {
+            if (board[row][col] !== 0) return;
+            
+            board[row][col] = currentPlayer;
+            renderBoard();
+            
+            const winLen = gameType === 'gomoku' ? 5 : 3;
+            if (checkWin(row, col, currentPlayer, winLen)) {
+                gameOver = true;
+                const playerName = currentPlayer === 1 ? player1Game.name : player2Game.name;
+                document.getElementById('status').textContent = `${playerName} Wins! 🎉`;
+            } else if (isBoardFull()) {
+                gameOver = true;
+                document.getElementById('status').textContent = 'Draw!';
+            } else {
+                currentPlayer = currentPlayer === 1 ? 2 : 1;
+                updateDisplay();
+            }
+        }
+
+        function checkWin(row, col, player, winLen = 4) {
+            const directions = [[0, 1], [1, 0], [1, 1], [1, -1]];
+            const rows = GAMES[gameType].rows;
+            const cols = GAMES[gameType].cols;
+            
+            for (const [dr, dc] of directions) {
+                let count = 1;
+                
+                for (let i = 1; i < winLen; i++) {
+                    const r = row + dr * i;
+                    const c = col + dc * i;
+                    if (r >= 0 && r < rows && c >= 0 && c < cols && board[r][c] === player) {
+                        count++;
+                    } else break;
+                }
+                
+                for (let i = 1; i < winLen; i++) {
+                    const r = row - dr * i;
+                    const c = col - dc * i;
+                    if (r >= 0 && r < rows && c >= 0 && c < cols && board[r][c] === player) {
+                        count++;
+                    } else break;
+                }
+                
+                if (count >= winLen) return true;
+            }
+            return false;
+        }
+
+        function isBoardFull() {
+            return board[0].every(cell => cell !== 0);
+        }
+
+        function updateDisplay() {
+            const playerName = currentPlayer === 1 ? player1Game.name : player2Game.name;
+            const playerNum = currentPlayer === 1 ? '1️⃣' : '2️⃣';
+            document.getElementById('playerDisplay').innerHTML = `${playerNum} ${playerName}`;
+        }
+
+        function resetGame() {
+            const game = GAMES[gameType];
+            initializeBoard(game.rows, game.cols);
+            renderBoard();
+            document.getElementById('status').textContent = 'In Progress';
+            updateDisplay();
+        }
+
+        function showSettings() { document.getElementById('setupModal').classList.remove('hidden'); }
+        function showInfo() {
+            const game = GAMES[gameType];
+            document.getElementById('infoTitle').textContent = game.name;
+            let content = '';
+            if (gameType === 'connectfour') {
+                content = '<p>• Click column to drop piece</p><p>• First to connect 4 wins</p><p>• Row, column, or diagonal</p>';
+            } else if (gameType === 'checkers') {
+                content = '<p>• Click piece then destination</p><p>• Jump opponents to capture</p><p>• Reach opposite side for king</p>';
+            } else if (gameType === 'tictactoe') {
+                content = '<p>• Click empty cell to place</p><p>• First to get 3 in row wins</p><p>• Row, column, or diagonal</p>';
+            } else if (gameType === 'ultimatetictactoe') {
+                content = '<p>• Play tic tac toe in 3x3 grid</p><p>• Win smaller grids to claim them</p><p>• Win 3 grids in a row to win</p>';
+            } else if (gameType === 'gomoku') {
+                content = '<p>• Click empty cell to place</p><p>• First to connect 5 wins</p><p>• Row, column, or diagonal</p>';
+            }
+            document.getElementById('infoContent').innerHTML = content;
+            document.getElementById('infoModal').classList.remove('hidden');
+        }
+        function closeInfo() { document.getElementById('infoModal').classList.add('hidden'); }
+    </script>
+</body>
+</html>
