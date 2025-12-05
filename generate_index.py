@@ -65,6 +65,9 @@ def generate_html_index(output_file='index.html'):
     # Directories to exclude from scanning
     EXCLUDE_DIRS = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api'}
     
+    # Optional directories that can be toggled off (stored in localStorage)
+    OPTIONAL_IGNORE_DIRS = ['private', 'draft']
+    
     # --- Start of HTML content ---
     # NOTE: The 'active' class on the HTML filter button has been removed here, 
     # as the JavaScript will handle the initial active state to ensure filtering is applied.
@@ -294,6 +297,34 @@ def generate_html_index(output_file='index.html'):
         }}
         /* --- End Sorting Button Styles --- */
 
+        /* --- Folder Visibility Filter Styles --- */
+        .folder-filters {{
+            margin-bottom: 15px;
+            display: flex;
+            flex-wrap: wrap;
+            gap: 15px;
+            padding: 10px;
+            background-color: #f9f9f9;
+            border-radius: 6px;
+            border: 1px solid #e5e5e5;
+        }}
+        .folder-filters label {{
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 14px;
+            cursor: pointer;
+            user-select: none;
+        }}
+        .folder-filters label:hover {{
+            color: #0366d6;
+        }}
+        .folder-filters input[type="checkbox"] {{
+            cursor: pointer;
+            accent-color: #0366d6;
+        }}
+        /* --- End Folder Visibility Filter Styles --- */
+
         /* --- New Compact Card/List Styles --- */
         .app-entry {{
             display: flex; /* Makes the entry a flex container */
@@ -482,7 +513,7 @@ def generate_html_index(output_file='index.html'):
             </div>
         </div>
         
-        <p>Click a file entry to open it. Filter by file type below.</p>
+        <p>Click a file entry to open it. Filter by file type and folder visibility below.</p>
         
         <!-- Random Button and Custom Launcher -->
         <div class="action-buttons">
@@ -491,6 +522,12 @@ def generate_html_index(output_file='index.html'):
                 <input type="text" id="customFileInput" class="custom-input" placeholder="Enter filename (e.g., myfile.html)">
                 <button id="launchBtn" class="launch-btn">🚀 Launch</button>
             </div>
+        </div>
+        
+        <!-- Folder Visibility Checkboxes -->
+        <div class="folder-filters">
+            <label><input type="checkbox" id="ignorePrivate" checked> Hide 'private' folder</label>
+            <label><input type="checkbox" id="ignoreDraft" checked> Hide 'draft' folder</label>
         </div>
         
         <div class="filter-controls">
@@ -593,10 +630,17 @@ def generate_html_index(output_file='index.html'):
             file_ext = file_data['extension']
             badge_class = get_badge_class(file_ext)
             
+            # Extract folder name (first part of path)
+            path_parts = file_path.split('/')
+            if len(path_parts) > 1 and path_parts[0] != '.':
+                folder = path_parts[0]
+            else:
+                folder = 'root'
+            
             # Add data- attributes for JavaScript sorting and filtering
             # New HTML structure for one-line card:
             html_content += f"""
-            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['path'].lower()}" data-extension="{file_ext}">
+            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['path'].lower()}" data-extension="{file_ext}" data-folder="{folder}">
                 <a href="{file_path}" class="file-link" role="button">
                     <div class="file-path-container">
                         <span class="file-type-badge badge-{badge_class}">{file_ext[1:]}</span>
@@ -624,9 +668,57 @@ def generate_html_index(output_file='index.html'):
             const randomBtn = document.getElementById('randomBtn');
             const launchBtn = document.getElementById('launchBtn');
             const customFileInput = document.getElementById('customFileInput');
+            const ignorePrivateCheckbox = document.getElementById('ignorePrivate');
+            const ignoreDraftCheckbox = document.getElementById('ignoreDraft');
             
             // *** CHANGE 1: Set default filter to HTML ***
             let currentFilter = '.html'; // Default to HTML
+            let hiddenFolders = new Set();
+            
+            // Load folder preferences from localStorage
+            function loadFolderPreferences() {
+                const savedPrefs = localStorage.getItem('folderPreferences');
+                if (savedPrefs) {
+                    try {
+                        const prefs = JSON.parse(savedPrefs);
+                        hiddenFolders = new Set(prefs.hiddenFolders);
+                        // Update checkboxes to match saved state
+                        if (ignorePrivateCheckbox) ignorePrivateCheckbox.checked = prefs.ignorePrivate;
+                        if (ignoreDraftCheckbox) ignoreDraftCheckbox.checked = prefs.ignoreDraft;
+                    } catch (e) {
+                        // If parsing fails, use defaults
+                        hiddenFolders.add('private');
+                        hiddenFolders.add('draft');
+                    }
+                } else {
+                    // Set defaults if no preferences saved
+                    hiddenFolders.add('private');
+                    hiddenFolders.add('draft');
+                }
+            }
+            
+            // Save folder preferences to localStorage
+            function saveFolderPreferences() {
+                const prefs = {
+                    ignorePrivate: ignorePrivateCheckbox.checked,
+                    ignoreDraft: ignoreDraftCheckbox.checked,
+                    hiddenFolders: Array.from(hiddenFolders)
+                };
+                localStorage.setItem('folderPreferences', JSON.stringify(prefs));
+            }
+            
+            // Update hidden folders set based on checkbox states
+            function updateHiddenFolders() {
+                hiddenFolders.clear();
+                if (ignorePrivateCheckbox && ignorePrivateCheckbox.checked) {
+                    hiddenFolders.add('private');
+                }
+                if (ignoreDraftCheckbox && ignoreDraftCheckbox.checked) {
+                    hiddenFolders.add('draft');
+                }
+                saveFolderPreferences();
+                applyFilters();
+            }
             
             function sortItems(criteria) {
                 const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
@@ -660,6 +752,7 @@ def generate_html_index(output_file='index.html'):
                     const itemName = item.dataset.name;
                     const updateInfo = item.querySelector('.file-update-info').textContent.toLowerCase();
                     const extension = item.dataset.extension;
+                    const folder = item.dataset.folder;
                     
                     // Check if item matches search term
                     const matchesSearch = !searchTerm || itemName.includes(searchTerm) || updateInfo.includes(searchTerm);
@@ -667,8 +760,11 @@ def generate_html_index(output_file='index.html'):
                     // Check if item matches file type filter
                     const matchesFilter = currentFilter === 'all' || extension === currentFilter;
                     
-                    // Show item only if it matches both filters
-                    if (matchesSearch && matchesFilter) {
+                    // Check if folder is hidden
+                    const folderNotHidden = !hiddenFolders.has(folder);
+                    
+                    // Show item only if it matches all filters
+                    if (matchesSearch && matchesFilter && folderNotHidden) {
                         item.style.display = 'flex'; // Use flex for the new layout
                     } else {
                         item.style.display = 'none';
@@ -744,6 +840,14 @@ def generate_html_index(output_file='index.html'):
                 });
             });
             
+            // Folder visibility checkbox event listeners
+            if (ignorePrivateCheckbox) {
+                ignorePrivateCheckbox.addEventListener('change', updateHiddenFolders);
+            }
+            if (ignoreDraftCheckbox) {
+                ignoreDraftCheckbox.addEventListener('change', updateHiddenFolders);
+            }
+            
             // Random button event listener
             randomBtn.addEventListener('click', openRandomFile);
             
@@ -755,6 +859,9 @@ def generate_html_index(output_file='index.html'):
                 }
             });
 
+            // Load folder preferences from localStorage
+            loadFolderPreferences();
+            
             // Initial setup: Sort and then apply the default filter
             sortItems('update'); 
             setFileTypeFilter(currentFilter); // *** CHANGE 2: Call to set initial filter/active button
