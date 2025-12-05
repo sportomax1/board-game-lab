@@ -16,20 +16,24 @@
     <div id="settingsModal" class="fixed inset-0 bg-gradient-to-br from-orange-900 to-red-900 z-50 flex items-center justify-center p-4 overflow-y-auto">
         <div class="bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-w-md w-full my-4">
             <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-2 text-center">📊 Meter Master</h1>
-            <p class="text-gray-500 text-center text-base mb-6">Sort games by stats!</p>
+            <p class="text-gray-500 text-center text-base mb-6">Guess game stats in ranges!</p>
             <div class="space-y-4">
                 <div>
                     <label class="block text-sm font-bold text-gray-700 mb-2">BGG Username</label>
                     <input type="text" id="username" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-orange-500 outline-none" value="sportomax">
                 </div>
                 <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-2">Sort Category</label>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Guess Category</label>
                     <select id="category" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-orange-500 outline-none">
                         <option value="weight">Weight (1-5)</option>
                         <option value="average">Average Rating (1-10)</option>
                         <option value="rank">BGG Rank</option>
                         <option value="userrating">My Rating (1-10)</option>
                     </select>
+                </div>
+                <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
+                    <input type="checkbox" id="excludeExpansions" class="w-4 h-4">
+                    <label for="excludeExpansions" class="text-sm font-bold text-gray-700">Exclude Expansions</label>
                 </div>
                 <button onclick="startGame()" class="w-full bg-orange-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-orange-700 transition shadow-lg">Start Game</button>
             </div>
@@ -40,9 +44,9 @@
             <h2 class="text-2xl font-bold text-gray-900 mb-4">ℹ️ How to Play</h2>
             <div class="space-y-3 text-gray-700">
                 <p>• Look at each game</p>
-                <p>• Guess its <strong>weight, rating, rank</strong>, or <strong>your rating</strong></p>
-                <p>• Enter your guess and click "Guess"</p>
-                <p>• See the actual value and if you were correct!</p>
+                <p>• Click the range you think it falls into</p>
+                <p>• After guessing, see the actual value</p>
+                <p>• ✅ Green = correct, ❌ Red = incorrect</p>
                 <p>• Move to the next game</p>
             </div>
             <button onclick="closeInfo()" class="w-full mt-6 bg-orange-600 text-white py-3 rounded-lg font-bold hover:bg-orange-700">Got it!</button>
@@ -89,19 +93,13 @@
                 </div>
             </div>
             <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
-                <div class="flex gap-3 items-end">
-                    <div class="flex-1">
-                        <label class="block text-sm font-bold text-gray-700 mb-2">Your Guess</label>
-                        <input type="text" id="guessInput" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-orange-500 outline-none" placeholder="Enter your guess..." onkeypress="if(event.key==='Enter') submitGuess()">
-                    </div>
-                    <button onclick="submitGuess()" class="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-lg transition">Guess</button>
-                </div>
+                <h3 class="font-bold text-gray-900 mb-3">Click a Range</h3>
+                <div id="ranges" class="flex flex-wrap gap-2 justify-center"></div>
             </div>
             <div id="feedback" class="bg-white rounded-xl shadow-sm p-4 mb-4 hidden">
                 <p id="feedbackText" class="text-center text-lg font-bold"></p>
             </div>
             <button id="nextBtn" onclick="showNextGame()" class="w-full mt-2 bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600 hidden">Next Game →</button>
-            <button id="finishBtn" onclick="finishGame()" class="w-full mt-2 bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600 hidden">Finish Game</button>
         </main>
     </div>
     <script>
@@ -110,9 +108,12 @@
         let currentGameIndex = 0;
         let shuffledCollection = [];
         let correct = 0;
+        let ranges = [];
+        let guessed = false;
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
+            const excludeExpansions = document.getElementById('excludeExpansions').checked;
             category = document.getElementById('category').value;
             document.getElementById('settingsModal').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
@@ -130,7 +131,16 @@
                 const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
                 const xml = await res.text();
                 const parser = new DOMParser().parseFromString(xml, 'text/xml');
-                const items = Array.from(parser.querySelectorAll('item'));
+                let items = Array.from(parser.querySelectorAll('item'));
+                
+                // Filter out expansions if requested
+                if (excludeExpansions) {
+                    items = items.filter(item => {
+                        const subtype = item.getAttribute('subtype');
+                        return subtype !== 'boardgameexpansion';
+                    });
+                }
+                
                 collection = items.map(item => {
                     const stats = item.querySelector('stats');
                     const rating = stats?.querySelector('rating');
@@ -149,6 +159,15 @@
                 shuffledCollection = [...collection].sort(() => Math.random() - 0.5);
                 document.getElementById('total').textContent = shuffledCollection.length;
                 
+                // Setup ranges
+                if (category === 'weight') {
+                    ranges = [[1,2],[2,3],[3,4],[4,5]];
+                } else if (category === 'average' || category === 'userrating') {
+                    ranges = [[0,2],[2,4],[4,6],[6,8],[8,10]];
+                } else {
+                    ranges = [[1,100],[101,500],[501,1000],[1001,5000],[5001,999999]];
+                }
+                
                 correct = 0;
                 currentGameIndex = 0;
                 displayGame();
@@ -156,6 +175,20 @@
                 alert('Error: ' + error.message);
                 location.reload();
             }
+        }
+
+        function renderRanges() {
+            const html = ranges.map(([min, max]) => {
+                const label = category === 'rank' ? 
+                    (max === 999999 ? `${min}+` : `${min}-${max}`) :
+                    `${min}-${max}`;
+                return `
+                    <button onclick="selectRange(${min},${max})" class="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-lg text-lg transition shadow">
+                        ${label}
+                    </button>
+                `;
+            }).join('');
+            document.getElementById('ranges').innerHTML = html;
         }
 
         function displayGame() {
@@ -168,65 +201,59 @@
             document.getElementById('gameImage').src = game.image;
             document.getElementById('gameName').textContent = game.name;
             document.getElementById('current').textContent = currentGameIndex + 1;
-            document.getElementById('guessInput').value = '';
             document.getElementById('feedback').classList.add('hidden');
             document.getElementById('nextBtn').classList.add('hidden');
-            document.getElementById('guessInput').focus();
+            guessed = false;
+            renderRanges();
         }
 
-        function submitGuess() {
-            const guess = document.getElementById('guessInput').value.trim();
-            if (!guess) {
-                alert('Please enter a guess!');
-                return;
-            }
+        function selectRange(min, max) {
+            if (guessed) return;
             
             const game = shuffledCollection[currentGameIndex];
             const actual = game[category];
-            const guessNum = parseFloat(guess);
             
             let isCorrect = false;
-            let tolerance = 0;
-            
-            if (category === 'weight') {
-                tolerance = 0.5; // Within 0.5 stars
-            } else if (category === 'average' || category === 'userrating') {
-                tolerance = 0.3; // Within 0.3 rating
-            } else if (category === 'rank') {
-                tolerance = 50; // Within 50 ranks
+            if (category === 'rank') {
+                isCorrect = actual >= min && actual <= max;
+            } else {
+                isCorrect = actual >= min && actual <= max;
             }
-            
-            isCorrect = Math.abs(guessNum - actual) <= tolerance;
             
             if (isCorrect) {
                 correct++;
                 document.getElementById('correct').textContent = correct;
             }
             
+            const label = category === 'rank' ? 
+                (max === 999999 ? `${min}+` : `${min}-${max}`) :
+                `${min}-${max}`;
+            
             const feedback = `
                 <strong class="${isCorrect ? 'text-green-600' : 'text-red-600'}">
                     ${isCorrect ? '✅ Correct!' : '❌ Wrong!'}
                 </strong>
                 <p class="text-gray-700 mt-2">
-                    You guessed: <strong>${guessNum.toFixed(2)}</strong><br>
-                    Actual: <strong>${actual.toFixed(2)}</strong>
+                    Your range: <strong>${label}</strong><br>
+                    Actual value: <strong>${actual.toFixed(2)}</strong>
                 </p>
             `;
             
             document.getElementById('feedbackText').innerHTML = feedback;
             document.getElementById('feedback').classList.remove('hidden');
-            document.getElementById('guessInput').disabled = true;
+            guessed = true;
             
             if (currentGameIndex < shuffledCollection.length - 1) {
                 document.getElementById('nextBtn').classList.remove('hidden');
             } else {
-                document.getElementById('finishBtn').classList.remove('hidden');
+                document.getElementById('nextBtn').textContent = 'Finish Game';
+                document.getElementById('nextBtn').classList.remove('hidden');
+                document.getElementById('nextBtn').onclick = finishGame;
             }
         }
 
         function showNextGame() {
             currentGameIndex++;
-            document.getElementById('guessInput').disabled = false;
             displayGame();
         }
 
@@ -236,6 +263,8 @@
             alert(`Game Over!\n\nYou got ${correct}/${total} correct (${percentage}%)`);
             document.getElementById('settingsModal').classList.remove('hidden');
             document.getElementById('app').classList.add('hidden');
+            document.getElementById('nextBtn').onclick = showNextGame;
+            document.getElementById('nextBtn').textContent = 'Next Game →';
         }
 
         function showSettings() { document.getElementById('settingsModal').classList.remove('hidden'); }
