@@ -10,31 +10,39 @@
     <style>
         body { padding: max(env(safe-area-inset-top), 0) max(env(safe-area-inset-right), 0) max(env(safe-area-inset-bottom), 0) max(env(safe-area-inset-left), 0); }
         input, select, button { font-size: 16px; }
-        .board { display: grid; grid-template-columns: repeat(7, 1fr); gap: 3px; padding: 10px; background: #1e40af; border-radius: 8px; }
-        .cell { aspect-ratio: 1; border-radius: 50%; border: 2px solid white; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; }
+        .board { display: grid; grid-template-columns: repeat(7, 1fr); gap: 6px; padding: 12px; background: #1e40af; border-radius: 12px; }
+        .cell { aspect-ratio: 1; border-radius: 50%; border: 3px solid white; overflow: hidden; cursor: pointer; display: flex; align-items: center; justify-content: center; min-height: 60px; }
         .cell img { width: 100%; height: 100%; object-fit: cover; }
         .cell.empty { background: white; }
         .cell.red { background: red; }
         .cell.yellow { background: yellow; }
         .winning-cell { animation: pulse 0.6s infinite; }
         @keyframes pulse { 0%, 100% { transform: scale(1); } 50% { transform: scale(1.1); } }
+        .search-result { cursor: pointer; border-2 border-gray-300 rounded-lg p-3 hover:border-blue-500 transition; }
+        .search-result img { width: 100%; height: auto; border-radius-lg; }
     </style>
 </head>
 <body class="bg-gradient-to-b from-blue-900 to-blue-800 min-h-screen flex flex-col">
-    <div id="settingsModal" class="fixed inset-0 bg-gradient-to-br from-red-900 to-yellow-900 z-50 flex items-center justify-center p-4 overflow-y-auto">
+    <div id="setupModal" class="fixed inset-0 bg-gradient-to-br from-red-900 to-yellow-900 z-50 flex items-center justify-center p-4 overflow-y-auto">
         <div class="bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-w-md w-full my-4">
             <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-2 text-center">🔴🟡 Connect Four</h1>
             <p class="text-gray-500 text-center text-base mb-6">Play with BGG game images!</p>
             <div class="space-y-4">
                 <div>
                     <label class="block text-sm font-bold text-gray-700 mb-2">Player 1 Game (Red Pieces)</label>
-                    <input type="text" id="player1Game" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-red-500 outline-none" placeholder="e.g., Catan">
+                    <input type="text" id="player1Search" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-red-500 outline-none" placeholder="Search game...">
                 </div>
+                <button onclick="searchPlayer1()" class="w-full bg-red-600 text-white py-3 rounded-lg font-bold hover:bg-red-700 transition">Search Player 1</button>
+                <div id="player1Results" class="grid grid-cols-3 gap-2 max-h-60 overflow-y-auto hidden"></div>
+                
                 <div>
                     <label class="block text-sm font-bold text-gray-700 mb-2">Player 2 Game (Yellow Pieces)</label>
-                    <input type="text" id="player2Game" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-yellow-500 outline-none" placeholder="e.g., Ticket to Ride">
+                    <input type="text" id="player2Search" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-yellow-500 outline-none" placeholder="Search game...">
                 </div>
-                <button onclick="startGame()" class="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-700 transition shadow-lg">Start Game</button>
+                <button onclick="searchPlayer2()" class="w-full bg-yellow-600 text-white py-3 rounded-lg font-bold hover:bg-yellow-700 transition">Search Player 2</button>
+                <div id="player2Results" class="grid grid-cols-3 gap-2 max-h-60 overflow-y-auto hidden"></div>
+                
+                <button id="startBtn" onclick="startGame()" class="w-full bg-green-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-green-700 transition shadow-lg disabled:opacity-50 disabled:cursor-not-allowed" disabled>Start Game</button>
             </div>
         </div>
     </div>
@@ -86,69 +94,30 @@
     <script>
         const ROWS = 6;
         const COLS = 7;
-        const RED = 1;
-        const YELLOW = 2;
+        let RED = 1;
+        let YELLOW = 2;
         
         let board = [];
         let currentPlayer = RED;
         let gameOver = false;
         let player1Game = {};
         let player2Game = {};
-        let player1Images = [];
-        let player2Images = [];
 
         async function startGame() {
-            const p1 = document.getElementById('player1Game').value.trim() || 'Catan';
-            const p2 = document.getElementById('player2Game').value.trim() || 'Ticket to Ride';
+            if (!player1Game.id || !player2Game.id) {
+                alert('Please select games for both players');
+                return;
+            }
             
-            document.getElementById('settingsModal').classList.add('hidden');
+            document.getElementById('setupModal').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
             
-            try {
-                // Search for Player 1 game
-                console.log('Searching for Player 1 game:', p1);
-                let res = await fetch(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(p1)}&type=boardgame`);
-                let xml = await res.text();
-                let parser = new DOMParser().parseFromString(xml, 'text/xml');
-                let item = parser.querySelector('item');
-                if (!item) throw new Error(`${p1} not found`);
-                
-                const p1Id = item.getAttribute('id');
-                res = await fetch(`/api/bgg-helper?endpoint=thing&id=${p1Id}&stats=1`);
-                xml = await res.text();
-                parser = new DOMParser().parseFromString(xml, 'text/xml');
-                player1Game = {
-                    name: parser.querySelector('name')?.textContent || p1,
-                    image: parser.querySelector('image')?.textContent || ''
-                };
-                console.log('Player 1 game:', player1Game);
-                
-                // Search for Player 2 game
-                console.log('Searching for Player 2 game:', p2);
-                res = await fetch(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(p2)}&type=boardgame`);
-                xml = await res.text();
-                parser = new DOMParser().parseFromString(xml, 'text/xml');
-                item = parser.querySelector('item');
-                if (!item) throw new Error(`${p2} not found`);
-                
-                const p2Id = item.getAttribute('id');
-                res = await fetch(`/api/bgg-helper?endpoint=thing&id=${p2Id}&stats=1`);
-                xml = await res.text();
-                parser = new DOMParser().parseFromString(xml, 'text/xml');
-                player2Game = {
-                    name: parser.querySelector('name')?.textContent || p2,
-                    image: parser.querySelector('image')?.textContent || ''
-                };
-                console.log('Player 2 game:', player2Game);
-                
-                initializeBoard();
-                renderBoard();
-                updateDisplay();
-            } catch (error) {
-                console.error('Error:', error);
-                alert('Error: ' + error.message);
-                location.reload();
-            }
+            console.log('Player 1:', player1Game);
+            console.log('Player 2:', player2Game);
+            
+            initializeBoard();
+            renderBoard();
+            updateDisplay();
         }
 
         function initializeBoard() {
@@ -285,9 +254,81 @@
             updateDisplay();
         }
 
-        function showSettings() { document.getElementById('settingsModal').classList.remove('hidden'); }
+        function showSettings() { document.getElementById('setupModal').classList.remove('hidden'); }
         function showInfo() { document.getElementById('infoModal').classList.remove('hidden'); }
         function closeInfo() { document.getElementById('infoModal').classList.add('hidden'); }
-    </script>
+
+        async function searchPlayer1() {
+            const query = document.getElementById('player1Search').value.trim();
+            if (!query) return;
+            await displaySearchResults(query, 'player1Results', 'player1');
+        }
+
+        async function searchPlayer2() {
+            const query = document.getElementById('player2Search').value.trim();
+            if (!query) return;
+            await displaySearchResults(query, 'player2Results', 'player2');
+        }
+
+        async function displaySearchResults(query, resultsId, player) {
+            const resultsDiv = document.getElementById(resultsId);
+            resultsDiv.innerHTML = '<p class="col-span-3 text-center text-gray-600">Searching...</p>';
+            resultsDiv.classList.remove('hidden');
+            
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}&type=boardgame`);
+                const xml = await res.text();
+                const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                const items = parser.querySelectorAll('item');
+                
+                resultsDiv.innerHTML = '';
+                let count = 0;
+                for (const item of items) {
+                    if (count >= 9) break;
+                    const id = item.getAttribute('id');
+                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    
+                    // Fetch thumbnail
+                    const thingRes = await fetch(`/api/bgg-helper?endpoint=thing&id=${id}&stats=1`);
+                    const thingXml = await thingRes.text();
+                    const thingParser = new DOMParser().parseFromString(thingXml, 'text/xml');
+                    const thumbnail = thingParser.querySelector('thumbnail')?.textContent || '';
+                    const image = thingParser.querySelector('image')?.textContent || '';
+                    
+                    const imgUrl = thumbnail || image || 'https://via.placeholder.com/100';
+                    
+                    const result = document.createElement('div');
+                    result.className = 'search-result';
+                    result.innerHTML = `<img src="${imgUrl}" alt="${name}" class="rounded-lg mb-1"><p class="text-xs font-bold text-center truncate">${name}</p>`;
+                    result.onclick = () => selectGame(player, id, name, image);
+                    resultsDiv.appendChild(result);
+                    count++;
+                }
+                
+                if (count === 0) {
+                    resultsDiv.innerHTML = '<p class="col-span-3 text-center text-gray-600">No results found</p>';
+                }
+            } catch (error) {
+                console.error('Search error:', error);
+                resultsDiv.innerHTML = '<p class="col-span-3 text-center text-red-600">Error searching</p>';
+            }
+        }
+
+        function selectGame(player, id, name, image) {
+            if (player === 'player1') {
+                player1Game = { name, image, id };
+                document.getElementById('player1Search').value = name;
+                document.getElementById('player1Results').classList.add('hidden');
+            } else {
+                player2Game = { name, image, id };
+                document.getElementById('player2Search').value = name;
+                document.getElementById('player2Results').classList.add('hidden');
+            }
+            
+            // Enable start button if both games selected
+            if (player1Game.id && player2Game.id) {
+                document.getElementById('startBtn').disabled = false;
+            }
+        }
 </body>
 </html>
