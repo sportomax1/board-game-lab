@@ -5,7 +5,7 @@ import time
 
 # --- Configuration ---
 BGG_API_URL = "https://boardgamegeek.com/xmlapi/geeklist/363504?comments=1" 
-OUTPUT_FILENAME = "vfm25bgg.xml" # <-- UPDATED FILENAME
+OUTPUT_FILENAME = "reference/vfm/vfm25bgg.xml" # <-- UPDATED FILENAME (now in reference/vfm/)
 MAX_ATTEMPTS = 4
 # Delays to wait *before* the next attempt (5s, 15s, 30s)
 RETRY_DELAYS = [5, 15, 30] 
