@@ -10,8 +10,11 @@
     <style>
         body { padding: max(env(safe-area-inset-top), 0) max(env(safe-area-inset-right), 0) max(env(safe-area-inset-bottom), 0) max(env(safe-area-inset-left), 0); }
         input, select, button { font-size: 16px; }
-        .puzzle-piece { cursor: pointer; transition: all 0.2s; }
+        .puzzle-piece { cursor: pointer; transition: all 0.2s; user-select: none; }
         .puzzle-piece:hover { transform: scale(1.05); }
+        .puzzle-piece-jiggly { clip-path: polygon(0% 0%, 85% 0%, 95% 15%, 100% 15%, 100% 85%, 85% 100%, 15% 100%, 0% 85%, 0% 15%, 15% 0%); }
+        .scattered-pieces { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; justify-content: center; min-height: 400px; padding: 12px; }
+        .scattered-piece { position: relative; }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen flex flex-col">
@@ -30,11 +33,36 @@
                 <div>
                     <label class="block text-sm font-bold text-gray-700 mb-2">Puzzle Size</label>
                     <select id="puzzleSize" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none">
-                        <option value="3">Easy - 9 pieces (3x3)</option>
-                        <option value="4" selected>Medium - 16 pieces (4x4)</option>
-                        <option value="5">Hard - 25 pieces (5x5)</option>
-                        <option value="6">Expert - 36 pieces (6x6)</option>
+                        <option value="3">3x3 (9 pieces)</option>
+                        <option value="4" selected>4x4 (16 pieces)</option>
+                        <option value="5">5x5 (25 pieces)</option>
+                        <option value="6">6x6 (36 pieces)</option>
+                        <option value="7">7x7 (49 pieces)</option>
+                        <option value="8">8x8 (64 pieces)</option>
+                        <option value="9">9x9 (81 pieces)</option>
+                        <option value="10">10x10 (100 pieces)</option>
                     </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Piece Style</label>
+                    <select id="pieceStyle" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none">
+                        <option value="square" selected>Square Pieces</option>
+                        <option value="jiggly">Puzzle Piece Shapes</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Layout</label>
+                    <select id="puzzleLayout" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none">
+                        <option value="grid" selected>Organized Grid</option>
+                        <option value="scattered">Scattered on Table</option>
+                    </select>
+                </div>
+                
+                <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
+                    <input type="checkbox" id="excludeExpansions" class="w-4 h-4">
+                    <label for="excludeExpansions" class="text-sm font-bold text-gray-700">Exclude Expansions</label>
                 </div>
                 
                 <button onclick="startGame()" class="w-full bg-purple-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-purple-700 transition shadow-lg">
@@ -128,19 +156,32 @@
         let selectedTile = null;
         let moves = 0;
         let completed = 0;
+        let pieceStyle = 'square';
+        let puzzleLayout = 'grid';
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
             gridSize = parseInt(document.getElementById('puzzleSize').value);
+            pieceStyle = document.getElementById('pieceStyle').value;
+            puzzleLayout = document.getElementById('puzzleLayout').value;
+            const excludeExpansions = document.getElementById('excludeExpansions').checked;
             
             document.getElementById('settingsModal').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
             
             try {
-                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&subtype=boardgame&stats=1`);
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
                 const xml = await res.text();
                 const parser = new DOMParser().parseFromString(xml, 'text/xml');
-                const items = Array.from(parser.querySelectorAll('item'));
+                let items = Array.from(parser.querySelectorAll('item'));
+                
+                // Filter expansions if requested
+                if (excludeExpansions) {
+                    items = items.filter(item => {
+                        const subtype = item.getAttribute('subtype');
+                        return subtype !== 'boardgameexpansion';
+                    });
+                }
                 
                 collection = items.map(item => ({
                     id: item.getAttribute('objectid'),
@@ -184,20 +225,48 @@
 
         function renderPuzzle() {
             const grid = document.getElementById('puzzleGrid');
-            grid.style.gridTemplateColumns = `repeat(${gridSize}, 1fr)`;
-            
             const tileSize = 100 / gridSize;
             
-            grid.innerHTML = puzzleState.map((pos, idx) => {
-                const row = Math.floor(pos / gridSize);
-                const col = pos % gridSize;
+            if (puzzleLayout === 'grid') {
+                grid.style.display = 'grid';
+                grid.className = 'grid gap-2 mx-auto';
+                grid.style.gridTemplateColumns = `repeat(${gridSize}, 1fr)`;
+                grid.style.maxWidth = '500px';
                 
-                return `
-                    <div onclick="selectTile(${idx})" class="puzzle-piece aspect-square bg-cover bg-center border-4 rounded-lg ${selectedTile === idx ? 'border-green-500 ring-4 ring-green-300' : 'border-white'} shadow-sm" 
-                         style="background-image: url('${currentGame.image}'); background-position: ${col * tileSize}% ${row * tileSize}%; background-size: ${gridSize * 100}%">
-                    </div>
-                `;
-            }).join('');
+                grid.innerHTML = puzzleState.map((pos, idx) => {
+                    const row = Math.floor(pos / gridSize);
+                    const col = pos % gridSize;
+                    const isJiggly = pieceStyle === 'jiggly';
+                    
+                    return `
+                        <div onclick="selectTile(${idx})" class="puzzle-piece aspect-square bg-cover bg-center border-4 rounded-lg ${isJiggly ? 'puzzle-piece-jiggly' : ''} ${selectedTile === idx ? 'border-green-500 ring-4 ring-green-300' : 'border-white'} shadow-sm" 
+                             style="background-image: url('${currentGame.image}'); background-position: ${col * tileSize}% ${row * tileSize}%; background-size: ${gridSize * 100}%">
+                        </div>
+                    `;
+                }).join('');
+            } else {
+                // Scattered layout
+                grid.style.display = 'flex';
+                grid.style.maxWidth = 'none';
+                grid.style.gridTemplateColumns = '';
+                grid.className = 'scattered-pieces bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl';
+                
+                grid.innerHTML = puzzleState.map((pos, idx) => {
+                    const row = Math.floor(pos / gridSize);
+                    const col = pos % gridSize;
+                    const isJiggly = pieceStyle === 'jiggly';
+                    const pieceSize = Math.max(40, Math.min(80, 400 / gridSize));
+                    const randomRotation = (Math.random() - 0.5) * 20;
+                    
+                    return `
+                        <div class="scattered-piece" style="width: ${pieceSize}px; height: ${pieceSize}px;">
+                            <div onclick="selectTile(${idx})" class="puzzle-piece w-full h-full bg-cover bg-center border-3 rounded-lg ${isJiggly ? 'puzzle-piece-jiggly' : ''} ${selectedTile === idx ? 'border-green-500 ring-4 ring-green-300' : 'border-gray-400'} shadow-md" 
+                                 style="background-image: url('${currentGame.image}'); background-position: ${col * tileSize}% ${row * tileSize}%; background-size: ${gridSize * 100}%; transform: rotate(${randomRotation}deg);">
+                            </div>
+                        </div>
+                    `;
+                }).join('');
+            }
         }
 
         function selectTile(idx) {
