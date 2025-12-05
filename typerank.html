@@ -88,8 +88,19 @@
                     <p class="text-3xl font-bold text-green-600"><span id="found">0</span> / <span id="total">0</span></p>
                 </div>
             </div>
+            <!-- Game Image Display -->
+            <div id="gameImageContainer" class="hidden bg-white rounded-xl shadow-sm p-4 mb-4 text-center">
+                <img id="gameImage" src="" alt="Game" class="mx-auto max-h-32 rounded-lg mb-2">
+                <p id="imageName" class="text-sm font-bold text-gray-900"></p>
+            </div>
+
             <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
                 <input type="text" id="guessInput" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none text-lg" placeholder="Type game name...">
+                <div class="flex gap-2 mt-3">
+                    <button onclick="cheatPartial()" class="flex-1 bg-yellow-500 text-white py-2 rounded-lg font-bold text-sm hover:bg-yellow-600">💡 First 3</button>
+                    <button onclick="cheatWord()" class="flex-1 bg-orange-500 text-white py-2 rounded-lg font-bold text-sm hover:bg-orange-600">📝 Word</button>
+                    <button onclick="cheatLetter()" class="flex-1 bg-red-500 text-white py-2 rounded-lg font-bold text-sm hover:bg-red-600">🔤 Letter</button>
+                </div>
             </div>
             <div id="gamesList" class="space-y-2">
             </div>
@@ -102,6 +113,7 @@
         let timeLeft = 300;
         let timerInterval = null;
         let sortBy = 'average';
+        let cheatUsed = new Set(); // Track which games had cheats used
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -169,13 +181,30 @@
         }
 
         function renderList() {
-            const html = gamesList.map((game, idx) => `
-                <div id="game-${idx}" class="bg-gray-100 rounded-lg p-3 flex items-center gap-3 ${foundGames.has(idx) ? 'bg-green-100' : ''}">
-                    <span class="font-bold text-gray-900 w-8">${idx + 1}.</span>
-                    <span class="flex-1 font-medium ${foundGames.has(idx) ? 'text-gray-900' : 'text-gray-400'}">${foundGames.has(idx) ? game.name : '???'}</span>
-                    <span class="text-xs text-gray-600">${foundGames.has(idx) ? (sortBy === 'average' ? game.average.toFixed(1) : '#' + game.rank) : ''}</span>
-                </div>
-            `).join('');
+            const html = gamesList.map((game, idx) => {
+                let displayName = '???';
+                if (foundGames.has(idx)) {
+                    displayName = game.name;
+                } else if (cheatUsed.has(idx + '-partial')) {
+                    // Show first 3 letters + dots
+                    displayName = game.name.substring(0, 3) + '...';
+                } else if (cheatUsed.has(idx + '-word')) {
+                    // Show full word but hidden letters
+                    displayName = game.name.split(' ').map(w => w.charAt(0) + '_'.repeat(w.length - 1)).join(' ');
+                } else if (cheatUsed.has(idx + '-letter')) {
+                    // Show one random letter revealed
+                    const letters = game.name.split('');
+                    const revealed = Math.floor(Math.random() * letters.length);
+                    displayName = letters.map((l, i) => i === revealed ? l : (l === ' ' ? ' ' : '_')).join('');
+                }
+                return `
+                    <div id="game-${idx}" class="bg-gray-100 rounded-lg p-3 flex items-center gap-3 ${foundGames.has(idx) ? 'bg-green-100' : ''}">
+                        <span class="font-bold text-gray-900 w-8">${idx + 1}.</span>
+                        <span class="flex-1 font-medium ${foundGames.has(idx) ? 'text-gray-900' : 'text-gray-400'}">${displayName}</span>
+                        <span class="text-xs text-gray-600">${foundGames.has(idx) ? (sortBy === 'average' ? game.average.toFixed(1) : '#' + game.rank) : ''}</span>
+                    </div>
+                `;
+            }).join('');
             document.getElementById('gamesList').innerHTML = html;
             document.getElementById('found').textContent = foundGames.size;
         }
@@ -188,6 +217,7 @@
             gamesList.forEach((game, idx) => {
                 if (!foundGames.has(idx) && game.name.toLowerCase() === guess) {
                     foundGames.add(idx);
+                    showGameImage(game);
                     document.getElementById('guessInput').value = '';
                     renderList();
                     if (foundGames.size === gamesList.length) {
@@ -207,6 +237,59 @@
                 document.getElementById('timer').textContent = `${mins}:${String(secs).padStart(2, '0')}`;
                 if (timeLeft <= 0) endGame(false);
             }, 1000);
+        }
+
+        async function showGameImage(game) {
+            try {
+                const res = await fetch(`/api/bgg-thing?id=${game.id}`);
+                const xml = await res.text();
+                const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                const item = parser.querySelector('item');
+                const imageUrl = item.querySelector('image')?.textContent || '';
+                
+                if (imageUrl) {
+                    document.getElementById('gameImage').src = imageUrl;
+                    document.getElementById('imageName').textContent = game.name;
+                    document.getElementById('gameImageContainer').classList.remove('hidden');
+                    
+                    // Hide after 2 seconds
+                    setTimeout(() => {
+                        document.getElementById('gameImageContainer').classList.add('hidden');
+                    }, 2000);
+                }
+            } catch (error) {
+                console.error('Error fetching game image:', error);
+            }
+        }
+
+        function cheatPartial() {
+            const unfoundIdx = Array.from(gamesList.entries()).find(([idx, _]) => !foundGames.has(idx));
+            if (!unfoundIdx) return;
+            const idx = unfoundIdx[0];
+            if (!cheatUsed.has(idx + '-partial')) {
+                cheatUsed.add(idx + '-partial');
+                renderList();
+            }
+        }
+
+        function cheatWord() {
+            const unfoundIdx = Array.from(gamesList.entries()).find(([idx, _]) => !foundGames.has(idx));
+            if (!unfoundIdx) return;
+            const idx = unfoundIdx[0];
+            if (!cheatUsed.has(idx + '-word')) {
+                cheatUsed.add(idx + '-word');
+                renderList();
+            }
+        }
+
+        function cheatLetter() {
+            const unfoundIdx = Array.from(gamesList.entries()).find(([idx, _]) => !foundGames.has(idx));
+            if (!unfoundIdx) return;
+            const idx = unfoundIdx[0];
+            if (!cheatUsed.has(idx + '-letter')) {
+                cheatUsed.add(idx + '-letter');
+                renderList();
+            }
         }
 
         function endGame(won) {
