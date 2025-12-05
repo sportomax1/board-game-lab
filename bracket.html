@@ -262,6 +262,15 @@
 
                     <!-- Tournament Settings Grid -->
                     <div class="grid grid-cols-2 gap-4">
+                        <!-- Tournament Type -->
+                        <div>
+                            <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Type</label>
+                            <select id="tournamentType" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="single" selected>Single Elimination</option>
+                                <option value="double">Double Elimination</option>
+                            </select>
+                        </div>
+
                         <!-- Field Size -->
                         <div>
                             <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Field Size</label>
@@ -349,6 +358,7 @@
         // --- State ---
         let bracketData = []; // Array of rounds. round[0] is initial matchups
         let currentFieldSize = 16;
+        let tournamentType = 'single'; // 'single' or 'double'
         let gameCollection = []; // Raw data
         
         // --- DOM Elements ---
@@ -532,6 +542,104 @@
 
         // --- Bracket Generation ---
 
+        function buildDoubleEliminationBracket(games) {
+            // Double elimination: winners bracket + losers bracket + grand finals
+            const rounds = [];
+            const n = games.length;
+            const roundCount = Math.log2(n);
+            
+            // WINNERS BRACKET (standard single elimination structure)
+            const winnersRounds = [];
+            
+            // Round 1 - Winners bracket
+            const w1Matches = [];
+            for (let i = 0; i < n; i += 2) {
+                w1Matches.push({
+                    id: `w1_m${i/2}`,
+                    roundIndex: 0,
+                    matchIndex: i/2,
+                    bracket: 'winners',
+                    p1: games[i],
+                    p2: games[i+1],
+                    winner: null
+                });
+            }
+            winnersRounds.push({ label: 'Winners Round 1', matches: w1Matches });
+            
+            // Subsequent Winners Rounds
+            for (let r = 1; r < roundCount; r++) {
+                const matchCount = winnersRounds[r-1].matches.length / 2;
+                const currentRoundMatches = [];
+                for (let m = 0; m < matchCount; m++) {
+                    currentRoundMatches.push({
+                        id: `w${r+1}_m${m}`,
+                        roundIndex: r,
+                        matchIndex: m,
+                        bracket: 'winners',
+                        p1: null,
+                        p2: null,
+                        winner: null
+                    });
+                }
+                winnersRounds.push({ label: `Winners Round ${r+1}`, matches: currentRoundMatches });
+            }
+            
+            // LOSERS BRACKET (half the size, feeds into grand finals)
+            const losersRounds = [];
+            
+            // Losers Bracket Round 1 (losers from Winners R1)
+            const l1Matches = [];
+            const l1MatchCount = n / 4;
+            for (let m = 0; m < l1MatchCount; m++) {
+                l1Matches.push({
+                    id: `l1_m${m}`,
+                    roundIndex: 0,
+                    matchIndex: m,
+                    bracket: 'losers',
+                    p1: null, // Will be filled from Winners R1 losers
+                    p2: null,
+                    winner: null
+                });
+            }
+            losersRounds.push({ label: 'Losers Round 1', matches: l1Matches });
+            
+            // Subsequent Losers Rounds (progressively doubles in size)
+            for (let r = 1; r < roundCount; r++) {
+                const matchCount = Math.max(1, l1MatchCount * Math.pow(2, r-1));
+                const currentRoundMatches = [];
+                for (let m = 0; m < matchCount; m++) {
+                    currentRoundMatches.push({
+                        id: `l${r+1}_m${m}`,
+                        roundIndex: r,
+                        matchIndex: m,
+                        bracket: 'losers',
+                        p1: null,
+                        p2: null,
+                        winner: null
+                    });
+                }
+                losersRounds.push({ label: `Losers Round ${r+1}`, matches: currentRoundMatches });
+            }
+            
+            // GRAND FINALS (Winners Bracket Champion vs Losers Bracket Champion)
+            const grandFinals = [{
+                id: 'grand_finals',
+                roundIndex: roundCount,
+                matchIndex: 0,
+                bracket: 'grand',
+                p1: null, // Winners bracket champ
+                p2: null, // Losers bracket champ
+                winner: null
+            }];
+            
+            // Return combined structure: winners + losers + grand finals
+            return {
+                winners: winnersRounds,
+                losers: losersRounds,
+                grandFinals: grandFinals
+            };
+        }
+
         function buildBracketStructure(games) {
             const rounds = [];
             const roundCount = Math.log2(games.length);
@@ -574,17 +682,19 @@
         function renderBracket() {
             bracketContainer.innerHTML = '';
             
+            if (tournamentType === 'double') {
+                renderDoubleEliminationBracket();
+            } else {
+                renderSingleEliminationBracket();
+            }
+        }
+
+        function renderSingleEliminationBracket() {
             // Render Rounds
             bracketData.forEach((round, rIndex) => {
                 const col = document.createElement('div');
                 col.className = 'round-column';
                 col.dataset.round = rIndex;
-                
-                // Add margins to space out later rounds vertically
-                // Formula: margin grows exponentially
-                if (rIndex > 0) {
-                   // This is handled by flex justify-around on the column
-                }
 
                 round.forEach((match, mIndex) => {
                     const matchEl = document.createElement('div');
@@ -629,6 +739,132 @@
             const finalMatch = bracketData[bracketData.length-1][0];
             if (finalMatch.winner) {
                 declareWinner(finalMatch.winner);
+            }
+        }
+
+        function renderDoubleEliminationBracket() {
+            // Render Winners Bracket
+            const winnersSection = document.createElement('div');
+            winnersSection.style.marginRight = '40px';
+            
+            const winnersLabel = document.createElement('div');
+            winnersLabel.className = 'text-slate-400 font-bold text-xs uppercase mb-2 ml-2';
+            winnersLabel.textContent = '👑 Winners Bracket';
+            winnersSection.appendChild(winnersLabel);
+            
+            const winnersContainer = document.createElement('div');
+            winnersContainer.className = 'bracket-container';
+            winnersContainer.style.gap = '60px';
+            winnersContainer.style.padding = '0';
+            winnersContainer.style.marginBottom = '40px';
+            
+            bracketData.winners.forEach((round, rIndex) => {
+                const col = document.createElement('div');
+                col.className = 'round-column';
+                col.dataset.round = `w${rIndex}`;
+                
+                round.matches.forEach((match, mIndex) => {
+                    const matchEl = document.createElement('div');
+                    matchEl.className = 'matchup';
+                    matchEl.id = match.id;
+
+                    if (rIndex < bracketData.winners.length - 1) {
+                        const conn = document.createElement('div');
+                        conn.className = 'connector';
+                        matchEl.appendChild(conn);
+                    }
+                    
+                    matchEl.appendChild(createTeamSlot(match.p1, match, 1));
+                    matchEl.appendChild(createTeamSlot(match.p2, match, 2));
+                    
+                    col.appendChild(matchEl);
+                });
+                winnersContainer.appendChild(col);
+            });
+            winnersSection.appendChild(winnersContainer);
+            bracketContainer.appendChild(winnersSection);
+            
+            // Render Losers Bracket
+            const losersSection = document.createElement('div');
+            losersSection.style.borderTop = '2px dashed #475569';
+            losersSection.style.paddingTop = '40px';
+            losersSection.style.marginTop = '40px';
+            
+            const losersLabel = document.createElement('div');
+            losersLabel.className = 'text-slate-400 font-bold text-xs uppercase mb-2 ml-2';
+            losersLabel.textContent = '⚡ Losers Bracket';
+            losersSection.appendChild(losersLabel);
+            
+            const losersContainer = document.createElement('div');
+            losersContainer.className = 'bracket-container';
+            losersContainer.style.gap = '60px';
+            losersContainer.style.padding = '0';
+            losersContainer.style.marginBottom = '40px';
+            
+            bracketData.losers.forEach((round, rIndex) => {
+                const col = document.createElement('div');
+                col.className = 'round-column';
+                col.dataset.round = `l${rIndex}`;
+                
+                round.matches.forEach((match, mIndex) => {
+                    const matchEl = document.createElement('div');
+                    matchEl.className = 'matchup';
+                    matchEl.id = match.id;
+
+                    if (rIndex < bracketData.losers.length - 1) {
+                        const conn = document.createElement('div');
+                        conn.className = 'connector';
+                        matchEl.appendChild(conn);
+                    }
+                    
+                    matchEl.appendChild(createTeamSlot(match.p1, match, 1));
+                    matchEl.appendChild(createTeamSlot(match.p2, match, 2));
+                    
+                    col.appendChild(matchEl);
+                });
+                losersContainer.appendChild(col);
+            });
+            losersSection.appendChild(losersContainer);
+            bracketContainer.appendChild(losersSection);
+            
+            // Render Grand Finals
+            const grandSection = document.createElement('div');
+            grandSection.style.borderTop = '2px dashed #475569';
+            grandSection.style.paddingTop = '40px';
+            grandSection.style.marginTop = '40px';
+            
+            const grandLabel = document.createElement('div');
+            grandLabel.className = 'text-amber-400 font-bold text-xs uppercase mb-4 text-center';
+            grandLabel.textContent = '🏆 Grand Finals';
+            grandSection.appendChild(grandLabel);
+            
+            const grandContainer = document.createElement('div');
+            grandContainer.className = 'bracket-container';
+            grandContainer.style.gap = '0';
+            grandContainer.style.padding = '0';
+            grandContainer.style.justifyContent = 'center';
+            
+            const col = document.createElement('div');
+            col.className = 'round-column';
+            col.style.minWidth = '250px';
+            
+            const grandMatch = bracketData.grandFinals[0];
+            const matchEl = document.createElement('div');
+            matchEl.className = 'matchup';
+            matchEl.id = grandMatch.id;
+            matchEl.style.width = '250px';
+            
+            matchEl.appendChild(createTeamSlot(grandMatch.p1, grandMatch, 1));
+            matchEl.appendChild(createTeamSlot(grandMatch.p2, grandMatch, 2));
+            
+            col.appendChild(matchEl);
+            grandContainer.appendChild(col);
+            grandSection.appendChild(grandContainer);
+            bracketContainer.appendChild(grandSection);
+            
+            // Champion Display
+            if (grandMatch.winner) {
+                declareWinner(grandMatch.winner);
             }
         }
 
@@ -722,6 +958,7 @@
             const username = document.getElementById('usernameInput').value.trim();
             const size = parseInt(document.getElementById('fieldSize').value);
             const method = document.getElementById('seedingMethod').value;
+            tournamentType = document.getElementById('tournamentType').value;
             
             if (!username) {
                 statusMsg.textContent = "Username required.";
@@ -743,14 +980,19 @@
                 }
 
                 // 3. Build
-                bracketData = buildBracketStructure(seededGames);
+                if (tournamentType === 'double') {
+                    bracketData = buildDoubleEliminationBracket(seededGames);
+                } else {
+                    bracketData = buildBracketStructure(seededGames);
+                }
                 currentFieldSize = size;
                 
                 // 4. UI
                 renderBracket();
                 
                 settingsModal.style.display = 'none';
-                headerSubtitle.textContent = `${size} Teams • ${method.toUpperCase()} Seed`;
+                const typeLabel = tournamentType === 'double' ? 'Double Elim' : 'Single Elim';
+                headerSubtitle.textContent = `${size} Teams • ${typeLabel} • ${method.toUpperCase()} Seed`;
                 restartBtn.classList.remove('hidden');
                 shareBtn.classList.remove('hidden');
 

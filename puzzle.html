@@ -10,11 +10,13 @@
     <style>
         body { padding: max(env(safe-area-inset-top), 0) max(env(safe-area-inset-right), 0) max(env(safe-area-inset-bottom), 0) max(env(safe-area-inset-left), 0); }
         input, select, button { font-size: 16px; }
-        .puzzle-piece { cursor: pointer; transition: all 0.2s; user-select: none; }
+        .puzzle-piece { cursor: grab; transition: all 0.2s; user-select: none; }
+        .puzzle-piece:active { cursor: grabbing; }
         .puzzle-piece:hover { transform: scale(1.05); }
         .puzzle-piece-jiggly { clip-path: polygon(0% 0%, 85% 0%, 95% 15%, 100% 15%, 100% 85%, 85% 100%, 15% 100%, 0% 85%, 0% 15%, 15% 0%); }
-        .scattered-pieces { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; justify-content: center; min-height: 400px; padding: 12px; }
-        .scattered-piece { position: relative; }
+        .scattered-pieces { display: flex; flex-wrap: wrap; gap: 8px; align-content: flex-start; justify-content: center; min-height: 400px; padding: 12px; position: relative; }
+        .scattered-piece { position: absolute; }
+        .puzzle-piece.dragging { opacity: 0.8; z-index: 1000; box-shadow: 0 10px 30px rgba(0,0,0,0.3); }
     </style>
 </head>
 <body class="bg-gray-50 min-h-screen flex flex-col">
@@ -158,6 +160,7 @@
         let completed = 0;
         let pieceStyle = 'square';
         let puzzleLayout = 'grid';
+        let piecePositions = {}; // Track dragged piece positions in scattered mode
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -203,6 +206,7 @@
             currentGame = collection[Math.floor(Math.random() * collection.length)];
             moves = 0;
             selectedTile = null;
+            piecePositions = {}; // Reset positions for new game
             
             document.getElementById('gameName').textContent = '???';
             document.getElementById('moves').textContent = moves;
@@ -232,6 +236,7 @@
                 grid.className = 'grid gap-2 mx-auto';
                 grid.style.gridTemplateColumns = `repeat(${gridSize}, 1fr)`;
                 grid.style.maxWidth = '500px';
+                grid.style.position = 'relative';
                 
                 grid.innerHTML = puzzleState.map((pos, idx) => {
                     const row = Math.floor(pos / gridSize);
@@ -239,34 +244,128 @@
                     const isJiggly = pieceStyle === 'jiggly';
                     
                     return `
-                        <div onclick="selectTile(${idx})" class="puzzle-piece aspect-square bg-cover bg-center border-4 rounded-lg ${isJiggly ? 'puzzle-piece-jiggly' : ''} ${selectedTile === idx ? 'border-green-500 ring-4 ring-green-300' : 'border-white'} shadow-sm" 
+                        <div class="puzzle-piece aspect-square bg-cover bg-center border-4 rounded-lg ${isJiggly ? 'puzzle-piece-jiggly' : ''} ${selectedTile === idx ? 'border-green-500 ring-4 ring-green-300' : 'border-white'} shadow-sm" 
+                             data-idx="${idx}"
+                             draggable="true"
                              style="background-image: url('${currentGame.image}'); background-position: ${col * tileSize}% ${row * tileSize}%; background-size: ${gridSize * 100}%">
                         </div>
                     `;
                 }).join('');
-            } else {
-                // Scattered layout
-                grid.style.display = 'flex';
-                grid.style.maxWidth = 'none';
-                grid.style.gridTemplateColumns = '';
-                grid.className = 'scattered-pieces bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl';
                 
-                grid.innerHTML = puzzleState.map((pos, idx) => {
+                // Add drag listeners for grid mode
+                addGridDragListeners();
+            } else {
+                // Scattered layout with absolute positioning
+                grid.style.display = 'block';
+                grid.style.maxWidth = 'none';
+                grid.style.position = 'relative';
+                grid.className = 'bg-gradient-to-br from-purple-50 to-pink-50 rounded-2xl';
+                grid.style.minHeight = '500px';
+                
+                grid.innerHTML = '';
+                
+                puzzleState.forEach((pos, idx) => {
                     const row = Math.floor(pos / gridSize);
                     const col = pos % gridSize;
                     const isJiggly = pieceStyle === 'jiggly';
                     const pieceSize = Math.max(40, Math.min(80, 400 / gridSize));
                     const randomRotation = (Math.random() - 0.5) * 20;
                     
-                    return `
-                        <div class="scattered-piece" style="width: ${pieceSize}px; height: ${pieceSize}px;">
-                            <div onclick="selectTile(${idx})" class="puzzle-piece w-full h-full bg-cover bg-center border-3 rounded-lg ${isJiggly ? 'puzzle-piece-jiggly' : ''} ${selectedTile === idx ? 'border-green-500 ring-4 ring-green-300' : 'border-gray-400'} shadow-md" 
-                                 style="background-image: url('${currentGame.image}'); background-position: ${col * tileSize}% ${row * tileSize}%; background-size: ${gridSize * 100}%; transform: rotate(${randomRotation}deg);">
-                            </div>
+                    // Restore position if it exists, otherwise random scatter
+                    const stored = piecePositions[idx];
+                    const left = stored ? stored.left : Math.random() * (grid.offsetWidth - pieceSize);
+                    const top = stored ? stored.top : Math.random() * (grid.offsetHeight - pieceSize);
+                    
+                    const piece = document.createElement('div');
+                    piece.className = 'scattered-piece';
+                    piece.style.left = left + 'px';
+                    piece.style.top = top + 'px';
+                    piece.style.width = pieceSize + 'px';
+                    piece.style.height = pieceSize + 'px';
+                    piece.innerHTML = `
+                        <div class="puzzle-piece w-full h-full bg-cover bg-center border-3 rounded-lg ${isJiggly ? 'puzzle-piece-jiggly' : ''} shadow-md" 
+                             data-idx="${idx}"
+                             draggable="true"
+                             style="background-image: url('${currentGame.image}'); background-position: ${col * tileSize}% ${row * tileSize}%; background-size: ${gridSize * 100}%; transform: rotate(${randomRotation}deg); border-color: var(--piece-color, rgb(243, 244, 246));">
                         </div>
                     `;
-                }).join('');
+                    grid.appendChild(piece);
+                });
+                
+                // Add drag listeners for scattered mode
+                addScatteredDragListeners();
             }
+        }
+        
+        function addGridDragListeners() {
+            const pieces = document.querySelectorAll('[data-idx]');
+            pieces.forEach(piece => {
+                piece.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.effectAllowed = 'move';
+                    e.dataTransfer.setData('text/idx', e.target.getAttribute('data-idx'));
+                    e.target.classList.add('dragging');
+                });
+                piece.addEventListener('dragend', (e) => {
+                    e.target.classList.remove('dragging');
+                });
+                piece.addEventListener('dragover', (e) => {
+                    e.preventDefault();
+                    e.dataTransfer.dropEffect = 'move';
+                });
+                piece.addEventListener('drop', (e) => {
+                    e.preventDefault();
+                    const fromIdx = parseInt(e.dataTransfer.getData('text/idx'));
+                    const toIdx = parseInt(e.target.getAttribute('data-idx'));
+                    if (fromIdx !== toIdx) {
+                        [puzzleState[fromIdx], puzzleState[toIdx]] = [puzzleState[toIdx], puzzleState[fromIdx]];
+                        moves++;
+                        document.getElementById('moves').textContent = moves;
+                        renderPuzzle();
+                        checkWin();
+                    }
+                });
+            });
+        }
+        
+        function addScatteredDragListeners() {
+            const pieces = document.querySelectorAll('[data-idx]');
+            let draggedPiece = null;
+            let offset = { x: 0, y: 0 };
+            
+            pieces.forEach(piece => {
+                piece.addEventListener('dragstart', (e) => {
+                    draggedPiece = e.target.parentElement;
+                    const rect = draggedPiece.getBoundingClientRect();
+                    offset.x = e.clientX - rect.left;
+                    offset.y = e.clientY - rect.top;
+                    e.target.classList.add('dragging');
+                });
+                piece.addEventListener('dragend', (e) => {
+                    if (draggedPiece) {
+                        e.target.classList.remove('dragging');
+                        const idx = parseInt(e.target.getAttribute('data-idx'));
+                        piecePositions[idx] = {
+                            left: draggedPiece.offsetLeft,
+                            top: draggedPiece.offsetTop
+                        };
+                        moves++;
+                        document.getElementById('moves').textContent = moves;
+                        draggedPiece = null;
+                    }
+                });
+            });
+            
+            document.getElementById('puzzleGrid').addEventListener('dragover', (e) => {
+                if (draggedPiece) {
+                    e.preventDefault();
+                    const grid = e.currentTarget;
+                    const rect = grid.getBoundingClientRect();
+                    const x = Math.max(0, Math.min(e.clientX - rect.left - offset.x, grid.offsetWidth - draggedPiece.offsetWidth));
+                    const y = Math.max(0, Math.min(e.clientY - rect.top - offset.y, grid.offsetHeight - draggedPiece.offsetHeight));
+                    draggedPiece.style.left = x + 'px';
+                    draggedPiece.style.top = y + 'px';
+                }
+            });
         }
 
         function selectTile(idx) {
