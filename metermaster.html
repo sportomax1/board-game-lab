@@ -78,10 +78,13 @@
                     </div>
                 </div>
             </div>
-            <div id="zones" class="grid grid-cols-2 md:grid-cols-5 gap-2 mb-4"></div>
-            <div class="bg-white rounded-xl shadow-sm p-4">
-                <h3 class="font-bold text-gray-900 mb-3">Games to Sort</h3>
-                <div id="gamesList" class="grid grid-cols-1 md:grid-cols-2 gap-2"></div>
+            <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
+                <h3 class="font-bold text-gray-900 mb-3">Current Game</h3>
+                <div id="currentGame" class="text-center text-gray-400">Click a range below to start</div>
+            </div>
+            <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
+                <h3 class="font-bold text-gray-900 mb-3">Click a Range</h3>
+                <div id="ranges" class="flex flex-wrap gap-2 justify-center"></div>
             </div>
             <button onclick="checkAnswers()" class="w-full mt-4 bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600">✓ Check Answers</button>
         </main>
@@ -90,7 +93,8 @@
         let collection = [];
         let category = 'weight';
         let zones = {};
-        let currentGame = null;
+        let currentGameIndex = 0;
+        let unassigned = [];
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -109,6 +113,7 @@
                     return {
                         id: item.getAttribute('objectid'),
                         name: item.querySelector('name').textContent,
+                        image: item.querySelector('thumbnail')?.textContent || '',
                         weight: parseFloat(rating?.querySelector('averageweight')?.getAttribute('value') || '0'),
                         average: parseFloat(rating?.querySelector('average')?.getAttribute('value') || '0'),
                         rank: parseInt(rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || '999999'),
@@ -116,7 +121,8 @@
                     };
                 }).slice(0, 20);
                 setupZones();
-                render();
+                renderRanges();
+                showNextGame();
             } catch (error) {
                 alert('Error: ' + error.message);
                 location.reload();
@@ -134,56 +140,58 @@
             ranges.forEach(([min, max]) => {
                 zones[`${min}-${max}`] = [];
             });
+            unassigned = [...collection];
         }
 
-        function render() {
-            const rangeKeys = Object.keys(zones);
-            document.getElementById('zones').innerHTML = rangeKeys.map(range => `
-                <div class="bg-gradient-to-br from-orange-50 to-red-50 rounded-xl border-2 border-orange-300 p-4">
-                    <h3 class="font-bold text-sm text-orange-800 mb-2">${range}</h3>
-                    <div id="zone-${range}" class="space-y-1 min-h-[100px]">
-                        ${zones[range].map((g, i) => `<div class="bg-white p-2 rounded text-xs">${g.name}</div>`).join('')}
-                    </div>
-                </div>
-            `).join('');
-            
-            const unassigned = collection.filter(g => !Object.values(zones).flat().find(zg => zg.id === g.id));
-            document.getElementById('gamesList').innerHTML = unassigned.map(game => `
-                <button onclick="selectGame('${game.id}')" class="bg-gray-100 hover:bg-gray-200 p-3 rounded-lg text-left border border-gray-300 text-sm">
-                    <div class="font-bold">${game.name}</div>
-                    <div class="grid grid-cols-2 gap-1 mt-2">
-                        ${Object.keys(zones).slice(0, 4).map(range => `
-                            <button onclick="event.stopPropagation(); placeInZone('${game.id}', '${range}')" class="bg-orange-500 text-white text-xs py-1 rounded hover:bg-orange-600">${range}</button>
-                        `).join('')}
-                    </div>
+        function renderRanges() {
+            const html = Object.keys(zones).map(range => `
+                <button onclick="selectRange('${range}')" class="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-lg text-lg transition shadow">
+                    ${range}
                 </button>
             `).join('');
-            
+            document.getElementById('ranges').innerHTML = html;
+        }
+
+        function showNextGame() {
+            if (unassigned.length === 0) {
+                checkAnswers();
+                return;
+            }
+            const game = unassigned[0];
+            document.getElementById('currentGame').innerHTML = `
+                <div class="flex flex-col items-center gap-3">
+                    ${game.image ? `<img src="${game.image}" class="w-32 h-32 rounded-lg shadow object-cover">` : ''}
+                    <h3 class="text-2xl font-bold text-gray-900">${game.name}</h3>
+                    <p class="text-sm text-gray-600">Value: ${game[category].toFixed(2)}</p>
+                </div>
+            `;
             document.getElementById('remaining').textContent = unassigned.length;
         }
 
-        function placeInZone(gameId, zoneKey) {
-            const game = collection.find(g => g.id === gameId);
-            zones[zoneKey].push(game);
-            render();
+        function selectRange(range) {
+            if (unassigned.length === 0) return;
+            const game = unassigned.shift();
+            zones[range].push(game);
+            showNextGame();
         }
 
         function checkAnswers() {
             let correct = 0;
+            let feedback = [];
             Object.entries(zones).forEach(([range, games]) => {
                 const [min, max] = range.split('-').map(Number);
                 games.forEach(game => {
                     const value = game[category];
-                    if (value >= min && value <= max) correct++;
+                    if (value >= min && value <= max) {
+                        correct++;
+                        feedback.push(`✅ ${game.name} (${value.toFixed(2)}) in ${range}`);
+                    } else {
+                        feedback.push(`❌ ${game.name} (${value.toFixed(2)}) in ${range} - should be elsewhere`);
+                    }
                 });
             });
             document.getElementById('correct').textContent = correct;
-            alert(`You got ${correct} / ${collection.length} correct!`);
-        }
-
-        function selectGame(id) {
-            const zone = prompt('Enter zone (e.g., 1-2, 2-4):');
-            if (zone && zones[zone]) placeInZone(id, zone);
+            alert(`You got ${correct} / ${collection.length} correct!\n\n${feedback.join('\n')}`);
         }
 
         function showSettings() { document.getElementById('settingsModal').classList.remove('hidden'); }
