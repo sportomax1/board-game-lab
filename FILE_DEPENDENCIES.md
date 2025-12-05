@@ -16,14 +16,10 @@ These are Vercel serverless functions that provide data to frontend apps.
 
 | API File | Purpose | Used By | Endpoints |
 |----------|---------|---------|-----------|
-| **bgg-helper.js** | Main BGG API proxy (60+ HTML files) | Almost all apps | `collection`, `thing`, `user`, `hot`, `geeklist`, `plays`, `search`, `browse`, `family`, `forumlist`, `thread`, `suggested`, `marketplace`, `videos`, `versions` |
-| **bgg-proxy.js** | Alternative BGG proxy | Fallback/special cases | Direct BGG proxying |
-| **bgg-thing.js** | BGG Thing endpoint handler | `thing.html`, `thingapi.html` | Thing data with authentication |
+| **bgg-helper.js** | Main BGG API proxy with all endpoints | 70+ files | `collection`, `thing`, `user`, `hot`, `geeklist`, `plays`, `search`, `browse`, `family`, `forumlist`, `thread`, `suggested`, `marketplace`, `videos`, `versions` |
 | **firebase-config.js** | Firebase credentials provider | `matchup.html`, `checkout.html` | Returns Firebase config from env vars |
 | **get-password.js** | Password/credential management | `checkout.html` | Authentication |
-| **image-proxy.js** | Image proxy for CORS bypass | Various image-heavy apps | Image URL proxying |
-| **cron-fetch-geeklist.js** | Scheduled geeklist fetch | N/A (scheduled) | Runs on schedule |
-| **trigger-geeklist.js** | Manual geeklist trigger | Admin use | Triggers geeklist fetch |
+| **image-proxy.js** | Image proxy for CORS bypass | 10+ files | Image URL proxying |
 
 ---
 
@@ -310,8 +306,6 @@ These files don't call other files but document the system.
 
 ### T Files
 - **test.html** - Testing utilities
-- **thing.html** (draft) - Thing API tester
-- **thingapi.html** (draft) - Thing endpoint tester
 - **timer.html** - ✅ Standalone timer
 - **token.html** (draft) - Token tracker
 - **toptier.html** - Collection-based (12+ API)
@@ -373,21 +367,20 @@ These files don't call other files but document the system.
 | **Data Files** | 8+ | XML/CSV |
 | **Documentation** | 12+ | .md files |
 | **Python Scripts** | 4 | Data generation |
+| **API Functions** | 4 | Consolidated from 8 |
 
 ---
 
 ## 🎯 Quick Reference: Which Files Use Which APIs?
 
-### Files Using `/api/bgg-helper`
-**70+ files** including: library.html, games.html, vfm.html, ranks.html, stats.html, collection.html, collage.html, etc.
+### Files Using `/api/bgg-helper` (Consolidated)
+**70+ files** including: library.html, games.html, vfm.html, ranks.html, stats.html, collection.html, collage.html, thing.html, thingapi.html, etc.
+
+- Now includes `endpoint=thing` support (previously in separate bgg-thing.js)
 
 ### Files Using `/api/firebase-config`
 - matchup.html
 - checkout.html
-
-### Files Using `/api/bgg-thing`
-- thing.html (draft)
-- thingapi.html (draft)
 
 ### Files Using `/api/get-password`
 - checkout.html
@@ -435,7 +428,7 @@ These files don't call other files but document the system.
 - **Documentation**: .md files
 
 ### `/api/`
-- **Backend Functions**: bgg-helper.js, bgg-proxy.js, bgg-thing.js, firebase-config.js, image-proxy.js, get-password.js, cron-fetch-geeklist.js, trigger-geeklist.js
+- **Backend Functions**: bgg-helper.js (consolidated), firebase-config.js, image-proxy.js, get-password.js
 
 ### `/alt/`
 - **Alternative Versions**: vfm.html (alternate), service-worker.js, manifest.json
@@ -473,7 +466,7 @@ All HTML, CSS, JS, and data files served as static assets from root
 - **Total Files**: 200+
 - **Standalone HTML Apps**: 18 ✅
 - **API-Dependent Apps**: 60+
-- **Backend APIs**: 8 functions
+- **Backend APIs**: 4 functions (consolidated from 8)
 - **Shared Libraries**: 3 files (bgg-api-client.js, style.css, welcome.js)
 - **Data Files**: 8+ (XML/CSV)
 - **Documentation**: 12+ markdown files
@@ -483,3 +476,5 @@ All HTML, CSS, JS, and data files served as static assets from root
 **Most Connected Frontend**: `library.html` - Makes 30+ API calls  
 **Most Standalone**: `games.html`, `cards.html`, `dice.html`, `timer.html`  
 **Most Firebase-Dependent**: `matchup.html`, `checkout.html`
+
+**API Reduction**: 50% (8 → 4 functions) ✅ Consolidated bgg-thing.js into bgg-helper.js
