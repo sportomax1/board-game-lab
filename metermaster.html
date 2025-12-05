@@ -39,10 +39,11 @@
         <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full">
             <h2 class="text-2xl font-bold text-gray-900 mb-4">ℹ️ How to Play</h2>
             <div class="space-y-3 text-gray-700">
-                <p>• Click games to place them in rating zones</p>
-                <p>• Zones are based on selected category</p>
-                <p>• Sort all games into correct ranges</p>
-                <p>• Green = correct, Red = wrong</p>
+                <p>• Look at each game</p>
+                <p>• Guess its <strong>weight, rating, rank</strong>, or <strong>your rating</strong></p>
+                <p>• Enter your guess and click "Guess"</p>
+                <p>• See the actual value and if you were correct!</p>
+                <p>• Move to the next game</p>
             </div>
             <button onclick="closeInfo()" class="w-full mt-6 bg-orange-600 text-white py-3 rounded-lg font-bold hover:bg-orange-700">Got it!</button>
         </div>
@@ -73,37 +74,60 @@
                         <p class="text-lg font-bold text-gray-900" id="categoryDisplay">Weight</p>
                     </div>
                     <div class="text-right">
-                        <p class="text-sm text-gray-600">Remaining</p>
-                        <p class="text-2xl font-bold text-orange-600" id="remaining">0</p>
+                        <p class="text-sm text-gray-600">Progress</p>
+                        <p class="text-2xl font-bold text-orange-600"><span id="current">1</span>/<span id="total">20</span></p>
                     </div>
                 </div>
             </div>
             <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
-                <h3 class="font-bold text-gray-900 mb-3">Current Game</h3>
-                <div id="currentGame" class="text-center text-gray-400">Click a range below to start</div>
+                <h3 class="font-bold text-gray-900 mb-3">What's this game's <span id="categoryName">weight</span>?</h3>
+                <div id="gameDisplay" class="text-center">
+                    <div class="flex flex-col items-center gap-3">
+                        <img id="gameImage" src="" class="w-40 h-40 rounded-lg shadow object-cover">
+                        <h2 id="gameName" class="text-2xl font-bold text-gray-900"></h2>
+                    </div>
+                </div>
             </div>
             <div class="bg-white rounded-xl shadow-sm p-4 mb-4">
-                <h3 class="font-bold text-gray-900 mb-3">Click a Range</h3>
-                <div id="ranges" class="flex flex-wrap gap-2 justify-center"></div>
+                <div class="flex gap-3 items-end">
+                    <div class="flex-1">
+                        <label class="block text-sm font-bold text-gray-700 mb-2">Your Guess</label>
+                        <input type="text" id="guessInput" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-orange-500 outline-none" placeholder="Enter your guess..." onkeypress="if(event.key==='Enter') submitGuess()">
+                    </div>
+                    <button onclick="submitGuess()" class="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-lg transition">Guess</button>
+                </div>
             </div>
-            <button onclick="checkAnswers()" class="w-full mt-4 bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600">✓ Check Answers</button>
+            <div id="feedback" class="bg-white rounded-xl shadow-sm p-4 mb-4 hidden">
+                <p id="feedbackText" class="text-center text-lg font-bold"></p>
+            </div>
+            <button id="nextBtn" onclick="showNextGame()" class="w-full mt-2 bg-blue-500 text-white py-3 rounded-lg font-bold hover:bg-blue-600 hidden">Next Game →</button>
+            <button id="finishBtn" onclick="finishGame()" class="w-full mt-2 bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600 hidden">Finish Game</button>
         </main>
     </div>
     <script>
         let collection = [];
         let category = 'weight';
-        let zones = {};
         let currentGameIndex = 0;
-        let unassigned = [];
+        let shuffledCollection = [];
+        let correct = 0;
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
             category = document.getElementById('category').value;
             document.getElementById('settingsModal').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
-            document.getElementById('categoryDisplay').textContent = category.charAt(0).toUpperCase() + category.slice(1);
+            
+            const categoryNames = {
+                weight: 'weight',
+                average: 'average rating',
+                rank: 'BGG rank',
+                userrating: 'your rating'
+            };
+            document.getElementById('categoryDisplay').textContent = categoryNames[category];
+            document.getElementById('categoryName').textContent = categoryNames[category];
+            
             try {
-                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&subtype=boardgame&stats=1`);
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
                 const xml = await res.text();
                 const parser = new DOMParser().parseFromString(xml, 'text/xml');
                 const items = Array.from(parser.querySelectorAll('item'));
@@ -120,78 +144,98 @@
                         userrating: parseFloat(rating?.querySelector('rating[username]')?.getAttribute('value') || '0')
                     };
                 }).slice(0, 20);
-                setupZones();
-                renderRanges();
-                showNextGame();
+                
+                // Shuffle collection
+                shuffledCollection = [...collection].sort(() => Math.random() - 0.5);
+                document.getElementById('total').textContent = shuffledCollection.length;
+                
+                correct = 0;
+                currentGameIndex = 0;
+                displayGame();
             } catch (error) {
                 alert('Error: ' + error.message);
                 location.reload();
             }
         }
 
-        function setupZones() {
-            const ranges = category === 'weight' ? 
-                [[1,2],[2,3],[3,4],[4,5]] :
-                category === 'average' || category === 'userrating' ?
-                [[0,2],[2,4],[4,6],[6,8],[8,10]] :
-                [[1,100],[101,500],[501,1000],[1001,5000]];
+        function displayGame() {
+            if (currentGameIndex >= shuffledCollection.length) {
+                finishGame();
+                return;
+            }
             
-            zones = {};
-            ranges.forEach(([min, max]) => {
-                zones[`${min}-${max}`] = [];
-            });
-            unassigned = [...collection];
+            const game = shuffledCollection[currentGameIndex];
+            document.getElementById('gameImage').src = game.image;
+            document.getElementById('gameName').textContent = game.name;
+            document.getElementById('current').textContent = currentGameIndex + 1;
+            document.getElementById('guessInput').value = '';
+            document.getElementById('feedback').classList.add('hidden');
+            document.getElementById('nextBtn').classList.add('hidden');
+            document.getElementById('guessInput').focus();
         }
 
-        function renderRanges() {
-            const html = Object.keys(zones).map(range => `
-                <button onclick="selectRange('${range}')" class="px-6 py-3 bg-orange-500 hover:bg-orange-600 text-white font-bold rounded-lg text-lg transition shadow">
-                    ${range}
-                </button>
-            `).join('');
-            document.getElementById('ranges').innerHTML = html;
+        function submitGuess() {
+            const guess = document.getElementById('guessInput').value.trim();
+            if (!guess) {
+                alert('Please enter a guess!');
+                return;
+            }
+            
+            const game = shuffledCollection[currentGameIndex];
+            const actual = game[category];
+            const guessNum = parseFloat(guess);
+            
+            let isCorrect = false;
+            let tolerance = 0;
+            
+            if (category === 'weight') {
+                tolerance = 0.5; // Within 0.5 stars
+            } else if (category === 'average' || category === 'userrating') {
+                tolerance = 0.3; // Within 0.3 rating
+            } else if (category === 'rank') {
+                tolerance = 50; // Within 50 ranks
+            }
+            
+            isCorrect = Math.abs(guessNum - actual) <= tolerance;
+            
+            if (isCorrect) {
+                correct++;
+                document.getElementById('correct').textContent = correct;
+            }
+            
+            const feedback = `
+                <strong class="${isCorrect ? 'text-green-600' : 'text-red-600'}">
+                    ${isCorrect ? '✅ Correct!' : '❌ Wrong!'}
+                </strong>
+                <p class="text-gray-700 mt-2">
+                    You guessed: <strong>${guessNum.toFixed(2)}</strong><br>
+                    Actual: <strong>${actual.toFixed(2)}</strong>
+                </p>
+            `;
+            
+            document.getElementById('feedbackText').innerHTML = feedback;
+            document.getElementById('feedback').classList.remove('hidden');
+            document.getElementById('guessInput').disabled = true;
+            
+            if (currentGameIndex < shuffledCollection.length - 1) {
+                document.getElementById('nextBtn').classList.remove('hidden');
+            } else {
+                document.getElementById('finishBtn').classList.remove('hidden');
+            }
         }
 
         function showNextGame() {
-            if (unassigned.length === 0) {
-                checkAnswers();
-                return;
-            }
-            const game = unassigned[0];
-            document.getElementById('currentGame').innerHTML = `
-                <div class="flex flex-col items-center gap-3">
-                    ${game.image ? `<img src="${game.image}" class="w-32 h-32 rounded-lg shadow object-cover">` : ''}
-                    <h3 class="text-2xl font-bold text-gray-900">${game.name}</h3>
-                    <p class="text-sm text-gray-600">Value: ${game[category].toFixed(2)}</p>
-                </div>
-            `;
-            document.getElementById('remaining').textContent = unassigned.length;
+            currentGameIndex++;
+            document.getElementById('guessInput').disabled = false;
+            displayGame();
         }
 
-        function selectRange(range) {
-            if (unassigned.length === 0) return;
-            const game = unassigned.shift();
-            zones[range].push(game);
-            showNextGame();
-        }
-
-        function checkAnswers() {
-            let correct = 0;
-            let feedback = [];
-            Object.entries(zones).forEach(([range, games]) => {
-                const [min, max] = range.split('-').map(Number);
-                games.forEach(game => {
-                    const value = game[category];
-                    if (value >= min && value <= max) {
-                        correct++;
-                        feedback.push(`✅ ${game.name} (${value.toFixed(2)}) in ${range}`);
-                    } else {
-                        feedback.push(`❌ ${game.name} (${value.toFixed(2)}) in ${range} - should be elsewhere`);
-                    }
-                });
-            });
-            document.getElementById('correct').textContent = correct;
-            alert(`You got ${correct} / ${collection.length} correct!\n\n${feedback.join('\n')}`);
+        function finishGame() {
+            const total = shuffledCollection.length;
+            const percentage = Math.round((correct / total) * 100);
+            alert(`Game Over!\n\nYou got ${correct}/${total} correct (${percentage}%)`);
+            document.getElementById('settingsModal').classList.remove('hidden');
+            document.getElementById('app').classList.add('hidden');
         }
 
         function showSettings() { document.getElementById('settingsModal').classList.remove('hidden'); }
