@@ -231,6 +231,30 @@
                 <input type="text" id="username" class="form-input" value="sportomax" placeholder="Enter BGG username">
             </div>
             
+            <div class="form-group">
+                <label class="form-label">Sort By</label>
+                <select id="sortOrder" class="form-select">
+                    <option value="alpha" selected>Alphabetical</option>
+                    <option value="average">Average Rating</option>
+                    <option value="rating">Your Rating</option>
+                    <option value="rank">BGG Rank</option>
+                </select>
+            </div>
+            
+            <div class="form-group">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="excludeExpansions" style="width: auto; cursor: pointer;">
+                    <label for="excludeExpansions" class="form-label" style="margin: 0; cursor: pointer;">Exclude Expansions</label>
+                </div>
+            </div>
+            
+            <div class="form-group">
+                <div style="display: flex; align-items: center; gap: 8px;">
+                    <input type="checkbox" id="showCardNumbers" checked style="width: auto; cursor: pointer;">
+                    <label for="showCardNumbers" class="form-label" style="margin: 0; cursor: pointer;">Show Card Numbers</label>
+                </div>
+            </div>
+            
             <div class="button-group">
                 <button id="loadBtn" class="btn-load">Load Collection</button>
                 <button id="printBtn" class="btn-print" disabled>Print Collage</button>
@@ -303,7 +327,8 @@
             try {
                 const xml = await fetchBGG('collection', {
                     username: username,
-                    own: '1'
+                    own: '1',
+                    stats: '1'
                 });
                 
                 const parser = new DOMParser();
@@ -313,7 +338,16 @@
                     throw new Error('Failed to parse BGG response');
                 }
                 
-                const items = Array.from(doc.querySelectorAll('item'));
+                let items = Array.from(doc.querySelectorAll('item'));
+                
+                // Filter expansions if requested
+                if (document.getElementById('excludeExpansions').checked) {
+                    items = items.filter(item => {
+                        const subtype = item.getAttribute('subtype');
+                        return subtype !== 'boardgameexpansion';
+                    });
+                }
+                
                 const games = [];
                 
                 items.forEach(item => {
@@ -321,7 +355,20 @@
                     const thumbnail = item.querySelector('thumbnail')?.textContent || '';
                     
                     if (thumbnail) {
-                        games.push({ name, thumbnail });
+                        // Get stats for sorting
+                        const stats = item.querySelector('stats');
+                        const rating = stats?.querySelector('rating');
+                        const userRating = rating?.getAttribute('value') || '0';
+                        const average = rating?.querySelector('average')?.getAttribute('value') || '0';
+                        const rank = rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || '999999';
+                        
+                        games.push({
+                            name,
+                            thumbnail,
+                            userRating: parseFloat(userRating),
+                            average: parseFloat(average),
+                            rank: parseInt(rank)
+                        });
                     }
                 });
                 
@@ -331,9 +378,26 @@
                     return;
                 }
                 
+                // Sort based on selected sort order
+                const sortOrder = document.getElementById('sortOrder').value;
+                games.sort((a, b) => {
+                    switch(sortOrder) {
+                        case 'alpha':
+                            return a.name.localeCompare(b.name);
+                        case 'average':
+                            return b.average - a.average;
+                        case 'rating':
+                            return b.userRating - a.userRating;
+                        case 'rank':
+                            return a.rank - b.rank;
+                        default:
+                            return 0;
+                    }
+                });
+                
                 collectionGames = games;
                 
-                showStatus(`✓ Loaded ${games.length} games`, 'success');
+                showStatus(`✓ Loaded ${games.length} games (sorted by ${sortOrder})`, 'success');
                 document.getElementById('printBtn').disabled = false;
                 
                 displayCollage();
@@ -349,6 +413,7 @@
             const collage = document.getElementById('collage');
             const info = document.getElementById('info');
             const preview = document.getElementById('preview');
+            const showNumbers = document.getElementById('showCardNumbers').checked;
             
             collage.innerHTML = '';
             
@@ -361,12 +426,15 @@
                 img.src = game.thumbnail;
                 img.alt = game.name;
                 
-                const number = document.createElement('div');
-                number.className = 'tile-number';
-                number.textContent = index + 1;
-                
                 tile.appendChild(img);
-                tile.appendChild(number);
+                
+                if (showNumbers) {
+                    const number = document.createElement('div');
+                    number.className = 'tile-number';
+                    number.textContent = index + 1;
+                    tile.appendChild(number);
+                }
+                
                 collage.appendChild(tile);
             });
             
@@ -377,6 +445,7 @@
         // Print collage
         function printCollage() {
             const username = document.getElementById('username').value;
+            const showNumbers = document.getElementById('showCardNumbers').checked;
             
             let printHtml = `<!DOCTYPE html>
 <html>
@@ -456,10 +525,11 @@
                 
                 pageGames.forEach((game, idx) => {
                     const number = start + idx + 1;
+                    const numberHtml = showNumbers ? `<div class="number">${number}</div>` : '';
                     printHtml += `
                         <div class="tile">
                             <img src="${game.thumbnail}" alt="${game.name}" onerror="this.style.display='none'">
-                            <div class="number">${number}</div>
+                            ${numberHtml}
                         </div>
                     `;
                 });
@@ -481,6 +551,25 @@
         document.getElementById('username').addEventListener('keypress', (e) => {
             if (e.key === 'Enter') {
                 loadCollection();
+            }
+        });
+        
+        // Settings change listeners
+        document.getElementById('sortOrder').addEventListener('change', () => {
+            if (collectionGames.length > 0) {
+                loadCollection();
+            }
+        });
+        
+        document.getElementById('excludeExpansions').addEventListener('change', () => {
+            if (collectionGames.length > 0) {
+                loadCollection();
+            }
+        });
+        
+        document.getElementById('showCardNumbers').addEventListener('change', () => {
+            if (collectionGames.length > 0) {
+                displayCollage();
             }
         });
     </script>
