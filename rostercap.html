@@ -39,11 +39,16 @@
         <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full">
             <h2 class="text-2xl font-bold text-gray-900 mb-4">ℹ️ How to Play</h2>
             <div class="space-y-3 text-gray-700">
-                <p>• Select one game from each rank category</p>
+                <p>• Select one game from each rank category (Board Game, Strategy, Family, etc.)</p>
                 <p>• Stay within your budget!</p>
-                <p>• Game costs based on average rating:</p>
-                <p class="pl-4">0-2 = $1, 2-4 = $2, 4-6 = $3, 6-8 = $4, 8-10 = $5</p>
-                <p>• Rank categories from BGG stats (Board Game, Family, Strategy, etc.)</p>
+                <p>• Game costs based on rating percentile:</p>
+                <p class="pl-4 text-sm">
+                    $5 = Top 20% (highest rated)<br>
+                    $4 = 20-40%<br>
+                    $3 = 40-60% (average)<br>
+                    $2 = 60-80%<br>
+                    $1 = Bottom 20% (lowest rated)
+                </p>
             </div>
             <button onclick="closeInfo()" class="w-full mt-6 bg-teal-600 text-white py-3 rounded-lg font-bold hover:bg-teal-700">Got it!</button>
         </div>
@@ -82,9 +87,10 @@
     </div>
     <script>
         let collection = [];
-        let categories = {};
+        let rankCategories = {};
         let roster = {};
         let budget = 25;
+        let ratingPercentiles = {}; // Store rating ranges for each tier
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -100,37 +106,68 @@
                 const parser = new DOMParser().parseFromString(xml, 'text/xml');
                 const items = Array.from(parser.querySelectorAll('item'));
                 console.log('Total items:', items.length);
+                
                 collection = items.map(item => {
                     const stats = item.querySelector('stats');
                     const rating = stats?.querySelector('rating');
                     const ranks = stats?.querySelectorAll('rank');
-                    const rankNames = [];
+                    const rankData = [];
                     ranks?.forEach(r => {
                         const fn = r.getAttribute('friendlyname');
-                        if (fn) rankNames.push(fn);
+                        if (fn) {
+                            rankData.push({
+                                name: fn,
+                                value: parseInt(r.getAttribute('value')) || 0
+                            });
+                        }
                     });
                     const avg = parseFloat(rating?.querySelector('average')?.getAttribute('value') || '0');
                     return {
                         id: item.getAttribute('objectid'),
                         name: item.querySelector('name').textContent,
                         average: avg,
-                        cost: Math.ceil(avg / 2) || 1,
                         image: item.querySelector('thumbnail')?.textContent || '',
-                        ranks: rankNames
+                        ranks: rankData
                     };
                 });
                 console.log('Processed collection:', collection.length, 'games');
                 
-                // Group by rank categories
-                categories = {};
+                // Extract all distinct rank types
+                const rankSet = new Set();
                 collection.forEach(game => {
                     game.ranks.forEach(rank => {
-                        if (!categories[rank]) categories[rank] = [];
-                        categories[rank].push(game);
+                        rankSet.add(rank.name);
                     });
                 });
-                console.log('Categories:', Object.keys(categories));
-                console.log('Category counts:', Object.entries(categories).map(([k,v]) => `${k}: ${v.length}`));
+                
+                // Group games by rank type and calculate price tiers based on average rating percentiles
+                rankCategories = {};
+                rankSet.forEach(rankName => {
+                    rankCategories[rankName] = collection.filter(g => 
+                        g.ranks.some(r => r.name === rankName)
+                    );
+                });
+                
+                console.log('Rank categories found:', Array.from(rankSet));
+                console.log('Games per rank:', Object.entries(rankCategories).map(([k,v]) => `${k}: ${v.length}`));
+                
+                // Calculate rating percentiles for pricing (5 tiers)
+                const allRatings = collection.map(g => g.average).filter(r => r > 0).sort((a,b) => b-a);
+                if (allRatings.length > 0) {
+                    const p20 = Math.floor(allRatings.length * 0.2);
+                    const p40 = Math.floor(allRatings.length * 0.4);
+                    const p60 = Math.floor(allRatings.length * 0.6);
+                    const p80 = Math.floor(allRatings.length * 0.8);
+                    
+                    ratingPercentiles = {
+                        5: { min: allRatings[0], max: allRatings[Math.min(p20, allRatings.length-1)] }, // Top 20%
+                        4: { min: allRatings[Math.min(p20, allRatings.length-1)], max: allRatings[Math.min(p40, allRatings.length-1)] }, // 20-40%
+                        3: { min: allRatings[Math.min(p40, allRatings.length-1)], max: allRatings[Math.min(p60, allRatings.length-1)] }, // 40-60%
+                        2: { min: allRatings[Math.min(p60, allRatings.length-1)], max: allRatings[Math.min(p80, allRatings.length-1)] }, // 60-80%
+                        1: { min: 0, max: allRatings[Math.min(p80, allRatings.length-1)] } // Bottom 20%
+                    };
+                    console.log('Rating percentiles:', ratingPercentiles);
+                }
                 
                 render();
             } catch (error) {
@@ -140,24 +177,33 @@
             }
         }
 
+        function getCostTier(averageRating) {
+            for (let [tier, range] of Object.entries(ratingPercentiles)) {
+                if (averageRating >= range.min && averageRating <= range.max) {
+                    return parseInt(tier);
+                }
+            }
+            return 3; // Default to middle tier
+        }
+
         function render() {
-            if (Object.keys(categories).length === 0) {
-                document.getElementById('roster').innerHTML = '<p class="text-gray-600 text-center py-8">No categories found. Please check your username and try again.</p>';
+            if (Object.keys(rankCategories).length === 0) {
+                document.getElementById('roster').innerHTML = '<p class="text-gray-600 text-center py-8">No rank categories found. Please check your username and try again.</p>';
                 return;
             }
-            const html = Object.entries(categories).slice(0, 8).map(([rank, games]) => {
-                const selected = roster[rank];
-                const rankKey = rank.replace(/'/g, "\\'");
+            const html = Object.entries(rankCategories).slice(0, 10).map(([rankName, games]) => {
+                const selected = roster[rankName];
+                const rankKey = rankName.replace(/'/g, "\\'");
                 return `
                     <div class="bg-white rounded-xl shadow-sm p-4">
-                        <h3 class="font-bold text-gray-900 mb-2">${rank}</h3>
+                        <h3 class="font-bold text-gray-900 mb-2">${rankName}</h3>
                         ${selected ? `
                             <div class="bg-green-100 border-2 border-green-500 rounded-lg p-3 mb-2">
                                 <div class="flex items-center gap-3">
                                     ${selected.image ? `<img src="${selected.image}" class="w-12 h-12 rounded object-cover">` : ''}
                                     <div class="flex-1">
                                         <p class="font-bold text-sm">${selected.name}</p>
-                                        <p class="text-xs text-gray-600">Cost: $${selected.cost} | Avg: ${selected.average.toFixed(1)}</p>
+                                        <p class="text-xs text-gray-600">Cost: $${selected.cost} | Rating: ${selected.average.toFixed(1)}</p>
                                     </div>
                                     <button onclick="removeFromRoster('${rankKey}')" class="bg-red-500 text-white px-3 py-1 rounded text-xs">Remove</button>
                                 </div>
@@ -165,7 +211,10 @@
                         ` : ''}
                         <select onchange="addToRoster('${rankKey}', this.value)" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2 text-sm">
                             <option value="">Select game...</option>
-                            ${games.map(g => `<option value="${g.id}">${g.name} - $${g.cost}</option>`).join('')}
+                            ${games.map(g => {
+                                const cost = getCostTier(g.average);
+                                return `<option value="${g.id}">${g.name} - $${cost} (${g.average.toFixed(1)}★)</option>`;
+                            }).join('')}
                         </select>
                     </div>
                 `;
@@ -174,20 +223,22 @@
             updateStats();
         }
 
-        function addToRoster(rank, gameId) {
+        function addToRoster(rankName, gameId) {
             if (!gameId) return;
             const game = collection.find(g => g.id === gameId);
+            const cost = getCostTier(game.average);
             const currentSpent = Object.values(roster).reduce((sum, g) => sum + g.cost, 0);
-            if (currentSpent + game.cost > budget) {
+            if (currentSpent + cost > budget) {
                 alert('Not enough budget!');
                 return;
             }
-            roster[rank] = game;
+            game.cost = cost; // Set the calculated cost
+            roster[rankName] = game;
             render();
         }
 
-        function removeFromRoster(rank) {
-            delete roster[rank];
+        function removeFromRoster(rankName) {
+            delete roster[rankName];
             render();
         }
 
