@@ -23,17 +23,29 @@ def get_github_repos(username):
     """
     Fetch all repositories for a GitHub user.
     Returns list of repo objects with name, url, description, updated_at, etc.
+    Uses GITHUB_TOKEN for authentication if available (increases rate limit from 60 to 5000 requests/hour).
     """
     repos = []
     page = 1
     per_page = 100
     
+    # Get GitHub token from environment (set by GitHub Actions)
+    headers = {}
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        headers['Authorization'] = f'token {token}'
+        print(f"[INFO] Using GITHUB_TOKEN for authenticated requests (5000 req/hr limit)")
+    else:
+        print(f"[INFO] No GITHUB_TOKEN found, using unauthenticated requests (60 req/hr limit)")
+    
     while True:
         url = f"https://api.github.com/users/{username}/repos?page={page}&per_page={per_page}&sort=updated"
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
             print(f"Error fetching repos: {response.status_code}")
+            if response.status_code == 403:
+                print(f"Response: {response.json()}")
             break
         
         data = response.json()
@@ -51,10 +63,17 @@ def get_repo_files(username, repo_name, path=''):
     Returns list of file objects with name, path, html_url, type, etc.
     """
     files = []
+    
+    # Get GitHub token from environment
+    headers = {}
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        headers['Authorization'] = f'token {token}'
+    
     url = f"https://api.github.com/repos/{username}/{repo_name}/contents/{path}"
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         
         if response.status_code != 200:
             return files
@@ -76,10 +95,16 @@ def get_file_last_commit(username, repo_name, file_path):
     """
     Get the last commit timestamp for a specific file.
     """
+    # Get GitHub token from environment
+    headers = {}
+    token = os.environ.get('GITHUB_TOKEN')
+    if token:
+        headers['Authorization'] = f'token {token}'
+    
     url = f"https://api.github.com/repos/{username}/{repo_name}/commits?path={file_path}&page=1&per_page=1"
     
     try:
-        response = requests.get(url)
+        response = requests.get(url, headers=headers)
         
         if response.status_code == 200:
             commits = response.json()
@@ -334,8 +359,18 @@ def generate_master_html_index(username='sportomax1', output_file='master_index.
             onkeyup="filterFiles()"
         >
         
-        <div class="filter-controls" id="filterButtons">
-            <button class="filter-btn active" onclick="setFilter('all')">All Files</button>
+        <div style="margin-bottom: 20px;">
+            <div style="font-weight: 600; margin-bottom: 10px;">Filter by File Type:</div>
+            <div class="filter-controls" id="filterButtons">
+                <button class="filter-btn active" onclick="setFilter('all', 'ext')">All Files</button>
+            </div>
+        </div>
+        
+        <div style="margin-bottom: 20px;">
+            <div style="font-weight: 600; margin-bottom: 10px;">Filter by Repository:</div>
+            <div class="filter-controls" id="repoFilterButtons">
+                <button class="filter-btn active" onclick="setFilter('all', 'repo')">All Repos</button>
+            </div>
         </div>
         
         <div class="sort-controls">
@@ -375,18 +410,25 @@ def generate_master_html_index(username='sportomax1', output_file='master_index.
     </div>
     
     <script>
-        let currentFilter = 'all';
+        let currentExtFilter = 'all';
+        let currentRepoFilter = 'all';
         let currentSort = 'updated';
         
-        function setFilter(ext) {
-            currentFilter = ext;
-            
-            // Update button states
-            document.querySelectorAll('.filter-btn').forEach(btn => {
-                btn.classList.remove('active');
-            });
+        function setFilter(filterValue, filterType) {
+            if (filterType === 'ext') {
+                currentExtFilter = filterValue;
+                // Update ext button states
+                document.querySelectorAll('#filterButtons .filter-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+            } else if (filterType === 'repo') {
+                currentRepoFilter = filterValue;
+                // Update repo button states
+                document.querySelectorAll('#repoFilterButtons .filter-btn').forEach(btn => {
+                    btn.classList.remove('active');
+                });
+            }
             event.target.classList.add('active');
-            
             filterFiles();
         }
         
@@ -401,10 +443,11 @@ def generate_master_html_index(username='sportomax1', output_file='master_index.
                 const name = item.dataset.name;
                 const path = item.dataset.path;
                 
-                const matchesFilter = currentFilter === 'all' || ext === currentFilter;
+                const matchesExtFilter = currentExtFilter === 'all' || ext === currentExtFilter;
+                const matchesRepoFilter = currentRepoFilter === 'all' || repo === currentRepoFilter;
                 const matchesSearch = name.includes(searchTerm) || path.includes(searchTerm) || repo.includes(searchTerm);
                 
-                if (matchesFilter && matchesSearch) {
+                if (matchesExtFilter && matchesRepoFilter && matchesSearch) {
                     item.style.display = 'block';
                     visibleCount++;
                 } else {
@@ -442,7 +485,7 @@ def generate_master_html_index(username='sportomax1', output_file='master_index.
             items.forEach(item => list.appendChild(item));
         }
         
-        // Build filter buttons dynamically
+        // Build file type filter buttons dynamically
         const extensions = new Set();
         document.querySelectorAll('.file-item').forEach(item => {
             const ext = item.dataset.ext;
@@ -455,8 +498,25 @@ def generate_master_html_index(username='sportomax1', output_file='master_index.
             const btn = document.createElement('button');
             btn.className = 'filter-btn';
             btn.textContent = ext || 'no ext';
-            btn.onclick = () => setFilter(ext);
+            btn.onclick = () => setFilter(ext, 'ext');
             filterContainer.appendChild(btn);
+        });
+        
+        // Build repository filter buttons dynamically
+        const repos = new Set();
+        document.querySelectorAll('.file-item').forEach(item => {
+            const repo = item.dataset.repo;
+            if (repo) repos.add(repo);
+        });
+        
+        const repoFilterContainer = document.getElementById('repoFilterButtons');
+        const sortedRepos = Array.from(repos).sort();
+        sortedRepos.forEach(repo => {
+            const btn = document.createElement('button');
+            btn.className = 'filter-btn';
+            btn.textContent = repo;
+            btn.onclick = () => setFilter(repo, 'repo');
+            repoFilterContainer.appendChild(btn);
         });
     </script>
 </body>
