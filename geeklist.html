@@ -104,12 +104,31 @@
             <input id="geeklistIdInput" type="number" min="1" placeholder="e.g. 11205">
             <button id="loadGeeklistBtn">Load Geeklist</button>
         </div>
+        
+        <!-- Sort Controls -->
+        <div id="sortControls" style="display:none; margin-bottom:1.5em; text-align:center; gap:1em;">
+            <label for="sortSelect" style="font-size:1em; font-weight:600;">Sort by:</label>
+            <select id="sortSelect" style="padding:0.5em; border-radius:8px; border:1px solid #bbb; font-size:1em;">
+                <option value="original">Original Order</option>
+                <option value="postdate-asc">Post Date (Oldest First)</option>
+                <option value="postdate-desc">Post Date (Newest First)</option>
+                <option value="name-asc">Name (A-Z)</option>
+                <option value="name-desc">Name (Z-A)</option>
+            </select>
+        </div>
+
         <div id="gamesCardWrapper">
             <div style="text-align:center; color:#888; font-size:1.1em;">Enter a Geeklist ID above and click Load.</div>
         </div>
-        <button id="scrollTopBtn" style="position:fixed; right:calc(50vw - 215px); bottom:calc(24px + env(safe-area-inset-bottom)); z-index:999; background:#1976d2; color:#fff; border:none; border-radius:50%; width:54px; height:54px; font-size:2em; box-shadow:0 2px 12px #0002; display:none; align-items:center; justify-content:center; max-width:430px;">&#8679;</button>
-        <button id="scrollBottomBtn" style="position:fixed; left:calc(50vw - 215px); bottom:calc(24px + env(safe-area-inset-bottom)); z-index:999; background:#1976d2; color:#fff; border:none; border-radius:50%; width:54px; height:54px; font-size:2em; box-shadow:0 2px 12px #0002; display:none; align-items:center; justify-content:center; max-width:430px;">&#8681;</button>
-    </div>
+
+        <!-- Detail Modal -->
+        <div id="detailModal" style="display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; overflow-y:auto;">
+            <div style="background:#fff; margin:2em 1em; padding:1.5em; border-radius:12px; max-width:600px; margin-left:auto; margin-right:auto;">
+                <h2 style="margin-top:0;">Full Details</h2>
+                <pre id="detailContent" style="white-space:pre-wrap; word-wrap:break-word; font-size:0.9em; max-height:70vh; overflow-y:auto; background:#f5f5f5; padding:1em; border-radius:8px;"></pre>
+                <button onclick="document.getElementById('detailModal').style.display='none'" style="background:#1976d2; color:#fff; border:none; padding:0.7em 2em; border-radius:8px; font-size:1em; cursor:pointer; margin-top:1em; width:100%;">Close</button>
+            </div>
+        </div>
     <script>
     // User collection tracking
     let userCollection = new Set();
@@ -118,6 +137,7 @@
     let userWantInTrade = new Set();
     let userPrevOwned = new Set();
     let userTradingAway = new Set();
+    let geeklistData = []; // Store original data for sorting
     
     async function fetchUserCollections() {
         // Fetch user's collection
@@ -199,6 +219,11 @@
         return '';
     }
 
+    function showDetailModal(xmlString) {
+        document.getElementById('detailContent').textContent = xmlString;
+        document.getElementById('detailModal').style.display = 'block';
+    }
+
     async function fetchThingDetails(objectId) {
         if (!objectId) return {};
         try {
@@ -220,6 +245,84 @@
         }
     }
 
+    function sortGeeklistData(sortType) {
+        let sorted = [...geeklistData];
+        
+        if (sortType === 'postdate-asc') {
+            sorted.sort((a, b) => new Date(a.postdate || 0) - new Date(b.postdate || 0));
+        } else if (sortType === 'postdate-desc') {
+            sorted.sort((a, b) => new Date(b.postdate || 0) - new Date(a.postdate || 0));
+        } else if (sortType === 'name-asc') {
+            sorted.sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+        } else if (sortType === 'name-desc') {
+            sorted.sort((a, b) => (b.name || '').localeCompare(a.name || ''));
+        }
+        
+        return sorted;
+    }
+
+    function renderGeeklistCards(items) {
+        const gamesCardWrapper = document.getElementById('gamesCardWrapper');
+        let html = '';
+        
+        for (let i = 0; i < items.length; i++) {
+            const item = items[i];
+            const name = item.name || 'Unknown';
+            const objectType = item.objectType || '';
+            const objectId = item.objectId || '';
+            const username = item.username || '';
+            const postdate = item.postdate || '';
+            const statusEmoji = getStatusEmoji(objectId);
+            
+            html += `<div class='game-card' id='geekcard-${i}'>
+                ${statusEmoji ? `<div class='status-emoji'>${statusEmoji}</div>` : ''}
+                <img src='' alt='' class='game-thumb' style='width:64px; height:64px; border-radius:10px; margin-right:1em; object-fit:cover; display:none;'>
+                <div class='game-info'>
+                    <div class='game-title'>#${i + 1} ${name}</div>
+                    <div class='game-details'>
+                        <b>Type:</b> ${objectType}<br>
+                        <b>BGG ID:</b> ${objectId}<br>
+                        <b>Added by:</b> ${username}<br>
+                        ${postdate ? `<b>Posted:</b> ${new Date(postdate).toLocaleDateString()}<br>` : ''}
+                        ${objectId ? `<a href='https://boardgamegeek.com/boardgame/${objectId}' target='_blank' style='color:#1976d2;'>View on BGG</a>` : ''}
+                    </div>
+                    <button onclick="showDetailModal('${item.xmlData.replace(/'/g, "\\'")}'" style="background:#1976d2; color:#fff; border:none; padding:0.5em 1em; border-radius:6px; margin-top:0.5em; cursor:pointer; font-size:0.9em;">📋 Details</button>
+                </div>
+            </div>`;
+        }
+        
+        gamesCardWrapper.innerHTML = html;
+        
+        // Fetch thumbnails/details asynchronously
+        items.forEach((item, i) => {
+            if (item.objectType === 'thing' && item.objectId) {
+                fetchThingDetails(item.objectId).then(details => {
+                    const card = document.getElementById(`geekcard-${i}`);
+                    if (card && details.thumbnail) {
+                        const img = card.querySelector('.game-thumb');
+                        if (img) {
+                            img.src = details.thumbnail;
+                            img.alt = `${item.name || 'Game'} thumbnail`;
+                            img.style.display = 'block';
+                        }
+                    }
+                    if (card && details.year) {
+                        const info = card.querySelector('.game-details');
+                        if (info) {
+                            info.innerHTML += `<b>Year:</b> ${details.year}<br>`;
+                        }
+                    }
+                    if (card && details.description) {
+                        const info = card.querySelector('.game-details');
+                        if (info) {
+                            info.innerHTML += `<span style='color:#888; font-size:0.95em;'>${details.description.substring(0,120)}${details.description.length>120?'...':''}</span><br>`;
+                        }
+                    }
+                });
+            }
+        });
+    }
+
     async function fetchGeeklist(geeklistId) {
         const gamesCardWrapper = document.getElementById('gamesCardWrapper');
         gamesCardWrapper.innerHTML = '<div style="text-align:center; color:#888; font-size:1.1em;">Loading Geeklist and User Collections...</div>';
@@ -234,68 +337,34 @@
             const parser = new window.DOMParser();
             const doc = parser.parseFromString(xml, 'text/xml');
             const items = Array.from(doc.querySelectorAll('item'));
+            
             if (items.length === 0) {
                 gamesCardWrapper.innerHTML = '<div style="text-align:center; color:#888;">No items found in this Geeklist.</div>';
+                document.getElementById('sortControls').style.display = 'none';
                 return;
             }
-            let html = '';
-            for (let i = 0; i < items.length; i++) {
-                const item = items[i];
-                const name = item.getAttribute('objectname') || 'Unknown';
-                const objectType = item.getAttribute('objecttype') || '';
-                const objectId = item.getAttribute('objectid') || '';
-                const username = item.getAttribute('username') || '';
-                const statusEmoji = getStatusEmoji(objectId);
-                html += `<div class='game-card' id='geekcard-${i}'>
-                    ${statusEmoji ? `<div class='status-emoji'>${statusEmoji}</div>` : ''}
-                    <img src='' alt='' class='game-thumb' style='width:64px; height:64px; border-radius:10px; margin-right:1em; object-fit:cover; display:none;'>
-                    <div class='game-info'>
-                        <div class='game-title'>#${i + 1} ${name}</div>
-                        <div class='game-details'>
-                            <b>Type:</b> ${objectType}<br>
-                            <b>BGG ID:</b> ${objectId}<br>
-                            <b>Added by:</b> ${username}<br>
-                            ${objectId ? `<a href='https://boardgamegeek.com/boardgame/${objectId}' target='_blank' style='color:#1976d2;'>View on BGG</a>` : ''}
-                        </div>
-                    </div>
-                </div>`;
-            }
-            gamesCardWrapper.innerHTML = html;
-            // Fetch thumbnails/details asynchronously and update cards
-            for (let i = 0; i < items.length; i++) {
-                const item = items[i];
-                const objectType = item.getAttribute('objecttype') || '';
-                const objectId = item.getAttribute('objectid') || '';
-                if (objectType === 'thing' && objectId) {
-                    fetchThingDetails(objectId).then(details => {
-                        const card = document.getElementById(`geekcard-${i}`);
-                        if (card && details.thumbnail) {
-                            const img = card.querySelector('.game-thumb');
-                            if (img) {
-                                img.src = details.thumbnail;
-                                img.alt = `${item.getAttribute('objectname') || 'Game'} thumbnail`;
-                                img.style.display = 'block';
-                            }
-                        }
-                        if (card && details.year) {
-                            const info = card.querySelector('.game-details');
-                            if (info) {
-                                info.innerHTML += `<b>Year:</b> ${details.year}<br>`;
-                            }
-                        }
-                        if (card && details.description) {
-                            const info = card.querySelector('.game-details');
-                            if (info) {
-                                info.innerHTML += `<span style='color:#888; font-size:0.95em;'>${details.description.substring(0,120)}${details.description.length>120?'...':''}</span><br>`;
-                            }
-                        }
-                    });
-                }
-            }
+            
+            // Store data for sorting
+            geeklistData = items.map((item, index) => ({
+                name: item.getAttribute('objectname') || 'Unknown',
+                objectType: item.getAttribute('objecttype') || '',
+                objectId: item.getAttribute('objectid') || '',
+                username: item.getAttribute('username') || '',
+                postdate: item.getAttribute('postdate') || '',
+                originalIndex: index,
+                xmlData: item.outerHTML
+            }));
+            
+            // Show sort controls and render
+            document.getElementById('sortControls').style.display = 'block';
+            renderGeeklistCards(geeklistData);
+            
         } catch (e) {
             gamesCardWrapper.innerHTML = `<div style='text-align:center; color:#c00;'>Error: ${e.message}</div>`;
+            document.getElementById('sortControls').style.display = 'none';
         }
     }
+    
     document.getElementById('loadGeeklistBtn').onclick = () => {
         const geeklistId = document.getElementById('geeklistIdInput').value.trim();
         if (!geeklistId || isNaN(geeklistId) || parseInt(geeklistId) < 1) {
@@ -304,26 +373,18 @@
         }
         fetchGeeklist(geeklistId);
     };
-    // Arrow button logic
-    const scrollTopBtn = document.getElementById('scrollTopBtn');
-    const scrollBottomBtn = document.getElementById('scrollBottomBtn');
-    window.addEventListener('scroll', () => {
-        if (window.scrollY > 300) {
-            scrollTopBtn.style.display = 'flex';
-        } else {
-            scrollTopBtn.style.display = 'none';
-        }
-        if ((window.innerHeight + window.scrollY) < document.body.offsetHeight - 300) {
-            scrollBottomBtn.style.display = 'flex';
-        } else {
-            scrollBottomBtn.style.display = 'none';
-        }
-    });
-    scrollTopBtn.onclick = () => {
-        window.scrollTo({ top: 0, behavior: 'smooth' });
+
+    // Sort select handler
+    document.getElementById('sortSelect').onchange = (e) => {
+        const sortedData = sortGeeklistData(e.target.value);
+        renderGeeklistCards(sortedData);
     };
-    scrollBottomBtn.onclick = () => {
-        window.scrollTo({ top: document.body.scrollHeight, behavior: 'smooth' });
+
+    // Close detail modal on outside click
+    document.getElementById('detailModal').onclick = (e) => {
+        if (e.target === document.getElementById('detailModal')) {
+            document.getElementById('detailModal').style.display = 'none';
+        }
     };
     </script>
 </body>
