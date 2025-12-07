@@ -234,31 +234,20 @@
                 <h1 style="text-align: center;">📋 Private Collection</h1>
                 
                 <div class="form-container">
-                    <div style="display: flex; gap: 1em; margin-bottom: 1em;">
-                        <button id="privateApiTabBtn" style="flex: 1; padding: 0.8em; border: 2px solid #1976d2; background: #1976d2; color: white; border-radius: 8px; font-weight: 600; cursor: pointer;">API Fetch</button>
-                        <button id="privateCsvTabBtn" style="flex: 1; padding: 0.8em; border: 2px solid #ccc; background: white; color: #666; border-radius: 8px; font-weight: 600; cursor: pointer;">CSV Upload</button>
+                    <div class="form-group">
+                        <label class="form-label">📥 Import CSV File</label>
+                        <p style="font-size: 0.9em; color: #666; margin: 0 0 1em 0;">Download your CSV from BGG: <a href="https://boardgamegeek.com/geekcollection.php?action=exportcsv&subtype=boardgame&username=Sportomax&all=1" target="_blank" style="color: #1976d2; text-decoration: none;">Export Collection as CSV</a></p>
+                        <input type="file" id="csvFileInput" class="form-input" accept=".csv" style="padding: 0.5em; cursor: pointer;">
                     </div>
+                    
+                    <button id="uploadCsvBtn" class="submit-btn" style="background: #2196F3;">📋 Upload & Analyze CSV</button>
+                </div>
 
-                    <!-- API Fetch Method -->
-                    <div id="privateApiForm">
-                        <div class="form-group">
-                            <label class="form-label">BGG Username:</label>
-                            <input type="text" id="privateUsername" class="form-input" value="sportomax" placeholder="Enter BGG username">
-                        </div>
-                        
-                        <button id="fetchPrivateBtn" class="submit-btn" style="background: #2196F3;">📚 Fetch Collection from BGG</button>
+                <div id="privateProgress" style="display: none; margin: 1.5em 0;">
+                    <div id="privateProgressBar" style="width: 100%; height: 6px; background: #e0e0e0; border-radius: 3px; overflow: hidden;">
+                        <div id="privateProgressFill" style="height: 100%; background: #4caf50; width: 0%; transition: width 0.3s;"></div>
                     </div>
-
-                    <!-- CSV Upload Method -->
-                    <div id="privateCsvForm" style="display: none;">
-                        <div class="form-group">
-                            <label class="form-label">📥 Import CSV File</label>
-                            <p style="font-size: 0.9em; color: #666; margin: 0 0 1em 0;">Download your CSV from BGG: <a href="https://boardgamegeek.com/geekcollection.php?action=exportcsv&subtype=boardgame&username=Sportomax&all=1" target="_blank" style="color: #1976d2; text-decoration: none;">Export Collection as CSV</a></p>
-                            <input type="file" id="csvFileInput" class="form-input" accept=".csv" style="padding: 0.5em; cursor: pointer;">
-                        </div>
-                        
-                        <button id="uploadCsvBtn" class="submit-btn" style="background: #2196F3;">Upload & Analyze CSV</button>
-                    </div>
+                    <p id="privateProgressText" style="text-align: center; color: #666; font-size: 0.9em; margin-top: 0.5em;">Loading...</p>
                 </div>
                 
                 <div id="privateResults" style="display: none; margin-top: 1.5em;">
@@ -1271,13 +1260,65 @@
             return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
         }
 
-        function displayPrivateGames(games) {
+        function updatePrivateProgress(percent, text) {
+            document.getElementById('privateProgressFill').style.width = `${percent}%`;
+            document.getElementById('privateProgressText').textContent = text;
+        }
+
+        async function fetchThumbnailsBatch(gameIds) {
+            try {
+                const thingUrl = `/api/bgg-helper?endpoint=thing&id=${gameIds.join(',')}&stats=1`;
+                const response = await fetch(thingUrl);
+                const xml = await response.text();
+                
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(xml, 'text/xml');
+                
+                const thumbnailMap = {};
+                Array.from(doc.querySelectorAll('item')).forEach(item => {
+                    const id = item.getAttribute('id');
+                    const thumbnail = item.querySelector('thumbnail')?.textContent || '';
+                    thumbnailMap[id] = thumbnail;
+                });
+                
+                return thumbnailMap;
+            } catch (error) {
+                console.error('Error fetching thumbnails:', error);
+                return {};
+            }
+        }
+
+        async function displayPrivateGamesWithThumbnails(games) {
             // Sort by invdate descending (newest first)
             games.sort((a, b) => {
                 const dateA = new Date(a.invdate || a.acquisitiondate || '1970-01-01');
                 const dateB = new Date(b.invdate || b.acquisitiondate || '1970-01-01');
                 return dateB - dateA;
             });
+
+            // Show progress
+            document.getElementById('privateProgress').style.display = 'block';
+            updatePrivateProgress(0, 'Fetching thumbnails...');
+
+            // Batch fetch thumbnails (20 at a time)
+            const gameIds = games.map(g => g.objectid).filter(id => id);
+            const thumbnailMap = {};
+            const batchSize = 20;
+            
+            for (let i = 0; i < gameIds.length; i += batchSize) {
+                const batch = gameIds.slice(i, i + batchSize);
+                const batchThumbnails = await fetchThumbnailsBatch(batch);
+                Object.assign(thumbnailMap, batchThumbnails);
+                
+                const progress = Math.round((i + batchSize) / gameIds.length * 100);
+                updatePrivateProgress(progress, `Fetched ${Math.min(i + batchSize, gameIds.length)} of ${gameIds.length} thumbnails...`);
+            }
+
+            // Attach thumbnails to games
+            games = games.map(game => ({
+                ...game,
+                thumbnail: thumbnailMap[game.objectid] || game.thumbnail || ''
+            }));
 
             // Display results
             document.getElementById('totalGames').textContent = games.length;
@@ -1292,12 +1333,9 @@
             // Render game list
             const gameList = document.getElementById('privateGameList');
             gameList.innerHTML = games.map(game => {
-                const gameThumb = game.imageid ? `https://cf.geekdo-images.com/${game.imageid}__small/img/placeholder.png` :
-                                  game.thumbnail ? game.thumbnail : null;
-                
                 return `
                     <div class="game-card">
-                        ${gameThumb ? `<img src="${gameThumb}" alt="${game.objectname || game.name}" class="game-thumb">` : '<div class="game-thumb" style="background: #f5f5f5; display: flex; align-items: center; justify-content: center; font-size: 2em;">🎲</div>'}
+                        ${game.thumbnail ? `<img src="${game.thumbnail}" alt="${game.objectname || game.name}" class="game-thumb">` : '<div class="game-thumb" style="background: #f5f5f5; display: flex; align-items: center; justify-content: center; font-size: 2em;">🎲</div>'}
                         <div class="game-info" style="flex: 1;">
                             <div class="game-title">${game.objectname || game.name}</div>
                             <div class="game-details">
@@ -1311,103 +1349,8 @@
             }).join('');
 
             document.getElementById('privateResults').style.display = 'block';
+            document.getElementById('privateProgress').style.display = 'none';
         }
-
-        // Private tab sub-menu switching
-        const privateApiTabBtn = document.getElementById('privateApiTabBtn');
-        const privateCsvTabBtn = document.getElementById('privateCsvTabBtn');
-        const privateApiForm = document.getElementById('privateApiForm');
-        const privateCsvForm = document.getElementById('privateCsvForm');
-
-        privateApiTabBtn.addEventListener('click', () => {
-            privateApiForm.style.display = 'block';
-            privateCsvForm.style.display = 'none';
-            privateApiTabBtn.style.background = '#1976d2';
-            privateApiTabBtn.style.color = 'white';
-            privateApiTabBtn.style.borderColor = '#1976d2';
-            privateCsvTabBtn.style.background = 'white';
-            privateCsvTabBtn.style.color = '#666';
-            privateCsvTabBtn.style.borderColor = '#ccc';
-        });
-
-        privateCsvTabBtn.addEventListener('click', () => {
-            privateApiForm.style.display = 'none';
-            privateCsvForm.style.display = 'block';
-            privateCsvTabBtn.style.background = '#1976d2';
-            privateCsvTabBtn.style.color = 'white';
-            privateCsvTabBtn.style.borderColor = '#1976d2';
-            privateApiTabBtn.style.background = 'white';
-            privateApiTabBtn.style.color = '#666';
-            privateApiTabBtn.style.borderColor = '#ccc';
-        });
-
-        // Fetch from API
-        document.getElementById('fetchPrivateBtn').addEventListener('click', async function() {
-            const username = document.getElementById('privateUsername').value.trim();
-            if (!username) {
-                alert('Please enter a BGG username');
-                return;
-            }
-
-            this.disabled = true;
-            this.textContent = '⏳ Fetching collection...';
-
-            try {
-                const collUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&prevowned=1&fortrade=1&want=1&wanttoplay=1&wanttobuy=1&wishlist=1&preordered=1&stats=1`;
-                const response = await fetch(collUrl);
-                const xml = await response.text();
-                
-                const parser = new DOMParser();
-                const doc = parser.parseFromString(xml, 'text/xml');
-                
-                const items = Array.from(doc.querySelectorAll('item'));
-                const games = items.map(item => {
-                    const name = item.querySelector('name')?.textContent || '';
-                    const year = item.querySelector('yearpublished')?.getAttribute('value') || '';
-                    const rating = item.querySelector('rating value')?.getAttribute('value') || '0';
-                    const thumbnail = item.querySelector('thumbnail')?.textContent || '';
-                    const image = item.querySelector('image')?.textContent || '';
-                    
-                    const status = item.querySelector('status');
-                    const statuses = {
-                        own: status?.getAttribute('own') === '1' ? '✓ Own' : '',
-                        prevowned: status?.getAttribute('prevowned') === '1' ? '✓ Prev-Owned' : '',
-                        fortrade: status?.getAttribute('fortrade') === '1' ? '🔄 For Trade' : '',
-                        want: status?.getAttribute('want') === '1' ? '💚 Want' : '',
-                        wanttoplay: status?.getAttribute('wanttoplay') === '1' ? '🎮 Want to Play' : '',
-                        wanttobuy: status?.getAttribute('wanttobuy') === '1' ? '💳 Want to Buy' : '',
-                        wishlist: status?.getAttribute('wishlist') === '1' ? '⭐ Wishlist' : '',
-                        preordered: status?.getAttribute('preordered') === '1' ? '📅 Pre-ordered' : ''
-                    };
-                    
-                    return {
-                        objectid: item.getAttribute('objectid'),
-                        name: name,
-                        objectname: name,
-                        yearpublished: year,
-                        rating: parseFloat(rating).toFixed(1),
-                        numplays: '0',
-                        weight: '0',
-                        thumbnail: thumbnail,
-                        image: image,
-                        imageid: image ? image.split('/').find(p => p.match(/^[0-9a-zA-Z_-]+$/)) : '',
-                        comment: Object.values(statuses).filter(s => s).join(' • ') || '-',
-                        invlocation: 'Collection',
-                        invdate: new Date().toISOString().split('T')[0],
-                        acquisitiondate: item.querySelector('lastmodified')?.textContent?.split(' ')[0] || ''
-                    };
-                });
-
-                displayPrivateGames(games);
-                this.textContent = '📚 Fetch Collection from BGG';
-            } catch (error) {
-                alert('Error fetching collection: ' + error.message);
-                console.error(error);
-                this.textContent = '📚 Fetch Collection from BGG';
-            } finally {
-                this.disabled = false;
-            }
-        });
 
         // Upload CSV
         document.getElementById('uploadCsvBtn').addEventListener('click', function() {
@@ -1420,14 +1363,15 @@
             const file = fileInput.files[0];
             const reader = new FileReader();
 
-            reader.onload = function(e) {
+            reader.onload = async function(e) {
                 try {
                     const csvData = e.target.result;
                     let games = parseCSV(csvData);
-                    displayPrivateGames(games);
+                    await displayPrivateGamesWithThumbnails(games);
                 } catch (error) {
                     alert('Error parsing CSV: ' + error.message);
                     console.error(error);
+                    document.getElementById('privateProgress').style.display = 'none';
                 }
             };
 
