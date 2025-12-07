@@ -252,12 +252,39 @@
                 
                 <div id="privateResults" style="display: none; margin-top: 1.5em;">
                     <div class="stats">
-                        <div><strong>Total Games:</strong> <span id="totalGames">0</span></div>
-                        <div><strong>Newest Acquisition:</strong> <span id="newestGame">-</span></div>
-                        <div><strong>Oldest Acquisition:</strong> <span id="oldestGame">-</span></div>
-                        <div><strong>Sort by Inventory Date (Newest First)</strong></div>
+                        <div><strong>Total Games:</strong> <span id="totalGames">0</span> | <strong>Showing:</strong> <span id="showingGames">0</span></div>
+                        <div><strong>Newest:</strong> <span id="newestGame">-</span> | <strong>Oldest:</strong> <span id="oldestGame">-</span></div>
                     </div>
+
+                    <div style="background: #fff; border-radius: 12px; box-shadow: 0 2px 12px #0001; padding: 1.5em; margin-bottom: 1.5em;">
+                        <div style="display: flex; gap: 1em; flex-wrap: wrap; align-items: center; margin-bottom: 1em;">
+                            <div style="flex: 1; min-width: 200px;">
+                                <label class="form-label" style="margin-bottom: 0.5em;">Sort By:</label>
+                                <select id="privateSortSelect" class="form-input" style="margin: 0;">
+                                    <option value="invdate_desc" selected>Inventory Date (Newest First)</option>
+                                    <option value="invdate_asc">Inventory Date (Oldest First)</option>
+                                    <option value="acquisitiondate_desc">Acquisition Date (Newest First)</option>
+                                    <option value="acquisitiondate_asc">Acquisition Date (Oldest First)</option>
+                                    <option value="name_asc">Name (A-Z)</option>
+                                    <option value="name_desc">Name (Z-A)</option>
+                                    <option value="rating_desc">Rating (High to Low)</option>
+                                    <option value="rating_asc">Rating (Low to High)</option>
+                                    <option value="weight_desc">Weight (High to Low)</option>
+                                    <option value="weight_asc">Weight (Low to High)</option>
+                                </select>
+                            </div>
+                            <div style="display: flex; align-items: flex-end; gap: 0.5em; height: 100%;">
+                                <input type="checkbox" id="filterOwnedOnly" style="width: auto; cursor: pointer; margin: 0;" checked>
+                                <label for="filterOwnedOnly" style="margin: 0; cursor: pointer; font-size: 0.95em; color: #333;">Own Only (own=1)</label>
+                            </div>
+                        </div>
+                        <button id="privatePrintBtn" class="submit-btn" style="background: #4caf50;">📄 Print Collection</button>
+                    </div>
+
                     <div id="privateGameList" class="game-list"></div>
+                </div>
+            </div>
+            <!-- End Private Collection Tab Content -->
                 </div>
             </div>
             <!-- End Private Collection Tab Content -->
@@ -1288,49 +1315,56 @@
             }
         }
 
-        async function displayPrivateGamesWithThumbnails(games) {
-            // Sort by invdate descending (newest first)
-            games.sort((a, b) => {
-                const dateA = new Date(a.invdate || a.acquisitiondate || '1970-01-01');
-                const dateB = new Date(b.invdate || b.acquisitiondate || '1970-01-01');
-                return dateB - dateA;
-            });
+        // Store all loaded games for sorting/filtering
+        let allPrivateGames = [];
 
-            // Show progress
-            document.getElementById('privateProgress').style.display = 'block';
-            updatePrivateProgress(0, 'Fetching thumbnails...');
-
-            // Batch fetch thumbnails (20 at a time)
-            const gameIds = games.map(g => g.objectid).filter(id => id);
-            const thumbnailMap = {};
-            const batchSize = 20;
+        function sortAndFilterPrivateGames() {
+            const sortBy = document.getElementById('privateSortSelect').value;
+            const filterOwnedOnly = document.getElementById('filterOwnedOnly').checked;
             
-            for (let i = 0; i < gameIds.length; i += batchSize) {
-                const batch = gameIds.slice(i, i + batchSize);
-                const batchThumbnails = await fetchThumbnailsBatch(batch);
-                Object.assign(thumbnailMap, batchThumbnails);
-                
-                const progress = Math.round((i + batchSize) / gameIds.length * 100);
-                updatePrivateProgress(progress, `Fetched ${Math.min(i + batchSize, gameIds.length)} of ${gameIds.length} thumbnails...`);
+            let filtered = allPrivateGames;
+            
+            // Filter by owned status
+            if (filterOwnedOnly) {
+                filtered = filtered.filter(g => g.own === '1' || g.own === 1);
             }
-
-            // Attach thumbnails to games
-            games = games.map(game => ({
-                ...game,
-                thumbnail: thumbnailMap[game.objectid] || game.thumbnail || ''
-            }));
-
-            // Display results
-            document.getElementById('totalGames').textContent = games.length;
-            if (games.length > 0) {
-                const newest = games[0];
-                document.getElementById('newestGame').textContent = `${newest.objectname || newest.name} (${formatDate(newest.invdate || newest.acquisitiondate)})`;
+            
+            // Sort based on selection
+            let sorted = [...filtered];
+            const [sortField, sortOrder] = sortBy.split('_');
+            
+            sorted.sort((a, b) => {
+                let aVal = a[sortField];
+                let bVal = b[sortField];
                 
-                const oldest = games[games.length - 1];
-                document.getElementById('oldestGame').textContent = `${oldest.objectname || oldest.name} (${formatDate(oldest.invdate || oldest.acquisitiondate)})`;
-            }
+                // Handle numeric fields
+                if (sortField === 'rating' || sortField === 'weight' || sortField === 'numplays') {
+                    aVal = parseFloat(aVal) || 0;
+                    bVal = parseFloat(bVal) || 0;
+                    return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+                }
+                
+                // Handle date fields
+                if (sortField === 'invdate' || sortField === 'acquisitiondate') {
+                    aVal = new Date(aVal || '1970-01-01');
+                    bVal = new Date(bVal || '1970-01-01');
+                    return sortOrder === 'asc' ? aVal - bVal : bVal - aVal;
+                }
+                
+                // Handle string fields
+                aVal = (aVal || '').toString().toLowerCase();
+                bVal = (bVal || '').toString().toLowerCase();
+                return sortOrder === 'asc' ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+            });
+            
+            // Update showing count
+            document.getElementById('showingGames').textContent = sorted.length;
+            
+            // Render
+            renderPrivateGameCards(sorted);
+        }
 
-            // Render game list
+        function renderPrivateGameCards(games) {
             const gameList = document.getElementById('privateGameList');
             gameList.innerHTML = games.map(game => {
                 return `
@@ -1347,10 +1381,114 @@
                     </div>
                 `;
             }).join('');
+        }
 
+        async function displayPrivateGamesWithThumbnails(games) {
+            // Show progress
+            document.getElementById('privateProgress').style.display = 'block';
+            updatePrivateProgress(0, 'Fetching thumbnails...');
+
+            // Store all games
+            allPrivateGames = games.map(g => ({
+                ...g,
+                own: g.own || '0',
+                thumbnail: g.thumbnail || ''
+            }));
+
+            // Display stats immediately
+            document.getElementById('totalGames').textContent = allPrivateGames.length;
+            const ownedGames = allPrivateGames.filter(g => g.own === '1' || g.own === 1);
+            document.getElementById('showingGames').textContent = ownedGames.length;
+            
+            if (allPrivateGames.length > 0) {
+                const sorted = [...allPrivateGames].sort((a, b) => {
+                    const dateA = new Date(a.invdate || a.acquisitiondate || '1970-01-01');
+                    const dateB = new Date(b.invdate || b.acquisitiondate || '1970-01-01');
+                    return dateB - dateA;
+                });
+                
+                document.getElementById('newestGame').textContent = `${sorted[0].objectname || sorted[0].name} (${formatDate(sorted[0].invdate || sorted[0].acquisitiondate)})`;
+                document.getElementById('oldestGame').textContent = `${sorted[sorted.length - 1].objectname || sorted[sorted.length - 1].name} (${formatDate(sorted[sorted.length - 1].invdate || sorted[sorted.length - 1].acquisitiondate)})`;
+            }
+
+            // Display games immediately (before thumbnails loaded)
             document.getElementById('privateResults').style.display = 'block';
+            sortAndFilterPrivateGames();
+
+            // Batch fetch thumbnails (20 at a time)
+            const gameIds = allPrivateGames.map(g => g.objectid).filter(id => id);
+            const thumbnailMap = {};
+            const batchSize = 20;
+            
+            for (let i = 0; i < gameIds.length; i += batchSize) {
+                const batch = gameIds.slice(i, i + batchSize);
+                const batchThumbnails = await fetchThumbnailsBatch(batch);
+                Object.assign(thumbnailMap, batchThumbnails);
+                
+                const progress = Math.round((i + batchSize) / gameIds.length * 100);
+                updatePrivateProgress(progress, `Fetched ${Math.min(i + batchSize, gameIds.length)} of ${gameIds.length} thumbnails...`);
+                
+                // Update thumbnails in cards as they arrive
+                allPrivateGames = allPrivateGames.map(game => ({
+                    ...game,
+                    thumbnail: thumbnailMap[game.objectid] || game.thumbnail
+                }));
+                sortAndFilterPrivateGames();
+            }
+
             document.getElementById('privateProgress').style.display = 'none';
         }
+
+        // Add event listeners for sorting and filtering
+        document.getElementById('privateSortSelect').addEventListener('change', sortAndFilterPrivateGames);
+        document.getElementById('filterOwnedOnly').addEventListener('change', sortAndFilterPrivateGames);
+
+        // Print functionality
+        document.getElementById('privatePrintBtn').addEventListener('click', function() {
+            const filterOwnedOnly = document.getElementById('filterOwnedOnly').checked;
+            const games = filterOwnedOnly ? allPrivateGames.filter(g => g.own === '1' || g.own === 1) : allPrivateGames;
+            
+            const printWindow = window.open('', 'print_private', 'width=8.5in,height=11in');
+            
+            let html = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    body { font-family: Arial, sans-serif; margin: 0.5in; }
+                    h1 { text-align: center; }
+                    .game { margin-bottom: 1.2em; page-break-inside: avoid; }
+                    .game-header { font-weight: bold; font-size: 1.1em; }
+                    .game-details { font-size: 0.9em; color: #555; }
+                    .game-thumb { height: 80px; width: auto; margin-right: 1em; float: left; }
+                </style>
+            </head>
+            <body>
+                <h1>Private Collection</h1>
+                <p><strong>Total Games:</strong> ${games.length} | <strong>Generated:</strong> ${new Date().toLocaleDateString()}</p>
+                <hr>
+            `;
+
+            games.forEach(game => {
+                html += `
+                    <div class="game">
+                        ${game.thumbnail ? `<img src="${game.thumbnail}" alt="${game.objectname || game.name}" class="game-thumb" style="max-height: 80px;">` : ''}
+                        <div class="game-header">${game.objectname || game.name}</div>
+                        <div class="game-details">
+                            <div>📅 Acquired: ${formatDate(game.acquisitiondate)} | Inv Date: ${formatDate(game.invdate)}</div>
+                            <div>⭐ Rating: ${game.rating || 'N/A'} | Plays: ${game.numplays || '0'} | Weight: ${game.weight || 'N/A'}</div>
+                            <div>📍 ${game.invlocation || '-'}</div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += `</body></html>`;
+            
+            printWindow.document.write(html);
+            printWindow.document.close();
+            setTimeout(() => printWindow.print(), 500);
+        });
 
         // Upload CSV
         document.getElementById('uploadCsvBtn').addEventListener('click', function() {
