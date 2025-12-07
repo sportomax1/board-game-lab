@@ -32,6 +32,8 @@
             .no-print { display: none !important; }
             body { background: white !important; -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
             * { -webkit-print-color-adjust: exact !important; print-color-adjust: exact !important; }
+            .print-header { text-align: center !important; }
+            h1 { text-align: center !important; page-break-inside: avoid; }
         }
         
         /* Print grid styles */
@@ -149,6 +151,14 @@
 <body>
     <div id="normalViewContainer">
         <div class="container">
+            <!-- Tab Navigation -->
+            <div style="display: flex; gap: 0.5em; margin-bottom: 1.5em; border-bottom: 2px solid #e0e0e0;">
+                <button id="menuTabBtn" class="no-print" style="flex: 1; padding: 1em; border: none; background: none; font-size: 1em; font-weight: 600; border-bottom: 3px solid #1976d2; color: #1976d2; cursor: pointer;">👥 Player Count Menu</button>
+                <button id="coverTabBtn" class="no-print" style="flex: 1; padding: 1em; border: none; background: none; font-size: 1em; font-weight: 600; border-bottom: 3px solid transparent; color: #666; cursor: pointer;">📸 Cover Collage</button>
+            </div>
+
+            <!-- Menu Tab Content -->
+            <div id="menuTabContent">
             <h1>BGG Player Count Menu</h1>
         
         <div class="form-container">
@@ -176,6 +186,47 @@
         </div>
         
         <div id="results"></div>
+            </div>
+            <!-- End Menu Tab Content -->
+
+            <!-- Cover Tab Content -->
+            <div id="coverTabContent" style="display: none;">
+                <h1 style="text-align: center;">🎲 My Collection</h1>
+                
+                <div class="form-container">
+                    <div class="form-group">
+                        <label class="form-label">BGG Username</label>
+                        <input type="text" id="coverUsername" class="form-input" value="sportomax" placeholder="Enter BGG username">
+                    </div>
+                    
+                    <div class="form-group">
+                        <label class="form-label">Sort By</label>
+                        <select id="sortOrder" class="form-input">
+                            <option value="alpha" selected>Alphabetical</option>
+                            <option value="average">Average Rating</option>
+                            <option value="rating">Your Rating</option>
+                            <option value="rank">BGG Rank</option>
+                        </select>
+                    </div>
+                    
+                    <div class="form-group">
+                        <div style="display: flex; align-items: center; gap: 8px;">
+                            <input type="checkbox" id="coverExcludeExpansions" style="width: auto; cursor: pointer;">
+                            <label for="coverExcludeExpansions" class="form-label" style="margin: 0; cursor: pointer;">Exclude Expansions</label>
+                        </div>
+                    </div>
+                    
+                    <button id="coverLoadBtn" class="submit-btn" style="background: #2196F3;">Load Collection</button>
+                    <button id="coverPrintBtn" class="submit-btn" style="background: #4caf50; margin-top: 0.5em;" disabled>📄 Print Collage</button>
+                </div>
+                
+                <div id="coverPreview" style="display: none; margin-top: 1.5em;">
+                    <div id="collageContainer" style="text-align: center;">
+                        <div id="collage" style="max-width: 100%; margin: 0 auto; display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px;"></div>
+                    </div>
+                </div>
+            </div>
+            <!-- End Cover Tab Content -->
     </div>
 
     <!-- Print Options Modal -->
@@ -975,6 +1026,155 @@
                 handleSubmit();
             }
         });
+
+        // Tab Switching Functionality
+        let coverGames = [];
+        const menuTabBtn = document.getElementById('menuTabBtn');
+        const coverTabBtn = document.getElementById('coverTabBtn');
+        const menuTabContent = document.getElementById('menuTabContent');
+        const coverTabContent = document.getElementById('coverTabContent');
+
+        menuTabBtn.addEventListener('click', () => {
+            menuTabContent.style.display = 'block';
+            coverTabContent.style.display = 'none';
+            menuTabBtn.style.borderBottomColor = '#1976d2';
+            menuTabBtn.style.color = '#1976d2';
+            coverTabBtn.style.borderBottomColor = 'transparent';
+            coverTabBtn.style.color = '#666';
+        });
+
+        coverTabBtn.addEventListener('click', () => {
+            menuTabContent.style.display = 'none';
+            coverTabContent.style.display = 'block';
+            coverTabBtn.style.borderBottomColor = '#1976d2';
+            coverTabBtn.style.color = '#1976d2';
+            menuTabBtn.style.borderBottomColor = 'transparent';
+            menuTabBtn.style.color = '#666';
+        });
+
+        // Cover Collage Functions
+        async function loadCoverCollection() {
+            const username = document.getElementById('coverUsername').value.trim();
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+
+            document.getElementById('coverLoadBtn').disabled = true;
+
+            try {
+                const xml = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`)
+                    .then(r => r.text());
+                
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(xml, 'text/xml');
+                
+                let items = Array.from(doc.querySelectorAll('item'));
+                
+                if (document.getElementById('coverExcludeExpansions').checked) {
+                    items = items.filter(item => item.getAttribute('subtype') !== 'boardgameexpansion');
+                }
+
+                const games = [];
+                items.forEach(item => {
+                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    const thumbnail = item.querySelector('thumbnail')?.textContent || '';
+                    
+                    if (thumbnail) {
+                        const stats = item.querySelector('stats');
+                        const rating = stats?.querySelector('rating');
+                        games.push({
+                            name,
+                            thumbnail,
+                            userRating: parseFloat(rating?.getAttribute('value') || '0'),
+                            average: parseFloat(rating?.querySelector('average')?.getAttribute('value') || '0'),
+                            rank: parseInt(rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || '999999')
+                        });
+                    }
+                });
+
+                if (games.length === 0) {
+                    alert('No games found');
+                    document.getElementById('coverLoadBtn').disabled = false;
+                    return;
+                }
+
+                const sortOrder = document.getElementById('sortOrder').value;
+                games.sort((a, b) => {
+                    switch(sortOrder) {
+                        case 'alpha': return a.name.localeCompare(b.name);
+                        case 'average': return b.average - a.average;
+                        case 'rating': return b.userRating - a.userRating;
+                        case 'rank': return a.rank - b.rank;
+                        default: return 0;
+                    }
+                });
+
+                coverGames = games;
+                renderCoverCollage();
+                document.getElementById('coverPreview').style.display = 'block';
+                document.getElementById('coverPrintBtn').disabled = false;
+                document.getElementById('coverLoadBtn').disabled = false;
+            } catch (error) {
+                alert('Error loading collection: ' + error.message);
+                document.getElementById('coverLoadBtn').disabled = false;
+            }
+        }
+
+        function renderCoverCollage() {
+            const collage = document.getElementById('collage');
+            collage.innerHTML = '';
+            collage.style.gridTemplateColumns = 'repeat(5, 1fr)';
+            
+            coverGames.slice(0, 50).forEach(game => {
+                const tile = document.createElement('div');
+                tile.style.cssText = 'aspect-ratio: 0.7; border-radius: 8px; overflow: hidden; background: #f5f5f5;';
+                tile.innerHTML = `<img src="${game.thumbnail}" alt="${game.name}" style="width: 100%; height: 100%; object-fit: cover;">`;
+                collage.appendChild(tile);
+            });
+        }
+
+        function printCoverCollage() {
+            const username = document.getElementById('coverUsername').value;
+            const sortOrder = document.getElementById('sortOrder').value;
+            const printWindow = window.open('', 'print_collage', 'width=8.5in,height=11in');
+            
+            let html = `
+            <!DOCTYPE html>
+            <html>
+            <head>
+                <style>
+                    @page { margin: 0.25in; size: letter; }
+                    body { margin: 0; padding: 0.25in; background: white; font-family: Arial, sans-serif; }
+                    .header { text-align: center; margin-bottom: 0.3in; }
+                    .header h1 { margin: 0; font-size: 18px; }
+                    .header p { margin: 0; font-size: 11px; color: #666; }
+                    .collage { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; }
+                    .tile { aspect-ratio: 0.7; overflow: hidden; border: 1px solid #ddd; }
+                    .tile img { width: 100%; height: 100%; object-fit: cover; display: block; }
+                </style>
+            </head>
+            <body>
+                <div class="header">
+                    <h1>${username}'s Collection</h1>
+                    <p>Sorted by ${sortOrder} | Generated ${new Date().toLocaleDateString()}</p>
+                </div>
+                <div class="collage">
+            `;
+
+            coverGames.slice(0, 120).forEach(game => {
+                html += `<div class="tile"><img src="${game.thumbnail}" alt="${game.name}"></div>`;
+            });
+
+            html += `</div></body></html>`;
+            
+            printWindow.document.write(html);
+            printWindow.document.close();
+            setTimeout(() => printWindow.print(), 500);
+        }
+
+        document.getElementById('coverLoadBtn').addEventListener('click', loadCoverCollection);
+        document.getElementById('coverPrintBtn').addEventListener('click', printCoverCollage);
     </script>
 </body>
 </html>
