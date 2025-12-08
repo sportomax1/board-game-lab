@@ -395,6 +395,41 @@
         .color-medium { background: linear-gradient(135deg, #2196f3 0%, #1976d2 100%); }
         .color-large { background: linear-gradient(135deg, #ff9800 0%, #f57c00 100%); }
         .color-storage { background: linear-gradient(135deg, #9c27b0 0%, #7b1fa2 100%); }
+
+        .console-logs {
+            background: #1e1e1e;
+            color: #00ff00;
+            border-radius: 8px;
+            padding: 1rem;
+            font-family: 'Courier New', monospace;
+            font-size: 0.8rem;
+            max-height: 250px;
+            overflow-y: auto;
+            margin-top: 2rem;
+            border: 2px solid #444;
+        }
+
+        .console-entry {
+            padding: 0.25rem 0;
+            line-height: 1.3;
+            word-break: break-all;
+        }
+
+        .console-error {
+            color: #ff6b6b;
+        }
+
+        .console-warn {
+            color: #ffd93d;
+        }
+
+        .console-info {
+            color: #74d3f5;
+        }
+
+        .console-log {
+            color: #00ff00;
+        }
     </style>
 </head>
 <body>
@@ -467,6 +502,10 @@
         </div>
 
         <div id="errorContainer" class="hidden"></div>
+        
+        <div id="consoleLogs" class="console-logs">
+            <div style="text-align: center; color: #888; padding: 0.5rem;">Logs will appear here...</div>
+        </div>
     </div>
 
     <script>
@@ -474,12 +513,51 @@
         const SHELF_DEPTH = 15;   // inches
         const SHELF_HEIGHT = 13;  // inches
 
+        // Console logging system
+        const logHistory = [];
+        const MAX_LOGS = 10;
+
+        function addLog(message, type = 'log') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}`;
+            logHistory.push({ message: logEntry, type });
+            
+            if (logHistory.length > MAX_LOGS) {
+                logHistory.shift();
+            }
+
+            displayLogs();
+
+            // Also log to browser console
+            const originalLog = console[type] || console.log;
+            originalLog.call(console, logEntry);
+        }
+
+        function displayLogs() {
+            const container = document.getElementById('consoleLogs');
+            if (logHistory.length === 0) {
+                container.innerHTML = '<div style="text-align: center; color: #888; padding: 0.5rem;">Logs will appear here...</div>';
+                return;
+            }
+
+            const logsHtml = logHistory.map(entry => {
+                const className = `console-entry console-${entry.type}`;
+                return `<div class="${className}">${entry.message}</div>`;
+            }).join('');
+            
+            container.innerHTML = logsHtml;
+            container.scrollTop = container.scrollHeight;
+        }
+
         async function analyzeCollection() {
             const username = document.getElementById('username').value.trim();
             if (!username) {
                 showError('Please enter a BGG username');
+                addLog('❌ Error: No username entered', 'error');
                 return;
             }
+
+            addLog(`🚀 Starting analysis for user: ${username}`, 'info');
 
             document.getElementById('analyzeBtn').disabled = true;
             showProgress(true);
@@ -487,25 +565,34 @@
 
             try {
                 updateProgress(10, 'Fetching collection...');
+                addLog(`📡 Fetching collection for @${username}...`, 'info');
                 const collection = await fetchCollection(username);
+                addLog(`✅ Collection loaded: ${collection.length} games`, 'log');
 
                 if (collection.length === 0) {
                     throw new Error('No games found in collection');
                 }
 
                 updateProgress(40, `Found ${collection.length} games, fetching versions...`);
+                addLog(`🎮 Fetching game versions for ${collection.length} games...`, 'info');
                 const gameVersions = await fetchGameVersions(collection);
+                addLog(`✅ Game versions fetched`, 'log');
 
                 updateProgress(80, 'Analyzing shelf layout...');
+                addLog(`📊 Analyzing optimal shelf layout...`, 'info');
                 const analysis = analyzeShelfLayout(collection, gameVersions);
+                addLog(`✅ Analysis complete - ${analysis.shelves.length} shelves needed`, 'log');
 
                 updateProgress(100, 'Complete!');
                 displayResults(analysis, username);
                 showProgress(false);
+                addLog(`🎉 All done! Displaying results...`, 'log');
 
             } catch (error) {
+                const errorMsg = error.message || 'Unknown error';
+                addLog(`❌ ERROR: ${errorMsg}`, 'error');
                 console.error('Error:', error);
-                showError(error.message);
+                showError(errorMsg);
                 showProgress(false);
             } finally {
                 document.getElementById('analyzeBtn').disabled = false;
@@ -513,8 +600,16 @@
         }
 
         async function fetchCollection(username) {
-            const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
-            if (!response.ok) throw new Error(`HTTP ${response.status}`);
+            const apiUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+            addLog(`🔗 Collection API: ${apiUrl}`, 'info');
+            
+            const response = await fetch(apiUrl);
+            addLog(`🔙 Response status: ${response.status} ${response.statusText}`, response.ok ? 'log' : 'error');
+            
+            if (!response.ok) {
+                addLog(`⚠️ HTTP Error ${response.status} - Check API endpoint or network`, 'error');
+                throw new Error(`HTTP ${response.status}`);
+            }
 
             const xml = await response.text();
             const parser = new DOMParser();
@@ -531,14 +626,25 @@
         async function fetchGameVersions(games) {
             const versions = {};
             const batchSize = 20;
+            addLog(`📦 Fetching game versions in batches of ${batchSize}...`, 'info');
 
             for (let i = 0; i < games.length; i += batchSize) {
                 const batch = games.slice(i, i + batchSize);
                 const ids = batch.map(g => g.objectId).join(',');
+                const batchNum = Math.floor(i / batchSize) + 1;
+                const totalBatches = Math.ceil(games.length / batchSize);
 
                 try {
-                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
-                    if (!response.ok) continue;
+                    const apiUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`;
+                    addLog(`🔗 Batch ${batchNum}/${totalBatches}: ${apiUrl.substring(0, 60)}...`, 'info');
+                    
+                    const response = await fetch(apiUrl);
+                    addLog(`🔙 Batch ${batchNum}: Status ${response.status} ${response.statusText}`, response.ok ? 'log' : 'warn');
+                    
+                    if (!response.ok) {
+                        addLog(`⚠️ Batch ${batchNum} failed (HTTP ${response.status}) - continuing with next batch...`, 'warn');
+                        continue;
+                    }
 
                     const xml = await response.text();
                     const parser = new DOMParser();
@@ -560,6 +666,7 @@
                         };
                     });
                 } catch (err) {
+                    addLog(`❌ Error in batch processing: ${err.message}`, 'error');
                     console.warn('Error fetching batch:', err);
                 }
 
@@ -567,6 +674,7 @@
                 await new Promise(r => setTimeout(r, 500));
             }
 
+            addLog(`✅ All batches processed - ${Object.keys(versions).length} games versioned`, 'log');
             return versions;
         }
 
