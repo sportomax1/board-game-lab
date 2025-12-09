@@ -735,34 +735,33 @@
         let flaggedItems = [];
 
         // Updated to use correct BGG Helper endpoint
-        async function fetchFromBGGProxy(endpoint, params = {}, retries = 5) {
-            const queryParams = new URLSearchParams(params).toString();
-            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    console.log(`[cubes.html] 📡 [Attempt ${i + 1}/${maxRetries}] GET ${url.substring(0, 100)}...`);
+                    const response = await fetch(url);
+                    console.log(`[cubes.html] ✓ Response status: ${response.status}`);
 
-            console.log(`[cubes.html] 📡 Fetching ${endpoint}...`);
-            console.log(`[cubes.html] URL: ${fullUrl}`);
+                    if (response.status === 202) {
+                        const delay = 2000 * (i + 1);
+                        console.warn(`[cubes.html] ⏳ Got 202 - retrying after ${delay}ms`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
 
-            try {
-                const response = await fetch(fullUrl);
-                console.log(`[cubes.html] ✓ Response status: ${response.status}`);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
 
-                if (response.status === 202 && retries > 0) {
-                    console.warn(`[cubes.html] ⏳ Got 202 - BGG rate limited. Waiting 3s...`);
-                    await new Promise(r => setTimeout(r, 3000));
-                    return fetchFromBGGProxy(endpoint, params, retries - 1);
+                    const text = await response.text();
+                    console.log(`[cubes.html] ✓ Response received (${text.length} bytes)`);
+                    return text;
+                } catch (error) {
+                    console.error(`[cubes.html] ❌ [Attempt ${i + 1}] Error:`, error.message);
+                    if (i === maxRetries - 1) throw error;
+                    const delay = 1000 * (i + 1);
+                    await new Promise(r => setTimeout(r, delay));
                 }
-
-                if (!response.ok) {
-                    console.error(`[cubes.html] ❌ API error: ${response.status}`);
-                    throw new Error(`API Status ${response.status}`);
-                }
-
-                const text = await response.text();
-                console.log(`[cubes.html] ✓ Response received (${text.length} bytes)`);
-                return text;
-            } catch (error) {
-                console.error(`[cubes.html] ❌ Fetch error:`, error);
-                throw error;
             }
         }
 
@@ -773,11 +772,8 @@
 
             try {
                 console.log(`[cubes.html] 📡 Requesting collection API...`);
-                const collectionText = await fetchFromBGGProxy('collection', {
-                    username: username,
-                    own: '1',
-                    stats: '1'
-                });
+                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                const collectionText = await fetchWithRetry(collectionUrl);
 
                 console.log(`[cubes.html] ✓ Collection response received (${collectionText.length} bytes)`);
                 console.log(`[cubes.html] First 200 chars:`, collectionText.substring(0, 200));
@@ -815,11 +811,10 @@
                     console.log(`[cubes.html] 📦 Fetching batch ${batchNum} of ${Math.ceil(gameIds.length / batchSize)} (${batch.length} games)`);
                     updateProgress(15 + (i / gameIds.length) * 40, `Fetching batch ${batchNum}...`);
 
-                    console.log(`[cubes.html] Batch IDs: ${batch.join(',')}`);
-                    const thingText = await fetchFromBGGProxy('thing', {
-                        ids: batch.join(','),
-                        versions: '1'
-                    });
+                    const ids = batch.join(',');
+                    console.log(`[cubes.html] Batch IDs: ${ids}`);
+                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`;
+                    const thingText = await fetchWithRetry(thingUrl);
                     console.log(`[cubes.html] ✓ Batch response received (${thingText.length} bytes)`);
 
                     const thingXml = parser.parseFromString(thingText, 'text/xml');

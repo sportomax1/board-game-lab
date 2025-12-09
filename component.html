@@ -516,33 +516,34 @@
         let currentGame = null;
         let componentInventory = {};
 
-        async function fetchFromBGG(endpoint, params = {}, retries = 5) {
-            const queryParams = new URLSearchParams(params).toString();
-            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
-            
-            console.log(`[component.html] 📡 Fetching ${endpoint}...`);
-            
-            try {
-                const response = await fetch(fullUrl);
-                
-                if (response.status === 202 && retries > 0) {
-                    console.warn(`[component.html] ⏳ Got 202 - retrying...`);
-                    showStatus(`BGG is processing... (${retries} retries left)`, 'loading');
-                    await new Promise(r => setTimeout(r, 3000));
-                    return fetchFromBGG(endpoint, params, retries - 1);
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    console.log(`[component.html] 📡 [Attempt ${i + 1}/${maxRetries}] GET ${url.substring(0, 100)}...`);
+                    const response = await fetch(url);
+                    console.log(`[component.html] ✓ Response status: ${response.status}`);
+
+                    if (response.status === 202) {
+                        const delay = 2000 * (i + 1);
+                        console.warn(`[component.html] ⏳ Got 202 - retrying after ${delay}ms`);
+                        showStatus(`BGG is processing... (${maxRetries - i - 1} retries left)`, 'loading');
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const text = await response.text();
+                    console.log(`[component.html] ✓ Response received (${text.length} bytes)`);
+                    return text;
+                } catch (error) {
+                    console.error(`[component.html] ❌ [Attempt ${i + 1}] Error:`, error.message);
+                    if (i === maxRetries - 1) throw error;
+                    const delay = 1000 * (i + 1);
+                    await new Promise(r => setTimeout(r, delay));
                 }
-                
-                if (!response.ok) {
-                    console.error(`[component.html] ❌ API error: ${response.status}`);
-                    throw new Error(`API Status ${response.status}`);
-                }
-                
-                const text = await response.text();
-                console.log(`[component.html] ✓ Response: ${text.length} bytes`);
-                return text;
-            } catch (error) {
-                console.error(`[component.html] ❌ Error:`, error);
-                throw error;
             }
         }
 
@@ -565,10 +566,8 @@
                 } else {
                     // Search by name
                     console.log(`[component.html] Searching by name: ${query}`);
-                    const searchXml = await fetchFromBGG('search', {
-                        query: query,
-                        type: 'boardgame'
-                    });
+                    const searchUrl = `/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}&type=boardgame`;
+                    const searchXml = await fetchWithRetry(searchUrl);
 
                     const parser = new DOMParser();
                     const searchDoc = parser.parseFromString(searchXml, 'text/xml');
@@ -585,10 +584,8 @@
 
                 // Fetch game details
                 showStatus('Fetching game details...', 'loading');
-                const thingXml = await fetchFromBGG('thing', {
-                    ids: gameId,
-                    versions: '1'
-                });
+                const thingUrl = `/api/bgg-helper?endpoint=thing&id=${gameId}&versions=1`;
+                const thingXml = await fetchWithRetry(thingUrl);
 
                 const parser = new DOMParser();
                 const thingDoc = parser.parseFromString(thingXml, 'text/xml');

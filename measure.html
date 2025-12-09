@@ -538,23 +538,34 @@
         const statusDiv = document.getElementById('statusDiv');
         const fetchBtn = document.getElementById('fetchBtn');
 
-        async function fetchFromBGG(endpoint, params = {}, retries = 5) {
-            const queryParams = new URLSearchParams(params).toString();
-            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    console.log(`[measure.html] 📡 [Attempt ${i + 1}/${maxRetries}] GET ${url.substring(0, 100)}...`);
+                    const response = await fetch(url);
+                    console.log(`[measure.html] ✓ Response status: ${response.status}`);
 
-            try {
-                const response = await fetch(fullUrl);
+                    if (response.status === 202) {
+                        const delay = 2000 * (i + 1);
+                        console.warn(`[measure.html] ⏳ Got 202 - retrying after ${delay}ms`);
+                        statusDiv.textContent = `BGG is processing... (${maxRetries - i - 1} retries left)`;
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
 
-                if (response.status === 202 && retries > 0) {
-                    statusDiv.textContent = `BGG is processing... (${retries} retries left)`;
-                    await new Promise(r => setTimeout(r, 3000));
-                    return fetchFromBGG(endpoint, params, retries - 1);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const text = await response.text();
+                    console.log(`[measure.html] ✓ Response received (${text.length} bytes)`);
+                    return text;
+                } catch (error) {
+                    console.error(`[measure.html] ❌ [Attempt ${i + 1}] Error:`, error.message);
+                    if (i === maxRetries - 1) throw error;
+                    const delay = 1000 * (i + 1);
+                    await new Promise(r => setTimeout(r, delay));
                 }
-
-                if (!response.ok) throw new Error(`API Status ${response.status}`);
-                return await response.text();
-            } catch (error) {
-                throw new Error(`Network/API error: ${error.message}`);
             }
         }
 
@@ -577,11 +588,8 @@
 
             try {
                 // Fetch collection using proxy
-                const collectionText = await fetchFromBGG('collection', {
-                    username: username,
-                    own: '1',
-                    stats: '1'
-                });
+                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                const collectionText = await fetchWithRetry(collectionUrl);
 
                 const parser = new DOMParser();
                 const collectionXml = parser.parseFromString(collectionText, 'text/xml');
@@ -608,10 +616,9 @@
                     showStatus(`Fetching batch ${Math.ceil((i + 1) / batchSize)} of ${Math.ceil(gameIds.length / batchSize)}... (${progress}%)`, 'loading');
 
                     // Fetch thing data using proxy
-                    const thingText = await fetchFromBGG('thing', {
-                        ids: batch.join(','),
-                        versions: '1'
-                    });
+                    const ids = batch.join(',');
+                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`;
+                    const thingText = await fetchWithRetry(thingUrl);
 
                     const thingXml = parser.parseFromString(thingText, 'text/xml');
 
