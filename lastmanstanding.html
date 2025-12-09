@@ -441,40 +441,34 @@
         const auditLog2 = document.getElementById('auditLog');
         const auditLogContent = document.getElementById('auditLogContent');
 
-        async function fetchFromBGG(endpoint, params = {}, retries = 5) {
-            const queryParams = new URLSearchParams(params).toString();
-            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
-            
-            console.log(`[lastmanstanding.html] 🏆 Fetching BGG API...`);
-            console.log(`[lastmanstanding.html] Endpoint: ${endpoint}`);
-            console.log(`[lastmanstanding.html] URL: ${fullUrl}`);
-            console.log(`[lastmanstanding.html] Params:`, params);
-            console.log(`[lastmanstanding.html] Retries remaining: ${retries}`);
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    console.log(`[lastmanstanding.html] 📡 [Attempt ${i + 1}/${maxRetries}] GET ${url.substring(0, 100)}...`);
+                    const response = await fetch(url);
+                    console.log(`[lastmanstanding.html] ✓ Response status: ${response.status}`);
 
-            try {
-                const response = await fetch(fullUrl);
-                console.log(`[lastmanstanding.html] ✓ Fetch response received`);
-                console.log(`[lastmanstanding.html] Status: ${response.status}`);
+                    if (response.status === 202) {
+                        const delay = 2000 * (i + 1);
+                        console.warn(`[lastmanstanding.html] ⏳ Got 202 - retrying after ${delay}ms`);
+                        showStatus(`BGG is processing... (${maxRetries - i - 1} retries left)`, 'loading');
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
 
-                if (response.status === 202 && retries > 0) {
-                    console.warn(`[lastmanstanding.html] ⏳ Got 202 - BGG rate limited. Waiting 3s before retry...`);
-                    showStatus(`BGG is processing... (${retries} retries left)`, 'loading');
-                    await new Promise(r => setTimeout(r, 3000));
-                    return fetchFromBGG(endpoint, params, retries - 1);
+                    if (!response.ok) {
+                        throw new Error(`HTTP ${response.status}`);
+                    }
+
+                    const text = await response.text();
+                    console.log(`[lastmanstanding.html] ✓ Response received (${text.length} bytes)`);
+                    return text;
+                } catch (error) {
+                    console.error(`[lastmanstanding.html] ❌ [Attempt ${i + 1}] Error:`, error.message);
+                    if (i === maxRetries - 1) throw error;
+                    const delay = 1000 * (i + 1);
+                    await new Promise(r => setTimeout(r, delay));
                 }
-
-                if (!response.ok) {
-                    console.error(`[lastmanstanding.html] ❌ API error: Status ${response.status}`);
-                    throw new Error(`API Status ${response.status}`);
-                }
-                
-                const text = await response.text();
-                console.log(`[lastmanstanding.html] ✓ Response received (${text.length} bytes)`);
-                console.log(`[lastmanstanding.html] First 200 chars:`, text.substring(0, 200));
-                return text;
-            } catch (error) {
-                console.error(`[lastmanstanding.html] ❌ Fetch error:`, error);
-                throw new Error(`Network/API error: ${error.message}`);
             }
         }
 
@@ -491,11 +485,8 @@
 
             try {
                 console.log(`[lastmanstanding.html] 📡 Requesting collection API...`);
-                const collectionText = await fetchFromBGG('collection', {
-                    username: username,
-                    own: '1',
-                    stats: '1'
-                });
+                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                const collectionText = await fetchWithRetry(collectionUrl);
 
                 console.log(`[lastmanstanding.html] ✓ Collection response received (${collectionText.length} bytes)`);
 
@@ -530,10 +521,10 @@
                     const progress = Math.round((i / gameIds.length) * 100);
                     showStatus(`Fetching batch ${Math.ceil((i + 1) / batchSize)} of ${Math.ceil(gameIds.length / batchSize)}... (${progress}%)`, 'loading');
 
-                    const thingText = await fetchFromBGG('thing', {
-                        ids: batch.join(','),
-                        versions: '1'
-                    });
+                    const ids = batch.join(',');
+                    console.log(`[lastmanstanding.html] Batch IDs: ${ids}`);
+                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`;
+                    const thingText = await fetchWithRetry(thingUrl);
 
                     const thingXml = parser.parseFromString(thingText, 'text/xml');
 
