@@ -734,18 +734,36 @@
         let gameDatabase = [];
         let flaggedItems = [];
 
-        // CORS Proxy for BGG API
-        const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
-        const BGG_API = 'https://www.boardgamegeek.com/xmlapi2';
-
-        async function fetchFromBGGProxy(endpoint, params = {}) {
+        // Updated to use correct BGG Helper endpoint
+        async function fetchFromBGGProxy(endpoint, params = {}, retries = 5) {
             const queryParams = new URLSearchParams(params).toString();
-            const targetUrl = `${BGG_API}/${endpoint}?${queryParams}`;
-            const proxiedUrl = `${CORS_PROXY}${encodeURIComponent(targetUrl)}`;
+            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
 
-            const response = await fetch(proxiedUrl);
-            if (!response.ok) throw new Error(`API Status ${response.status}`);
-            return await response.text();
+            console.log(`[cubes.html] 📡 Fetching ${endpoint}...`);
+            console.log(`[cubes.html] URL: ${fullUrl}`);
+
+            try {
+                const response = await fetch(fullUrl);
+                console.log(`[cubes.html] ✓ Response status: ${response.status}`);
+
+                if (response.status === 202 && retries > 0) {
+                    console.warn(`[cubes.html] ⏳ Got 202 - BGG rate limited. Waiting 3s...`);
+                    await new Promise(r => setTimeout(r, 3000));
+                    return fetchFromBGGProxy(endpoint, params, retries - 1);
+                }
+
+                if (!response.ok) {
+                    console.error(`[cubes.html] ❌ API error: ${response.status}`);
+                    throw new Error(`API Status ${response.status}`);
+                }
+
+                const text = await response.text();
+                console.log(`[cubes.html] ✓ Response received (${text.length} bytes)`);
+                return text;
+            } catch (error) {
+                console.error(`[cubes.html] ❌ Fetch error:`, error);
+                throw error;
+            }
         }
 
         async function fetchFromBGG(username, maxGames) {
@@ -1152,6 +1170,83 @@
 
         function showProgress(show) {
             document.getElementById('progressSection').classList.toggle('hidden', !show);
+        }
+
+        // Main entry point for packing
+        async function initiatePacking() {
+            console.log(`[cubes.html] 🚀 Starting packing process...`);
+            
+            const username = document.getElementById('username').value.trim() || 'sportomax';
+            const maxGames = parseInt(document.getElementById('maxGames').value) || 100;
+            const cubeW = parseFloat(document.getElementById('cubeWidth').value) || 13;
+            const cubeH = parseFloat(document.getElementById('cubeHeight').value) || 13;
+            const inputMethod = document.getElementById('inputMethod').value;
+
+            console.log(`[cubes.html] Username: ${username}, Max: ${maxGames}, Cube: ${cubeW}"×${cubeH}"`);
+
+            document.getElementById('errorContainer').innerHTML = '';
+            document.getElementById('successContainer').innerHTML = '';
+            showProgress(true);
+
+            try {
+                let games;
+
+                if (inputMethod === 'bgg') {
+                    console.log(`[cubes.html] Loading from BGG collection...`);
+                    games = await fetchFromBGG(username, maxGames);
+                } else {
+                    console.log(`[cubes.html] Loading from CSV/JSON...`);
+                    games = await loadFromCSV();
+                }
+
+                console.log(`[cubes.html] Loaded ${games.length} games`);
+                updateProgress(50, `Normalizing ${games.length} games...`);
+
+                const normalized = normalizeGames(games);
+                console.log(`[cubes.html] Normalized ${normalized.length} games (${flaggedItems.length} flagged)`);
+
+                updateProgress(70, 'Packing games into cubes...');
+                packingData = packGamesToCubes(normalized, cubeW, cubeH, 100);
+
+                console.log(`[cubes.html] ✓ Packing complete: ${packingData.cubes.length} cubes`);
+                updateProgress(90, 'Rendering results...');
+
+                displayResults(cubeW, cubeH);
+                updateDashboard();
+
+                updateProgress(100, 'Complete!');
+                showProgress(false);
+                showSuccess(`Successfully packed ${packingData.packedGames} games into ${packingData.cubes.length} cubes!`);
+
+                if (flaggedItems.length > 0) {
+                    showFlaggedItems();
+                }
+
+            } catch (error) {
+                console.error(`[cubes.html] ❌ Error:`, error);
+                showError(`Error: ${error.message}`);
+                showProgress(false);
+            }
+        }
+
+        function updateDashboard() {
+            if (!packingData) return;
+
+            const totalCubes = packingData.cubes.length;
+            const avgFill = packingData.cubes.reduce((sum, c) => sum + c.efficiency, 0) / totalCubes;
+
+            document.getElementById('totalCubes').textContent = totalCubes;
+            document.getElementById('avgFill').textContent = avgFill.toFixed(1) + '%';
+            document.getElementById('flaggedCount').textContent = flaggedItems.length;
+            document.getElementById('totalGames').textContent = packingData.packedGames;
+
+            document.getElementById('dashboardSection').classList.remove('hidden');
+        }
+
+        function showFlaggedItems() {
+            const flagsList = document.getElementById('flagsList');
+            flagsList.innerHTML = flaggedItems.map(item => `<div class="flag-item">• ${item}</div>`).join('');
+            document.getElementById('flagsSection').classList.remove('hidden');
         }
 
         function updateProgress(percent, message) {
