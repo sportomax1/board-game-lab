@@ -538,6 +538,20 @@
         const statusDiv = document.getElementById('statusDiv');
         const fetchBtn = document.getElementById('fetchBtn');
 
+        // CORS Proxy for BGG API
+        const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+        const BGG_API = 'https://www.boardgamegeek.com/xmlapi2';
+
+        async function fetchFromBGG(endpoint, params = {}) {
+            const queryParams = new URLSearchParams(params).toString();
+            const targetUrl = `${BGG_API}/${endpoint}?${queryParams}`;
+            const proxiedUrl = `${CORS_PROXY}${encodeURIComponent(targetUrl)}`;
+
+            const response = await fetch(proxiedUrl);
+            if (!response.ok) throw new Error(`API Status ${response.status}`);
+            return await response.text();
+        }
+
         async function fetchMeasurements() {
             const username = document.getElementById('username').value.trim();
             const maxGames = parseInt(document.getElementById('maxGames').value);
@@ -553,23 +567,21 @@
             }
 
             fetchBtn.disabled = true;
-            showStatus(`Fetching collection for ${username}...`, 'loading');
+            showStatus(`Fetching collection for ${username} (own=1)...`, 'loading');
 
             try {
-                // Fetch collection
-                const collectionUrl = `https://www.boardgamegeek.com/xmlapi2/collection/${username}?own=1`;
-                const collectionResp = await fetch(collectionUrl);
-                
-                if (!collectionResp.ok) {
-                    throw new Error('User not found or collection is private');
-                }
+                // Fetch collection using proxy
+                const collectionText = await fetchFromBGG('collection', {
+                    username: username,
+                    own: '1',
+                    stats: '1'
+                });
 
-                const collectionText = await collectionResp.text();
                 const parser = new DOMParser();
                 const collectionXml = parser.parseFromString(collectionText, 'text/xml');
 
                 if (collectionXml.querySelector('error')) {
-                    throw new Error('Invalid BGG response');
+                    throw new Error('Invalid BGG response - user not found or collection is private');
                 }
 
                 const items = Array.from(collectionXml.querySelectorAll('item')).slice(0, maxGames);
@@ -589,9 +601,12 @@
                     const progress = Math.round((i / gameIds.length) * 100);
                     showStatus(`Fetching batch ${Math.ceil((i + 1) / batchSize)} of ${Math.ceil(gameIds.length / batchSize)}... (${progress}%)`, 'loading');
 
-                    const thingUrl = `https://www.boardgamegeek.com/xmlapi2/thing?ids=${batch.join(',')}&versions=1`;
-                    const thingResp = await fetch(thingUrl);
-                    const thingText = await thingResp.text();
+                    // Fetch thing data using proxy
+                    const thingText = await fetchFromBGG('thing', {
+                        ids: batch.join(','),
+                        versions: '1'
+                    });
+
                     const thingXml = parser.parseFromString(thingText, 'text/xml');
 
                     Array.from(thingXml.querySelectorAll('item')).forEach(item => {

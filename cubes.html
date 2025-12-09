@@ -734,69 +734,30 @@
         let gameDatabase = [];
         let flaggedItems = [];
 
-        // Show/hide CSV upload based on input method
-        document.getElementById('inputMethod')?.addEventListener('change', (e) => {
-            document.getElementById('csvUploadDiv').classList.toggle('hidden', e.target.value === 'bgg');
-        });
+        // CORS Proxy for BGG API
+        const CORS_PROXY = 'https://api.allorigins.win/raw?url=';
+        const BGG_API = 'https://www.boardgamegeek.com/xmlapi2';
 
-        async function initiatePacking() {
-            const username = document.getElementById('username').value.trim();
-            const maxGames = parseInt(document.getElementById('maxGames').value);
-            const cubeWidth = parseFloat(document.getElementById('cubeWidth').value);
-            const cubeHeight = parseFloat(document.getElementById('cubeHeight').value);
-            const inputMethod = document.getElementById('inputMethod').value;
+        async function fetchFromBGGProxy(endpoint, params = {}) {
+            const queryParams = new URLSearchParams(params).toString();
+            const targetUrl = `${BGG_API}/${endpoint}?${queryParams}`;
+            const proxiedUrl = `${CORS_PROXY}${encodeURIComponent(targetUrl)}`;
 
-            if (!username && inputMethod === 'bgg') {
-                showError('Please enter a BGG username.');
-                return;
-            }
-
-            clearMessages();
-            showProgress(true);
-            updateProgress(0, 'Initializing...');
-
-            try {
-                let games = [];
-
-                if (inputMethod === 'bgg') {
-                    games = await fetchFromBGG(username, maxGames);
-                } else {
-                    games = await loadFromCSV();
-                }
-
-                if (games.length === 0) {
-                    showError('No games found. Please check your input.');
-                    showProgress(false);
-                    return;
-                }
-
-                updateProgress(40, `Loaded ${games.length} games. Normalizing...`);
-                gameDatabase = normalizeGames(games);
-
-                updateProgress(60, `Packing ${gameDatabase.length} games into cubes...`);
-                packingData = packGamesToCubes(gameDatabase, cubeWidth, cubeHeight, maxGames);
-
-                updateProgress(90, 'Generating visualizations...');
-                displayResults(cubeWidth, cubeHeight);
-
-                updateProgress(100, 'Complete!');
-                setTimeout(() => showProgress(false), 500);
-
-                showSuccess(`Successfully packed ${gameDatabase.length} games into ${packingData.cubes.length} cubes!`);
-            } catch (error) {
-                showError(`Error: ${error.message}`);
-                console.error(error);
-                showProgress(false);
-            }
+            const response = await fetch(proxiedUrl);
+            if (!response.ok) throw new Error(`API Status ${response.status}`);
+            return await response.text();
         }
 
         async function fetchFromBGG(username, maxGames) {
-            updateProgress(5, `Fetching collection for ${username}...`);
+            updateProgress(5, `Fetching collection for ${username} (own=1)...`);
 
             try {
-                const collectionUrl = `https://www.boardgamegeek.com/xmlapi2/collection/${username}?own=1`;
-                const collectionResp = await fetch(collectionUrl);
-                const collectionText = await collectionResp.text();
+                const collectionText = await fetchFromBGGProxy('collection', {
+                    username: username,
+                    own: '1',
+                    stats: '1'
+                });
+
                 const parser = new DOMParser();
                 const collectionXml = parser.parseFromString(collectionText, 'text/xml');
 
@@ -817,9 +778,11 @@
                     const batch = gameIds.slice(i, i + batchSize);
                     updateProgress(15 + (i / gameIds.length) * 40, `Fetching batch ${Math.ceil((i + 1) / batchSize)}...`);
 
-                    const thingUrl = `https://www.boardgamegeek.com/xmlapi2/thing?ids=${batch.join(',')}&versions=1`;
-                    const thingResp = await fetch(thingUrl);
-                    const thingText = await thingResp.text();
+                    const thingText = await fetchFromBGGProxy('thing', {
+                        ids: batch.join(','),
+                        versions: '1'
+                    });
+
                     const thingXml = parser.parseFromString(thingText, 'text/xml');
 
                     Array.from(thingXml.querySelectorAll('item')).forEach(item => {
