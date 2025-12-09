@@ -283,6 +283,11 @@
                 </div>
             </div>
 
+            <div style="display: flex; align-items: center; gap: 8px; padding: 8px; background-color: #f8f9fa; border-radius: 8px; border: 1px solid #e0e0e0;">
+                <input type="checkbox" id="filter-expansions" checked style="width: 18px; height: 18px; cursor: pointer;">
+                <label for="filter-expansions" style="font-size: 14px; cursor: pointer; user-select: none;">Include Expansions</label>
+            </div>
+
             <button id="submit-btn">Generate Layout</button>
         </div>
 
@@ -315,6 +320,7 @@
             const status = document.getElementById('status');
             const generateBtn = document.getElementById('generate-btn');
             const downloadArea = document.getElementById('download-area');
+            const filterExpansions = document.getElementById('filter-expansions');
 
             // BGG Proxy
             const IMAGE_PROXY = 'https://images.weserv.nl/?url=';
@@ -335,12 +341,10 @@
                     // Diamond: 1 + 3 + 5 + ... (odd numbers)
                     total = n * n;
                 } else if (shape === 'circle') {
-                    // Circle expanding outward: approximate as circles
-                    let sum = 0;
-                    for (let i = 1; i <= n; i++) {
-                        sum += Math.PI * i * i;
-                    }
-                    total = Math.round(sum / Math.PI);
+                    // Circle/Spiral: Use a simple formula based on circumference growth
+                    // For a spiral, we can estimate based on the number of items that fit
+                    // Use a simpler formula: roughly n^2 items for n layers
+                    total = n * n;
                 }
 
                 totalGamesDisplay.value = total;
@@ -433,9 +437,15 @@
                         throw new Error(error.textContent || 'Collection not found');
                     }
 
-                    const items = Array.from(doc.querySelectorAll('item'));
+                    let items = Array.from(doc.querySelectorAll('item'));
                     console.log(`[layers.html] ✓ Collection parsed. Found ${items.length} items`);
                     console.log(`[layers.html] First item:`, items[0] ? items[0].outerHTML.substring(0, 100) : 'None');
+                    
+                    // Filter out expansions if not included
+                    if (!filterExpansions.checked) {
+                        items = items.filter(item => item.getAttribute('subtype') !== 'boardgameexpansion');
+                        console.log(`[layers.html] ✓ After filtering expansions: ${items.length} items`);
+                    }
                     
                     if (items.length === 0) {
                         console.error(`[layers.html] ❌ No items found in collection XML`);
@@ -447,7 +457,7 @@
                         totalNeeded = Math.min(totalNeeded, items.length);
                     }
 
-                    // 2. Parse and Randomize
+                    // 2. Parse games and extract data
                     let games = items.map(item => {
                         const id = item.getAttribute('objectid');
                         const name = item.querySelector('name').textContent;
@@ -462,11 +472,19 @@
                         return { id, name, imageUrl, avgRating };
                     });
 
-                    // SORT BY AVERAGE RATING (High to Low) - best on top, worst on bottom
-                    games.sort((a, b) => b.avgRating - a.avgRating);
+                    // STEP 1: Randomize the entire collection first
+                    console.log(`[layers.html] 🎲 Shuffling ${games.length} games randomly...`);
+                    for (let i = games.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [games[i], games[j]] = [games[j], games[i]];
+                    }
 
-                    // Select top games based on rating (no randomization)
+                    // STEP 2: Select the needed games from the randomized collection
                     const selectedGames = games.slice(0, totalNeeded);
+
+                    // STEP 3: Sort the selected games by rating (High to Low) for display
+                    selectedGames.sort((a, b) => b.avgRating - a.avgRating);
+                    console.log(`[layers.html] ⭐ Sorted ${selectedGames.length} selected games by rating`);
 
                     // 3. Build Layout based on shape
                     renderLayout(selectedGames, baseSize, shape);
@@ -567,51 +585,46 @@
             }
 
             function renderCircle(games, layers) {
-                let gameIndex = 0;
-
-                for (let layer = 1; layer <= layers; layer++) {
-                    // Show arrow for growth
-                    if (layer > 1) {
-                        const arrowDiv = document.createElement('div');
-                        arrowDiv.className = 'circle-arrow';
-                        arrowDiv.textContent = '↓ Growing Outward ↓';
-                        pyramidContainer.appendChild(arrowDiv);
-                    }
-
-                    const layerDiv = document.createElement('div');
-                    layerDiv.className = 'circle-layer';
-                    layerDiv.style.borderRadius = '50%';
-                    layerDiv.style.display = 'flex';
-                    layerDiv.style.justifyContent = 'center';
-                    layerDiv.style.alignItems = 'center';
-                    layerDiv.style.flexWrap = 'wrap';
-                    layerDiv.style.gap = '8px';
-                    layerDiv.style.padding = '10px';
-
-                    // Layer label
-                    const layerLabel = document.createElement('div');
-                    layerLabel.style.width = '100%';
-                    layerLabel.style.textAlign = 'center';
-                    layerLabel.style.fontWeight = 'bold';
-                    layerLabel.style.color = '#667eea';
-                    layerLabel.style.marginBottom = '8px';
-                    layerLabel.style.fontSize = '0.9rem';
-                    layerLabel.textContent = `Ring ${layer}`;
-                    layerDiv.appendChild(layerLabel);
-
-                    // Calculate games in this ring (circumference-based)
-                    const circumference = Math.max(4, Math.round(Math.PI * layer * 2));
-                    const gamesInRing = Math.min(circumference, games.length - gameIndex);
-
-                    for (let i = 0; i < gamesInRing; i++) {
-                        if (gameIndex >= games.length) break;
-                        const cell = createGameCell(games[gameIndex]);
-                        layerDiv.appendChild(cell);
-                        gameIndex++;
-                    }
-
-                    pyramidContainer.appendChild(layerDiv);
-                }
+                // Create a container for the spiral
+                const spiralContainer = document.createElement('div');
+                spiralContainer.style.position = 'relative';
+                spiralContainer.style.width = '800px';
+                spiralContainer.style.height = '800px';
+                spiralContainer.style.margin = '20px auto';
+                
+                // Calculate total games and distribute them in a spiral
+                const totalGames = games.length;
+                const centerX = 400; // Center of the container
+                const centerY = 400;
+                const cellSize = 100; // Size of each game cell
+                
+                // Spiral parameters
+                const rotations = layers; // Number of full rotations
+                const angleIncrement = (Math.PI * 2 * rotations) / totalGames;
+                
+                games.forEach((game, index) => {
+                    const angle = index * angleIncrement;
+                    const radius = (index / totalGames) * 350; // Gradually expand from center
+                    
+                    // Calculate position using polar coordinates
+                    const x = centerX + radius * Math.cos(angle);
+                    const y = centerY + radius * Math.sin(angle);
+                    
+                    // Create game cell
+                    const cell = createGameCell(game);
+                    cell.style.position = 'absolute';
+                    cell.style.left = `${x - (cellSize / 2)}px`; // Center the cell
+                    cell.style.top = `${y - (cellSize / 2)}px`;
+                    
+                    // Add slight rotation based on angle for visual effect
+                    const rotation = (angle * 180 / Math.PI) % 360;
+                    cell.style.transform = `rotate(${rotation}deg)`;
+                    cell.style.transformOrigin = 'center';
+                    
+                    spiralContainer.appendChild(cell);
+                });
+                
+                pyramidContainer.appendChild(spiralContainer);
             }
 
             function createGameCell(game) {
