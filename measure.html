@@ -588,25 +588,32 @@
 
             try {
                 // Fetch collection using proxy
+                console.log(`[measure.html] 👤 Starting fetch for user: ${username}`);
                 const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                console.log(`[measure.html] 🔗 Collection URL: ${collectionUrl}`);
                 const collectionText = await fetchWithRetry(collectionUrl);
 
                 const parser = new DOMParser();
                 const collectionXml = parser.parseFromString(collectionText, 'text/xml');
+                console.log(`[measure.html] 📄 Parsed collection XML (${collectionText.length} bytes)`);
 
                 if (collectionXml.querySelector('error')) {
+                    console.error(`[measure.html] ❌ BGG returned an error in collection XML`);
                     throw new Error('Invalid BGG response - user not found or collection is private');
                 }
 
                 const items = Array.from(collectionXml.querySelectorAll('item')).slice(0, maxGames);
+                console.log(`[measure.html] 🎮 Found ${items.length} owned games (limited to ${maxGames})`);
 
                 if (items.length === 0) {
+                    console.error(`[measure.html] ❌ No owned games found in collection`);
                     throw new Error('No owned games found');
                 }
 
                 showStatus(`Found ${items.length} games. Fetching measurements...`, 'loading');
 
                 const gameIds = items.map(item => item.getAttribute('objectid'));
+                console.log(`[measure.html] 🔢 Game IDs to process: ${gameIds.join(', ')}`);
                 allMeasurements = [];
                 const batchSize = 20;
 
@@ -618,44 +625,74 @@
                     // Fetch thing data using proxy
                     const ids = batch.join(',');
                     const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`;
+                    console.log(`[measure.html] 📦 Fetching batch for game IDs: ${ids}`);
                     const thingText = await fetchWithRetry(thingUrl);
 
                     const thingXml = parser.parseFromString(thingText, 'text/xml');
+                    
+                    // Build lookup for game info from the batch
+                    const gameInfo = {};
+                    Array.from(thingXml.querySelectorAll('item[type="boardgame"]')).forEach(item => {
+                        const id = item.getAttribute('id');
+                        gameInfo[id] = {
+                            name: item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown',
+                            thumbnail: item.querySelector('thumbnail')?.textContent || ''
+                        };
+                    });
+                    console.log(`[measure.html] 📋 Found ${Object.keys(gameInfo).length} games in batch`);
 
-                    Array.from(thingXml.querySelectorAll('item')).forEach(item => {
-                        const gameName = item.querySelector('name')?.getAttribute('value') || 'Unknown';
-                        const gameId = item.getAttribute('id');
-                        const thumbnail = item.querySelector('thumbnail')?.textContent;
+                    // Get all version items (not nested in versions element)
+                    const versionItems = thingXml.querySelectorAll('item[type="boardgameversion"]');
+                    console.log(`[measure.html] 📏 Found ${versionItems.length} version items in batch`);
+                    
+                    Array.from(versionItems).forEach(version => {
+                        // Find the parent game link
+                        const gameLink = version.querySelector('link[type="boardgameversion"][inbound="true"]');
+                        if (!gameLink) {
+                            console.log(`[measure.html] ⚠️ Version ${version.getAttribute('id')} has no parent game link`);
+                            return;
+                        }
+                        
+                        const gameId = gameLink.getAttribute('id');
+                        const game = gameInfo[gameId];
+                        if (!game) {
+                            console.log(`[measure.html] ⚠️ Game ${gameId} not found in batch info`);
+                            return;
+                        }
 
-                        // Get all versions
-                        const versions = item.querySelector('versions');
-                        if (versions) {
-                            Array.from(versions.querySelectorAll('version')).forEach(version => {
-                                const versionId = version.getAttribute('id');
-                                const width = version.querySelector('width')?.textContent;
-                                const height = version.querySelector('height')?.textContent;
-                                const length = version.querySelector('length')?.textContent;
+                        const versionId = version.getAttribute('id');
+                        const widthAttr = version.querySelector('width')?.getAttribute('value');
+                        const lengthAttr = version.querySelector('length')?.getAttribute('value');
+                        const depthAttr = version.querySelector('depth')?.getAttribute('value');
+                        
+                        const width = widthAttr ? parseFloat(widthAttr) : null;
+                        const length = lengthAttr ? parseFloat(lengthAttr) : null;
+                        const depth = depthAttr ? parseFloat(depthAttr) : null;
 
-                                if (width && height && length) {
-                                    allMeasurements.push({
-                                        name: gameName,
-                                        gameId: gameId,
-                                        versionId: versionId,
-                                        width: parseFloat(width),
-                                        height: parseFloat(height),
-                                        length: parseFloat(length),
-                                        thumbnail: thumbnail,
-                                    });
-                                }
+                        if (width !== null && length !== null && depth !== null && width > 0 && length > 0 && depth > 0) {
+                            allMeasurements.push({
+                                name: game.name,
+                                gameId: gameId,
+                                versionId: versionId,
+                                width: width,
+                                // Note: BGG API provides 'depth', but we store as 'height' to match 
+                                // the existing display table structure (W x H x L)
+                                height: depth,
+                                length: length,
+                                thumbnail: game.thumbnail,
                             });
+                            console.log(`[measure.html] ✅ Added measurement for ${game.name}: ${width}" x ${length}" x ${depth}"`);
                         }
                     });
+
+                    console.log(`[measure.html] 📊 Total measurements so far: ${allMeasurements.length}`);
 
                     // Rate limiting
                     await new Promise(r => setTimeout(r, 500));
                 }
 
                 // Calculate popular measurements
+                console.log(`[measure.html] 📊 Calculating popular measurements from ${allMeasurements.length} total measurements`);
                 const gameGrouped = {};
                 allMeasurements.forEach(m => {
                     if (!gameGrouped[m.gameId]) {
@@ -668,6 +705,8 @@
                     }
                     gameGrouped[m.gameId].versions.push(m);
                 });
+
+                console.log(`[measure.html] 🎯 Grouped measurements into ${Object.keys(gameGrouped).length} unique games`);
 
                 popularMeasurements = Object.values(gameGrouped).map(g => {
                     // Find most common measurement
@@ -700,17 +739,24 @@
                     };
                 });
 
+                console.log(`[measure.html] ⭐ Created ${popularMeasurements.length} popular measurement entries`);
+
                 filteredAllData = [...allMeasurements];
                 filteredPopularData = [...popularMeasurements];
 
-                showStatus(`Successfully loaded ${allMeasurements.length} measurements from ${popularMeasurements.length} games`, 'success');
+                const successMessage = `Successfully loaded ${allMeasurements.length} measurements from ${popularMeasurements.length} games`;
+                console.log(`[measure.html] ✅ ${successMessage}`);
+                showStatus(successMessage, 'success');
                 renderAllTab();
                 renderPopularTab();
 
             } catch (error) {
+                console.error(`[measure.html] ❌ Error occurred:`, error);
+                console.error(`[measure.html] ❌ Error stack:`, error.stack);
                 showStatus(`Error: ${error.message}`, 'error');
             } finally {
                 fetchBtn.disabled = false;
+                console.log(`[measure.html] 🏁 Fetch process completed`);
             }
         }
 
