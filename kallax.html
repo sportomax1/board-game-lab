@@ -519,6 +519,10 @@
                     <label>BGG Username</label>
                     <input type="text" id="username" placeholder="sportomax" value="sportomax">
                 </div>
+                <div class="input-field" style="max-width: 100px;">
+                    <label>Max Games</label>
+                    <input type="number" id="maxGames" placeholder="All" value="100" min="1">
+                </div>
                 <button class="btn" id="analyzeBtn" onclick="analyzeCollection()">📊 Analyze Collection</button>
             </div>
 
@@ -716,13 +720,15 @@
 
         async function analyzeCollection() {
             const username = document.getElementById('username').value.trim();
+            const maxGames = parseInt(document.getElementById('maxGames').value) || 0;
+            
             if (!username) {
                 showError('Please enter a BGG username');
                 addLog('❌ Error: No username entered', 'error');
                 return;
             }
 
-            addLog(`🚀 Starting analysis for user: ${username}`, 'info');
+            addLog(`🚀 Starting analysis for user: ${username} (Limit: ${maxGames || 'All'})`, 'info');
 
             document.getElementById('analyzeBtn').disabled = true;
             showProgress(true);
@@ -731,7 +737,14 @@
             try {
                 updateProgress(10, 'Fetching collection...');
                 addLog(`📡 Fetching collection for @${username}...`, 'info');
-                const collection = await fetchCollection(username);
+                let collection = await fetchCollection(username);
+                
+                // Apply max games limit
+                if (maxGames > 0 && collection.length > maxGames) {
+                    addLog(`✂️ Limiting collection to first ${maxGames} games (from ${collection.length})`, 'warn');
+                    collection = collection.slice(0, maxGames);
+                }
+                
                 addLog(`✅ Collection loaded: ${collection.length} games`, 'log');
 
                 if (collection.length === 0) {
@@ -740,26 +753,10 @@
 
                 updateProgress(40, `Found ${collection.length} games, fetching versions...`);
                 
-                // Try to load detailed version data from localStorage (from versions.html)
-                let gameVersions = {};
-                try {
-                    const cached = localStorage.getItem('bgg_game_versions');
-                    if (cached) {
-                        gameVersions = JSON.parse(cached);
-                        addLog(`✅ Loaded detailed version data for ${Object.keys(gameVersions).length} games from cache`, 'log');
-                    }
-                } catch (e) {
-                    console.error('Error loading cache', e);
-                }
-
-                // If cache is missing or empty, fetch from API
-                if (Object.keys(gameVersions).length === 0) {
-                    addLog(`🎮 Fetching game versions for ${collection.length} games (API)...`, 'info');
-                    gameVersions = await fetchGameVersions(collection);
-                    addLog(`✅ Game versions fetched`, 'log');
-                } else {
-                    addLog(`⚡ Using cached version data (run versions.html to update)`, 'info');
-                }
+                // Always fetch fresh version data from API (ignoring cache as requested)
+                addLog(`🎮 Fetching game versions for ${collection.length} games (API)...`, 'info');
+                const gameVersions = await fetchGameVersions(collection);
+                addLog(`✅ Game versions fetched`, 'log');
 
                 updateProgress(80, 'Analyzing shelf layout...');
                 addLog(`📊 Analyzing optimal shelf layout...`, 'info');
@@ -826,7 +823,8 @@
                 const totalBatches = Math.ceil(games.length / batchSize);
 
                 try {
-                    const apiUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`;
+                    // Use type=boardgame&versions=1 to get detailed version data
+                    const apiUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1&stats=1`;
                     addLog(`🔗 Batch ${batchNum}/${totalBatches}: ${apiUrl.substring(0, 60)}...`, 'info');
                     
                     const response = await fetch(apiUrl);
@@ -841,21 +839,58 @@
                     const parser = new DOMParser();
                     const doc = parser.parseFromString(xml, 'text/xml');
 
-                    Array.from(doc.querySelectorAll('item')).forEach(item => {
+                    // 1. Parse basic game info from boardgame items
+                    Array.from(doc.querySelectorAll('item[type="boardgame"]')).forEach(item => {
                         const id = item.getAttribute('id');
-                        const minPlayers = parseInt(item.getAttribute('minplayers')) || 1;
-                        const maxPlayers = parseInt(item.getAttribute('maxplayers')) || 1;
-                        const playTime = parseInt(item.getAttribute('playingtime')) || 30;
+                        const minPlayers = parseInt(item.querySelector('minplayers')?.getAttribute('value')) || 1;
+                        const maxPlayers = parseInt(item.querySelector('maxplayers')?.getAttribute('value')) || 1;
+                        const playTime = parseInt(item.querySelector('playingtime')?.getAttribute('value')) || 30;
                         const avgRating = parseFloat(item.querySelector('statistics ratings average')?.getAttribute('value')) || 0;
 
-                        versions[id] = {
-                            minPlayers,
-                            maxPlayers,
-                            playTime,
-                            avgRating,
-                            dimensions: estimateDimensions(item)
-                        };
+                        if (!versions[id]) {
+                            versions[id] = {
+                                minPlayers,
+                                maxPlayers,
+                                playTime,
+                                avgRating,
+                                dimensions: estimateDimensions(item),
+                                versions: [] // Initialize versions array
+                            };
+                        }
                     });
+
+                    // 2. Parse detailed version info
+                    const versionItems = doc.querySelectorAll('item[type="boardgameversion"]');
+                    addLog(`   - Found ${versionItems.length} version items in batch`, 'info');
+
+                    Array.from(versionItems).forEach(item => {
+                        const gameLink = item.querySelector('link[type="boardgameversion"][inbound="true"]');
+                        if (!gameLink) return;
+
+                        const gameId = gameLink.getAttribute('id');
+                        if (!versions[gameId]) return; // Should exist from step 1, but safety check
+
+                        const width = parseFloat(item.querySelector('width')?.getAttribute('value') || 0);
+                        const length = parseFloat(item.querySelector('length')?.getAttribute('value') || 0);
+                        const depth = parseFloat(item.querySelector('depth')?.getAttribute('value') || 0);
+                        const weight = parseFloat(item.querySelector('weight')?.getAttribute('value') || 0);
+                        
+                        // Extract language
+                        const languages = Array.from(item.querySelectorAll('link[type="language"]'))
+                            .map(l => l.getAttribute('value'));
+                        const language = languages.length > 0 ? languages.join(', ') : 'Unknown';
+
+                        versions[gameId].versions.push({
+                            id: item.getAttribute('id'),
+                            name: item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown',
+                            width: width,
+                            length: length,
+                            depth: depth,
+                            weight: weight,
+                            language: language
+                        });
+                    });
+
                 } catch (err) {
                     addLog(`❌ Error in batch processing: ${err.message}`, 'error');
                     console.warn('Error fetching batch:', err);
