@@ -1111,16 +1111,32 @@
                 };
             });
 
-            // 2. Sort by Face Area Descending (Largest 2 measurements math)
-            // This ensures we pack big items first
-            processedGames.sort((a, b) => b.faceArea - a.faceArea);
+            // 2. Separate games into fitting and oversized
+            const fittingGames = [];
+            const oversizedGames = [];
+            
+            processedGames.forEach(game => {
+                // Check if it fits in a 13x13 opening
+                // We allow a small tolerance (13.25")
+                // The two smallest dimensions (width, height) must be <= 13.25
+                const fitsFace = game.width <= 13.25 && game.height <= 13.25;
+                
+                if (fitsFace) {
+                    fittingGames.push(game);
+                } else {
+                    oversizedGames.push(game);
+                }
+            });
 
-            // 3. Pack into shelves
+            // 3. Sort fitting games by Face Area Descending
+            fittingGames.sort((a, b) => b.faceArea - a.faceArea);
+
+            // 4. Pack into shelves
             const shelves = [];
             let currentShelfArea = 0;
             let currentGames = [];
             
-            processedGames.forEach(game => {
+            fittingGames.forEach(game => {
                 // Check if game fits in current shelf
                 // Use 85% efficiency threshold
                 if (currentShelfArea + game.faceArea > SHELF_FACE_AREA * 0.85) {
@@ -1164,6 +1180,7 @@
                 totalGames: collection.length,
                 categories,
                 shelves,
+                oversizedGames, // Add oversized games to result
                 efficiency: calculateEfficiency(shelves)
             };
         }
@@ -1188,12 +1205,53 @@
         }
 
         function displayResults(analysis, username) {
-            const { totalGames, categories, shelves, efficiency } = analysis;
+            const { totalGames, categories, shelves, oversizedGames, efficiency } = analysis;
 
             document.getElementById('totalGames').textContent = totalGames;
             document.getElementById('shelfsNeeded').textContent = shelves.length;
             document.getElementById('avgPerShelf').textContent = Math.ceil(totalGames / shelves.length);
             document.getElementById('efficiency').textContent = efficiency + '%';
+
+            // Oversized Games Section
+            let oversizedHtml = '';
+            if (oversizedGames && oversizedGames.length > 0) {
+                oversizedHtml = `
+                <div class="shelf-row" style="margin-bottom: 1.5rem; border: 2px solid #ff5252; border-radius: 8px; overflow: hidden;">
+                    <div style="display: flex; justify-content: space-between; align-items: center; background: linear-gradient(135deg, #ff5252 0%, #d32f2f 100%); color: white; padding: 1rem;">
+                        <strong style="font-size: 1.1rem;">⚠️ Oversized Games (Won't Fit)</strong>
+                        <span style="background: rgba(255,255,255,0.3); padding: 0.35rem 0.85rem; border-radius: 12px; font-size: 0.85rem; font-weight: 600;">
+                            ${oversizedGames.length} games
+                        </span>
+                    </div>
+                    <div style="padding: 1rem; background: #fff5f5;">
+                        <div style="margin-bottom: 1rem; color: #d32f2f; font-size: 0.9rem;">
+                            These games have dimensions larger than the 13" × 13" Kallax opening, even when rotated to their smallest side.
+                        </div>
+                        <div style="max-height: 400px; overflow-y: auto; background: white; border-radius: 6px;">
+                            ${oversizedGames.map((g, idx) => {
+                                const uniqueId = `oversized-${Date.now()}-${idx}`;
+                                return `
+                                <div class="game-card" style="display: flex; gap: 0.75rem; padding: 0.75rem; border-bottom: 1px solid #eee; align-items: center; border-radius: 4px;" onclick="toggleGameDetails('${uniqueId}', event)">
+                                    ${g.thumbnail ? `<img src="${g.thumbnail}" alt="${g.name}" style="width: 50px; height: 50px; object-fit: cover; border-radius: 4px; flex-shrink: 0;">` : `<div style="width: 50px; height: 50px; background: #ddd; border-radius: 4px; flex-shrink: 0;"></div>`}
+                                    <div style="flex: 1; min-width: 0;">
+                                        <div style="font-weight: 600; font-size: 0.9rem; color: #d32f2f;">${g.name}</div>
+                                        <div style="color: #555; font-size: 0.8rem;">
+                                            <strong>${g.width.toFixed(1)}" × ${g.height.toFixed(1)}"</strong> (Face) × ${g.depth.toFixed(1)}" (Depth)
+                                        </div>
+                                        <div class="game-details" id="${uniqueId}">
+                                            <div style="background: #f5f5f5; padding: 0.75rem; border-radius: 4px; margin-top: 0.5rem; font-size: 0.85rem;">
+                                                <strong>Why it doesn't fit:</strong><br>
+                                                Smallest dimensions are ${g.width.toFixed(1)}" and ${g.height.toFixed(1)}".<br>
+                                                Both must be ≤ 13.25" to fit in the opening.
+                                            </div>
+                                        </div>
+                                    </div>
+                                </div>`;
+                            }).join('')}
+                        </div>
+                    </div>
+                </div>`;
+            }
 
             // Shelf plan with detailed games per shelf and math breakdown
             const shelfPlanHtml = shelves.map((shelf, idx) => {
@@ -1348,7 +1406,7 @@
                 `;
             }).join('');
 
-            document.getElementById('shelfPlan').innerHTML = shelfPlanHtml || '<p>Calculating...</p>';
+            document.getElementById('shelfPlan').innerHTML = oversizedHtml + (shelfPlanHtml || '<p>Calculating...</p>');
 
             // Size category cards with detailed game lists
             const sizeCategoryHtml = Object.entries(categories)
