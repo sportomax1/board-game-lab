@@ -449,10 +449,45 @@
                 <button class="btn" id="analyzeBtn" onclick="analyzeCollection()">📊 Analyze Collection</button>
             </div>
 
+            <h3 style="margin-top: 1.5rem; margin-bottom: 1rem; font-size: 1rem; color: #555;">⚙️ Analysis Options</h3>
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <div style="background: #f9f9f9; padding: 1rem; border-radius: 8px;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600;">
+                        <input type="radio" name="strategy" value="efficient" checked onchange="updateStrategy()">
+                        ⚡ Efficient Packing
+                    </label>
+                    <p style="font-size: 0.85rem; color: #666; margin: 0.5rem 0 0 1.8rem;">Maximize space usage, minimize shelves needed</p>
+                </div>
+                <div style="background: #f9f9f9; padding: 1rem; border-radius: 8px;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600;">
+                        <input type="radio" name="strategy" value="random" onchange="updateStrategy()">
+                        🎲 Random Fill
+                    </label>
+                    <p style="font-size: 0.85rem; color: #666; margin: 0.5rem 0 0 1.8rem;">Distribute games randomly across available shelves</p>
+                </div>
+            </div>
+
+            <div style="display: grid; grid-template-columns: 1fr 1fr; gap: 1rem; margin-bottom: 1rem;">
+                <div style="background: #f9f9f9; padding: 1rem; border-radius: 8px;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600;">
+                        <input type="checkbox" id="useDepth" checked onchange="updateStrategy()">
+                        📏 Use Full Depth
+                    </label>
+                    <p style="font-size: 0.85rem; color: #666; margin: 0.5rem 0 0 1.8rem;">Consider depth for actual box placement (full stuffing)</p>
+                </div>
+                <div style="background: #f9f9f9; padding: 1rem; border-radius: 8px;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600;">
+                        <input type="checkbox" id="allowRotation" checked onchange="updateStrategy()">
+                        🔄 Allow Rotation
+                    </label>
+                    <p style="font-size: 0.85rem; color: #666; margin: 0.5rem 0 0 1.8rem;">Rotate boxes to fit better (W×D can be swapped)</p>
+                </div>
+            </div>
+
             <div class="info-box">
                 <strong>Shelf Dimensions:</strong> 13" W × 15" D × 13" H
                 <br><strong>Analysis:</strong> Fetches your collection and game versions to calculate actual box sizes
-                <br><strong>Result:</strong> Automatic shelf count recommendation based on optimal packing
+                <br><strong>Result:</strong> Automatic shelf count recommendation based on selected strategy
             </div>
 
             <div id="progressContainer" class="progress-container hidden">
@@ -512,6 +547,20 @@
         const SHELF_WIDTH = 13;   // inches
         const SHELF_DEPTH = 15;   // inches
         const SHELF_HEIGHT = 13;  // inches
+
+        // Strategy options
+        let analysisStrategy = {
+            packing: 'efficient',  // 'efficient' or 'random'
+            useDepth: true,        // Consider depth in calculations
+            allowRotation: true    // Allow rotating boxes (swap W×D)
+        };
+
+        function updateStrategy() {
+            analysisStrategy.packing = document.querySelector('input[name="strategy"]:checked').value;
+            analysisStrategy.useDepth = document.getElementById('useDepth').checked;
+            analysisStrategy.allowRotation = document.getElementById('allowRotation').checked;
+            addLog(`⚙️ Strategy updated: ${analysisStrategy.packing} | Depth: ${analysisStrategy.useDepth} | Rotation: ${analysisStrategy.allowRotation}`, 'info');
+        }
 
         // Console logging system
         const logHistory = [];
@@ -779,6 +828,16 @@
             const shelves = [];
             const SHELF_AREA = SHELF_WIDTH * SHELF_DEPTH;
 
+            if (analysisStrategy.packing === 'random') {
+                return calculateRandomShelves(categories, SHELF_AREA);
+            } else {
+                return calculateEfficientShelves(categories, SHELF_AREA);
+            }
+        }
+
+        function calculateEfficientShelves(categories, shelfArea) {
+            const shelves = [];
+            
             // Sort by size for optimal packing (largest first for stability)
             const sortedCats = ['xlarge', 'large', 'medium', 'small', 'micro'];
 
@@ -791,22 +850,33 @@
                 let currentGames = [];
 
                 games.forEach(game => {
-                    const gameArea = game.width * game.depth;
+                    const gameArea = analysisStrategy.useDepth 
+                        ? (game.width * game.depth)  // Full 2D area
+                        : game.width;  // Only width (visual)
 
-                    if (currentShelfArea + gameArea > SHELF_AREA * 0.85) {
+                    let actualArea = gameArea;
+                    if (analysisStrategy.allowRotation && gameArea > shelfArea * 0.85) {
+                        // Try rotating (swap width and depth)
+                        const rotatedArea = analysisStrategy.useDepth 
+                            ? (game.depth * game.width)  // Same for 2D
+                            : game.depth;  // Try depth instead
+                        actualArea = Math.min(gameArea, rotatedArea);
+                    }
+
+                    if (currentShelfArea + actualArea > shelfArea * 0.85) {
                         // Start new shelf
                         if (currentGames.length > 0) {
                             shelves.push({
                                 games: [...currentGames],
                                 category: catName,
                                 usedArea: currentShelfArea,
-                                efficiency: (currentShelfArea / SHELF_AREA) * 100
+                                efficiency: (currentShelfArea / shelfArea) * 100
                             });
                         }
-                        currentShelfArea = gameArea;
+                        currentShelfArea = actualArea;
                         currentGames = [game];
                     } else {
-                        currentShelfArea += gameArea;
+                        currentShelfArea += actualArea;
                         currentGames.push(game);
                     }
                 });
@@ -817,11 +887,67 @@
                         games: currentGames,
                         category: catName,
                         usedArea: currentShelfArea,
-                        efficiency: (currentShelfArea / SHELF_AREA) * 100
+                        efficiency: (currentShelfArea / shelfArea) * 100
                     });
                 }
             });
 
+            addLog(`📊 Efficient packing: ${shelves.length} shelves calculated`, 'info');
+            return shelves;
+        }
+
+        function calculateRandomShelves(categories, shelfArea) {
+            // Flatten all games
+            const allGames = [];
+            Object.entries(categories).forEach(([cat, games]) => {
+                games.forEach(g => {
+                    allGames.push({ ...g, category: cat });
+                });
+            });
+
+            // Shuffle randomly
+            for (let i = allGames.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [allGames[i], allGames[j]] = [allGames[j], allGames[i]];
+            }
+
+            // Fill shelves with random distribution
+            const shelves = [];
+            let currentShelfArea = 0;
+            let currentGames = [];
+            let currentCategory = '';
+
+            allGames.forEach(game => {
+                const gameArea = analysisStrategy.useDepth 
+                    ? (game.width * game.depth)
+                    : game.width;
+
+                if (currentShelfArea + gameArea > shelfArea * 0.85 && currentGames.length > 0) {
+                    shelves.push({
+                        games: [...currentGames],
+                        category: currentCategory || 'mixed',
+                        usedArea: currentShelfArea,
+                        efficiency: (currentShelfArea / shelfArea) * 100
+                    });
+                    currentShelfArea = gameArea;
+                    currentGames = [game];
+                    currentCategory = game.category;
+                } else {
+                    currentShelfArea += gameArea;
+                    currentGames.push(game);
+                }
+            });
+
+            if (currentGames.length > 0) {
+                shelves.push({
+                    games: currentGames,
+                    category: currentCategory || 'mixed',
+                    usedArea: currentShelfArea,
+                    efficiency: (currentShelfArea / shelfArea) * 100
+                });
+            }
+
+            addLog(`🎲 Random distribution: ${shelves.length} shelves calculated`, 'info');
             return shelves;
         }
 
@@ -835,7 +961,7 @@
             const { totalGames, categories, shelves, efficiency } = analysis;
 
             document.getElementById('totalGames').textContent = totalGames;
-            document.getElementById('shelvesNeeded').textContent = shelves.length;
+            document.getElementById('shelfsNeeded').textContent = shelves.length;
             document.getElementById('avgPerShelf').textContent = Math.ceil(totalGames / shelves.length);
             document.getElementById('efficiency').textContent = efficiency + '%';
 
@@ -858,6 +984,7 @@
             document.getElementById('recommendations').innerHTML = recommendationsHtml;
             document.getElementById('results').classList.remove('hidden');
             document.getElementById('results').scrollIntoView({ behavior: 'smooth' });
+            addLog(`📺 Results displayed with ${shelves.length} shelf layout`, 'log');
         }
 
         function getShelfPosition(category) {
