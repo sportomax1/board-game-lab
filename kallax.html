@@ -739,9 +739,27 @@
                 }
 
                 updateProgress(40, `Found ${collection.length} games, fetching versions...`);
-                addLog(`🎮 Fetching game versions for ${collection.length} games...`, 'info');
-                const gameVersions = await fetchGameVersions(collection);
-                addLog(`✅ Game versions fetched`, 'log');
+                
+                // Try to load detailed version data from localStorage (from versions.html)
+                let gameVersions = {};
+                try {
+                    const cached = localStorage.getItem('bgg_game_versions');
+                    if (cached) {
+                        gameVersions = JSON.parse(cached);
+                        addLog(`✅ Loaded detailed version data for ${Object.keys(gameVersions).length} games from cache`, 'log');
+                    }
+                } catch (e) {
+                    console.error('Error loading cache', e);
+                }
+
+                // If cache is missing or empty, fetch from API
+                if (Object.keys(gameVersions).length === 0) {
+                    addLog(`🎮 Fetching game versions for ${collection.length} games (API)...`, 'info');
+                    gameVersions = await fetchGameVersions(collection);
+                    addLog(`✅ Game versions fetched`, 'log');
+                } else {
+                    addLog(`⚡ Using cached version data (run versions.html to update)`, 'info');
+                }
 
                 updateProgress(80, 'Analyzing shelf layout...');
                 addLog(`📊 Analyzing optimal shelf layout...`, 'info');
@@ -749,10 +767,12 @@
                 addLog(`✅ Analysis complete - ${analysis.shelves.length} shelves needed`, 'log');
                 
                 // Log first few games and their dimensions for debugging
-                const sampleGames = analysis.categories.xlarge.concat(analysis.categories.large).slice(0, 3);
-                sampleGames.forEach(g => {
-                    addLog(`📐 ${g.name}: ${g.width.toFixed(1)}"W × ${g.height.toFixed(1)}"H × ${g.depth.toFixed(1)}"D (Area: ${(g.width * g.height).toFixed(1)} sq in)`, 'log');
-                });
+                if (analysis.shelves.length > 0 && analysis.shelves[0].games.length > 0) {
+                    const sampleGames = analysis.shelves[0].games.slice(0, 3);
+                    sampleGames.forEach(g => {
+                        addLog(`📐 ${g.name}: ${g.width.toFixed(1)}"W × ${g.height.toFixed(1)}"H × ${g.depth.toFixed(1)}"D (Face Area: ${(g.width * g.height).toFixed(1)} sq in)`, 'log');
+                    });
+                }
 
                 updateProgress(100, 'Complete!');
                 displayResults(analysis, username);
@@ -957,34 +977,56 @@
         }
 
         function analyzeShelfLayout(collection, versions) {
-            const SHELF_AREA = SHELF_WIDTH * SHELF_HEIGHT;
+            const SHELF_FACE_AREA = SHELF_WIDTH * SHELF_HEIGHT; // 13x13 = 169
 
-            // Categorize games
-            const categories = {
-                micro: [],
-                small: [],
-                medium: [],
-                large: [],
-                xlarge: []
-            };
-
-            collection.forEach(game => {
+            // 1. Process all games to find best fit dimensions
+            let processedGames = collection.map(game => {
                 const gameVersion = versions[game.objectId];
-                
-                // Try to get dimensions: prefer versions data with most common dimensions
                 let dims = null;
                 let versionData = null;
                 
+                // Try to get dimensions from versions.html data
                 if (gameVersion && gameVersion.versions && gameVersion.versions.length > 0) {
-                    // Use versions.html data - get most common dimensions
                     const mostCommon = getMostCommonDimensions(gameVersion);
                     if (mostCommon) {
+                        // Raw dimensions from most common version
+                        const rawDims = [mostCommon.width, mostCommon.length, mostCommon.depth].sort((a, b) => a - b);
+                        
+                        // Find best orientation for Kallax (13x13 face)
+                        // We want the two smallest dimensions to be the face (W x H)
+                        // IF the middle dimension fits in 13".
+                        // If middle > 13, then we can't fit it "inside" normally.
+                        
+                        let faceW, faceH, depth;
+                        
+                        // Check if middle dimension fits in shelf height/width (13")
+                        // Allow small tolerance (13.25")
+                        if (rawDims[1] <= 13.25) {
+                            // Fits! Face is Smallest x Middle
+                            faceW = rawDims[0];
+                            faceH = rawDims[1];
+                            depth = rawDims[2];
+                        } else {
+                            // Doesn't fit standard way. 
+                            // Maybe it's a flat wide box? (e.g. 14x14x3) -> Face 3x14? No, 14 > 13.
+                            // If the two smallest are > 13, it definitely doesn't fit.
+                            // If smallest <= 13 but middle > 13, we can orient it so smallest is Width, 
+                            // but Height will be > 13 (sticks out top? or lies flat and sticks out front?)
+                            // For "Face Area" calculation, we assume it takes up Smallest x Middle space on the grid?
+                            // Or Smallest x 13 (if we treat it as taking full height)?
+                            // Let's assume we orient to minimize face area: Smallest x Middle.
+                            faceW = rawDims[0];
+                            faceH = rawDims[1];
+                            depth = rawDims[2];
+                        }
+
                         dims = {
-                            width: mostCommon.width,
-                            height: mostCommon.length,  // NOTE: versions.html uses "length" for the second dimension
-                            depth: mostCommon.depth,
+                            width: faceW,
+                            height: faceH,
+                            depth: depth,
                             estimated: false
                         };
+                        
                         versionData = {
                             versionCount: gameVersion.versions.length,
                             allMeasurements: mostCommon.allMeasurements.map(m => ({
@@ -998,29 +1040,77 @@
                     }
                 }
                 
-                // Fall back to API dimensions or estimation
+                // Fallback
                 if (!dims) {
-                    dims = gameVersion?.dimensions || estimateDimensionsByName(game.name);
+                    const est = gameVersion?.dimensions || estimateDimensionsByName(game.name);
+                    // Apply same sorting logic to estimate
+                    const rawDims = [est.width, est.height, est.depth].sort((a, b) => a - b);
+                    dims = {
+                        width: rawDims[0],
+                        height: rawDims[1],
+                        depth: rawDims[2],
+                        estimated: true
+                    };
                 }
 
-                // Categorize by volume
-                const volume = dims.width * dims.depth * dims.height;
+                return {
+                    ...game,
+                    ...dims,
+                    faceArea: dims.width * dims.height,
+                    volume: dims.width * dims.height * dims.depth,
+                    versionData: versionData || gameVersion,
+                    category: getCategoryByVolume(dims.width * dims.height * dims.depth)
+                };
+            });
 
-                if (volume < 30) {
-                    categories.micro.push({ ...game, ...dims, volume, versionData: versionData || gameVersion });
-                } else if (volume < 100) {
-                    categories.small.push({ ...game, ...dims, volume, versionData: versionData || gameVersion });
-                } else if (volume < 250) {
-                    categories.medium.push({ ...game, ...dims, volume, versionData: versionData || gameVersion });
-                } else if (volume < 500) {
-                    categories.large.push({ ...game, ...dims, volume, versionData: versionData || gameVersion });
+            // 2. Sort by Face Area Descending (Largest 2 measurements math)
+            // This ensures we pack big items first
+            processedGames.sort((a, b) => b.faceArea - a.faceArea);
+
+            // 3. Pack into shelves
+            const shelves = [];
+            let currentShelfArea = 0;
+            let currentGames = [];
+            
+            processedGames.forEach(game => {
+                // Check if game fits in current shelf
+                // Use 85% efficiency threshold
+                if (currentShelfArea + game.faceArea > SHELF_FACE_AREA * 0.85) {
+                    // Push current shelf
+                    if (currentGames.length > 0) {
+                        shelves.push({
+                            games: [...currentGames],
+                            category: 'mixed',
+                            usedArea: currentShelfArea,
+                            shelfArea: SHELF_FACE_AREA,
+                            efficiency: (currentShelfArea / SHELF_FACE_AREA) * 100
+                        });
+                    }
+                    // Start new shelf
+                    currentShelfArea = game.faceArea;
+                    currentGames = [game];
                 } else {
-                    categories.xlarge.push({ ...game, ...dims, volume, versionData: versionData || gameVersion });
+                    currentShelfArea += game.faceArea;
+                    currentGames.push(game);
                 }
             });
 
-            // Calculate shelf distribution
-            const shelves = calculateOptimalShelves(categories);
+            // Add final shelf
+            if (currentGames.length > 0) {
+                shelves.push({
+                    games: currentGames,
+                    category: 'mixed',
+                    usedArea: currentShelfArea,
+                    shelfArea: SHELF_FACE_AREA,
+                    efficiency: (currentShelfArea / SHELF_FACE_AREA) * 100
+                });
+            }
+
+            // Re-construct categories object for display compatibility
+            const categories = { micro: [], small: [], medium: [], large: [], xlarge: [] };
+            processedGames.forEach(g => {
+                if (categories[g.category]) categories[g.category].push(g);
+            });
 
             return {
                 totalGames: collection.length,
@@ -1030,140 +1120,18 @@
             };
         }
 
-        function calculateOptimalShelves(categories) {
-            const shelves = [];
-            // Shelf face area is WIDTH × HEIGHT (13 × 13 = 169 sq in)
-            // Depth (15") is how far back boxes go, not part of the face calculation
-            const SHELF_AREA = SHELF_WIDTH * SHELF_HEIGHT;
-
-            if (analysisStrategy.packing === 'random') {
-                return calculateRandomShelves(categories, SHELF_AREA);
-            } else {
-                return calculateEfficientShelves(categories, SHELF_AREA);
-            }
+        function getCategoryByVolume(volume) {
+            if (volume < 30) return 'micro';
+            if (volume < 100) return 'small';
+            if (volume < 250) return 'medium';
+            if (volume < 500) return 'large';
+            return 'xlarge';
         }
 
-        function calculateEfficientShelves(categories, shelfArea) {
-            const shelves = [];
-            
-            // Sort by size for optimal packing (largest first for stability)
-            const sortedCats = ['xlarge', 'large', 'medium', 'small', 'micro'];
-
-            sortedCats.forEach(catName => {
-                const games = categories[catName];
-                if (!games.length) return;
-
-                // Calculate how many fit per shelf
-                let currentShelfArea = 0;
-                let currentGames = [];
-
-                games.forEach(game => {
-                    // Game area uses WIDTH × HEIGHT (the shelf face area)
-                    const gameArea = analysisStrategy.useDepth 
-                        ? (game.width * game.height)  // W × H shelf face area
-                        : game.width;  // Only width (visual)
-
-                    let actualArea = gameArea;
-                    if (analysisStrategy.allowRotation && gameArea > shelfArea * 0.85) {
-                        // Try rotating (swap width and height)
-                        const rotatedArea = analysisStrategy.useDepth 
-                            ? (game.height * game.width)  // Same for 2D W×H
-                            : game.height;  // Try height instead
-                        actualArea = Math.min(gameArea, rotatedArea);
-                    }
-
-                    if (currentShelfArea + actualArea > shelfArea * 0.85) {
-                        // Start new shelf
-                        if (currentGames.length > 0) {
-                            shelves.push({
-                                games: [...currentGames],
-                                category: catName,
-                                usedArea: currentShelfArea,
-                                shelfArea: shelfArea,
-                                efficiency: (currentShelfArea / shelfArea) * 100
-                            });
-                        }
-                        currentShelfArea = actualArea;
-                        currentGames = [game];
-                    } else {
-                        currentShelfArea += actualArea;
-                        currentGames.push(game);
-                    }
-                });
-
-                // Add final shelf
-                if (currentGames.length > 0) {
-                    shelves.push({
-                        games: currentGames,
-                        category: catName,
-                        usedArea: currentShelfArea,
-                        shelfArea: shelfArea,
-                        efficiency: (currentShelfArea / shelfArea) * 100
-                    });
-                }
-            });
-
-            addLog(`📊 Efficient packing: ${shelves.length} shelves calculated`, 'info');
-            return shelves;
-        }
-
-        function calculateRandomShelves(categories, shelfArea) {
-            // Flatten all games
-            const allGames = [];
-            Object.entries(categories).forEach(([cat, games]) => {
-                games.forEach(g => {
-                    allGames.push({ ...g, category: cat });
-                });
-            });
-
-            // Shuffle randomly
-            for (let i = allGames.length - 1; i > 0; i--) {
-                const j = Math.floor(Math.random() * (i + 1));
-                [allGames[i], allGames[j]] = [allGames[j], allGames[i]];
-            }
-
-            // Fill shelves with random distribution
-            const shelves = [];
-            let currentShelfArea = 0;
-            let currentGames = [];
-            let currentCategory = '';
-
-            allGames.forEach(game => {
-                // Game area uses WIDTH × HEIGHT (shelf face area)
-                const gameArea = analysisStrategy.useDepth 
-                    ? (game.width * game.height)  // W × H shelf face area
-                    : game.width;
-
-                if (currentShelfArea + gameArea > shelfArea * 0.85 && currentGames.length > 0) {
-                    shelves.push({
-                        games: [...currentGames],
-                        category: currentCategory || 'mixed',
-                        usedArea: currentShelfArea,
-                        shelfArea: shelfArea,
-                        efficiency: (currentShelfArea / shelfArea) * 100
-                    });
-                    currentShelfArea = gameArea;
-                    currentGames = [game];
-                    currentCategory = game.category;
-                } else {
-                    currentShelfArea += gameArea;
-                    currentGames.push(game);
-                }
-            });
-
-            if (currentGames.length > 0) {
-                shelves.push({
-                    games: currentGames,
-                    category: currentCategory || 'mixed',
-                    usedArea: currentShelfArea,
-                    shelfArea: shelfArea,
-                    efficiency: (currentShelfArea / shelfArea) * 100
-                });
-            }
-
-            addLog(`🎲 Random distribution: ${shelves.length} shelves calculated`, 'info');
-            return shelves;
-        }
+        // Deprecated but kept for compatibility if needed
+        function calculateOptimalShelves(categories) { return []; }
+        function calculateEfficientShelves(categories, shelfArea) { return []; }
+        function calculateRandomShelves(categories, shelfArea) { return []; }
 
         function calculateEfficiency(shelves) {
             const totalUsed = shelves.reduce((sum, s) => sum + s.usedArea, 0);
@@ -1259,8 +1227,10 @@
                                     </div>
                                     
                                     <div style="background: white; padding: 0.5rem; border-radius: 4px; font-family: monospace; font-size: 0.8rem;">
-                                        <div>Shelf Face Area: ${(g.width * g.height).toFixed(1)} sq in</div>
-                                        <div>Volume: ${(g.width * g.height * g.depth).toFixed(1)} cu in</div>
+                                        <div><strong>Used for Packing:</strong></div>
+                                        <div>Face: ${g.width.toFixed(1)}" W × ${g.height.toFixed(1)}" H</div>
+                                        <div>Depth: ${g.depth.toFixed(1)}"</div>
+                                        <div>Face Area: ${(g.width * g.height).toFixed(1)} sq in</div>
                                     </div>
                                 </div>
                             </div>
