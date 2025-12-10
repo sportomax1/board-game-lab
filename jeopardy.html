@@ -435,6 +435,14 @@
                 <input type="text" id="username" class="setup-input" placeholder="Enter BGG username" value="sportomax">
                 <button class="btn" onclick="loadGames()">Start Game</button>
             </div>
+            
+            <div style="margin-top: 1.5rem; padding-top: 1.5rem; border-top: 2px solid #eee;">
+                <label style="display: flex; align-items: center; gap: 0.5rem; cursor: pointer; font-weight: 600;">
+                    <input type="checkbox" id="useDescription" checked style="width: 18px; height: 18px; cursor: pointer;">
+                    <span>Include description as hint</span>
+                </label>
+            </div>
+
             <div id="setupStatus" class="status hidden"></div>
         </div>
 
@@ -488,12 +496,15 @@
         }, false);
 
         let allGames = [];
+        let gameDetailsMap = {};
+        let gameQueue = [];
         let currentGameIndex = 0;
         let currentGameDetails = null;
         let revealed = false;
         let answered = false;
         let correct = 0;
         let wrong = 0;
+        let useDescription = true;
 
         const IMAGE_PROXY = 'https://images.weserv.nl/?url=';
 
@@ -530,6 +541,7 @@
 
         async function loadGames() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
+            useDescription = document.getElementById('useDescription').checked;
             console.log(`[jeopardy.html] 📡 Loading collection for ${username}...`);
             updateStatus(`Loading ${username}'s collection...`, 'loading', 'setupStatus');
 
@@ -556,12 +568,19 @@
                     name: item.querySelector('name').textContent
                 }));
 
-                console.log(`[jeopardy.html] 📦 Fetching Thing API details...`);
-                await fetchGameDetails();
+                // Shuffle games
+                allGames = allGames.sort(() => Math.random() - 0.5);
+                gameQueue = [...allGames];
 
+                console.log(`[jeopardy.html] 📦 Starting game with ${allGames.length} games...`);
                 document.getElementById('setupSection').style.display = 'none';
                 document.getElementById('gameSection').classList.add('show');
                 resetScores();
+
+                // Start fetching details in background
+                fetchGameDetailsAsync();
+                
+                // Show first game
                 showGame();
 
             } catch (error) {
@@ -592,17 +611,27 @@
                         const id = item.getAttribute('id');
                         const game = allGames.find(g => g.id === id);
                         if (game) {
-                            game.name = item.querySelector('name')?.getAttribute('value') || game.name;
-                            game.yearPublished = item.querySelector('yearpublished')?.getAttribute('value');
-                            game.minPlayers = item.querySelector('minplayers')?.getAttribute('value');
-                            game.maxPlayers = item.querySelector('maxplayers')?.getAttribute('value');
-                            game.playingTime = item.querySelector('playingtime')?.getAttribute('value');
-                            game.description = item.querySelector('description')?.textContent?.substring(0, 100) || '';
-                            game.thumbnail = item.querySelector('thumbnail')?.textContent;
-                            game.image = item.querySelector('image')?.textContent;
-                            game.rating = item.querySelector('statistics > ratings > average')?.getAttribute('value');
-                            game.mechanics = Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value'));
-                            game.categories = Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value'));
+                            let description = item.querySelector('description')?.textContent?.substring(0, 200) || '';
+                            // Remove game name from description
+                            description = description.replace(new RegExp(`\\b${game.name}\\b`, 'gi'), '[REDACTED]');
+                            
+                            gameDetailsMap[id] = {
+                                id: id,
+                                name: item.querySelector('name')?.getAttribute('value') || game.name,
+                                yearPublished: item.querySelector('yearpublished')?.getAttribute('value'),
+                                minPlayers: item.querySelector('minplayers')?.getAttribute('value'),
+                                maxPlayers: item.querySelector('maxplayers')?.getAttribute('value'),
+                                playingTime: item.querySelector('playingtime')?.getAttribute('value'),
+                                description: description,
+                                thumbnail: item.querySelector('thumbnail')?.textContent,
+                                image: item.querySelector('image')?.textContent,
+                                rating: item.querySelector('statistics > ratings > average')?.getAttribute('value'),
+                                mechanics: Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')),
+                                categories: Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')),
+                                designers: Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')),
+                                publishers: Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')),
+                                artists: Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value'))
+                            };
                         }
                     });
 
@@ -613,18 +642,78 @@
             }
         }
 
+        function fetchGameDetailsAsync() {
+            // Fetch game details in background without blocking gameplay
+            const batchSize = 20;
+            let batchIndex = 0;
+
+            const fetchBatch = async () => {
+                const startIndex = batchIndex * batchSize;
+                if (startIndex >= allGames.length) return;
+
+                const batch = allGames.slice(startIndex, startIndex + batchSize);
+                const ids = batch.map(g => g.id).join(',');
+                batchIndex++;
+
+                console.log(`[jeopardy.html] 📦 Background fetch batch ${batchIndex}/${Math.ceil(allGames.length / batchSize)}`);
+
+                try {
+                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`;
+                    const thingText = await fetchWithRetry(thingUrl);
+
+                    const thingXml = new DOMParser().parseFromString(thingText, 'text/xml');
+                    Array.from(thingXml.querySelectorAll('item')).forEach(item => {
+                        const id = item.getAttribute('id');
+                        const game = allGames.find(g => g.id === id);
+                        if (game && !gameDetailsMap[id]) {
+                            let description = item.querySelector('description')?.textContent?.substring(0, 200) || '';
+                            // Remove game name from description
+                            description = description.replace(new RegExp(`\\b${game.name}\\b`, 'gi'), '[REDACTED]');
+                            
+                            gameDetailsMap[id] = {
+                                id: id,
+                                name: item.querySelector('name')?.getAttribute('value') || game.name,
+                                yearPublished: item.querySelector('yearpublished')?.getAttribute('value'),
+                                minPlayers: item.querySelector('minplayers')?.getAttribute('value'),
+                                maxPlayers: item.querySelector('maxplayers')?.getAttribute('value'),
+                                playingTime: item.querySelector('playingtime')?.getAttribute('value'),
+                                description: description,
+                                thumbnail: item.querySelector('thumbnail')?.textContent,
+                                image: item.querySelector('image')?.textContent,
+                                rating: item.querySelector('statistics > ratings > average')?.getAttribute('value'),
+                                mechanics: Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')),
+                                categories: Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')),
+                                designers: Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')),
+                                publishers: Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')),
+                                artists: Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value'))
+                            };
+                        }
+                    });
+
+                    await new Promise(r => setTimeout(r, 500));
+                    await fetchBatch(); // Fetch next batch
+                } catch (error) {
+                    console.error(`[jeopardy.html] ❌ Background fetch error:`, error);
+                    await fetchBatch();
+                }
+            };
+
+            fetchBatch();
+        }
+
         function showGame() {
-            if (currentGameIndex >= allGames.length) {
-                updateStatus(`Game Over! You completed all ${allGames.length} games!`, 'success', 'gameStatus');
+            if (currentGameIndex >= gameQueue.length) {
+                updateStatus(`Game Over! You completed all ${gameQueue.length} games!`, 'success', 'gameStatus');
                 return;
             }
 
-            const game = allGames[currentGameIndex];
-            console.log(`[jeopardy.html] 🎮 Showing game ${currentGameIndex + 1}/${allGames.length}: ${game.id}`);
+            const game = gameQueue[currentGameIndex];
+            currentGameDetails = gameDetailsMap[game.id] || game;
+            
+            console.log(`[jeopardy.html] 🎮 Showing game ${currentGameIndex + 1}/${gameQueue.length}: ${currentGameDetails.name}`);
 
             revealed = false;
             answered = false;
-            currentGameDetails = game;
 
             const gameCard = document.getElementById('gameCard');
             gameCard.classList.add('hidden');
@@ -639,12 +728,16 @@
             const gameInfo = document.getElementById('gameInfo');
             const clueItems = [];
 
-            if (game.yearPublished) clueItems.push(`<div class="info-item"><div class="info-label">Year Published</div><div class="info-value">${game.yearPublished}</div></div>`);
-            if (game.minPlayers && game.maxPlayers) clueItems.push(`<div class="info-item"><div class="info-label">Players</div><div class="info-value">${game.minPlayers}-${game.maxPlayers}</div></div>`);
-            if (game.playingTime) clueItems.push(`<div class="info-item"><div class="info-label">Playing Time</div><div class="info-value">${game.playingTime} min</div></div>`);
-            if (game.rating) clueItems.push(`<div class="info-item"><div class="info-label">Average Rating</div><div class="info-value">${parseFloat(game.rating).toFixed(2)}</div></div>`);
-            if (game.mechanics && game.mechanics.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Mechanics</div><div class="info-value">${game.mechanics.slice(0, 2).join(', ')}</div></div>`);
-            if (game.categories && game.categories.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Categories</div><div class="info-value">${game.categories.slice(0, 2).join(', ')}</div></div>`);
+            if (currentGameDetails.yearPublished) clueItems.push(`<div class="info-item"><div class="info-label">Year Published</div><div class="info-value">${currentGameDetails.yearPublished}</div></div>`);
+            if (currentGameDetails.minPlayers && currentGameDetails.maxPlayers) clueItems.push(`<div class="info-item"><div class="info-label">Players</div><div class="info-value">${currentGameDetails.minPlayers}-${currentGameDetails.maxPlayers}</div></div>`);
+            if (currentGameDetails.playingTime) clueItems.push(`<div class="info-item"><div class="info-label">Playing Time</div><div class="info-value">${currentGameDetails.playingTime} min</div></div>`);
+            if (currentGameDetails.rating) clueItems.push(`<div class="info-item"><div class="info-label">Average Rating</div><div class="info-value">${parseFloat(currentGameDetails.rating).toFixed(2)}</div></div>`);
+            if (currentGameDetails.mechanics && currentGameDetails.mechanics.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Mechanics</div><div class="info-value">${currentGameDetails.mechanics.slice(0, 2).join(', ')}</div></div>`);
+            if (currentGameDetails.categories && currentGameDetails.categories.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Categories</div><div class="info-value">${currentGameDetails.categories.slice(0, 2).join(', ')}</div></div>`);
+            if (currentGameDetails.designers && currentGameDetails.designers.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Designers</div><div class="info-value">${currentGameDetails.designers.slice(0, 2).join(', ')}</div></div>`);
+            if (currentGameDetails.artists && currentGameDetails.artists.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Artists</div><div class="info-value">${currentGameDetails.artists.slice(0, 2).join(', ')}</div></div>`);
+            if (currentGameDetails.publishers && currentGameDetails.publishers.length > 0) clueItems.push(`<div class="info-item"><div class="info-label">Publishers</div><div class="info-value">${currentGameDetails.publishers.slice(0, 2).join(', ')}</div></div>`);
+            if (useDescription && currentGameDetails.description) clueItems.push(`<div class="info-item" style="grid-column: 1 / -1;"><div class="info-label">Description</div><div class="info-value" style="font-size: 0.9rem; line-height: 1.4;">${currentGameDetails.description}</div></div>`);
 
             gameInfo.innerHTML = clueItems.join('');
 
@@ -656,7 +749,7 @@
             document.getElementById('resultIndicator').classList.add('hidden');
 
             gameCard.classList.remove('hidden');
-            updateStatus(`Question ${currentGameIndex + 1}/${allGames.length}`, 'info', 'gameStatus');
+            updateStatus(`Question ${currentGameIndex + 1}/${gameQueue.length}`, 'info', 'gameStatus');
         }
 
         function revealAnswer() {
@@ -732,14 +825,13 @@
 
         function resetGame() {
             currentGameIndex = 0;
+            allGames = [];
+            gameDetailsMap = {};
+            gameQueue = [];
             resetScores();
-            if (allGames.length > 0) {
-                showGame();
-            } else {
-                document.getElementById('setupSection').style.display = 'block';
-                document.getElementById('gameSection').classList.remove('show');
-                updateStatus('', '', 'setupStatus');
-            }
+            document.getElementById('setupSection').style.display = 'block';
+            document.getElementById('gameSection').classList.remove('show');
+            updateStatus('', '', 'setupStatus');
         }
 
         function resetScores() {
