@@ -791,9 +791,93 @@
         .hidden-section {
             display: none !important;
         }
+
+        /* On-screen console for debugging */
+        #debugConsole {
+            position: fixed;
+            bottom: 1rem;
+            right: 1rem;
+            width: 350px;
+            height: 200px;
+            background: #1e1e1e;
+            border: 2px solid #ffb81c;
+            border-radius: 8px;
+            color: #00ff00;
+            font-family: 'Courier New', monospace;
+            font-size: 0.75rem;
+            line-height: 1.4;
+            z-index: 2000;
+            box-shadow: 0 4px 20px rgba(0, 0, 0, 0.5);
+            display: flex;
+            flex-direction: column;
+        }
+
+        #debugConsole.hidden {
+            display: none;
+        }
+
+        #debugConsoleHeader {
+            padding: 0.5rem 1rem;
+            background: #ffb81c;
+            color: #000;
+            font-weight: 700;
+            display: flex;
+            justify-content: space-between;
+            align-items: center;
+            border-bottom: 2px solid #001a4d;
+        }
+
+        #debugConsoleToggle {
+            background: none;
+            border: none;
+            color: #000;
+            font-weight: 700;
+            cursor: pointer;
+            padding: 0;
+            font-size: 1rem;
+        }
+
+        #debugConsoleContent {
+            flex: 1;
+            padding: 0.75rem 1rem;
+            overflow-y: auto;
+            word-wrap: break-word;
+            word-break: break-all;
+        }
+
+        .console-log {
+            color: #00ff00;
+        }
+
+        .console-warn {
+            color: #ffcc00;
+        }
+
+        .console-error {
+            color: #ff6666;
+        }
+
+        @media (max-width: 768px) {
+            #debugConsole {
+                width: 90vw;
+                height: 200px;
+                bottom: 0.5rem;
+                right: 0.5rem;
+                left: 0.5rem;
+            }
+        }
     </style>
 </head>
 <body>
+    <!-- Debug Console -->
+    <div id="debugConsole">
+        <div id="debugConsoleHeader">
+            <span>🔍 Debug Console</span>
+            <button id="debugConsoleToggle" onclick="toggleDebugConsole()">−</button>
+        </div>
+        <div id="debugConsoleContent"></div>
+    </div>
+
     <div class="container">
         <div class="header">
             <h1>🎲 Game Similarity Analyzer</h1>
@@ -888,6 +972,56 @@
         let similarityMatrix = {};
 
         const IMAGE_PROXY = 'https://images.weserv.nl/?url=';
+
+        // Debug Console Functions
+        function addLog(message, type = 'log') {
+            const content = document.getElementById('debugConsoleContent');
+            const logEntry = document.createElement('div');
+            const timestamp = new Date().toLocaleTimeString();
+            const className = `console-${type}`;
+            logEntry.className = className;
+            logEntry.textContent = `[${timestamp}] ${message}`;
+            content.appendChild(logEntry);
+            content.scrollTop = content.scrollHeight;
+        }
+
+        function toggleDebugConsole() {
+            const console = document.getElementById('debugConsole');
+            const btn = document.getElementById('debugConsoleToggle');
+            const isHidden = console.classList.toggle('collapsed');
+            const content = document.getElementById('debugConsoleContent');
+            const header = document.getElementById('debugConsoleHeader');
+            
+            if (console.classList.contains('collapsed')) {
+                content.style.display = 'none';
+                btn.textContent = '+';
+                console.style.height = 'auto';
+            } else {
+                content.style.display = 'block';
+                btn.textContent = '−';
+                console.style.height = '200px';
+            }
+        }
+
+        // Override console methods
+        const originalLog = console.log;
+        const originalWarn = console.warn;
+        const originalError = console.error;
+
+        console.log = function(...args) {
+            originalLog.apply(console, args);
+            addLog(args.join(' '), 'log');
+        };
+
+        console.warn = function(...args) {
+            originalWarn.apply(console, args);
+            addLog(args.join(' '), 'warn');
+        };
+
+        console.error = function(...args) {
+            originalError.apply(console, args);
+            addLog(args.join(' '), 'error');
+        };
 
         async function fetchWithRetry(url, maxRetries = 5) {
             for (let i = 0; i < maxRetries; i++) {
@@ -1014,10 +1148,16 @@
 
         function calculateSimilarities() {
             const gameIds = Object.keys(gameDetails);
+            console.log(`[similar.html] 📊 Starting similarity calculation for ${gameIds.length} games...`);
 
             gameIds.forEach(gameId => {
                 similarityMatrix[gameId] = {};
                 const game1 = gameDetails[gameId];
+
+                if (!game1) {
+                    console.error(`[similar.html] ❌ Game ${gameId} has no details!`);
+                    return;
+                }
 
                 gameIds.forEach(otherId => {
                     if (gameId === otherId) {
@@ -1026,54 +1166,78 @@
                     }
 
                     const game2 = gameDetails[otherId];
+                    
+                    if (!game2) {
+                        console.error(`[similar.html] ❌ Game ${otherId} has no details!`);
+                        similarityMatrix[gameId][otherId] = 0;
+                        return;
+                    }
+
                     let score = 0;
 
-                    // Year Published (+1 if same year)
-                    if (game1.yearPublished === game2.yearPublished && game1.yearPublished > 0) score++;
+                    try {
+                        // Year Published (+1 if same year)
+                        if (game1.yearPublished === game2.yearPublished && game1.yearPublished > 0) score++;
 
-                    // Min Players (+1 if same)
-                    if (game1.minPlayers === game2.minPlayers && game1.minPlayers > 0) score++;
+                        // Min Players (+1 if same)
+                        if (game1.minPlayers === game2.minPlayers && game1.minPlayers > 0) score++;
 
-                    // Max Players (+1 if same)
-                    if (game1.maxPlayers === game2.maxPlayers && game1.maxPlayers > 0) score++;
+                        // Max Players (+1 if same)
+                        if (game1.maxPlayers === game2.maxPlayers && game1.maxPlayers > 0) score++;
 
-                    // Playing Time (+1 if within 15 min)
-                    if (Math.abs(game1.playingTime - game2.playingTime) <= 15 && game1.playingTime > 0) score++;
+                        // Playing Time (+1 if within 15 min)
+                        if (Math.abs(game1.playingTime - game2.playingTime) <= 15 && game1.playingTime > 0) score++;
 
-                    // Min Playtime (+1 if within 10 min)
-                    if (Math.abs(game1.minPlaytime - game2.minPlaytime) <= 10 && game1.minPlaytime > 0) score++;
+                        // Min Playtime (+1 if within 10 min)
+                        if (Math.abs(game1.minPlaytime - game2.minPlaytime) <= 10 && game1.minPlaytime > 0) score++;
 
-                    // Max Playtime (+1 if within 10 min)
-                    if (Math.abs(game1.maxPlaytime - game2.maxPlaytime) <= 10 && game1.maxPlaytime > 0) score++;
+                        // Max Playtime (+1 if within 10 min)
+                        if (Math.abs(game1.maxPlaytime - game2.maxPlaytime) <= 10 && game1.maxPlaytime > 0) score++;
 
-                    // Min Age (+1 if within 2 years)
-                    if (Math.abs(game1.minAge - game2.minAge) <= 2 && game1.minAge > 0) score++;
+                        // Min Age (+1 if within 2 years)
+                        if (Math.abs(game1.minAge - game2.minAge) <= 2 && game1.minAge > 0) score++;
 
-                    // Categories (same = +1 each, max 5)
-                    const categoryMatches = game1.categories.filter(c => game2.categories.includes(c)).length;
-                    score += Math.min(categoryMatches, 5);
+                        // Categories (same = +1 each, max 5)
+                        const categories1 = game1.categories || [];
+                        const categories2 = game2.categories || [];
+                        const categoryMatches = categories1.filter(c => categories2.includes(c)).length;
+                        score += Math.min(categoryMatches, 5);
 
-                    // Mechanics (same = +1 each, max 5)
-                    const mechanicMatches = game1.mechanics.filter(m => game2.mechanics.includes(m)).length;
-                    score += Math.min(mechanicMatches, 5);
+                        // Mechanics (same = +1 each, max 5)
+                        const mechanics1 = game1.mechanics || [];
+                        const mechanics2 = game2.mechanics || [];
+                        const mechanicMatches = mechanics1.filter(m => mechanics2.includes(m)).length;
+                        score += Math.min(mechanicMatches, 5);
 
-                    // Designers (same = +1 each, max 2)
-                    const designerMatches = game1.designers.filter(d => game2.designers.includes(d)).length;
-                    score += Math.min(designerMatches, 2);
+                        // Designers (same = +1 each, max 2)
+                        const designers1 = game1.designers || [];
+                        const designers2 = game2.designers || [];
+                        const designerMatches = designers1.filter(d => designers2.includes(d)).length;
+                        score += Math.min(designerMatches, 2);
 
-                    // Publishers (same = +1 each, max 2)
-                    const publisherMatches = game1.publishers.filter(p => game2.publishers.includes(p)).length;
-                    score += Math.min(publisherMatches, 2);
+                        // Publishers (same = +1 each, max 2)
+                        const publishers1 = game1.publishers || [];
+                        const publishers2 = game2.publishers || [];
+                        const publisherMatches = publishers1.filter(p => publishers2.includes(p)).length;
+                        score += Math.min(publisherMatches, 2);
 
-                    // Game Types (same = +1 each, max 3)
-                    const typeMatches = game1.types.filter(t => game2.types.includes(t)).length;
-                    score += Math.min(typeMatches, 3);
+                        // Game Types (same = +1 each, max 3)
+                        const types1 = game1.types || [];
+                        const types2 = game2.types || [];
+                        const typeMatches = types1.filter(t => types2.includes(t)).length;
+                        score += Math.min(typeMatches, 3);
 
-                    // Artists (same = +1 each, max 2)
-                    const artistMatches = game1.artists.filter(a => game2.artists.includes(a)).length;
-                    score += Math.min(artistMatches, 2);
+                        // Artists (same = +1 each, max 2)
+                        const artists1 = game1.artists || [];
+                        const artists2 = game2.artists || [];
+                        const artistMatches = artists1.filter(a => artists2.includes(a)).length;
+                        score += Math.min(artistMatches, 2);
 
-                    similarityMatrix[gameId][otherId] = score;
+                        similarityMatrix[gameId][otherId] = score;
+                    } catch (error) {
+                        console.error(`[similar.html] ❌ Error comparing ${gameId} vs ${otherId}:`, error.message);
+                        similarityMatrix[gameId][otherId] = 0;
+                    }
                 });
             });
 
