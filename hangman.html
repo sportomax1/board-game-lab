@@ -38,6 +38,20 @@
                         <span class="text-sm font-medium text-gray-700">Auto-show Special Characters & Numbers</span>
                     </label>
                 </div>
+
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-3">Game End Mode</label>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="gameMode" value="type" class="w-5 h-5" checked>
+                            <span class="text-sm font-medium text-gray-700">✅ Type Mode (confirm each answer)</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" name="gameMode" value="reveal" class="w-5 h-5">
+                            <span class="text-sm font-medium text-gray-700">❌ Reveal Mode (auto-advance)</span>
+                        </label>
+                    </div>
+                </div>
                 
                 <button onclick="startGame()" class="w-full bg-blue-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-blue-700 transition shadow-lg">
                     Start Game
@@ -118,9 +132,13 @@
 
             <!-- Game Image Display -->
             <div id="gameImageContainer" class="hidden bg-white rounded-2xl shadow-sm border-2 border-gray-200 p-6 mb-4 text-center">
+                <p id="gameEndTitle" class="text-2xl font-bold mb-4 text-gray-900"></p>
                 <img id="gameImage" src="" alt="Game" class="mx-auto max-h-64 rounded-lg mb-3">
-                <p id="gameName" class="text-xl font-bold text-gray-900"></p>
-                <a id="gameLink" href="" target="_blank" class="text-blue-600 hover:underline text-sm">View on BGG</a>
+                <p id="gameName" class="text-xl font-bold text-gray-900 mb-2"></p>
+                <div class="flex gap-2 justify-center">
+                    <a id="gameLink" href="" target="_blank" class="text-blue-600 hover:underline text-sm py-2 px-4 bg-blue-50 rounded-lg">🔗 View on BGG</a>
+                    <button onclick="gameImageConfirm()" id="confirmBtn" class="bg-green-600 text-white py-2 px-6 rounded-lg font-bold hover:bg-green-700 text-sm">Next Game</button>
+                </div>
             </div>
 
             <!-- Word Display -->
@@ -153,14 +171,16 @@
         let wrongGuesses = 0;
         let gamesWon = 0;
         let settings = {};
+        let gameEnded = false;
         const hangmanParts = ['head', 'body', 'leftArm', 'rightArm', 'leftLeg', 'rightLeg'];
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
             const includeExpansions = document.getElementById('includeExpansions').checked;
             const showSpecialChars = document.getElementById('showSpecialChars').checked;
+            const gameMode = document.querySelector('input[name="gameMode"]:checked').value;
             
-            settings = { username, includeExpansions, showSpecialChars };
+            settings = { username, includeExpansions, showSpecialChars, gameMode };
             
             document.getElementById('settingsModal').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
@@ -206,6 +226,7 @@
             currentGame = collection[Math.floor(Math.random() * collection.length)];
             guessedLetters = new Set();
             wrongGuesses = 0;
+            gameEnded = false;
             
             // Auto-reveal special chars and numbers if enabled
             if (settings.showSpecialChars) {
@@ -278,11 +299,13 @@
             
             if (allGuessed) {
                 gamesWon++;
+                gameEnded = true;
                 disableGame();
                 setTimeout(() => {
                     showGameImage('🎉 You won!');
                 }, 300);
             } else if (wrongGuesses >= 6) {
+                gameEnded = true;
                 disableGame();
                 setTimeout(() => {
                     showGameImage('💀 Game Over!');
@@ -298,42 +321,68 @@
 
         async function showGameImage(title) {
             try {
-                // Fetch game data from BGG API
-                const res = await fetch(`/api/bgg-thing?id=${currentGame.id}`);
-                const xml = await res.text();
-                const parser = new DOMParser().parseFromString(xml, 'text/xml');
-                const item = parser.querySelector('item');
-                
-                const imageUrl = item.querySelector('image')?.textContent || '';
-                const gameName = item.querySelector('name[type="primary"]')?.getAttribute('value') || currentGame.name;
+                // Fetch game data with staggered retries
+                const imageUrl = await fetchGameImageWithRetry(currentGame.id, 3);
+                const gameName = currentGame.name;
                 
                 // Show image container
                 const container = document.getElementById('gameImageContainer');
+                document.getElementById('gameEndTitle').textContent = title;
                 document.getElementById('gameImage').src = imageUrl;
                 document.getElementById('gameName').textContent = gameName;
                 document.getElementById('gameLink').href = `https://boardgamegeek.com/boardgame/${currentGame.id}`;
                 container.classList.remove('hidden');
                 
-                await new Promise(resolve => {
-                    alert(title + '\n\nThe game was: ' + currentGame.name);
-                    resolve();
-                });
-                
-                // Automatically move to next game after 3 seconds
-                setTimeout(() => {
-                    newGame();
-                }, 3000);
+                // Handle mode-based auto-advance
+                if (settings.gameMode === 'reveal') {
+                    setTimeout(() => {
+                        newGame();
+                    }, 2500);
+                }
             } catch (error) {
                 console.error('Error fetching game image:', error);
-                await new Promise(resolve => {
-                    alert(title + '\n\nThe game was: ' + currentGame.name);
-                    resolve();
-                });
-                // Automatically move to next game after 3 seconds
-                setTimeout(() => {
-                    newGame();
-                }, 3000);
+                // Show image container even if fetch failed
+                const container = document.getElementById('gameImageContainer');
+                document.getElementById('gameEndTitle').textContent = title;
+                document.getElementById('gameImage').src = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22200%22 height=%22200%22%3E%3Crect fill=%22%23e5e7eb%22 width=%22200%22 height=%22200%22/%3E%3Ctext x=%2250%25%22 y=%2250%25%22 font-size=%2224%22 text-anchor=%22middle%22 dy=%22.3em%22 fill=%22%236b7280%22%3ENo Image%3C/text%3E%3C/svg%3E';
+                document.getElementById('gameName').textContent = currentGame.name;
+                document.getElementById('gameLink').href = `https://boardgamegeek.com/boardgame/${currentGame.id}`;
+                container.classList.remove('hidden');
+                
+                // Handle mode-based auto-advance
+                if (settings.gameMode === 'reveal') {
+                    setTimeout(() => {
+                        newGame();
+                    }, 2500);
+                }
             }
+        }
+
+        async function fetchGameImageWithRetry(gameId, maxAttempts) {
+            for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+                try {
+                    const res = await fetch(`/api/bgg-thing?id=${gameId}`);
+                    const xml = await res.text();
+                    const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                    const item = parser.querySelector('item');
+                    const imageUrl = item.querySelector('image')?.textContent || '';
+                    
+                    if (imageUrl) {
+                        return imageUrl;
+                    }
+                } catch (error) {
+                    console.log(`Attempt ${attempt}/${maxAttempts} failed for game ${gameId}`);
+                    if (attempt < maxAttempts) {
+                        // Staggered delay: 300ms, 600ms, etc.
+                        await new Promise(resolve => setTimeout(resolve, 300 * attempt));
+                    }
+                }
+            }
+            throw new Error('Failed to fetch game image after ' + maxAttempts + ' attempts');
+        }
+
+        function gameImageConfirm() {
+            newGame();
         }
 
         function giveUp() {
