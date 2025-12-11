@@ -44,8 +44,11 @@
             <div>
                 <h1 class="text-xl font-bold">🎲 Game Library</h1>
                 <p class="text-xs opacity-90">Sorted by desire to play</p>
+                <div id="dataFreshness" class="text-xs opacity-75 mt-1"></div>
             </div>
             <div class="flex gap-2">
+                <button onclick="showShelfModal()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center" title="DTE Shelf Layout">📦</button>
+                <button onclick="manualRefreshData()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center" title="Refresh data">🔄</button>
                 <button onclick="showCSVExportModal()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center" title="Export as CSV">📊</button>
                 <button onclick="toggleCompactView()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center">📋</button>
                 <button onclick="showInfoModal()" class="bg-white bg-opacity-20 hover:bg-opacity-30 rounded-full w-8 h-8 flex items-center justify-center">ℹ️</button>
@@ -105,7 +108,7 @@
             </div>
         </div>
 
-        <div id="gameList" class="space-y-2"></div>
+        <div id="gameList" class="grid gap-2 grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 2xl:grid-cols-5"></div>
     </div>
 
     <div id="apiModal" class="modal">
@@ -127,6 +130,19 @@
                 <button onclick="closeModal('infoModal')" class="text-2xl text-gray-500 hover:text-black">✕</button>
             </div>
             <p class="text-sm">Loads games from XML files, enriches with BGG API. Filters apply to loaded data without reloading.</p>
+        </div>
+    </div>
+
+    <div id="shelfModal" class="modal">
+        <div class="modal-content">
+            <div class="flex justify-between items-center mb-3">
+                <h2 class="text-lg font-bold">📦 DTE Shelf Layout</h2>
+                <button onclick="closeModal('shelfModal')" class="text-2xl text-gray-500 hover:text-black">✕</button>
+            </div>
+            <p class="text-sm text-gray-600 mb-3">Visual representation of game locations on DTE shelves:</p>
+            <div id="shelfMap" class="bg-gray-50 p-3 rounded border max-h-96 overflow-y-auto">
+                <div class="text-gray-500 text-xs">Loading shelf data...</div>
+            </div>
         </div>
     </div>
 
@@ -185,6 +201,66 @@ function setCache(id, data) {
     try { localStorage.setItem(`bgg_${id}`, JSON.stringify({ts: Date.now(), v: data})); } catch(e) {}
 }
 
+// IndexedDB XML Cache for performance
+const dbName = 'GameLibraryDB';
+const storeName = 'xmlCache';
+
+function initIndexedDB() {
+    return new Promise((resolve, reject) => {
+        const req = indexedDB.open(dbName, 1);
+        
+        req.onerror = () => reject(req.error);
+        req.onsuccess = () => resolve(req.result);
+        
+        req.onupgradeneeded = (e) => {
+            const db = e.target.result;
+            if (!db.objectStoreNames.contains(storeName)) {
+                db.createObjectStore(storeName, { keyPath: 'filename' });
+            }
+        };
+    });
+}
+
+async function getCachedXML(filename) {
+    try {
+        const db = await initIndexedDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(storeName, 'readonly');
+            const store = tx.objectStore(storeName);
+            const req = store.get(filename);
+            
+            req.onerror = () => reject(req.error);
+            req.onsuccess = () => {
+                const data = req.result;
+                if (data && Date.now() - data.timestamp < 24*60*60*1000) {
+                    resolve(data.xml);
+                } else {
+                    resolve(null);
+                }
+            };
+        });
+    } catch (e) {
+        console.warn('IndexedDB read failed:', e);
+        return null;
+    }
+}
+
+async function setCachedXML(filename, xmlString) {
+    try {
+        const db = await initIndexedDB();
+        return new Promise((resolve, reject) => {
+            const tx = db.transaction(storeName, 'readwrite');
+            const store = tx.objectStore(storeName);
+            const req = store.put({ filename, xml: xmlString, timestamp: Date.now() });
+            
+            req.onerror = () => reject(req.error);
+            req.onsuccess = () => resolve();
+        });
+    } catch (e) {
+        console.warn('IndexedDB write failed:', e);
+    }
+}
+
 function toggleCompactView() {
     isCompactView = !isCompactView;
     document.querySelectorAll('.game-card').forEach(c => c.classList.toggle('compact', isCompactView));
@@ -206,6 +282,87 @@ function clearQuickFilters() {
 function toggleMechanics(id) {
     const s = document.querySelector(`[data-mechanics="${id}"]`);
     if (s) s.classList.toggle('expanded');
+}
+
+// Lazy Loading Image Observer
+const imgObserver = new IntersectionObserver((entries, observer) => {
+    entries.forEach(entry => {
+        if (entry.isIntersecting) {
+            const img = entry.target;
+            img.src = img.dataset.src;
+            img.removeAttribute('data-src');
+            observer.unobserve(img);
+        }
+    });
+});
+
+// Update data freshness display
+function updateDataFreshness() {
+    const freshness = document.getElementById('dataFreshness');
+    if (!freshness) return;
+    
+    try {
+        const lastUpdate = localStorage.getItem('libraryLastUpdate');
+        if (lastUpdate) {
+            const date = new Date(parseInt(lastUpdate));
+            const now = new Date();
+            const diffHours = Math.floor((now - date) / (1000 * 60 * 60));
+            const diffMins = Math.floor((now - date) / (1000 * 60));
+            
+            let timeStr = '';
+            if (diffHours === 0) timeStr = `${diffMins}m ago`;
+            else if (diffHours < 24) timeStr = `${diffHours}h ago`;
+            else timeStr = date.toLocaleDateString();
+            
+            freshness.textContent = `Last updated: ${timeStr}`;
+        }
+    } catch (e) {
+        console.error('Error updating freshness:', e);
+    }
+}
+
+// Manual refresh workflow
+async function manualRefreshData() {
+    const prog = document.getElementById('progressContainer');
+    const progText = document.getElementById('progressText');
+    const progFill = document.getElementById('progressFill');
+    
+    prog.classList.add('active');
+    progText.textContent = 'Refreshing library data...';
+    progFill.style.width = '0%';
+    
+    try {
+        progFill.style.width = '25%';
+        localStorage.removeItem('libraryLastUpdate');
+        
+        // Clear XML cache from IndexedDB
+        try {
+            const db = await initIndexedDB();
+            const tx = db.transaction(storeName, 'readwrite');
+            const store = tx.objectStore(storeName);
+            store.clear();
+        } catch (e) {
+            console.warn('Could not clear cache:', e);
+        }
+        
+        progFill.style.width = '50%';
+        allGames = [];
+        document.getElementById('gameList').innerHTML = '';
+        
+        progFill.style.width = '75%';
+        await loadLibraries();
+        
+        progFill.style.width = '100%';
+        localStorage.setItem('libraryLastUpdate', Date.now().toString());
+        updateDataFreshness();
+        
+        progText.textContent = '✅ Data refreshed successfully';
+        setTimeout(() => prog.classList.remove('active'), 1500);
+    } catch (e) {
+        progText.textContent = '❌ Refresh failed';
+        setTimeout(() => prog.classList.remove('active'), 2000);
+        console.error('Refresh error:', e);
+    }
 }
 
 async function loadLibraries() {
@@ -233,16 +390,35 @@ async function loadLibraries() {
     progFill.style.width = '100%';
     setTimeout(() => prog.classList.remove('active'), 500);
 
+    // Save timestamp for data freshness
+    localStorage.setItem('libraryLastUpdate', Date.now().toString());
+    updateDataFreshness();
+
     setTimeout(loadVisibleAPI, 200);
 }
 
 async function fetchXML(file) {
     try {
+        // Try to get from IndexedDB cache first
+        const cached = await getCachedXML(file);
+        if (cached) {
+            const parsed = cached.trim() ? new DOMParser().parseFromString(cached, 'text/xml') : null;
+            if (parsed) return parsed;
+        }
+        
+        // Fetch from server
         const r = await fetch(file);
         if (!r.ok) return null;
         const t = await r.text();
+        
+        // Store in cache
+        if (t.trim()) await setCachedXML(file, t);
+        
         return t.trim() ? new DOMParser().parseFromString(t, 'text/xml') : null;
-    } catch(e) { return null; }
+    } catch(e) { 
+        console.error('fetchXML error:', e);
+        return null; 
+    }
 }
 
 function processLibraries(sportomaxXML, bggXML, dteXML, dtwXML) {
@@ -360,7 +536,7 @@ function renderAllGames() {
 
 function createCard(g, idx) {
     const card = document.createElement('div');
-    card.className = 'game-card bg-white rounded-lg shadow p-2 flex gap-2';
+    card.className = 'game-card bg-white rounded-lg shadow p-2 flex gap-2 hover:shadow-lg transition-shadow';
     card.dataset.gameId = g.id;
     if (isCompactView) card.classList.add('compact');
 
@@ -375,7 +551,7 @@ function createCard(g, idx) {
     const locTags = g.locations.map(l => `<span class="inline-block bg-gray-100 rounded px-1 text-xs">${l.emoji} ${l.lib || l.loc}</span>`).join(' ');
 
     card.innerHTML = `
-        <img src="https://via.placeholder.com/60x60?text=..." data-gid="${g.id}" class="w-14 h-14 rounded cursor-pointer object-cover flex-shrink-0" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}','_blank')" onerror="this.src='https://via.placeholder.com/60x60?text=?'"/>
+        <img src="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='56' height='56'%3E%3Crect width='56' height='56' fill='%23e5e7eb'/%3E%3Ctext x='50%' y='50%' font-size='10' fill='%239ca3af' text-anchor='middle' dominant-baseline='middle'%3E?%3C/text%3E%3C/svg%3E" data-src="https://via.placeholder.com/60x60?text=..." data-gid="${g.id}" class="w-14 h-14 rounded cursor-pointer object-cover flex-shrink-0 lazy-image" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}','_blank')" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2256%22 height=%2256%22%3E%3Crect width=%2256%22 height=%2256%22 fill=%22%23e5e7eb%22/%3E%3C/svg%3E'"/>
         <div class="flex-1 min-w-0">
             <div class="flex items-start gap-1">
                 <span class="text-gray-400 text-xs">#${idx+1}</span>
@@ -392,6 +568,16 @@ function createCard(g, idx) {
             </div>
             <div class="mt-1 flex flex-wrap gap-1">${locTags}</div>
         </div>`;
+    
+    // Setup lazy loading for image
+    const img = card.querySelector('.lazy-image');
+    if ('IntersectionObserver' in window) {
+        imgObserver.observe(img);
+    } else {
+        img.src = img.dataset.src;
+        img.removeAttribute('data-src');
+    }
+    
     return card;
 }
 
@@ -566,6 +752,47 @@ function openBGGPage() { if (currentGameId) window.open(`https://boardgamegeek.c
 
 function closeModal(id) { document.getElementById(id).classList.remove('active'); }
 function showInfoModal() { document.getElementById('infoModal').classList.add('active'); }
+
+function showShelfModal() {
+    document.getElementById('shelfModal').classList.add('active');
+    buildShelfMap();
+}
+
+function buildShelfMap() {
+    const shelfMap = document.getElementById('shelfMap');
+    
+    // Group games by shelf
+    const shelves = new Map();
+    allGames.forEach(g => {
+        const dteLocation = g.locations.find(l => l.loc === 'dte');
+        if (dteLocation && dteLocation.lib) {
+            if (!shelves.has(dteLocation.lib)) shelves.set(dteLocation.lib, []);
+            shelves.get(dteLocation.lib).push(g);
+        }
+    });
+    
+    if (shelves.size === 0) {
+        shelfMap.innerHTML = '<div class="text-gray-500 text-xs">No games with shelf locations found in DTE library.</div>';
+        return;
+    }
+    
+    // Sort shelves alphabetically
+    const sortedShelves = Array.from(shelves.entries()).sort((a, b) => a[0].localeCompare(b[0]));
+    
+    shelfMap.innerHTML = sortedShelves.map(([shelf, games]) => `
+        <div class="mb-4 last:mb-0">
+            <div class="font-semibold text-sm bg-blue-100 p-2 rounded mb-2">📦 ${shelf} (${games.length} games)</div>
+            <div class="grid grid-cols-2 sm:grid-cols-3 gap-1 ml-2">
+                ${games.map(g => `
+                    <div class="bg-white border border-gray-300 rounded p-1 text-xs hover:bg-gray-50 cursor-pointer" title="${g.name}">
+                        <div class="font-semibold truncate text-gray-800">${g.name.substring(0, 20)}</div>
+                        <div class="text-gray-500 text-xs">⭐ ${g.rating}</div>
+                    </div>
+                `).join('')}
+            </div>
+        </div>
+    `).join('');
+}
 
 function showCSVExportModal() {
     document.getElementById('csvExportModal').classList.add('active');
