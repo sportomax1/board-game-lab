@@ -48,6 +48,10 @@
                         <option value="5">5 per category</option>
                     </select>
                 </div>
+                <div class="flex items-center gap-2">
+                    <input type="checkbox" id="includeExpansions" class="w-4 h-4 border-2 border-gray-300 rounded cursor-pointer" checked>
+                    <label for="includeExpansions" class="text-sm font-bold text-gray-700 cursor-pointer">Include Expansions</label>
+                </div>
                 <button onclick="startGame()" class="w-full bg-green-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-green-700 transition shadow-lg">Start Game</button>
             </div>
         </div>
@@ -132,19 +136,63 @@
         let username = 'sportomax';
         let currentCanvas = null;
 
+        /** Helper function to delay execution. */
+        function wait(ms) {
+            return new Promise(resolve => setTimeout(resolve, ms));
+        }
+
+        /**
+         * Fetches collection data with retry logic for BGG 202 responses.
+         * Retries up to 3 times with increasing delays (300ms, 600ms, 1200ms).
+         */
+        async function fetchCollectionWithRetry(username, retries = 3, attemptNum = 1) {
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&subtype=boardgame&stats=1`);
+                
+                // BGG returns 202 when processing - retry with delay
+                if (res.status === 202 && retries > 0) {
+                    const delayMs = 300 * attemptNum; // 300ms, 600ms, 1200ms
+                    console.log(`BGG processing (202). Retry ${attemptNum} in ${delayMs}ms...`);
+                    await wait(delayMs);
+                    return fetchCollectionWithRetry(username, retries - 1, attemptNum + 1);
+                }
+
+                if (!res.ok) {
+                    throw new Error(`API failed: Status ${res.status} ${res.statusText}`);
+                }
+
+                return await res.text();
+            } catch (error) {
+                console.error('Fetch error:', error);
+                throw error;
+            }
+        }
+
         async function startGame() {
             username = document.getElementById('username').value.trim() || 'sportomax';
             perCategory = parseInt(document.getElementById('perCategory').value);
+            const includeExpansions = document.getElementById('includeExpansions').checked;
+            
             document.getElementById('settingsModal').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
             document.getElementById('startMax').textContent = perCategory;
             document.getElementById('benchMax').textContent = perCategory;
             document.getElementById('cutMax').textContent = perCategory;
+            
             try {
-                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&subtype=boardgame&stats=1`);
-                const xml = await res.text();
+                const xml = await fetchCollectionWithRetry(username);
                 const parser = new DOMParser().parseFromString(xml, 'text/xml');
-                const items = Array.from(parser.querySelectorAll('item'));
+                let items = Array.from(parser.querySelectorAll('item'));
+                
+                // Filter out expansions if not included
+                if (!includeExpansions) {
+                    items = items.filter(item => item.getAttribute('subtype') !== 'boardgameexpansion');
+                }
+                
+                if (items.length === 0) {
+                    throw new Error('No games found. Try adjusting expansion filter.');
+                }
+                
                 collection = items.map(item => ({
                     id: item.getAttribute('objectid'),
                     name: item.querySelector('name').textContent,
