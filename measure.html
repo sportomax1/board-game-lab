@@ -277,7 +277,7 @@
 
         .table-row {
             display: grid;
-            grid-template-columns: 50px 1fr 50px 50px 50px 100px;
+            grid-template-columns: 50px 1fr 50px 50px 50px 50px 100px;
             gap: 0.4rem;
             padding: 0.5rem;
             border-bottom: 1px solid #eee;
@@ -293,7 +293,7 @@
 
         .table-header {
             display: grid;
-            grid-template-columns: 50px 1fr 50px 50px 50px 100px;
+            grid-template-columns: 50px 1fr 50px 50px 50px 50px 100px;
             gap: 0.4rem;
             padding: 0.5rem;
             background: #f5f5f5;
@@ -769,18 +769,35 @@
                 console.log(`[measure.html] 🎯 Grouped measurements into ${Object.keys(gameGrouped).length} unique games`);
 
                 popularMeasurements = Object.values(gameGrouped).map(g => {
-                    // Find most common measurement
+                    // Find most common measurement, with cubic footage as tie-breaker
                     const measurementKey = m => `${m.width}x${m.height}x${m.length}`;
                     const measurementCounts = {};
+                    const measurementByKey = {};
                     let maxCount = 0;
                     let mostPopularMeasure = null;
 
                     g.versions.forEach(v => {
                         const key = measurementKey(v);
                         measurementCounts[key] = (measurementCounts[key] || 0) + 1;
-                        if (measurementCounts[key] > maxCount) {
-                            maxCount = measurementCounts[key];
-                            mostPopularMeasure = v;
+                        if (!measurementByKey[key]) {
+                            measurementByKey[key] = v;
+                        }
+                    });
+
+                    // Find max count and apply cubic footage tie-breaker
+                    Object.entries(measurementCounts).forEach(([key, count]) => {
+                        const measure = measurementByKey[key];
+                        const cubicFootage = measure.width * measure.height * measure.length;
+                        
+                        if (count > maxCount) {
+                            maxCount = count;
+                            mostPopularMeasure = measure;
+                        } else if (count === maxCount && mostPopularMeasure) {
+                            // Tie-breaker: use cubic footage
+                            const existingCubic = mostPopularMeasure.width * mostPopularMeasure.height * mostPopularMeasure.length;
+                            if (cubicFootage > existingCubic) {
+                                mostPopularMeasure = measure;
+                            }
                         }
                     });
 
@@ -875,6 +892,7 @@
                     <div style="text-align: center; padding: 0.5rem;" onclick="sortTable('popular', 'width')" style="cursor: pointer;">W ${currentTab === 'popular' && currentSortColumn === 'width' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
                     <div style="text-align: center; padding: 0.5rem;" onclick="sortTable('popular', 'height')" style="cursor: pointer;">H ${currentTab === 'popular' && currentSortColumn === 'height' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
                     <div style="text-align: center; padding: 0.5rem;" onclick="sortTable('popular', 'length')" style="cursor: pointer;">L ${currentTab === 'popular' && currentSortColumn === 'length' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
+                    <div style="text-align: center; padding: 0.5rem;" onclick="sortTable('popular', 'middle')" style="cursor: pointer;">Mid ${currentTab === 'popular' && currentSortColumn === 'middle' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
                     <div style="text-align: center; padding: 0.5rem; font-size: 0.75rem;"><div>Variants</div><div style="font-size: 0.7rem;">#/types/all</div></div>
                 </div>
             `;
@@ -897,16 +915,44 @@
                         v.length === selectedMeasure.length
                     ).length;
                 }
+
+                // Calculate middle measurement for display
+                const middleMeasure = getMiddleMeasurement(selectedMeasure.width, selectedMeasure.height, selectedMeasure.length);
                 
                 // Build variant info display and optional swap button
                 let variantsDisplay = `<div style="text-align: center; font-size: 0.85rem;">
                     <div>${countForSelected}/${g.differentMeasures}/${g.totalVersions}</div>`;
                 
                 if (g.versions && g.versions.length > 1) {
+                    // Sort variants by: count (desc), then cubic footage (desc)
+                    const variantsWithCounts = g.versions.map((v, idx) => {
+                        const count = g.versions.filter(x => 
+                            x.width === v.width && x.height === v.height && x.length === v.length
+                        ).length;
+                        const cubicFootage = v.width * v.height * v.length;
+                        return { variant: v, index: idx, count, cubicFootage };
+                    });
+                    
+                    // Remove duplicates (keep first occurrence of each measurement)
+                    const seen = new Set();
+                    const uniqueVariants = variantsWithCounts.filter(item => {
+                        const key = `${item.variant.width}x${item.variant.height}x${item.variant.length}`;
+                        if (seen.has(key)) return false;
+                        seen.add(key);
+                        return true;
+                    });
+                    
+                    // Sort by count (desc), then by cubic footage (desc)
+                    uniqueVariants.sort((a, b) => {
+                        if (a.count !== b.count) return b.count - a.count;
+                        return b.cubicFootage - a.cubicFootage;
+                    });
+                    
                     variantsDisplay += `<select class="dimension-select" onchange="swapMeasurementVariant('${g.gameId}', this.value); renderPopularTab()" style="margin-top: 0.25rem; font-size: 0.75rem; padding: 0.25rem;">`;
-                    g.versions.forEach((v, idx) => {
-                        const isSelected = selectedVariant === idx ? 'selected' : '';
-                        variantsDisplay += `<option value="${idx}" ${isSelected}>${v.width.toFixed(0)}"×${v.height.toFixed(0)}"×${v.length.toFixed(0)}"</option>`;
+                    uniqueVariants.forEach(item => {
+                        const isSelected = selectedVariant === item.index ? 'selected' : '';
+                        const v = item.variant;
+                        variantsDisplay += `<option value="${item.index}" ${isSelected}>${v.width.toFixed(0)}"×${v.height.toFixed(0)}"×${v.length.toFixed(0)}" (${item.count})</option>`;
                     });
                     variantsDisplay += `</select>`;
                 }
@@ -921,6 +967,7 @@
                         <div class="dimension-cell" style="text-align: center;">${selectedMeasure.width.toFixed(1)}"</div>
                         <div class="dimension-cell" style="text-align: center;">${selectedMeasure.height.toFixed(1)}"</div>
                         <div class="dimension-cell" style="text-align: center;">${selectedMeasure.length.toFixed(1)}"</div>
+                        <div class="dimension-cell" style="text-align: center;">${middleMeasure.toFixed(1)}"</div>
                         <div>${variantsDisplay}</div>
                     </div>
                 `;
