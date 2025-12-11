@@ -4,6 +4,7 @@
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Expansion Explorer</title>
+    <link rel="icon" type="image/svg+xml" href="data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%2216a34a%22 width=%22100%22 height=%22100%22/%3E%3Ctext x=%2250%22 y=%2270%22 font-size=%2260%22 text-anchor=%22middle%22 dominant-baseline=%22middle%22%3E🌳%3C/text%3E%3C/svg%3E">
     <script src="https://cdn.tailwindcss.com"></script>
 </head>
 <body class="bg-gray-100 min-h-screen">
@@ -42,8 +43,14 @@
         </header>
 
         <main class="max-w-7xl mx-auto px-4 py-6">
-            <div class="mb-6">
+            <div class="mb-6 flex flex-col gap-4">
                 <input type="text" id="searchInput" placeholder="Search your games..." class="w-full border rounded-lg px-4 py-3 focus:ring-2 focus:ring-green-500 outline-none" onkeyup="filterGames()">
+                <div class="flex gap-2 flex-wrap">
+                    <span class="text-sm font-medium text-gray-700 self-center">Sort by:</span>
+                    <button onclick="sortGames('alpha')" class="px-4 py-2 rounded-lg border text-sm font-medium transition" id="sortAlpha">📝 Alphabetical</button>
+                    <button onclick="sortGames('totalDesc')" class="px-4 py-2 rounded-lg border text-sm font-medium transition" id="sortTotal">📊 Total Expansions</button>
+                    <button onclick="sortGames('ownedDesc')" class="px-4 py-2 rounded-lg border text-sm font-medium transition" id="sortOwned">✅ Owned Expansions</button>
+                </div>
             </div>
 
             <div id="gameList" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4">
@@ -84,6 +91,7 @@
     <script>
         let ownedGameIds = new Set();
         let allGames = [];
+        let currentSort = 'alpha';
 
         async function loadCollection() {
             const username = document.getElementById('usernameInput').value;
@@ -105,22 +113,48 @@
                     const id = item.getAttribute('objectid');
                     ownedGameIds.add(id);
                     
-                    // Only add base games to the display list (heuristic: no "expansion" subtype usually, but collection API doesn't always show subtype clearly without extra calls. 
-                    // We'll assume everything is a game for now, but we can filter if needed. 
-                    // Actually, let's just list everything and let the user click.)
-                    // Better: Filter out things that look like expansions if possible? 
-                    // BGG collection doesn't explicitly say "is expansion" easily in the simple list unless we check stats.
-                    // We'll just list all owned items.
-                    
                     allGames.push({
                         id: id,
                         name: item.querySelector('name').textContent,
                         image: item.querySelector('thumbnail')?.textContent || '',
-                        year: item.querySelector('yearpublished')?.textContent || ''
+                        year: item.querySelector('yearpublished')?.textContent || '',
+                        ownedExpansions: 0,
+                        totalExpansions: 0
                     });
                 });
 
-                // Sort by name
+                // Fetch expansion counts for each game
+                document.getElementById('loadingStatus').textContent = 'Loading expansion data...';
+                for (let game of allGames) {
+                    try {
+                        const expResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
+                        const expText = await expResponse.text();
+                        const expXml = parser.parseFromString(expText, 'text/xml');
+                        
+                        const expansions = Array.from(expXml.querySelectorAll('link[type="boardgameexpansion"]'));
+                        
+                        let ownedCount = 0;
+                        let totalCount = 0;
+
+                        expansions.forEach(link => {
+                            const isInbound = link.getAttribute('inbound') === 'true';
+                            if (!isInbound) {
+                                totalCount++;
+                                const expId = link.getAttribute('id');
+                                if (ownedGameIds.has(expId)) {
+                                    ownedCount++;
+                                }
+                            }
+                        });
+
+                        game.ownedExpansions = ownedCount;
+                        game.totalExpansions = totalCount;
+                    } catch (e) {
+                        console.error('Error loading expansions for ' + game.name, e);
+                    }
+                }
+
+                // Sort by name initially
                 allGames.sort((a, b) => a.name.localeCompare(b.name));
                 
                 renderGames(allGames);
@@ -133,17 +167,53 @@
             }
         }
 
+        function sortGames(sortType) {
+            currentSort = sortType;
+            
+            if (sortType === 'alpha') {
+                allGames.sort((a, b) => a.name.localeCompare(b.name));
+            } else if (sortType === 'totalDesc') {
+                allGames.sort((a, b) => b.totalExpansions - a.totalExpansions || a.name.localeCompare(b.name));
+            } else if (sortType === 'ownedDesc') {
+                allGames.sort((a, b) => b.ownedExpansions - a.ownedExpansions || a.name.localeCompare(b.name));
+            }
+            
+            // Update button styling
+            document.getElementById('sortAlpha').classList.toggle('bg-green-100 border-green-500 text-green-700', sortType === 'alpha');
+            document.getElementById('sortAlpha').classList.toggle('bg-white border-gray-300 text-gray-700', sortType !== 'alpha');
+            
+            document.getElementById('sortTotal').classList.toggle('bg-green-100 border-green-500 text-green-700', sortType === 'totalDesc');
+            document.getElementById('sortTotal').classList.toggle('bg-white border-gray-300 text-gray-700', sortType !== 'totalDesc');
+            
+            document.getElementById('sortOwned').classList.toggle('bg-green-100 border-green-500 text-green-700', sortType === 'ownedDesc');
+            document.getElementById('sortOwned').classList.toggle('bg-white border-gray-300 text-gray-700', sortType !== 'ownedDesc');
+            
+            filterGames();
+        }
+
         function renderGames(games) {
             const container = document.getElementById('gameList');
             container.innerHTML = games.map(game => `
                 <div onclick="checkExpansions('${game.id}', '${game.name.replace(/'/g, "\\'")}')" 
-                     class="bg-white p-4 rounded-lg shadow hover:shadow-md transition cursor-pointer flex items-center gap-4 border border-gray-200">
-                    <div class="w-16 h-16 bg-gray-100 rounded flex-shrink-0 overflow-hidden">
-                        ${game.image ? `<img src="${game.image}" class="w-full h-full object-cover">` : ''}
+                     class="bg-white p-4 rounded-lg shadow hover:shadow-md transition cursor-pointer flex flex-col gap-3 border border-gray-200">
+                    <div class="flex items-center gap-4">
+                        <div class="w-16 h-16 bg-gray-100 rounded flex-shrink-0 overflow-hidden">
+                            ${game.image ? `<img src="${game.image}" class="w-full h-full object-cover">` : ''}
+                        </div>
+                        <div class="flex-1">
+                            <h3 class="font-bold text-gray-900">${game.name}</h3>
+                            <p class="text-sm text-gray-500">${game.year}</p>
+                        </div>
                     </div>
-                    <div>
-                        <h3 class="font-bold text-gray-900">${game.name}</h3>
-                        <p class="text-sm text-gray-500">${game.year}</p>
+                    <div class="flex gap-3 text-xs font-medium">
+                        <div class="flex-1 bg-green-50 p-2 rounded border border-green-200">
+                            <div class="text-green-700">✅ ${game.ownedExpansions}</div>
+                            <div class="text-green-600 text-xs">owned</div>
+                        </div>
+                        <div class="flex-1 bg-blue-50 p-2 rounded border border-blue-200">
+                            <div class="text-blue-700">📊 ${game.totalExpansions}</div>
+                            <div class="text-blue-600 text-xs">total</div>
+                        </div>
                     </div>
                 </div>
             `).join('');
