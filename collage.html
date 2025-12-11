@@ -394,6 +394,11 @@
                 <button id="searchBtn" class="search-btn">🔍</button>
                 <button id="clearSearchBtn" class="search-btn" style="background: #999;" title="Clear">✕</button>
             </div>
+            <div style="display: flex; gap: 0.5rem; margin-top: 0.75rem; flex-wrap: wrap;">
+                <button id="searchTypeStarts" class="search-type-btn active" style="flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; background: #4f46e5; color: white; cursor: pointer; font-size: 0.85rem; font-weight: 600;" title="Search for games that start with the text">Starts With</button>
+                <button id="searchTypeContains" class="search-type-btn" style="flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333; cursor: pointer; font-size: 0.85rem; font-weight: 600;" title="Search for games containing the text">Contains</button>
+                <button id="searchTypeExact" class="search-type-btn" style="flex: 1; padding: 0.5rem; border: 1px solid #ddd; border-radius: 6px; background: white; color: #333; cursor: pointer; font-size: 0.85rem; font-weight: 600;" title="Search for exact game name match">Exact</button>
+            </div>
         </div>
 
         <div class="main-content">
@@ -425,6 +430,7 @@
         let selectedGames = [];
         let searchResults = [];
         let draggedCell = null;
+        let searchType = 'starts'; // 'starts', 'contains', 'exact'
 
         const searchInput = document.getElementById('searchInput');
         const searchBtn = document.getElementById('searchBtn');
@@ -438,6 +444,7 @@
         const searchStatus = document.getElementById('searchStatus');
         const tabs = document.querySelectorAll('.tab');
         const tabContents = document.querySelectorAll('.tab-content');
+        const searchTypeButtons = document.querySelectorAll('.search-type-btn');
 
         // Tab switching
         tabs.forEach(tab => {
@@ -448,6 +455,37 @@
                 document.getElementById(tab.dataset.tab + '-tab').classList.add('active');
             });
         });
+
+        // Search type toggle buttons
+        document.getElementById('searchTypeStarts').addEventListener('click', () => {
+            searchType = 'starts';
+            updateSearchTypeButtons();
+        });
+        document.getElementById('searchTypeContains').addEventListener('click', () => {
+            searchType = 'contains';
+            updateSearchTypeButtons();
+        });
+        document.getElementById('searchTypeExact').addEventListener('click', () => {
+            searchType = 'exact';
+            updateSearchTypeButtons();
+        });
+
+        function updateSearchTypeButtons() {
+            searchTypeButtons.forEach(btn => {
+                btn.style.background = 'white';
+                btn.style.color = '#333';
+                btn.style.borderColor = '#ddd';
+            });
+            let activeBtn;
+            if (searchType === 'starts') activeBtn = document.getElementById('searchTypeStarts');
+            else if (searchType === 'contains') activeBtn = document.getElementById('searchTypeContains');
+            else activeBtn = document.getElementById('searchTypeExact');
+            if (activeBtn) {
+                activeBtn.style.background = '#4f46e5';
+                activeBtn.style.color = 'white';
+                activeBtn.style.borderColor = '#4f46e5';
+            }
+        }
 
         // Search
         searchBtn.addEventListener('click', performSearch);
@@ -479,11 +517,8 @@
                 const xmlText = await response.text();
                 const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
                 
-                // Debug: log the XML to see structure
-                console.log('Search XML:', xmlText.substring(0, 500));
-                
                 const items = Array.from(xml.querySelectorAll('item[id]'));
-                console.log('Found items:', items.length);
+                console.log(`Found ${items.length} games matching "${query}" from API`);
                 
                 if (items.length === 0) {
                     searchStatus.textContent = 'No games found.';
@@ -491,19 +526,14 @@
                 }
 
                 searchResults = items.map((item, idx) => {
-                    // Get all name elements
                     const nameEls = item.querySelectorAll('name');
                     let name = 'Unknown';
                     
-                    // Try to get a name from first element - might be in 'value' attribute or textContent
                     if (nameEls.length > 0) {
-                        // First try getAttribute('value') - search API often uses this
                         name = nameEls[0].getAttribute('value')?.trim();
-                        // If not found, try textContent
                         if (!name) {
                             name = nameEls[0].textContent?.trim();
                         }
-                        // If still empty, keep Unknown
                         if (!name) {
                             name = 'Unknown';
                         }
@@ -512,15 +542,30 @@
                     const year = item.querySelector('yearpublished')?.textContent?.trim() || '';
                     const thumb = item.querySelector('thumbnail')?.textContent?.trim() || '';
                     
-                    console.log(`Game ${idx}: "${name}" (${year}) - thumbnail: ${thumb ? 'yes' : 'no'}`);
-                    
                     return {
                         id: item.getAttribute('id'),
                         name: name,
                         year: year,
                         thumbnail: thumb
                     };
+                }).filter(game => {
+                    const gameName = game.name.toLowerCase();
+                    const queryLower = query.toLowerCase();
+                    
+                    if (searchType === 'starts') {
+                        return gameName.startsWith(queryLower);
+                    } else if (searchType === 'contains') {
+                        return gameName.includes(queryLower);
+                    } else if (searchType === 'exact') {
+                        return gameName === queryLower;
+                    }
+                    return true;
                 });
+
+                if (searchResults.length === 0) {
+                    searchStatus.textContent = `No games found matching "${query}" (${searchType} match).`;
+                    return;
+                }
 
                 displaySearchResults();
                 searchStatus.style.display = 'none';
@@ -556,8 +601,17 @@
             try {
                 const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&stats=1`);
                 const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                const imgEl = xml.querySelector('image');
-                const imageUrl = imgEl?.textContent || '';
+                let imageUrl = xml.querySelector('image')?.textContent || '';
+
+                // If image not found, try thumbnail from detailed API
+                if (!imageUrl) {
+                    imageUrl = xml.querySelector('thumbnail')?.textContent || '';
+                }
+                
+                // If still no image, try thumbnail from search results
+                if (!imageUrl) {
+                    imageUrl = game.thumbnail;
+                }
 
                 if (imageUrl) {
                     selectedGames.push({
@@ -567,9 +621,14 @@
                     });
                     renderGrid();
                     updateCount();
+                    console.log(`Added game: ${game.name} with image: ${imageUrl}`);
+                } else {
+                    console.warn(`No image found for game: ${game.name} (ID: ${game.id})`);
+                    alert(`Could not find image for "${game.name}". Try another game.`);
                 }
             } catch (err) {
                 console.error('Error fetching game:', err);
+                alert('Error loading game. Please try again.');
             }
         }
 
