@@ -554,13 +554,12 @@
                     }
                     
                     const year = item.querySelector('yearpublished')?.textContent?.trim() || '';
-                    const thumb = item.querySelector('thumbnail')?.textContent?.trim() || '';
                     
                     return {
                         id: item.getAttribute('id'),
                         name: name,
                         year: year,
-                        thumbnail: thumb
+                        thumbnail: null  // Will be fetched later
                     };
                 }).filter(game => {
                     const gameName = game.name.toLowerCase();
@@ -582,6 +581,11 @@
                 }
 
                 displaySearchResults();
+                
+                // Fetch thumbnails for all search results in batches
+                searchStatus.innerHTML = '<div class="spinner"></div> Loading thumbnails...';
+                await fetchThumbnailsForResults();
+                
                 searchStatus.style.display = 'none';
                 
                 // Switch to results tab
@@ -592,12 +596,49 @@
             }
         }
 
+        async function fetchThumbnailsForResults() {
+            // Fetch thumbnails in batches of 5 to avoid rate limiting
+            const batchSize = 5;
+            for (let i = 0; i < searchResults.length; i += batchSize) {
+                const batch = searchResults.slice(i, i + batchSize);
+                const ids = batch.map(g => g.id).join(',');
+                
+                try {
+                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
+                    if (!response.ok) continue;
+                    
+                    const xmlText = await response.text();
+                    const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
+                    
+                    xml.querySelectorAll('item').forEach(item => {
+                        const itemId = item.getAttribute('id');
+                        const thumbnail = item.querySelector('thumbnail')?.textContent?.trim() || 
+                                        item.querySelector('image')?.textContent?.trim() || '';
+                        
+                        const game = searchResults.find(g => g.id === itemId);
+                        if (game && thumbnail) {
+                            game.thumbnail = thumbnail;
+                            console.log(`✅ Got thumbnail for ${game.name}`);
+                        }
+                    });
+                    
+                    // Update display after each batch
+                    displaySearchResults();
+                } catch (err) {
+                    console.warn('Error fetching batch:', err);
+                }
+                
+                // Small delay between batches to avoid rate limiting
+                await new Promise(resolve => setTimeout(resolve, 200));
+            }
+        }
+
         function displaySearchResults() {
             searchResults_.innerHTML = searchResults.map((game, idx) => {
                 return `
                     <div class="search-result-item" onclick="selectGame(${idx})" style="cursor: pointer;">
-                        <div class="result-thumb" style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; font-size: 2rem;">
-                            🎲
+                        <div class="result-thumb" style="${game.thumbnail ? '' : 'background: linear-gradient(135deg, #667eea, #764ba2); color: white; font-size: 2rem;'}">
+                            ${game.thumbnail ? `<img src="${game.thumbnail}" alt="${game.name}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.style.background='linear-gradient(135deg, #667eea, #764ba2)'; this.style.display='none';">` : '🎲'}
                         </div>
                         <div class="result-info">
                             <div class="result-name">${game.name}</div>
