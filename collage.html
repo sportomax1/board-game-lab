@@ -513,15 +513,29 @@
             searchResults_.innerHTML = '';
 
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}`);
+                const url = `/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}`;
+                console.log('Searching with URL:', url);
+                
+                const response = await fetch(url);
+                if (!response.ok) {
+                    throw new Error(`Search failed: ${response.status} ${response.statusText}`);
+                }
+                
                 const xmlText = await response.text();
+                console.log('Search response length:', xmlText.length);
+                
                 const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
+                
+                // Check for parse errors
+                if (xml.querySelector('parsererror')) {
+                    throw new Error('Invalid XML response from server');
+                }
                 
                 const items = Array.from(xml.querySelectorAll('item[id]'));
                 console.log(`Found ${items.length} games matching "${query}" from API`);
                 
                 if (items.length === 0) {
-                    searchStatus.textContent = 'No games found.';
+                    searchStatus.textContent = 'No games found. Try a different search term.';
                     return;
                 }
 
@@ -573,21 +587,22 @@
                 // Switch to results tab
                 document.querySelector('[data-tab="results"]').click();
             } catch (err) {
-                searchStatus.textContent = 'Error: ' + err.message;
+                console.error('Search error:', err);
+                searchStatus.textContent = `❌ Error: ${err.message}. Check console for details.`;
             }
         }
 
         function displaySearchResults() {
             searchResults_.innerHTML = searchResults.map((game, idx) => {
-                const thumbUrl = game.thumbnail || '';
                 return `
-                    <div class="search-result-item" onclick="selectGame(${idx})">
-                        <div class="result-thumb">
-                            ${thumbUrl ? `<img src="${thumbUrl}" alt="${game.name}" style="width:100%; height:100%; object-fit:cover;" onerror="this.parentElement.style.background='#ddd'; this.style.display='none';">` : '<div style="width:100%; height:100%; background:#ddd; display: flex; align-items: center; justify-content: center; color: #999; font-size: 0.75rem; text-align: center; padding: 0.5rem;"><span>No image</span></div>'}
+                    <div class="search-result-item" onclick="selectGame(${idx})" style="cursor: pointer;">
+                        <div class="result-thumb" style="background: linear-gradient(135deg, #667eea, #764ba2); color: white; font-size: 2rem;">
+                            🎲
                         </div>
                         <div class="result-info">
                             <div class="result-name">${game.name}</div>
-                            <div class="result-year">${game.year}</div>
+                            <div class="result-year">${game.year || 'Year unknown'}</div>
+                            <div style="font-size: 0.75rem; color: #999; margin-top: 5px;">Click to add to grid →</div>
                         </div>
                     </div>
                 `;
@@ -595,39 +610,61 @@
         }
 
         async function selectGame(idx) {
-            if (selectedGames.length >= 9) return;
+            if (selectedGames.length >= 9) {
+                alert('Maximum 9 games reached!');
+                return;
+            }
             const game = searchResults[idx];
             
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&stats=1`);
-                const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                // Show loading feedback
+                const originalItem = event.target.closest('.search-result-item');
+                const originalContent = originalItem.innerHTML;
+                originalItem.innerHTML = '<div style="padding: 1rem; text-align: center; color: white;">Loading image...</div>';
                 
-                // Try to get image first, then thumbnail
-                let imageUrl = xml.querySelector('image')?.textContent?.trim() || '';
-                if (!imageUrl) {
-                    imageUrl = xml.querySelector('thumbnail')?.textContent?.trim() || '';
-                }
-                // Final fallback to search result thumbnail
-                if (!imageUrl) {
-                    imageUrl = game.thumbnail || '';
+                // Fetch game details from thing endpoint using our API proxy
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&stats=1`);
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch game details: ${response.status}`);
                 }
 
-                if (imageUrl) {
-                    selectedGames.push({
-                        id: game.id,
-                        name: game.name,
-                        image: imageUrl  // Use raw URL, no image-proxy
-                    });
-                    renderGrid();
-                    updateCount();
-                    console.log(`Added game: ${game.name} with image: ${imageUrl}`);
-                } else {
-                    console.warn(`No image found for game: ${game.name} (ID: ${game.id})`);
-                    alert(`Could not find image for "${game.name}". Try another game.`);
+                const xmlText = await response.text();
+                const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
+                
+                // Check for parse errors
+                if (xml.querySelector('parsererror')) {
+                    throw new Error('Invalid response from server');
                 }
+                
+                const itemEl = xml.querySelector('item');
+                if (!itemEl) {
+                    throw new Error('Game not found in database');
+                }
+
+                // Get image - try multiple sources
+                let imageUrl = itemEl.querySelector('image')?.textContent?.trim() || '';
+                if (!imageUrl) {
+                    imageUrl = itemEl.querySelector('thumbnail')?.textContent?.trim() || '';
+                }
+
+                if (!imageUrl) {
+                    throw new Error(`No image available for "${game.name}"`);
+                }
+
+                // Add to selected games
+                selectedGames.push({
+                    id: game.id,
+                    name: game.name,
+                    image: imageUrl
+                });
+                
+                renderGrid();
+                updateCount();
+                console.log(`✅ Added: ${game.name} with image`);
+                
             } catch (err) {
-                console.error('Error fetching game:', err);
-                alert('Error loading game. Please try again.');
+                console.error('Error:', err);
+                alert(`❌ Error: ${err.message}`);
             }
         }
 
