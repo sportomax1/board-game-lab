@@ -610,6 +610,10 @@
 
                 console.log(`[component.html] ✓ Game loaded:`, currentGame);
 
+                // Fetch components from BGG page
+                showStatus('Fetching components from BGG...', 'loading');
+                await fetchComponentsFromBGG(gameId);
+
                 // Display game info
                 displayGameInfo();
                 showStatus(`Found: ${currentGame.name}`, 'success');
@@ -617,6 +621,41 @@
             } catch (error) {
                 console.error(`[component.html] Error:`, error);
                 showStatus(`Error: ${error.message}`, 'error');
+            }
+        }
+
+        async function fetchComponentsFromBGG(gameId) {
+            try {
+                // Fetch the BGG game page HTML
+                const pageUrl = `/api/bgg-helper?endpoint=page&url=https://boardgamegeek.com/boardgame/${gameId}`;
+                const pageHtml = await fetchWithRetry(pageUrl);
+
+                console.log(`[component.html] Fetched BGG page for game ${gameId}`);
+
+                // Parse HTML to find Components section
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(pageHtml, 'text/html');
+
+                // Find the components section - typically contains "Components:" header
+                let componentsText = '';
+                
+                // Method 1: Look for text containing "Components"
+                const allText = doc.body.innerText;
+                const componentsMatch = allText.match(/Components:\s*(.*?)(?=\n\n|$)/i);
+                
+                if (componentsMatch) {
+                    componentsText = componentsMatch[1].trim();
+                    console.log(`[component.html] Found components text:`, componentsText.substring(0, 200));
+                } else {
+                    console.log(`[component.html] Could not find Components section in page`);
+                }
+
+                // Store components for later use
+                currentGame.componentsDescription = componentsText || 'Components information not available on BGG page';
+
+            } catch (error) {
+                console.error(`[component.html] Error fetching components:`, error);
+                currentGame.componentsDescription = 'Error fetching from BGG';
             }
         }
 
@@ -632,7 +671,7 @@
                 document.getElementById('gameThumbnail').src = currentGame.thumbnail;
             }
 
-            // Generate sample components based on game name
+            // Generate component cards from BGG components or defaults
             generateComponentCards();
 
             // Show sections
@@ -649,17 +688,20 @@
             const componentsGrid = document.getElementById('componentsGrid');
             componentsGrid.innerHTML = '';
 
-            // Common components found in board games
-            const commonComponents = [
-                { name: 'Cards', icon: '🃏', count: '50-100' },
-                { name: 'Dice', icon: '🎲', count: '10-20' },
-                { name: 'Tokens/Counters', icon: '💰', count: '30-100' },
-                { name: 'Meeples', icon: '🧑', count: '20-80' },
-                { name: 'Game Board', icon: '📋', count: '1' },
-                { name: 'Rulebook', icon: '📖', count: '1' }
-            ];
+            // Check if we have components from BGG
+            if (currentGame.componentsDescription && currentGame.componentsDescription !== 'Components information not available on BGG page' && !currentGame.componentsDescription.includes('Error')) {
+                // Parse components from BGG text
+                const components = parseComponentsFromBGG(currentGame.componentsDescription);
+                
+                if (components.length > 0) {
+                    console.log(`[component.html] Displaying ${components.length} components from BGG`);
+                    displayParsedComponents(components);
+                    return;
+                }
+            }
 
-            // Estimate components based on player count
+            // Fallback: Use estimated components based on game stats
+            console.log(`[component.html] Using estimated components (BGG data not available)`);
             const playerCount = parseInt(currentGame.maxPlayers) || 4;
             const estimatedComponents = [
                 { name: 'Cards', icon: '🃏', count: Math.max(50, playerCount * 10) },
@@ -672,7 +714,95 @@
                 { name: 'Scoring Track/Pad', icon: '📊', count: playerCount }
             ];
 
-            estimatedComponents.forEach((component, idx) => {
+            displayEstimatedComponents(estimatedComponents);
+        }
+
+        function parseComponentsFromBGG(componentsText) {
+            const components = [];
+            
+            // Split by common component delimiters
+            const lines = componentsText.split(/[;•\n]/).map(l => l.trim()).filter(l => l.length > 0);
+            
+            lines.forEach(line => {
+                // Try to extract quantity and name
+                // Patterns: "5x Cards", "5 Cards", "Cards (5)", etc.
+                const matches = line.match(/^(\d+)\s*x?\s*(.+)$|^(.+?)\s*\((\d+)\)$|^(.+?):?\s*(\d+)$/i);
+                
+                if (matches) {
+                    let quantity = 1;
+                    let name = '';
+                    
+                    if (matches[1] && matches[2]) {
+                        quantity = parseInt(matches[1]);
+                        name = matches[2];
+                    } else if (matches[3] && matches[4]) {
+                        name = matches[3];
+                        quantity = parseInt(matches[4]);
+                    } else if (matches[5] && matches[6]) {
+                        name = matches[5];
+                        quantity = parseInt(matches[6]);
+                    }
+                    
+                    if (name) {
+                        // Assign icons based on component type
+                        let icon = '📦';
+                        const nameLower = name.toLowerCase();
+                        if (nameLower.includes('card')) icon = '🃏';
+                        else if (nameLower.includes('dice') || nameLower.includes('die')) icon = '🎲';
+                        else if (nameLower.includes('token') || nameLower.includes('counter')) icon = '💰';
+                        else if (nameLower.includes('meeple') || nameLower.includes('pawn')) icon = '🧑';
+                        else if (nameLower.includes('board')) icon = '📋';
+                        else if (nameLower.includes('rule') || nameLower.includes('book')) icon = '📖';
+                        
+                        components.push({ name, quantity, icon });
+                    }
+                } else if (line.length > 3) {
+                    // If we can't parse quantity, just add the component name
+                    let icon = '📦';
+                    const lineLower = line.toLowerCase();
+                    if (lineLower.includes('card')) icon = '🃏';
+                    else if (lineLower.includes('dice')) icon = '🎲';
+                    
+                    components.push({ name: line, quantity: '?', icon });
+                }
+            });
+            
+            return components;
+        }
+
+        function displayParsedComponents(components) {
+            const componentsGrid = document.getElementById('componentsGrid');
+            componentsGrid.innerHTML = '';
+
+            components.forEach(component => {
+                const card = document.createElement('div');
+                card.className = 'component-card';
+                card.innerHTML = `
+                    <h3>
+                        <span class="component-icon">${component.icon}</span>
+                        ${component.name}
+                    </h3>
+                    <ul class="component-list">
+                        <li class="component-item">
+                            <span class="component-name">Quantity</span>
+                            <span class="component-count">${component.quantity}</span>
+                        </li>
+                    </ul>
+                `;
+                componentsGrid.appendChild(card);
+
+                componentInventory[component.name] = {
+                    expected: component.quantity.toString(),
+                    found: 0
+                };
+            });
+        }
+
+        function displayEstimatedComponents(components) {
+            const componentsGrid = document.getElementById('componentsGrid');
+            componentsGrid.innerHTML = '';
+
+            components.forEach((component, idx) => {
                 const card = document.createElement('div');
                 card.className = 'component-card';
                 card.innerHTML = `

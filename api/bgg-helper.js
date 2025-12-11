@@ -100,8 +100,25 @@ module.exports = async (req, res) => {
             const page = params.page || 1;
             bggUrl = `https://boardgamegeek.com/browse/boardgame/page/${page}`;
             break;
+        case 'page':
+            // Fetch a specific BGG game page or other page URL
+            // Pass the full URL via the 'url' parameter
+            const pageUrl = params.url;
+            if (!pageUrl) {
+                const errorMsg = 'E-400: Missing url parameter for page endpoint.';
+                console.error(errorMsg);
+                console.log('--- END: BGG Helper Failed (400) ---');
+                return res.status(400).json({ 
+                    status: 400,
+                    step: 'Parameter Check',
+                    error: 'Bad Request', 
+                    message: errorMsg
+                });
+            }
+            bggUrl = pageUrl;
+            break;
         default:
-            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays, family, forumlist, thread`;
+            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays, family, forumlist, thread, browse, page`;
             console.error(errorMsg);
             console.log('--- END: BGG Helper Failed (400) ---');
             return res.status(400).json({ 
