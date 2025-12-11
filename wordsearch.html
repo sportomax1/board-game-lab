@@ -146,6 +146,16 @@
                 <button onclick="startGame()" class="w-full bg-purple-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-purple-700 transition shadow-lg">
                     🎯 Start Wordsearch
                 </button>
+
+                <button onclick="analyzeWordLengths()" class="w-full bg-blue-600 text-white py-3 rounded-lg font-bold text-lg hover:bg-blue-700 transition shadow-lg">
+                    📊 Analyze Word Lengths
+                </button>
+
+                <div id="analysisResults" class="hidden mt-4 p-4 bg-gray-50 rounded-lg border border-gray-200">
+                    <h3 class="font-bold text-gray-900 mb-3">Word Length Distribution</h3>
+                    <div id="lengthStats" class="space-y-2 max-h-64 overflow-y-auto text-sm">
+                    </div>
+                </div>
             </div>
         </div>
     </div>
@@ -275,6 +285,82 @@
                 button.classList.add('selected');
                 button.style.backgroundColor = '#667eea';
                 button.style.color = 'white';
+            }
+        }
+
+        async function analyzeWordLengths() {
+            const username = document.getElementById('usernameInput').value.trim();
+            if (!username) {
+                alert('Please enter a username');
+                return;
+            }
+
+            try {
+                // Show loading state
+                const resultsDiv = document.getElementById('analysisResults');
+                const statsDiv = document.getElementById('lengthStats');
+                statsDiv.innerHTML = '<p class="text-gray-600">Loading...</p>';
+                resultsDiv.classList.remove('hidden');
+
+                // Load collection with same filters as game
+                let queryParams = `endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                if (!document.getElementById('excludeExpansions').checked) {
+                    queryParams += '&includeexpansions=1';
+                }
+
+                const res = await fetchWithRetry(`/api/bgg-helper?${queryParams}`);
+                const xml = await res.text();
+                const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                const items = Array.from(parser.querySelectorAll('item'));
+
+                // Filter and extract names
+                const filtered = items
+                    .filter(item => {
+                        if (document.getElementById('excludeExpansions').checked) {
+                            const type = item.getAttribute('subtype');
+                            if (type === 'boardgameexpansion') return false;
+                        }
+                        if (document.getElementById('ignoreNumbers').checked) {
+                            const name = item.querySelector('name').textContent;
+                            if (/\d/.test(name)) return false;
+                        }
+                        return true;
+                    })
+                    .map(item => cleanName(item.querySelector('name').textContent));
+
+                // Count word lengths
+                const lengthCounts = {};
+                filtered.forEach(word => {
+                    if (word.length >= 3) { // Only count words 3+ chars
+                        lengthCounts[word.length] = (lengthCounts[word.length] || 0) + 1;
+                    }
+                });
+
+                // Sort by length ascending and display
+                const sortedLengths = Object.keys(lengthCounts)
+                    .map(len => ({ length: parseInt(len), count: lengthCounts[len] }))
+                    .sort((a, b) => a.length - b.length);
+
+                // Build HTML
+                let html = '';
+                let totalWords = 0;
+                sortedLengths.forEach(item => {
+                    totalWords += item.count;
+                    html += `<div class="flex justify-between py-1 border-b border-gray-200">
+                        <span class="font-semibold text-gray-900">Length ${item.length}:</span>
+                        <span class="text-blue-600 font-bold">${item.count} words</span>
+                    </div>`;
+                });
+
+                html += `<div class="flex justify-between py-2 mt-2 pt-2 border-t-2 border-gray-400 font-bold">
+                    <span>Total Valid Words:</span>
+                    <span class="text-purple-600">${totalWords}</span>
+                </div>`;
+
+                statsDiv.innerHTML = html;
+            } catch (error) {
+                console.error('Analysis error:', error);
+                document.getElementById('lengthStats').innerHTML = `<p class="text-red-600">Error: ${error.message}</p>`;
             }
         }
 
