@@ -114,6 +114,16 @@
             background: transparent;
         }
 
+        .team-slot.bye-slot {
+            background: linear-gradient(to right, rgba(168, 85, 247, 0.1), rgba(168, 85, 247, 0.05));
+            cursor: pointer;
+            border: 1px dashed #8b5cf6;
+        }
+        .team-slot.bye-slot:hover {
+            background: linear-gradient(to right, rgba(168, 85, 247, 0.2), rgba(168, 85, 247, 0.1));
+            border-color: #a78bfa;
+        }
+
         .team-seed {
             font-size: 0.7rem;
             color: #94a3b8;
@@ -275,9 +285,15 @@
                         <div>
                             <label class="block text-xs font-bold text-slate-400 uppercase mb-2">Field Size</label>
                             <select id="fieldSize" class="w-full bg-slate-900 border border-slate-700 rounded-xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-blue-500">
+                                <option value="3">3 Teams (1 Bye)</option>
                                 <option value="4">4 Teams (Semis)</option>
+                                <option value="5">5 Teams (2 Byes)</option>
+                                <option value="6">6 Teams (2 Byes)</option>
+                                <option value="7">7 Teams (1 Bye)</option>
                                 <option value="8">8 Teams (Quarters)</option>
+                                <option value="12">12 Teams (4 Byes)</option>
                                 <option value="16" selected>16 Teams</option>
+                                <option value="24">24 Teams (8 Byes)</option>
                                 <option value="32">32 Teams</option>
                                 <option value="64">64 Teams</option>
                             </select>
@@ -326,6 +342,16 @@
                                 <span class="text-sm text-slate-300 group-hover:text-white transition-colors">Owned Only</span>
                             </label>
                         </div>
+                    </div>
+
+                    <!-- Instructions -->
+                    <div class="bg-slate-800/50 rounded-xl p-3 border border-slate-700/50">
+                        <p class="text-xs text-slate-400 mb-2"><strong>💡 Tips:</strong></p>
+                        <ul class="text-xs text-slate-400 space-y-1">
+                            <li>• Click any team to advance them (single elim wins)</li>
+                            <li>• Right-click to substitute a team in the first round</li>
+                            <li>• BYE teams automatically advance to next round</li>
+                        </ul>
                     </div>
 
                     <div id="statusMsg" class="text-center text-sm min-h-[20px] font-medium text-amber-400 break-words"></div>
@@ -624,19 +650,35 @@
         }
 
         function buildBracketStructure(games) {
+            // Pad to nearest power of 2 with byes
+            let maxTeams = 1;
+            while (maxTeams < games.length) {
+                maxTeams *= 2;
+            }
+            
+            const byeCount = maxTeams - games.length;
+            
+            // Create array with byes (null represents a bye)
+            const bracketGames = [];
+            for (let i = 0; i < byeCount; i++) {
+                bracketGames.push(null); // Byes at the beginning
+            }
+            bracketGames.push(...games);
+            
             const rounds = [];
-            const roundCount = Math.log2(games.length);
+            const roundCount = Math.log2(maxTeams);
             
             // Round 1
             const r1Matches = [];
-            for (let i = 0; i < games.length; i += 2) {
+            for (let i = 0; i < bracketGames.length; i += 2) {
                 r1Matches.push({
                     id: `r1_m${i/2}`,
                     roundIndex: 0,
                     matchIndex: i/2,
-                    p1: games[i],
-                    p2: games[i+1],
-                    winner: null
+                    p1: bracketGames[i],
+                    p2: bracketGames[i+1],
+                    winner: null,
+                    isBye: bracketGames[i] === null || bracketGames[i+1] === null
                 });
             }
             rounds.push(r1Matches);
@@ -658,7 +700,6 @@
                 rounds.push(currentRoundMatches);
             }
             
-            // Champion Slot (handled visually, but logic-wise it's the winner of last match)
             return rounds;
         }
 
@@ -951,10 +992,32 @@
         function createTeamSlot(team, match, slotNum) {
             const div = document.createElement('div');
             div.className = 'team-slot';
+            
+            // Handle bye
             if (!team) {
-                div.classList.add('empty');
-                div.innerHTML = `<span class="text-xs text-slate-600">Waiting...</span>`;
-                return div;
+                // Show "Bye" or empty if not round 1
+                if (match.roundIndex === 0) {
+                    div.classList.add('bye-slot');
+                    div.innerHTML = `<span class="text-xs text-slate-600 font-semibold">BYE →</span>`;
+                    
+                    // Add right-click handler for substitution in first round
+                    div.addEventListener('contextmenu', (e) => {
+                        e.preventDefault();
+                        showSubstitutionDialog(match, slotNum);
+                    });
+                    
+                    // Add hover hint
+                    const hint = document.createElement('div');
+                    hint.className = 'text-xs text-slate-600 absolute bottom-0 right-0 p-1 opacity-0 group-hover:opacity-100';
+                    hint.textContent = 'Right-click to substitute';
+                    div.title = 'Right-click to substitute a team';
+                    
+                    return div;
+                } else {
+                    div.classList.add('empty');
+                    div.innerHTML = `<span class="text-xs text-slate-600">Waiting...</span>`;
+                    return div;
+                }
             }
 
             // Status Classes
@@ -978,28 +1041,134 @@
                 if (match.winner) return; // Already played
                 advanceWinner(match, team);
             });
+            
+            // Right-click handler for substitution in first round
+            if (match.roundIndex === 0 && !match.winner) {
+                div.addEventListener('contextmenu', (e) => {
+                    e.preventDefault();
+                    showSubstitutionDialog(match, slotNum);
+                });
+                div.title = `${team.name} - Right-click to substitute`;
+            }
 
             return div;
+        }
+
+        function showSubstitutionDialog(match, slotNum) {
+            // Get all available games not yet in this match
+            const usedIds = new Set();
+            bracketData.forEach(round => {
+                round.forEach(m => {
+                    if (m.p1) usedIds.add(m.p1.id);
+                    if (m.p2) usedIds.add(m.p2.id);
+                });
+            });
+            
+            // Remove current match participants from used set temporarily
+            if (match.p1) usedIds.delete(match.p1.id);
+            if (match.p2) usedIds.delete(match.p2.id);
+            
+            const availableGames = seededGames.filter(g => !usedIds.has(g.id));
+            
+            if (availableGames.length === 0) {
+                alert('No available teams to substitute!');
+                return;
+            }
+            
+            // Create a simple selection prompt
+            const gamesList = availableGames.slice(0, 10).map((g, idx) => `${idx+1}. ${g.name} (#${g.seed})`).join('\n');
+            const selected = prompt(`Select a team to substitute:\n\n${gamesList}\n\nEnter number (1-${Math.min(10, availableGames.length)}):`, '1');
+            
+            if (!selected) return;
+            const idx = parseInt(selected) - 1;
+            if (idx < 0 || idx >= availableGames.length) {
+                alert('Invalid selection');
+                return;
+            }
+            
+            const newTeam = availableGames[idx];
+            
+            if (slotNum === 1) {
+                match.p1 = newTeam;
+            } else {
+                match.p2 = newTeam;
+            }
+            
+            renderBracket();
         }
 
         function advanceWinner(match, team) {
             if (match.winner) return; // Already decided
             
+            // Determine loser
             const loser = match.p1.id === team.id ? match.p2 : match.p1;
             match.winner = team;
             match.loser = loser;
             
-            if (match.bracket === 'winners') {
+            // Single Elimination
+            if (!match.bracket) {
+                advanceInSingleElimination(match, team);
+            }
+            // Double Elimination - Winners Bracket
+            else if (match.bracket === 'winners') {
                 advanceInWinnersBracket(match, team);
                 if (loser) advanceToLosersBracket(match, loser);
-            } else if (match.bracket === 'losers') {
+            } 
+            // Double Elimination - Losers Bracket
+            else if (match.bracket === 'losers') {
                 advanceInLosersBracket(match, team);
-            } else if (match.bracket === 'grand') {
+            } 
+            // Grand Finals
+            else if (match.bracket === 'grand') {
                 declareWinner(team);
             }
             
             // Re-render after all advancements are made
             renderBracket();
+        }
+
+        function advanceInSingleElimination(match, winner) {
+            const roundIdx = match.roundIndex;
+            const nextRound = bracketData[roundIdx + 1];
+            
+            // No next round = this is the final
+            if (!nextRound) {
+                declareWinner(winner);
+                return;
+            }
+            
+            const nextMatchIdx = Math.floor(match.matchIndex / 2);
+            const nextMatch = nextRound[nextMatchIdx];
+            const slotIdx = match.matchIndex % 2;
+            
+            if (slotIdx === 0) {
+                nextMatch.p1 = winner;
+            } else {
+                nextMatch.p2 = winner;
+            }
+        }
+
+        function processByeMatches() {
+            // Automatically advance teams that had byes in first round
+            bracketData.forEach((round, roundIdx) => {
+                round.forEach((match) => {
+                    // Only process first round
+                    if (roundIdx === 0 && match.isBye) {
+                        // One side is null (bye)
+                        let winnerTeam = null;
+                        if (match.p1 && !match.p2) {
+                            winnerTeam = match.p1;
+                        } else if (match.p2 && !match.p1) {
+                            winnerTeam = match.p2;
+                        }
+                        
+                        if (winnerTeam && !match.winner) {
+                            match.winner = winnerTeam;
+                            advanceInSingleElimination(match, winnerTeam);
+                        }
+                    }
+                });
+            });
         }
 
         function declareWinner(team) {
@@ -1060,6 +1229,8 @@
                     bracketData = buildDoubleEliminationBracket(seededGames);
                 } else {
                     bracketData = buildBracketStructure(seededGames);
+                    // Process bye matches automatically
+                    processByeMatches();
                 }
                 currentFieldSize = size;
                 
