@@ -71,14 +71,24 @@
                     <div class="animate-spin rounded-full h-8 w-8 border-b-2 border-green-600"></div>
                 </div>
                 <div id="modalContent" class="hidden space-y-6">
+                    <div class="grid grid-cols-2 gap-3 p-3 bg-gray-50 rounded-lg border border-gray-200">
+                        <div class="text-center">
+                            <div id="ownedCount" class="text-2xl font-bold text-green-600">0</div>
+                            <div class="text-xs text-gray-600">Owned Expansions</div>
+                        </div>
+                        <div class="text-center">
+                            <div id="missingCount" class="text-2xl font-bold text-red-600">0</div>
+                            <div class="text-xs text-gray-600">Missing Expansions</div>
+                        </div>
+                    </div>
                     <div>
-                        <h3 class="font-bold text-green-600 mb-2 flex items-center gap-2">
+                        <h3 class="font-bold text-green-600 mb-3 flex items-center gap-2">
                             <span>✅</span> Owned Expansions
                         </h3>
                         <div id="ownedExpansions" class="grid grid-cols-1 gap-2 text-sm"></div>
                     </div>
                     <div>
-                        <h3 class="font-bold text-red-500 mb-2 flex items-center gap-2">
+                        <h3 class="font-bold text-red-500 mb-3 flex items-center gap-2">
                             <span>❌</span> Missing Expansions
                         </h3>
                         <div id="missingExpansions" class="grid grid-cols-1 gap-2 text-sm"></div>
@@ -241,16 +251,11 @@
                 
                 const owned = [];
                 const missing = [];
+                const thumbnails = {};
 
                 links.forEach(link => {
                     const id = link.getAttribute('id');
                     const name = link.getAttribute('value');
-                    // Basic filter: inbound vs outbound is not distinguished in simple link tags usually, 
-                    // but usually "boardgameexpansion" on a base game points to its expansions.
-                    // However, expansions also point back to base game with same tag.
-                    // We can't easily distinguish without checking the "inbound" attribute which isn't always there in simple API?
-                    // Actually, BGG API thing items usually have `inbound="true"` for the parent.
-                    
                     const isInbound = link.getAttribute('inbound') === 'true';
                     
                     if (!isInbound) { // Only look at children (expansions of this game)
@@ -262,16 +267,39 @@
                     }
                 });
 
+                // Fetch thumbnails for all expansions
+                const allExpansions = [...owned, ...missing];
+                for (let exp of allExpansions) {
+                    try {
+                        const thingResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${exp.id}`);
+                        const thingText = await thingResponse.text();
+                        const thingXml = parser.parseFromString(thingText, 'text/xml');
+                        const imageEl = thingXml.querySelector('image');
+                        if (imageEl) {
+                            thumbnails[exp.id] = imageEl.textContent;
+                        }
+                    } catch (e) {
+                        console.error('Error fetching thumbnail for ' + exp.name);
+                    }
+                }
+
                 const renderList = (items, emptyMsg) => {
                     if (items.length === 0) return `<div class="text-gray-400 italic">${emptyMsg}</div>`;
                     return items.map(i => `
-                        <div class="flex justify-between items-center bg-gray-50 p-2 rounded">
-                            <span>${i.name}</span>
-                            <a href="https://boardgamegeek.com/boardgame/${i.id}" target="_blank" class="text-blue-500 hover:underline text-xs">View</a>
+                        <div class="flex items-center gap-3 bg-gray-50 p-3 rounded border border-gray-200 hover:border-gray-300 transition">
+                            <div class="w-12 h-12 bg-gray-200 rounded flex-shrink-0 overflow-hidden">
+                                ${thumbnails[i.id] ? `<img src="${thumbnails[i.id]}" alt="${i.name}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-gray-400 text-xs">No img</div>'}
+                            </div>
+                            <div class="flex-1 min-w-0">
+                                <p class="font-medium text-gray-900 text-sm truncate">${i.name}</p>
+                                <a href="https://boardgamegeek.com/boardgame/${i.id}" target="_blank" class="text-blue-500 hover:underline text-xs">View on BGG →</a>
+                            </div>
                         </div>
                     `).join('');
                 };
 
+                document.getElementById('ownedCount').textContent = owned.length;
+                document.getElementById('missingCount').textContent = missing.length;
                 document.getElementById('ownedExpansions').innerHTML = renderList(owned, "No owned expansions found");
                 document.getElementById('missingExpansions').innerHTML = renderList(missing, "No missing expansions found (or none exist)");
 
