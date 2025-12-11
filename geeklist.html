@@ -140,6 +140,32 @@
     let userTradingAway = new Set();
     let geeklistData = [];
     
+    async function fetchWithRetry(url, maxRetries = 3) {
+        for (let attempt = 1; attempt <= maxRetries; attempt++) {
+            try {
+                const resp = await fetch(url);
+                // If 502 (Bad Gateway), retry with delay
+                if (resp.status === 502) {
+                    if (attempt < maxRetries) {
+                        const delay = 1000 * attempt; // 1s, 2s, 3s
+                        console.log(`502 error, retrying in ${delay}ms...`);
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    } else {
+                        throw new Error('Service temporarily unavailable (502)');
+                    }
+                }
+                if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+                return resp;
+            } catch (error) {
+                if (attempt === maxRetries) throw error;
+                const delay = 1000 * attempt;
+                console.log(`Fetch failed: ${error.message}, retrying in ${delay}ms...`);
+                await new Promise(r => setTimeout(r, delay));
+            }
+        }
+    }
+
     async function fetchUserCollections() {
         const collections = [
             { param: 'own=1', set: 'userCollection' },
@@ -152,16 +178,14 @@
         
         for (const { param, set } of collections) {
             try {
-                const resp = await fetch(`/api/bgg-helper?endpoint=collection&username=sportomax&${param}`);
-                if (resp.ok) {
-                    const xml = await resp.text();
-                    const parser = new DOMParser();
-                    const doc = parser.parseFromString(xml, 'text/xml');
-                    const items = Array.from(doc.querySelectorAll('item'));
-                    window[set] = new Set(items.map(i => i.getAttribute('objectid')));
-                }
+                const resp = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=sportomax&${param}`);
+                const xml = await resp.text();
+                const parser = new DOMParser();
+                const doc = parser.parseFromString(xml, 'text/xml');
+                const items = Array.from(doc.querySelectorAll('item'));
+                window[set] = new Set(items.map(i => i.getAttribute('objectid')));
             } catch (e) {
-                console.log(`Failed to fetch ${set}`);
+                console.log(`Failed to fetch ${set}: ${e.message}`);
             }
         }
     }
@@ -195,8 +219,7 @@
     async function fetchThingDetails(objectId) {
         if (!objectId) return {};
         try {
-            const resp = await fetch(`/api/bgg-helper?endpoint=thing&id=${objectId}`);
-            if (!resp.ok) return {};
+            const resp = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${objectId}`, 2);
             const xml = await resp.text();
             const parser = new DOMParser();
             const doc = parser.parseFromString(xml, 'text/xml');
@@ -208,7 +231,8 @@
                 year: year ? year.textContent : '',
                 description: desc ? desc.textContent : ''
             };
-        } catch {
+        } catch (e) {
+            console.log(`Failed to fetch details for ${objectId}`);
             return {};
         }
     }
@@ -295,8 +319,7 @@
         await fetchUserCollections();
         
         try {
-            const resp = await fetch(`/api/bgg-helper?endpoint=geeklist&id=${geeklistId}`);
-            if (!resp.ok) throw new Error('Failed to fetch Geeklist');
+            const resp = await fetchWithRetry(`/api/bgg-helper?endpoint=geeklist&id=${geeklistId}`);
             const xml = await resp.text();
             const parser = new DOMParser();
             const doc = parser.parseFromString(xml, 'text/xml');
