@@ -267,33 +267,48 @@
                     }
                 });
 
-                // Fetch thumbnails, ratings, weight, and year for all expansions
+                // Fetch data for all expansions in batches (max 20 per batch to avoid 502 errors)
                 const allExpansions = [...owned, ...missing];
-                for (let exp of allExpansions) {
+                const batchSize = 20;
+                
+                for (let i = 0; i < allExpansions.length; i += batchSize) {
+                    const batch = allExpansions.slice(i, i + batchSize);
+                    const batchIds = batch.map(e => e.id).join(',');
+                    
                     try {
-                        const thingResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${exp.id}`);
-                        const thingText = await thingResponse.text();
-                        const thingXml = parser.parseFromString(thingText, 'text/xml');
+                        const batchResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${batchIds}&stats=1`);
+                        const batchText = await batchResponse.text();
+                        const batchXml = parser.parseFromString(batchText, 'text/xml');
                         
-                        const imageEl = thingXml.querySelector('image');
-                        const yearEl = thingXml.querySelector('yearpublished');
-                        const ratingEl = thingXml.querySelector('average');
-                        const weightEl = thingXml.querySelector('averageweight');
-                        
-                        expansionData[exp.id] = {
-                            thumbnail: imageEl ? imageEl.textContent : null,
-                            year: yearEl ? yearEl.textContent : 'N/A',
-                            rating: ratingEl ? parseFloat(ratingEl.textContent).toFixed(1) : 'N/A',
-                            weight: weightEl ? parseFloat(weightEl.textContent).toFixed(1) : 'N/A'
-                        };
+                        const items = Array.from(batchXml.querySelectorAll('item'));
+                        items.forEach(item => {
+                            const itemId = item.getAttribute('id');
+                            const imageEl = item.querySelector('image');
+                            const yearEl = item.querySelector('yearpublished');
+                            const statsEl = item.querySelector('statistics');
+                            const ratingEl = statsEl ? statsEl.querySelector('average') : null;
+                            const weightEl = statsEl ? statsEl.querySelector('averageweight') : null;
+                            
+                            expansionData[itemId] = {
+                                thumbnail: imageEl ? imageEl.textContent : null,
+                                year: yearEl ? yearEl.getAttribute('value') : 'N/A',
+                                rating: ratingEl ? parseFloat(ratingEl.getAttribute('value')).toFixed(1) : 'N/A',
+                                weight: weightEl ? parseFloat(weightEl.getAttribute('value')).toFixed(1) : 'N/A'
+                            };
+                        });
                     } catch (e) {
-                        console.error('Error fetching data for ' + exp.name);
-                        expansionData[exp.id] = {
-                            thumbnail: null,
-                            year: 'N/A',
-                            rating: 'N/A',
-                            weight: 'N/A'
-                        };
+                        console.error('Error fetching batch data:', e);
+                        // Set default data for items in this batch
+                        batch.forEach(exp => {
+                            if (!expansionData[exp.id]) {
+                                expansionData[exp.id] = {
+                                    thumbnail: null,
+                                    year: 'N/A',
+                                    rating: 'N/A',
+                                    weight: 'N/A'
+                                };
+                            }
+                        });
                     }
                 }
 
