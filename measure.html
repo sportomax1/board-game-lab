@@ -1649,7 +1649,9 @@
             const validGames = gamesToProcess.filter(game => game.mid < MID_LIMIT);
 
             // Route to appropriate packing mode
-            if (shelfPackingMode === 'expert') {
+            if (shelfPackingMode === 'super') {
+                return calculateSuperShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
+            } else if (shelfPackingMode === 'expert') {
                 return calculateExpertShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
             } else if (shelfPackingMode === 'smart') {
                 return calculateSmartShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
@@ -1919,6 +1921,101 @@
             return { cubes, skipped, skippedGames, mode: 'expert' };
         }
 
+        function calculateSuperShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
+            // Super mode: Multi-strategy optimization
+            // 1. Try horizontal-first packing for small games
+            // 2. Analyze which games should be rotated to save shelves
+            // 3. Consolidate shelves by rotating games that fit upper spaces better
+            
+            const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
+            let cubes = [];
+            let unpackedGames = [...sortedGames];
+            
+            // Helper to try packing a set of games on one shelf
+            function tryPackShelf(gamesToPack, allowHorizontal = true) {
+                let currentShelf = [];
+                let usedShortSum = 0;
+                let remaining = [...gamesToPack];
+                
+                // First pass: pack vertical games
+                remaining = remaining.filter(game => {
+                    if (usedShortSum + game.short <= SHORT_LIMIT) {
+                        currentShelf.push(game);
+                        usedShortSum += game.short;
+                        return false; // Remove from remaining
+                    }
+                    return true; // Keep in remaining
+                });
+                
+                // Second pass: try smart fit for remaining vertical space
+                const remainingSpace = SHORT_LIMIT - usedShortSum;
+                remaining = remaining.filter(game => {
+                    if (game.short <= remainingSpace) {
+                        currentShelf.push(game);
+                        usedShortSum += game.short;
+                        return false;
+                    }
+                    return true;
+                });
+                
+                // Third pass: try horizontal rotation for games that fit in upper space
+                if (allowHorizontal && currentShelf.length > 0) {
+                    const firstGameMid = currentShelf[0].mid;
+                    const upperSpaceHeight = SHORT_LIMIT - firstGameMid;
+                    let usedHorizontalSpace = 0;
+                    
+                    const sortedByShort = [...remaining].sort((a, b) => b.short - a.short);
+                    
+                    remaining = remaining.filter(game => {
+                        const rotatedHeight = game.short;
+                        const rotatedWidth = game.mid;
+                        
+                        if (rotatedHeight <= upperSpaceHeight && usedHorizontalSpace + rotatedWidth <= SHORT_LIMIT) {
+                            currentShelf.push({...game, rotated: true, rotatedShort: game.mid, rotatedHeight: game.short});
+                            usedHorizontalSpace += rotatedWidth;
+                            return false;
+                        }
+                        return true;
+                    });
+                }
+                
+                return { shelf: currentShelf, remaining };
+            }
+            
+            // Main packing loop with consolidation
+            while (unpackedGames.length > 0) {
+                // Try to fit as many games as possible on this shelf
+                const result = tryPackShelf(unpackedGames, true);
+                
+                if (result.shelf.length === 0) {
+                    // Couldn't pack anything, take the first game and move on
+                    result.shelf.push(unpackedGames.shift());
+                }
+                
+                unpackedGames = result.remaining;
+                
+                // Create cube with debug info
+                const maxMid = Math.max(...result.shelf.filter(g => !g.rotated).map(g => g.mid || 0), 0);
+                const shortSum = result.shelf.filter(g => !g.rotated).reduce((sum, g) => sum + g.short, 0);
+                
+                const cube = {
+                    games: result.shelf,
+                    shortSum: shortSum,
+                    maxMid: maxMid,
+                    debugInfo: {
+                        upperSpaceHeight: (SHORT_LIMIT - maxMid).toFixed(1),
+                        upperSpaceWidth: SHORT_LIMIT.toFixed(1),
+                        evaluated: [],
+                        placed: result.shelf.filter(g => g.rotated).map(g => g.name)
+                    }
+                };
+                
+                cubes.push(cube);
+            }
+
+            return { cubes, skipped, skippedGames, mode: 'super' };
+        }
+
         function openShelfTimeModal() {
             const modal = document.getElementById('shelfTimeModal');
             const body = document.getElementById('shelfTimeBody');
@@ -1933,6 +2030,7 @@
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'basic' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('basic')">📊 Basic</button>
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'smart' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('smart')">🧠 Smart Fill</button>
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'expert' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('expert')">⚡ Expert (Rotation)</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'super' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('super')">🚀 Super (Multi-Strategy)</button>
             </div>`;
 
             // Summary section
@@ -1946,6 +2044,7 @@
                     <span style="font-weight: 600; color: #27ae60;">${
                         shelfPackingMode === 'basic' ? '📊 Basic Sequential' : 
                         shelfPackingMode === 'smart' ? '🧠 Smart Fill (Best Fit)' :
+                        shelfPackingMode === 'super' ? '🚀 Super (Multi-Strategy)' :
                         '⚡ Expert (Rotation + Flipping)'
                     }</span>
                 </div>
