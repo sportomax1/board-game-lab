@@ -1755,89 +1755,22 @@
         }
 
         function calculateExpertShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
-            // Expert mode: Phase 1 - Smart Fill for normal (vertical) orientation
-            // Phase 2 - Fill upper space with horizontally-oriented games (flipped)
+            // Expert mode: Two-phase per shelf
+            // Phase 1 (per shelf): Smart Fill for vertical orientation
+            // Phase 2 (per shelf): Fill upper space with horizontal games BEFORE moving to next shelf
             
             const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
-            const allGames = [...sortedGames];
             let cubes = [];
-            let currentCube = [];
-            let currentShortSum = 0;
-            let currentMidStack = [];
-
-            // Phase 1: Smart Fill - pack games vertically (normal orientation)
-            const unpackedGames = [...allGames];
+            let unpackedGames = [...sortedGames];
             
-            while (unpackedGames.length > 0) {
-                if (currentCube.length === 0) {
-                    const nextGame = unpackedGames.shift();
-                    currentCube.push(nextGame);
-                    currentShortSum = nextGame.short;
-                    currentMidStack = [nextGame.mid];
-                } else {
-                    const nextGame = unpackedGames[0];
-                    
-                    if (currentShortSum + nextGame.short <= SHORT_LIMIT) {
-                        unpackedGames.shift();
-                        currentCube.push(nextGame);
-                        currentShortSum += nextGame.short;
-                        currentMidStack.push(nextGame.mid);
-                    } else {
-                        // Try smart search for best fit
-                        const remainingHorizontal = SHORT_LIMIT - currentShortSum;
-                        let bestFitIdx = -1;
-                        let bestFitSize = 0;
-                        
-                        for (let i = 0; i < unpackedGames.length; i++) {
-                            const candidate = unpackedGames[i];
-                            if (candidate.short <= remainingHorizontal && candidate.short > bestFitSize) {
-                                bestFitIdx = i;
-                                bestFitSize = candidate.short;
-                            }
-                        }
-                        
-                        if (bestFitIdx >= 0) {
-                            const bestGame = unpackedGames.splice(bestFitIdx, 1)[0];
-                            currentCube.push(bestGame);
-                            currentShortSum += bestGame.short;
-                            currentMidStack.push(bestGame.mid);
-                        } else {
-                            // No fit - save shelf and start new one
-                            const maxMidHeight = Math.max(...currentMidStack);
-                            cubes.push({
-                                games: currentCube,
-                                shortSum: currentShortSum,
-                                maxMid: maxMidHeight
-                            });
-                            currentCube = [];
-                            currentShortSum = 0;
-                            currentMidStack = [];
-                        }
-                    }
-                }
-            }
-
-            // Push last cube
-            if (currentCube.length > 0) {
-                const maxMidHeight = Math.max(...currentMidStack);
-                cubes.push({
-                    games: currentCube,
-                    shortSum: currentShortSum,
-                    maxMid: maxMidHeight
-                });
-            }
-
-            // Phase 2: Fill upper space with horizontally-oriented games (rotated)
-            const rotationCandidates = validGames.filter(g => !cubes.some(cube => cube.games.some(cg => cg.gameId === g.gameId)));
-            
-            cubes.forEach(cube => {
-                // Calculate upper space dimensions
+            // Helper function to evaluate horizontal placement for current shelf
+            function tryHorizontalPlacement(cube, unpackedGames, SHORT_LIMIT) {
                 const normalGames = cube.games.filter(g => !g.rotated);
                 const firstGameMid = normalGames.length > 0 ? normalGames[0].mid : 0;
-                const upperSpaceHeight = SHORT_LIMIT - firstGameMid; // Available vertical space
-                const upperSpaceWidth = SHORT_LIMIT; // Full 13" width available
+                const upperSpaceHeight = SHORT_LIMIT - firstGameMid;
+                const upperSpaceWidth = SHORT_LIMIT;
                 
-                // Debug info for this cube
+                // Debug info
                 cube.debugInfo = {
                     upperSpaceHeight: upperSpaceHeight.toFixed(1),
                     upperSpaceWidth: upperSpaceWidth.toFixed(1),
@@ -1845,21 +1778,21 @@
                     placed: []
                 };
                 
-                if (upperSpaceHeight > 0.5 && rotationCandidates.length > 0) {
-                    // Sort by mid descending (since when rotated, mid becomes width)
-                    const sortedCandidates = [...rotationCandidates].sort((a, b) => b.mid - a.mid);
+                if (upperSpaceHeight > 0.5 && unpackedGames.length > 0) {
+                    // Sort by mid descending (mid becomes width when rotated)
+                    const sortedCandidates = [...unpackedGames].sort((a, b) => b.mid - a.mid);
                     
                     let usedHorizontalSpace = 0;
                     const gamesToAdd = [];
                     
-                    // Try to fit games horizontally in upper space
                     for (const candidate of sortedCandidates) {
-                        // When rotated horizontally: mid becomes width, short becomes height
-                        const rotatedWidth = candidate.mid;    // Horizontal space needed
-                        const rotatedHeight = candidate.short; // Vertical space needed
+                        // When rotated: mid → width, short → height
+                        const rotatedWidth = candidate.mid;
+                        const rotatedHeight = candidate.short;
+                        
+                        const fits = rotatedHeight <= upperSpaceHeight && usedHorizontalSpace + rotatedWidth <= upperSpaceWidth;
                         
                         // Log evaluation
-                        const fits = rotatedHeight <= upperSpaceHeight && usedHorizontalSpace + rotatedWidth <= upperSpaceWidth;
                         cube.debugInfo.evaluated.push({
                             name: candidate.name,
                             mid: candidate.mid.toFixed(1),
@@ -1874,29 +1807,91 @@
                                 : 'FITS!'
                         });
                         
-                        // Check if it fits in upper space
                         if (fits) {
                             gamesToAdd.push(candidate);
                             usedHorizontalSpace += rotatedWidth;
                             cube.debugInfo.placed.push(candidate.name);
                             
-                            // Stop if shelf is full
                             if (usedHorizontalSpace >= upperSpaceWidth) break;
                         }
                     }
                     
-                    // Add rotated games to cube
+                    // Add rotated games and remove from unpacked
                     gamesToAdd.forEach(game => {
                         cube.games.push({
                             ...game,
                             rotated: true,
-                            rotatedShort: game.mid,      // When horizontal: mid becomes width
-                            rotatedHeight: game.short    // When horizontal: short becomes height
+                            rotatedShort: game.mid,
+                            rotatedHeight: game.short
                         });
-                        rotationCandidates.splice(rotationCandidates.indexOf(game), 1);
+                        const idx = unpackedGames.findIndex(g => g.gameId === game.gameId);
+                        if (idx >= 0) unpackedGames.splice(idx, 1);
                     });
                 }
-            });
+            }
+            
+            // Phase 1: Pack shelves vertically, then evaluate horizontal BEFORE next shelf
+            while (unpackedGames.length > 0) {
+                let currentCube = [];
+                let currentShortSum = 0;
+                let currentMidStack = [];
+                
+                // Fill vertical space on this shelf
+                while (unpackedGames.length > 0) {
+                    if (currentCube.length === 0) {
+                        const nextGame = unpackedGames.shift();
+                        currentCube.push(nextGame);
+                        currentShortSum = nextGame.short;
+                        currentMidStack = [nextGame.mid];
+                    } else {
+                        const nextGame = unpackedGames[0];
+                        
+                        if (currentShortSum + nextGame.short <= SHORT_LIMIT) {
+                            unpackedGames.shift();
+                            currentCube.push(nextGame);
+                            currentShortSum += nextGame.short;
+                            currentMidStack.push(nextGame.mid);
+                        } else {
+                            // Smart search for best fit
+                            const remainingHorizontal = SHORT_LIMIT - currentShortSum;
+                            let bestFitIdx = -1;
+                            let bestFitSize = 0;
+                            
+                            for (let i = 0; i < unpackedGames.length; i++) {
+                                const candidate = unpackedGames[i];
+                                if (candidate.short <= remainingHorizontal && candidate.short > bestFitSize) {
+                                    bestFitIdx = i;
+                                    bestFitSize = candidate.short;
+                                }
+                            }
+                            
+                            if (bestFitIdx >= 0) {
+                                const bestGame = unpackedGames.splice(bestFitIdx, 1)[0];
+                                currentCube.push(bestGame);
+                                currentShortSum += bestGame.short;
+                                currentMidStack.push(bestGame.mid);
+                            } else {
+                                // No more vertical fits - shelf complete
+                                break;
+                            }
+                        }
+                    }
+                }
+                
+                // Shelf vertical packing complete - create cube
+                const maxMidHeight = Math.max(...currentMidStack);
+                const cube = {
+                    games: currentCube,
+                    shortSum: currentShortSum,
+                    maxMid: maxMidHeight
+                };
+                
+                // Phase 2: NOW evaluate horizontal placement for THIS shelf
+                tryHorizontalPlacement(cube, unpackedGames, SHORT_LIMIT);
+                
+                // Add completed shelf
+                cubes.push(cube);
+            }
 
             return { cubes, skipped, skippedGames, mode: 'expert' };
         }
