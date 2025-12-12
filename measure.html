@@ -944,6 +944,7 @@
         let currentSortDirection = 'asc';
         let currentTab = 'all';
         let selectedMeasurements = {}; // Track which measurement variant to show for each game
+        let shelfPackingMode = 'basic'; // 'basic' or 'smart'
 
         const statusDiv = document.getElementById('statusDiv');
         const fetchBtn = document.getElementById('fetchBtn');
@@ -1621,10 +1622,10 @@
             const SHORT_LIMIT = 13;
             
             if (filteredPopularData.length === 0) {
-                return { cubes: [], skipped: 0, skippedGames: [] };
+                return { cubes: [], skipped: 0, skippedGames: [], mode: shelfPackingMode };
             }
 
-            // Create working copy sorted by Mid descending
+            // Create working copy with measurements
             const gamesToProcess = filteredPopularData.map(g => {
                 const selectedVariant = selectedMeasurements[g.gameId] || 0;
                 const selectedMeasure = g.versions && g.versions[selectedVariant] ? g.versions[selectedVariant] : {
@@ -1637,22 +1638,30 @@
                     mid: getMiddleMeasurement(selectedMeasure.width, selectedMeasure.height, selectedMeasure.length),
                     short: getShortestMeasurement(selectedMeasure.width, selectedMeasure.height, selectedMeasure.length)
                 };
-            }).sort((a, b) => b.mid - a.mid);
+            });
+
+            // Filter and track skipped games
+            const skippedGames = gamesToProcess.filter(game => game.mid >= MID_LIMIT);
+            let skipped = skippedGames.length;
+            const validGames = gamesToProcess.filter(game => game.mid < MID_LIMIT);
+
+            // Route to appropriate packing mode
+            if (shelfPackingMode === 'smart') {
+                return calculateSmartShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
+            } else {
+                return calculateBasicShelfPacking(validGames, skipped, skippedGames, SHORT_LIMIT);
+            }
+        }
+
+        function calculateBasicShelfPacking(validGames, skipped, skippedGames, SHORT_LIMIT) {
+            // Sort by Mid descending
+            const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
 
             let cubes = [];
             let currentCube = [];
             let currentShortSum = 0;
-            let skipped = 0;
-            let skippedGames = [];
 
-            gamesToProcess.forEach(game => {
-                // Skip games where Mid >= 13"
-                if (game.mid >= MID_LIMIT) {
-                    skipped++;
-                    skippedGames.push(game);
-                    return;
-                }
-
+            sortedGames.forEach(game => {
                 // Check if Short fits in current cube (compounding)
                 if (currentShortSum + game.short <= SHORT_LIMIT) {
                     currentCube.push(game);
@@ -1678,7 +1687,66 @@
                 });
             }
 
-            return { cubes, skipped, skippedGames };
+            return { cubes, skipped, skippedGames, mode: 'basic' };
+        }
+
+        function calculateSmartShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
+            // Smart mode: Start with highest mid, when short space runs out, 
+            // search ahead for a game that fits, or start new shelf with next highest mid
+            
+            const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
+            const unpackedGames = [...sortedGames];
+            let cubes = [];
+            let currentCube = [];
+            let currentShortSum = 0;
+            let nextMidCandidate = null;
+
+            while (unpackedGames.length > 0) {
+                // If current shelf is empty, get highest mid game
+                if (currentCube.length === 0) {
+                    const nextGame = unpackedGames.shift();
+                    currentCube.push(nextGame);
+                    currentShortSum = nextGame.short;
+                    nextMidCandidate = nextGame.mid;
+                } else {
+                    // Try to find a game from remaining that fits in remaining short space
+                    let foundFit = false;
+                    for (let i = 0; i < unpackedGames.length; i++) {
+                        const game = unpackedGames[i];
+                        if (currentShortSum + game.short <= SHORT_LIMIT) {
+                            // Found a fit! Add it
+                            currentCube.push(game);
+                            currentShortSum += game.short;
+                            unpackedGames.splice(i, 1);
+                            foundFit = true;
+                            break;
+                        }
+                    }
+
+                    if (!foundFit) {
+                        // No fit found, close current shelf and start new one
+                        if (currentCube.length > 0) {
+                            cubes.push({
+                                games: currentCube,
+                                shortSum: currentShortSum
+                            });
+                        }
+                        currentCube = [];
+                        currentShortSum = 0;
+                        nextMidCandidate = null;
+                    }
+                }
+            }
+
+            // Push last cube if it has games
+            if (currentCube.length > 0) {
+                cubes.push({
+                    games: currentCube,
+                    shortSum: currentShortSum
+                });
+            }
+
+            return { cubes, skipped, skippedGames, mode: 'smart' };
         }
 
         function openShelfTimeModal() {
@@ -1689,11 +1757,22 @@
 
             let html = '';
 
+            // Mode selector
+            html += `<div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+                <label style="font-weight: 600;">Packing Mode:</label>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'basic' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('basic')">📊 Basic</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'smart' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('smart')">🧠 Smart Fill</button>
+            </div>`;
+
             // Summary section
             html += `<div class="shelf-summary">
                 <div class="shelf-summary-row">
-                    <span>Total Cubes Needed:</span>
-                    <span style="font-size: 1.3rem;">${cubes.length}</span>
+                    <span>Total Shelves Needed:</span>
+                    <span style="font-size: 1.3rem; font-weight: 700; color: #667eea;">${cubes.length}</span>
+                </div>
+                <div class="shelf-summary-row">
+                    <span>Mode:</span>
+                    <span style="font-weight: 600; color: #27ae60;">${shelfPackingMode === 'basic' ? '📊 Basic Sequential' : '🧠 Smart Fill (Best Fit)'}</span>
                 </div>
                 <div class="shelf-summary-row">
                     <span>Games Assigned:</span>
@@ -1716,7 +1795,7 @@
             
             cubes.forEach((cube, idx) => {
                 html += `<div class="cube-card">
-                    <div class="cube-title">Cube ${idx + 1}</div>`;
+                    <div class="cube-title">Shelf ${idx + 1}</div>`;
                 
                 // Create visualization - 300px represents 13" (scale factor for bigger display)
                 const scale = 300 / 13;
@@ -1816,6 +1895,11 @@
 
             body.innerHTML = html;
             modal.style.display = 'flex';
+        }
+
+        function switchShelfMode(mode) {
+            shelfPackingMode = mode;
+            openShelfTimeModal(); // Recalculate and re-render with new mode
         }
 
         function closeShelfTimeModal() {
