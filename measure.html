@@ -1755,39 +1755,35 @@
         }
 
         function calculateExpertShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
-            // Expert mode: Start with Smart Fill, then evaluate empty space above each shelf
-            // and add games via rotation if they fit in the empty vertical space
+            // Expert mode: Phase 1 - Smart Fill for normal (vertical) orientation
+            // Phase 2 - Fill upper space with horizontally-oriented games (flipped)
             
-            // First, apply Smart Fill algorithm to get initial packing
             const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
             const allGames = [...sortedGames];
             let cubes = [];
             let currentCube = [];
             let currentShortSum = 0;
-            let currentMidStack = []; // Track actual heights of games in current shelf
+            let currentMidStack = [];
 
-            // Phase 1: Smart Fill - get baseline packing
+            // Phase 1: Smart Fill - pack games vertically (normal orientation)
             const unpackedGames = [...allGames];
             
             while (unpackedGames.length > 0) {
-                // If current shelf is empty, get highest mid game
                 if (currentCube.length === 0) {
                     const nextGame = unpackedGames.shift();
                     currentCube.push(nextGame);
                     currentShortSum = nextGame.short;
                     currentMidStack = [nextGame.mid];
                 } else {
-                    // Try to fit next game in current shelf horizontally
                     const nextGame = unpackedGames[0];
                     
                     if (currentShortSum + nextGame.short <= SHORT_LIMIT) {
-                        // Fits horizontally - add to current shelf
                         unpackedGames.shift();
                         currentCube.push(nextGame);
                         currentShortSum += nextGame.short;
                         currentMidStack.push(nextGame.mid);
                     } else {
-                        // Doesn't fit horizontally - smart search: look ahead for a game that fits
+                        // Try smart search for best fit
                         const remainingHorizontal = SHORT_LIMIT - currentShortSum;
                         let bestFitIdx = -1;
                         let bestFitSize = 0;
@@ -1801,13 +1797,12 @@
                         }
                         
                         if (bestFitIdx >= 0) {
-                            // Found a game that fits - insert it
                             const bestGame = unpackedGames.splice(bestFitIdx, 1)[0];
                             currentCube.push(bestGame);
                             currentShortSum += bestGame.short;
                             currentMidStack.push(bestGame.mid);
                         } else {
-                            // No game fits - save current shelf and start new one
+                            // No fit - save shelf and start new one
                             const maxMidHeight = Math.max(...currentMidStack);
                             cubes.push({
                                 games: currentCube,
@@ -1822,7 +1817,7 @@
                 }
             }
 
-            // Push last cube if it has games
+            // Push last cube
             if (currentCube.length > 0) {
                 const maxMidHeight = Math.max(...currentMidStack);
                 cubes.push({
@@ -1832,36 +1827,36 @@
                 });
             }
 
-            // Phase 2: Evaluate empty vertical space and add rotated games
+            // Phase 2: Fill upper space with horizontally-oriented games (rotated)
             const rotationCandidates = validGames.filter(g => !cubes.some(cube => cube.games.some(cg => cg.gameId === g.gameId)));
             
             cubes.forEach(cube => {
-                // Calculate empty vertical space - from tallest normal game to 13"
-                // Get height of first (tallest) normal game in this shelf
+                // Calculate upper space dimensions
                 const normalGames = cube.games.filter(g => !g.rotated);
-                const firstGameHeight = normalGames.length > 0 ? normalGames[0].mid : 0;
-                const availableVerticalSpace = SHORT_LIMIT - firstGameHeight; // Space above first game
+                const firstGameMid = normalGames.length > 0 ? normalGames[0].mid : 0;
+                const upperSpaceHeight = SHORT_LIMIT - firstGameMid; // Available vertical space
+                const upperSpaceWidth = SHORT_LIMIT; // Full 13" width available
                 
-                if (availableVerticalSpace > 0.5 && rotationCandidates.length > 0) {
-                    // Sort candidates by rotated width (which is candidate.short when flipped) - largest first
-                    const sortedCandidates = [...rotationCandidates].sort((a, b) => b.short - a.short);
+                if (upperSpaceHeight > 0.5 && rotationCandidates.length > 0) {
+                    // Sort by mid descending (since when rotated, mid becomes width)
+                    const sortedCandidates = [...rotationCandidates].sort((a, b) => b.mid - a.mid);
                     
-                    let emptySpaceUsed = 0;
+                    let usedHorizontalSpace = 0;
                     const gamesToAdd = [];
                     
-                    // Try to stack rotated games horizontally in the empty space
+                    // Try to fit games horizontally in upper space
                     for (const candidate of sortedCandidates) {
-                        // When rotated: width = candidate.short, height = candidate.mid
-                        const rotatedWidth = candidate.short; // Horizontal dimension when rotated
-                        const rotatedHeight = candidate.mid;  // Vertical dimension when rotated
+                        // When rotated horizontally: mid becomes width, short becomes height
+                        const rotatedWidth = candidate.mid;    // Horizontal space needed
+                        const rotatedHeight = candidate.short; // Vertical space needed
                         
-                        // Check if rotated game fits vertically in empty space AND horizontally in shelf (13")
-                        if (rotatedHeight <= availableVerticalSpace && emptySpaceUsed + rotatedWidth <= SHORT_LIMIT) {
+                        // Check if it fits in upper space
+                        if (rotatedHeight <= upperSpaceHeight && usedHorizontalSpace + rotatedWidth <= upperSpaceWidth) {
                             gamesToAdd.push(candidate);
-                            emptySpaceUsed += rotatedWidth; // Track horizontal space used
+                            usedHorizontalSpace += rotatedWidth;
                             
-                            // Stop if we've filled the shelf width (13")
-                            if (emptySpaceUsed >= 13) break;
+                            // Stop if shelf is full
+                            if (usedHorizontalSpace >= upperSpaceWidth) break;
                         }
                     }
                     
@@ -1870,10 +1865,9 @@
                         cube.games.push({
                             ...game,
                             rotated: true,
-                            rotatedShort: game.short,
-                            rotatedHeight: game.mid
+                            rotatedShort: game.mid,      // When horizontal: mid becomes width
+                            rotatedHeight: game.short    // When horizontal: short becomes height
                         });
-                        // Remove from candidates for next shelves
                         rotationCandidates.splice(rotationCandidates.indexOf(game), 1);
                     });
                 }
@@ -1983,15 +1977,7 @@
                 });
                 
                 if (emptyVerticalSpace > 5) {  // Show if there's meaningful empty space
-                    // Always show empty space rectangle for all modes
-                    const maxNormalGameHeight = normalGames.length > 0 ? Math.max(...normalGames.map(g => g.mid * scale)) : 0;
-                    const availableVerticalHeight = 225 - maxNormalGameHeight;
-                    const availableVerticalWidth = 13; // Full shelf width available
-                    
-                    html += `<div style="position: absolute; top: ${maxNormalGameHeight}px; left: 0; width: ${availableVerticalWidth * scale}px; height: ${availableVerticalHeight}px; background: linear-gradient(135deg, rgba(255,200,124,0.15) 0%, rgba(255,200,124,0.05) 100%); border: 2px dashed #ffa500; border-radius: 3px; z-index: 2;" title="Empty space: ${(availableVerticalHeight / scale).toFixed(1)}\\" H × ${availableVerticalWidth}\\""></div>`;
-                    
-                    // Show space dimensions
-                    html += `<div style="position: absolute; top: ${maxNormalGameHeight + 2}px; left: 6px; font-size: 9px; color: #ff8800; font-weight: bold; background: rgba(255, 255, 255, 0.9); padding: 2px 4px; border-radius: 2px; z-index: 3;">EMPTY: ${(availableVerticalHeight / scale).toFixed(1)}\\" H × ${availableVerticalWidth}\\"</div>`;
+                    // Don't show the empty space rectangle - just let it be visible as white space
                 }
                 
                 // Add remaining width indicator
@@ -2007,14 +1993,15 @@
                 
                 cube.games.forEach(game => {
                     const thumbnail = game.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E';
-                    const rotationBadge = game.rotated ? '<span style="display: inline-block; background: #ff8800; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: bold; margin-left: 0.5rem;">🔄 ROTATED</span>' : '';
+                    const orientationLabel = game.rotated ? 'Horizontal' : 'Vertical';
+                    const orientationBadge = game.rotated ? '<span style="display: inline-block; background: #ff8800; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: bold; margin-left: 0.5rem;">↔️ HORIZONTAL</span>' : '<span style="display: inline-block; background: #4caf50; color: white; padding: 2px 6px; border-radius: 3px; font-size: 0.7rem; font-weight: bold; margin-left: 0.5rem;">↕️ VERTICAL</span>';
                     html += `<div class="cube-game">
                         <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
                             <img src="${thumbnail}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'" alt="" style="width: 40px; height: 40px; border-radius: 3px; object-fit: cover; flex-shrink: 0;">
                             <div style="flex: 1;">
-                                <div class="cube-game-name">${game.name}${rotationBadge}</div>
+                                <div class="cube-game-name">${game.name}${orientationBadge}</div>
                                 <div class="cube-game-info">
-                                    ${game.rotated ? `Rotated: ${game.rotatedShort.toFixed(1)}"W × ${game.rotatedHeight.toFixed(1)}"H` : `Mid: ${game.mid.toFixed(1)}" | Short: ${game.short.toFixed(1)}"`}
+                                    ${game.rotated ? `Horizontal: ${game.rotatedShort.toFixed(1)}"W × ${game.rotatedHeight.toFixed(1)}"H` : `Vertical: ${game.short.toFixed(1)}"W × ${game.mid.toFixed(1)}"H`}
                                 </div>
                             </div>
                         </div>
