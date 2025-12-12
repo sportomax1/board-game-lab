@@ -305,7 +305,7 @@
         /* Most Popular Tab Table */
         #popularTab .table-header {
             display: grid;
-            grid-template-columns: 50px 0.5rem auto 0.5rem 50px 45px 45px 45px 45px 45px 45px 45px 45px 60px 70px;
+            grid-template-columns: 50px 0.5rem minmax(120px, 200px) 0.5rem 50px 45px 45px 45px 45px 45px 45px 45px 45px 60px 70px;
             gap: 0;
             padding: 0.5rem;
             background: #f5f5f5;
@@ -320,7 +320,7 @@
 
         #popularTab .table-row {
             display: grid;
-            grid-template-columns: 50px 0.5rem auto 0.5rem 50px 45px 45px 45px 45px 45px 45px 45px 45px 60px 70px;
+            grid-template-columns: 50px 0.5rem minmax(120px, 200px) 0.5rem 50px 45px 45px 45px 45px 45px 45px 45px 45px 60px 70px;
             gap: 0;
             padding: 0.5rem;
             border-bottom: 1px solid #eee;
@@ -332,8 +332,10 @@
             word-wrap: break-word;
             overflow-wrap: break-word;
             word-break: break-word;
-            max-width: 180px;
+            min-width: 120px;
+            max-width: 200px;
             line-height: 1.2;
+            padding: 0.25rem;
         }
 
         .table-header-cell {
@@ -1752,18 +1754,20 @@
         }
 
         function calculateExpertShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
-            // Expert mode: Games can be rotated/flipped to fill horizontal space
-            // - Primary layer: stacked by short dimension (normal orientation)
-            // - Secondary layer: games can be placed above with mid/width dimensions rotated
-            // This maximizes horizontal space usage
+            // Expert mode: Start with Smart Fill, then evaluate empty space above each shelf
+            // and add games via rotation if they fit in the empty vertical space
             
+            // First, apply Smart Fill algorithm to get initial packing
             const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
-            const unpackedGames = [...sortedGames];
+            const allGames = [...sortedGames];
             let cubes = [];
             let currentCube = [];
             let currentShortSum = 0;
-            let currentMidStack = []; // Track mid values of stacked games for height calculation
+            let currentMidStack = []; // Track actual heights of games in current shelf
 
+            // Phase 1: Smart Fill - get baseline packing
+            const unpackedGames = [...allGames];
+            
             while (unpackedGames.length > 0) {
                 // If current shelf is empty, get highest mid game
                 if (currentCube.length === 0) {
@@ -1772,16 +1776,9 @@
                     currentShortSum = nextGame.short;
                     currentMidStack = [nextGame.mid];
                 } else {
-                    // Calculate current shelf height (max mid)
-                    const shelfHeight = Math.max(...currentMidStack);
-                    
-                    // Try to find a game that fits either:
-                    // 1. In remaining short space (normal orientation)
-                    // 2. In remaining mid space above the tallest game (rotated - using its mid/length as new short)
-                    
+                    // Try to find a game that fits in remaining short space (normal orientation)
                     let foundFit = false;
                     
-                    // First, try normal orientation (short-based stacking)
                     for (let i = 0; i < unpackedGames.length; i++) {
                         const game = unpackedGames[i];
                         if (currentShortSum + game.short <= SHORT_LIMIT) {
@@ -1794,40 +1791,53 @@
                         }
                     }
 
-                    // If no normal fit, try rotated/flipped orientation (mid-based filling above)
                     if (!foundFit) {
-                        const remainingMidSpace = SHORT_LIMIT - shelfHeight;
+                        // No fit found with normal orientation
+                        // Phase 2: Evaluate empty space and try to add rotated games
+                        const shelfHeight = Math.max(...currentMidStack);
+                        const availableVerticalSpace = SHORT_LIMIT - shelfHeight;
                         
-                        for (let i = 0; i < unpackedGames.length; i++) {
-                            const game = unpackedGames[i];
-                            // When rotated, game uses its mid dimension as the new "short" (horizontal space)
-                            // and its short dimension as height
-                            const rotatedShort = game.mid; // Using mid as new width
-                            const rotatedHeight = game.short; // Using short as new height
-                            
-                            // Check if rotated game's height fits in remaining vertical space
-                            if (shelfHeight + rotatedHeight <= SHORT_LIMIT && currentShortSum + rotatedShort <= SHORT_LIMIT) {
-                                currentCube.push({ ...game, rotated: true, rotatedShort, rotatedHeight });
-                                currentMidStack.push(rotatedHeight);
-                                unpackedGames.splice(i, 1);
-                                foundFit = true;
-                                break;
+                        // Try to find games that can fit above when rotated
+                        let addedRotated = false;
+                        
+                        if (availableVerticalSpace > 0) {
+                            for (let i = 0; i < unpackedGames.length; i++) {
+                                const game = unpackedGames[i];
+                                // When rotated: game.mid becomes new width (horizontal), game.short becomes height (vertical)
+                                const rotatedWidth = game.mid;  // Horizontal space needed
+                                const rotatedHeight = game.short; // Vertical space needed
+                                
+                                // Check if rotated game fits in available space
+                                if (currentShortSum + rotatedWidth <= SHORT_LIMIT && rotatedHeight <= availableVerticalSpace) {
+                                    currentCube.push({ 
+                                        ...game, 
+                                        rotated: true,
+                                        rotatedShort: rotatedWidth,
+                                        rotatedHeight: rotatedHeight
+                                    });
+                                    currentShortSum += rotatedWidth;
+                                    currentMidStack.push(rotatedHeight); // Update stack with rotated height
+                                    unpackedGames.splice(i, 1);
+                                    addedRotated = true;
+                                    foundFit = true;
+                                    break;
+                                }
                             }
                         }
-                    }
 
-                    if (!foundFit) {
-                        // No fit found, close current shelf and start new one
-                        if (currentCube.length > 0) {
-                            cubes.push({
-                                games: currentCube,
-                                shortSum: currentShortSum,
-                                maxMid: Math.max(...currentMidStack)
-                            });
+                        if (!foundFit) {
+                            // Still no fit, close shelf and start new one
+                            if (currentCube.length > 0) {
+                                cubes.push({
+                                    games: currentCube,
+                                    shortSum: currentShortSum,
+                                    maxMid: Math.max(...currentMidStack)
+                                });
+                            }
+                            currentCube = [];
+                            currentShortSum = 0;
+                            currentMidStack = [];
                         }
-                        currentCube = [];
-                        currentShortSum = 0;
-                        currentMidStack = [];
                     }
                 }
             }
