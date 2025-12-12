@@ -904,6 +904,22 @@
         </div>
     </div>
 
+    <!-- Measurement Variants Modal -->
+    <div id="measurementVariantsModal" class="modal" style="display: none;">
+        <div class="modal-content" style="max-width: 700px; max-height: 80vh; overflow-y: auto;">
+            <div class="modal-header">
+                <h2 id="variantsModalTitle">All Measurements</h2>
+                <button class="modal-close" onclick="closeMeasurementVariantsModal()">✕</button>
+            </div>
+            <div class="modal-body" id="measurementVariantsBody">
+                <div style="text-align: center; padding: 2rem;">Loading...</div>
+            </div>
+            <div class="modal-footer">
+                <button class="btn" onclick="closeMeasurementVariantsModal()">Close</button>
+            </div>
+        </div>
+    </div>
+
     <script>
         // Prevent double-tap zoom
         document.addEventListener('touchstart', function(e) {
@@ -1248,14 +1264,14 @@
                     length: g.length
                 };
                 
-                // Count how many versions match the selected measurement (with safety check)
+                // Count how many versions match the selected measurement (respecting decimal precision)
                 let countForSelected = 1;
                 if (g.versions && Array.isArray(g.versions)) {
-                    countForSelected = g.versions.filter(v => 
-                        v.width === selectedMeasure.width && 
-                        v.height === selectedMeasure.height && 
-                        v.length === selectedMeasure.length
-                    ).length;
+                    const selectedRounded = `${selectedMeasure.width.toFixed(decimalPlaces)}x${selectedMeasure.height.toFixed(decimalPlaces)}x${selectedMeasure.length.toFixed(decimalPlaces)}`;
+                    countForSelected = g.versions.filter(v => {
+                        const vRounded = `${v.width.toFixed(decimalPlaces)}x${v.height.toFixed(decimalPlaces)}x${v.length.toFixed(decimalPlaces)}`;
+                        return vRounded === selectedRounded;
+                    }).length;
                 }
 
                 // Calculate middle measurement for display
@@ -1310,7 +1326,7 @@
                             <img src="${g.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'" alt="">
                         </div>
                         <div></div>
-                        <div class="name-cell" title="${g.name}">${g.name}</div>
+                        <div class="name-cell" title="${g.name}" style="cursor: pointer; color: #667eea; text-decoration: underline;" onclick="showMeasurementVariants('${g.gameId}', '${g.name}')">${g.name}</div>
                         <div></div>
                         <div class="dimension-cell" style="text-align: center;">${selectedMeasure.width.toFixed(decimalPlaces)}"</div>
                         <div class="dimension-cell" style="text-align: center;">${selectedMeasure.height.toFixed(decimalPlaces)}"</div>
@@ -1331,6 +1347,70 @@
 
         function swapMeasurementVariant(gameId, variantIndex) {
             selectedMeasurements[gameId] = parseInt(variantIndex);
+        }
+
+        function showMeasurementVariants(gameId, gameName) {
+            const decimalPlaces = parseInt(document.getElementById('decimalPlaces').value) || 1;
+            const game = popularMeasurements.find(g => g.gameId === gameId);
+            
+            if (!game || !game.versions) {
+                return;
+            }
+
+            // Group measurements by decimal-rounded values
+            const measurementsByRounded = {};
+            const measurementCountsByRounded = {};
+            
+            game.versions.forEach(v => {
+                const roundedKey = `${v.width.toFixed(decimalPlaces)}x${v.height.toFixed(decimalPlaces)}x${v.length.toFixed(decimalPlaces)}`;
+                if (!measurementsByRounded[roundedKey]) {
+                    measurementsByRounded[roundedKey] = v;
+                    measurementCountsByRounded[roundedKey] = 0;
+                }
+                measurementCountsByRounded[roundedKey]++;
+            });
+
+            // Sort by count (desc), then by cubic volume (desc)
+            const sortedMeasurements = Object.entries(measurementCountsByRounded)
+                .map(([key, count]) => ({
+                    key,
+                    measure: measurementsByRounded[key],
+                    count,
+                    cubic: measurementsByRounded[key].width * measurementsByRounded[key].height * measurementsByRounded[key].length
+                }))
+                .sort((a, b) => {
+                    if (a.count !== b.count) return b.count - a.count;
+                    return b.cubic - a.cubic;
+                });
+
+            // Build HTML for modal
+            let html = `<div style="padding: 1rem;">`;
+            html += `<p style="margin-bottom: 1rem; color: #666;">Measurements grouped by ${decimalPlaces} decimal place${decimalPlaces !== 1 ? 's' : ''}</p>`;
+            html += `<table style="width: 100%; border-collapse: collapse;">`;
+            html += `<thead><tr style="border-bottom: 2px solid #667eea;">`;
+            html += `<th style="text-align: left; padding: 0.5rem; font-weight: 600;">Measurement</th>`;
+            html += `<th style="text-align: center; padding: 0.5rem; font-weight: 600;">Count</th>`;
+            html += `<th style="text-align: center; padding: 0.5rem; font-weight: 600;">Cubic</th>`;
+            html += `</tr></thead><tbody>`;
+
+            sortedMeasurements.forEach((item, idx) => {
+                const rowColor = idx % 2 === 0 ? '#f9f9f9' : 'white';
+                html += `<tr style="border-bottom: 1px solid #eee; background: ${rowColor};">`;
+                html += `<td style="padding: 0.75rem; font-weight: 600; color: #333;">${item.key}"</td>`;
+                html += `<td style="text-align: center; padding: 0.75rem; font-weight: 600; color: #667eea;">${item.count}</td>`;
+                html += `<td style="text-align: center; padding: 0.75rem; color: #666;">${item.cubic.toFixed(2)}</td>`;
+                html += `</tr>`;
+            });
+
+            html += `</tbody></table></div>`;
+
+            document.getElementById('variantsModalTitle').textContent = `All Measurements - ${gameName}`;
+            document.getElementById('measurementVariantsBody').innerHTML = html;
+            document.getElementById('measurementVariantsModal').style.display = 'flex';
+        }
+
+        function closeMeasurementVariantsModal() {
+            document.getElementById('measurementVariantsModal').style.display = 'none';
         }
 
         function switchTab(tab) {
