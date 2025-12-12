@@ -1779,54 +1779,77 @@
                 };
                 
                 if (upperSpaceHeight > 0.5 && unpackedGames.length > 0) {
-                    // Sort by mid descending (mid becomes width when rotated)
-                    const sortedCandidates = [...unpackedGames].sort((a, b) => b.mid - a.mid);
-                    
-                    let usedHorizontalSpace = 0;
+                    // Track horizontal layers (rows stacked vertically in upper space)
+                    let currentLayerHeight = 0; // Current vertical position from top of first game
                     const gamesToAdd = [];
                     
-                    for (const candidate of sortedCandidates) {
-                        // When rotated: mid → width, short → height
-                        const rotatedWidth = candidate.mid;
-                        const rotatedHeight = candidate.short;
+                    // Keep trying to add layers until we run out of vertical space
+                    while (currentLayerHeight < upperSpaceHeight && unpackedGames.length > 0) {
+                        // Sort by mid descending (mid becomes width when rotated)
+                        const sortedCandidates = [...unpackedGames].sort((a, b) => b.mid - a.mid);
                         
-                        const fits = rotatedHeight <= upperSpaceHeight && usedHorizontalSpace + rotatedWidth <= upperSpaceWidth;
+                        let usedHorizontalSpace = 0;
+                        let layerMaxHeight = 0;
+                        let layerGames = [];
                         
-                        // Log evaluation
-                        cube.debugInfo.evaluated.push({
-                            name: candidate.name,
-                            mid: candidate.mid.toFixed(1),
-                            short: candidate.short.toFixed(1),
-                            rotatedWidth: rotatedWidth.toFixed(1),
-                            rotatedHeight: rotatedHeight.toFixed(1),
-                            fits: fits,
-                            reason: !fits ? 
-                                (rotatedHeight > upperSpaceHeight ? 
-                                    `Height ${rotatedHeight.toFixed(1)}" > ${upperSpaceHeight.toFixed(1)}"` : 
-                                    `Width would exceed: ${(usedHorizontalSpace + rotatedWidth).toFixed(1)}" > ${upperSpaceWidth}"`) 
-                                : 'FITS!'
+                        // Try to fill this horizontal layer
+                        for (const candidate of sortedCandidates) {
+                            // When rotated: mid → width, short → height
+                            const rotatedWidth = candidate.mid;
+                            const rotatedHeight = candidate.short;
+                            
+                            const fitsHeight = (currentLayerHeight + rotatedHeight) <= upperSpaceHeight;
+                            const fitsWidth = (usedHorizontalSpace + rotatedWidth) <= upperSpaceWidth;
+                            const fits = fitsHeight && fitsWidth;
+                            
+                            // Log evaluation
+                            cube.debugInfo.evaluated.push({
+                                name: candidate.name,
+                                mid: candidate.mid.toFixed(1),
+                                short: candidate.short.toFixed(1),
+                                rotatedWidth: rotatedWidth.toFixed(1),
+                                rotatedHeight: rotatedHeight.toFixed(1),
+                                layer: Math.floor(currentLayerHeight) + 1,
+                                fits: fits,
+                                reason: !fits ? 
+                                    (!fitsHeight ? 
+                                        `Layer height ${(currentLayerHeight + rotatedHeight).toFixed(1)}" > ${upperSpaceHeight.toFixed(1)}"` : 
+                                        `Width would exceed: ${(usedHorizontalSpace + rotatedWidth).toFixed(1)}" > ${upperSpaceWidth}"`) 
+                                    : 'FITS!'
+                            });
+                            
+                            if (fits) {
+                                layerGames.push(candidate);
+                                usedHorizontalSpace += rotatedWidth;
+                                layerMaxHeight = Math.max(layerMaxHeight, rotatedHeight);
+                                cube.debugInfo.placed.push(candidate.name);
+                                
+                                if (usedHorizontalSpace >= upperSpaceWidth) break;
+                            }
+                        }
+                        
+                        // If no games fit in this layer, stop trying
+                        if (layerGames.length === 0) break;
+                        
+                        // Add layer games with their layer position
+                        layerGames.forEach(game => {
+                            gamesToAdd.push({
+                                ...game,
+                                rotated: true,
+                                rotatedShort: game.mid,
+                                rotatedHeight: game.short,
+                                horizontalLayer: currentLayerHeight // Store layer position for rendering
+                            });
+                            const idx = unpackedGames.findIndex(g => g.gameId === game.gameId);
+                            if (idx >= 0) unpackedGames.splice(idx, 1);
                         });
                         
-                        if (fits) {
-                            gamesToAdd.push(candidate);
-                            usedHorizontalSpace += rotatedWidth;
-                            cube.debugInfo.placed.push(candidate.name);
-                            
-                            if (usedHorizontalSpace >= upperSpaceWidth) break;
-                        }
+                        // Move to next layer
+                        currentLayerHeight += layerMaxHeight;
                     }
                     
-                    // Add rotated games and remove from unpacked
-                    gamesToAdd.forEach(game => {
-                        cube.games.push({
-                            ...game,
-                            rotated: true,
-                            rotatedShort: game.mid,
-                            rotatedHeight: game.short
-                        });
-                        const idx = unpackedGames.findIndex(g => g.gameId === game.gameId);
-                        if (idx >= 0) unpackedGames.splice(idx, 1);
-                    });
+                    // Add all rotated games to cube
+                    gamesToAdd.forEach(game => cube.games.push(game));
                 }
             }
             
@@ -1981,19 +2004,35 @@
                 const emptyVerticalSpace = 225 - maxGameHeight; // Space from top of tallest game to top of shelf
                 const remainingShort = 13 - cube.shortSum;
                 
-                // Render rotated games in the empty space (stacked horizontally from left)
-                let rotatedPosX = 0;
+                // Render rotated games in the empty space (ABOVE first vertical game, going upward)
                 const firstGameHeight = normalGames.length > 0 ? normalGames[0].mid * scale : 0;
+                const firstGameTopY = 225 - firstGameHeight; // Y position of top of first vertical game
+                
+                // Group rotated games by layer
+                const layerMap = new Map();
                 rotatedGames.forEach((game, rotIdx) => {
-                    const boxColor = colors[(normalGames.length + rotIdx) % colors.length];
-                    const rotatedBoxWidth = game.rotatedShort * scale; // When rotated: mid becomes width (stored in rotatedShort)
-                    const rotatedBoxHeight = game.rotatedHeight * scale; // When rotated: short becomes height (stored in rotatedHeight)
+                    const layerPos = game.horizontalLayer || 0;
+                    if (!layerMap.has(layerPos)) layerMap.set(layerPos, []);
+                    layerMap.get(layerPos).push({game, rotIdx});
+                });
+                
+                // Render each layer from bottom to top (bottom layer = closest to first game top)
+                const sortedLayers = Array.from(layerMap.entries()).sort((a, b) => a[0] - b[0]);
+                sortedLayers.forEach(([layerHeight, gamesInLayer]) => {
+                    let rotatedPosX = 0;
                     
-                    // Position rotated games at the top of first normal game, stacking left to right
-                    const posY = 225 - firstGameHeight; // Position at the top of the first game
-                    
-                    html += `<div class="cube-box" style="left: ${rotatedPosX}px; top: ${posY}px; width: ${rotatedBoxWidth}px; height: ${rotatedBoxHeight}px; background-color: ${boxColor}; opacity: 0.8; border: 2px dashed rgba(0,0,0,0.3); z-index: 8; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);" title="${game.name} (horizontal)" onclick="alert('${game.name} - HORIZONTAL')">H${normalGames.length + rotIdx + 1}</div>`;
-                    rotatedPosX += rotatedBoxWidth;
+                    gamesInLayer.forEach(({game, rotIdx}) => {
+                        const boxColor = colors[(normalGames.length + rotIdx) % colors.length];
+                        const rotatedBoxWidth = game.rotatedShort * scale; // When rotated: mid becomes width
+                        const rotatedBoxHeight = game.rotatedHeight * scale; // When rotated: short becomes height
+                        
+                        // Position ABOVE first game: go upward from top of first game
+                        // Layer height is distance FROM top of first game UPWARD (negative direction)
+                        const posY = firstGameTopY - (layerHeight * scale) - rotatedBoxHeight;
+                        
+                        html += `<div class="cube-box" style="left: ${rotatedPosX}px; top: ${posY}px; width: ${rotatedBoxWidth}px; height: ${rotatedBoxHeight}px; background-color: ${boxColor}; opacity: 0.8; border: 2px dashed rgba(0,0,0,0.3); z-index: 8; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);" title="${game.name} (horizontal)" onclick="alert('${game.name} - HORIZONTAL')">H${rotIdx + 1}</div>`;
+                        rotatedPosX += rotatedBoxWidth;
+                    });
                 });
                 
                 if (emptyVerticalSpace > 5) {  // Show if there's meaningful empty space
