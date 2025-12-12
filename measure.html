@@ -1646,7 +1646,9 @@
             const validGames = gamesToProcess.filter(game => game.mid < MID_LIMIT);
 
             // Route to appropriate packing mode
-            if (shelfPackingMode === 'smart') {
+            if (shelfPackingMode === 'expert') {
+                return calculateExpertShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
+            } else if (shelfPackingMode === 'smart') {
                 return calculateSmartShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
             } else {
                 return calculateBasicShelfPacking(validGames, skipped, skippedGames, SHORT_LIMIT);
@@ -1749,6 +1751,99 @@
             return { cubes, skipped, skippedGames, mode: 'smart' };
         }
 
+        function calculateExpertShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
+            // Expert mode: Games can be rotated/flipped to fill horizontal space
+            // - Primary layer: stacked by short dimension (normal orientation)
+            // - Secondary layer: games can be placed above with mid/width dimensions rotated
+            // This maximizes horizontal space usage
+            
+            const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
+            const unpackedGames = [...sortedGames];
+            let cubes = [];
+            let currentCube = [];
+            let currentShortSum = 0;
+            let currentMidStack = []; // Track mid values of stacked games for height calculation
+
+            while (unpackedGames.length > 0) {
+                // If current shelf is empty, get highest mid game
+                if (currentCube.length === 0) {
+                    const nextGame = unpackedGames.shift();
+                    currentCube.push({ ...nextGame, rotated: false });
+                    currentShortSum = nextGame.short;
+                    currentMidStack = [nextGame.mid];
+                } else {
+                    // Calculate current shelf height (max mid)
+                    const shelfHeight = Math.max(...currentMidStack);
+                    
+                    // Try to find a game that fits either:
+                    // 1. In remaining short space (normal orientation)
+                    // 2. In remaining mid space above the tallest game (rotated - using its mid/length as new short)
+                    
+                    let foundFit = false;
+                    
+                    // First, try normal orientation (short-based stacking)
+                    for (let i = 0; i < unpackedGames.length; i++) {
+                        const game = unpackedGames[i];
+                        if (currentShortSum + game.short <= SHORT_LIMIT) {
+                            currentCube.push({ ...game, rotated: false });
+                            currentShortSum += game.short;
+                            currentMidStack.push(game.mid);
+                            unpackedGames.splice(i, 1);
+                            foundFit = true;
+                            break;
+                        }
+                    }
+
+                    // If no normal fit, try rotated/flipped orientation (mid-based filling above)
+                    if (!foundFit) {
+                        const remainingMidSpace = SHORT_LIMIT - shelfHeight;
+                        
+                        for (let i = 0; i < unpackedGames.length; i++) {
+                            const game = unpackedGames[i];
+                            // When rotated, game uses its mid dimension as the new "short" (horizontal space)
+                            // and its short dimension as height
+                            const rotatedShort = game.mid; // Using mid as new width
+                            const rotatedHeight = game.short; // Using short as new height
+                            
+                            // Check if rotated game's height fits in remaining vertical space
+                            if (shelfHeight + rotatedHeight <= SHORT_LIMIT && currentShortSum + rotatedShort <= SHORT_LIMIT) {
+                                currentCube.push({ ...game, rotated: true, rotatedShort, rotatedHeight });
+                                currentMidStack.push(rotatedHeight);
+                                unpackedGames.splice(i, 1);
+                                foundFit = true;
+                                break;
+                            }
+                        }
+                    }
+
+                    if (!foundFit) {
+                        // No fit found, close current shelf and start new one
+                        if (currentCube.length > 0) {
+                            cubes.push({
+                                games: currentCube,
+                                shortSum: currentShortSum,
+                                maxMid: Math.max(...currentMidStack)
+                            });
+                        }
+                        currentCube = [];
+                        currentShortSum = 0;
+                        currentMidStack = [];
+                    }
+                }
+            }
+
+            // Push last cube if it has games
+            if (currentCube.length > 0) {
+                cubes.push({
+                    games: currentCube,
+                    shortSum: currentShortSum,
+                    maxMid: Math.max(...currentMidStack)
+                });
+            }
+
+            return { cubes, skipped, skippedGames, mode: 'expert' };
+        }
+
         function openShelfTimeModal() {
             const modal = document.getElementById('shelfTimeModal');
             const body = document.getElementById('shelfTimeBody');
@@ -1758,10 +1853,11 @@
             let html = '';
 
             // Mode selector
-            html += `<div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center;">
+            html += `<div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
                 <label style="font-weight: 600;">Packing Mode:</label>
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'basic' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('basic')">📊 Basic</button>
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'smart' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('smart')">🧠 Smart Fill</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'expert' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('expert')">⚡ Expert (Rotation)</button>
             </div>`;
 
             // Summary section
@@ -1772,7 +1868,11 @@
                 </div>
                 <div class="shelf-summary-row">
                     <span>Mode:</span>
-                    <span style="font-weight: 600; color: #27ae60;">${shelfPackingMode === 'basic' ? '📊 Basic Sequential' : '🧠 Smart Fill (Best Fit)'}</span>
+                    <span style="font-weight: 600; color: #27ae60;">${
+                        shelfPackingMode === 'basic' ? '📊 Basic Sequential' : 
+                        shelfPackingMode === 'smart' ? '🧠 Smart Fill (Best Fit)' :
+                        '⚡ Expert (Rotation + Flipping)'
+                    }</span>
                 </div>
                 <div class="shelf-summary-row">
                     <span>Games Assigned:</span>
@@ -1804,9 +1904,20 @@
                 
                 // Render games as colored boxes within the cube (stacked horizontally, positioned vertically)
                 let posX = 0;
+                let maxHeightSoFar = 0;
                 cube.games.forEach((game, gameIdx) => {
-                    const boxWidth = (game.short * scale);
-                    const boxHeight = (game.mid * scale);
+                    // Handle rotated vs normal orientation
+                    const isRotated = game.rotated === true;
+                    let boxWidth, boxHeight;
+                    
+                    if (isRotated) {
+                        boxWidth = (game.rotatedShort * scale);
+                        boxHeight = (game.rotatedHeight * scale);
+                    } else {
+                        boxWidth = (game.short * scale);
+                        boxHeight = (game.mid * scale);
+                    }
+                    
                     const boxColor = colors[gameIdx % colors.length];
                     const gameName = game.name.substring(0, 15);
                     
@@ -1830,8 +1941,10 @@
                     // Position games from bottom up (to match kallax visual style)
                     const posY = 300 - boxHeight;
                     
-                    html += `<div class="cube-box" style="left: ${posX}px; top: ${posY}px; width: ${boxWidth}px; height: ${boxHeight}px; background-color: ${boxColor};" title="${game.name} (${percentageOfVersions.toFixed(1)}% of versions)" onclick="alert('${game.name}\\n${percentageOfVersions.toFixed(1)}% of versions')"></div>`;
+                    const rotationIndicator = isRotated ? ' 🔄' : '';
+                    html += `<div class="cube-box" style="left: ${posX}px; top: ${posY}px; width: ${boxWidth}px; height: ${boxHeight}px; background-color: ${boxColor}; opacity: ${isRotated ? '0.8' : '1'}; border: ${isRotated ? '2px dashed rgba(0,0,0,0.3)' : '1px solid rgba(0,0,0,0.1)'};" title="${game.name}${rotationIndicator}\\n${percentageOfVersions.toFixed(1)}% of versions" onclick="alert('${game.name}${rotationIndicator}\\n${percentageOfVersions.toFixed(1)}% of versions')"></div>`;
                     posX += boxWidth;
+                    maxHeightSoFar = Math.max(maxHeightSoFar, boxHeight);
                 });
                 
                 // Add white space indicator for remaining width
