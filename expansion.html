@@ -133,63 +133,8 @@
                     });
                 });
 
-                // Fetch expansion counts for each game (batched with delays to avoid rate limiting)
-                document.getElementById('loadingStatus').textContent = 'Loading expansion data...';
-                const gameBatchSize = 5;
-                const delayBetweenGameBatches = 500; // 500ms delay between game batches
-                
-                for (let i = 0; i < allGames.length; i += gameBatchSize) {
-                    const gameBatch = allGames.slice(i, i + gameBatchSize);
-                    
-                    const batchPromises = gameBatch.map(async game => {
-                        try {
-                            const expResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
-                            if (!expResponse.ok) {
-                                throw new Error(`API error: ${expResponse.status}`);
-                            }
-                            
-                            const expText = await expResponse.text();
-                            const expXml = parser.parseFromString(expText, 'text/xml');
-                            
-                            // Check for XML parsing errors
-                            if (expXml.documentElement.tagName === 'parsererror') {
-                                throw new Error('Failed to parse XML response');
-                            }
-                            
-                            const expansions = Array.from(expXml.querySelectorAll('link[type="boardgameexpansion"]'));
-                            
-                            let ownedCount = 0;
-                            let totalCount = 0;
-
-                            expansions.forEach(link => {
-                                const isInbound = link.getAttribute('inbound') === 'true';
-                                if (!isInbound) {
-                                    totalCount++;
-                                    const expId = link.getAttribute('id');
-                                    if (ownedGameIds.has(expId)) {
-                                        ownedCount++;
-                                    }
-                                }
-                            });
-
-                            game.ownedExpansions = ownedCount;
-                            game.totalExpansions = totalCount;
-                        } catch (e) {
-                            console.error('Error loading expansions for ' + game.name, e);
-                            game.ownedExpansions = 0;
-                            game.totalExpansions = 0;
-                        }
-                    });
-                    
-                    await Promise.all(batchPromises);
-                    
-                    // Add delay between batches to avoid rate limiting
-                    if (i + gameBatchSize < allGames.length) {
-                        await new Promise(resolve => setTimeout(resolve, delayBetweenGameBatches));
-                    }
-                }
-
-                // Sort by name initially
+                // Don't fetch expansion counts upfront - just sort and display
+                // Expansion counts will be fetched on-demand when user interacts
                 allGames.sort((a, b) => a.name.localeCompare(b.name));
                 
                 renderGames(allGames);
@@ -229,11 +174,10 @@
         function renderGames(games) {
             const container = document.getElementById('gameList');
             container.innerHTML = games.map(game => `
-                <div onclick="checkExpansions('${game.id}', '${game.name.replace(/'/g, "\\'")}')" 
-                     class="bg-white p-4 rounded-lg shadow hover:shadow-md transition cursor-pointer flex flex-col gap-3 border border-gray-200">
+                <div data-game-id="${game.id}" class="game-card bg-white p-4 rounded-lg shadow hover:shadow-md transition cursor-pointer flex flex-col gap-3 border border-gray-200" onclick="checkExpansions('${game.id}', '${game.name.replace(/'/g, "\\'")}')" >
                     <div class="flex items-center gap-4">
                         <div class="w-16 h-16 bg-gray-100 rounded flex-shrink-0 overflow-hidden">
-                            ${game.image ? `<img src="${game.image}" class="w-full h-full object-cover">` : ''}
+                            ${game.image ? `<img src="${game.image}" class="w-full h-full object-contain">` : ''}
                         </div>
                         <div class="flex-1">
                             <h3 class="font-bold text-gray-900">${game.name}</h3>
@@ -242,16 +186,90 @@
                     </div>
                     <div class="flex gap-3 text-xs font-medium">
                         <div class="flex-1 bg-green-50 p-2 rounded border border-green-200">
-                            <div class="text-green-700">✅ ${game.ownedExpansions}</div>
+                            <div class="text-green-700 expansion-counts-${game.id}">✅ -</div>
                             <div class="text-green-600 text-xs">owned</div>
                         </div>
                         <div class="flex-1 bg-blue-50 p-2 rounded border border-blue-200">
-                            <div class="text-blue-700">📊 ${game.totalExpansions}</div>
+                            <div class="text-blue-700 expansion-counts-${game.id}">📊 -</div>
                             <div class="text-blue-600 text-xs">total</div>
                         </div>
                     </div>
                 </div>
             `).join('');
+            
+            // Lazy load expansion counts for visible cards
+            loadExpansionCountsLazy(games);
+        }
+        
+        let expansionCountsCache = {};
+        
+        async function loadExpansionCountsLazy(games) {
+            // Load in batches with delays to avoid 502s
+            const batchSize = 3;
+            const delay = 800; // 800ms between batches
+            
+            for (let i = 0; i < games.length; i += batchSize) {
+                const batch = games.slice(i, i + batchSize);
+                
+                const promises = batch.map(async game => {
+                    // Skip if already cached
+                    if (expansionCountsCache[game.id]) {
+                        updateExpansionCountDisplay(game.id, expansionCountsCache[game.id]);
+                        return;
+                    }
+                    
+                    try {
+                        const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
+                        if (!response.ok) throw new Error(`API error: ${response.status}`);
+                        
+                        const text = await response.text();
+                        const parser = new DOMParser();
+                        const xml = parser.parseFromString(text, 'text/xml');
+                        
+                        if (xml.documentElement.tagName === 'parsererror') throw new Error('Parse error');
+                        
+                        const expansions = Array.from(xml.querySelectorAll('link[type="boardgameexpansion"]'));
+                        let ownedCount = 0;
+                        let totalCount = 0;
+                        
+                        expansions.forEach(link => {
+                            const isInbound = link.getAttribute('inbound') === 'true';
+                            if (!isInbound) {
+                                totalCount++;
+                                const expId = link.getAttribute('id');
+                                if (ownedGameIds.has(expId)) {
+                                    ownedCount++;
+                                }
+                            }
+                        });
+                        
+                        const counts = { ownedCount, totalCount };
+                        expansionCountsCache[game.id] = counts;
+                        updateExpansionCountDisplay(game.id, counts);
+                    } catch (e) {
+                        console.error('Error loading expansions for ' + game.name, e);
+                        updateExpansionCountDisplay(game.id, { ownedCount: 0, totalCount: 0 });
+                    }
+                });
+                
+                await Promise.all(promises);
+                
+                // Delay between batches
+                if (i + batchSize < games.length) {
+                    await new Promise(resolve => setTimeout(resolve, delay));
+                }
+            }
+        }
+        
+        function updateExpansionCountDisplay(gameId, counts) {
+            const elements = document.querySelectorAll(`.expansion-counts-${gameId}`);
+            elements.forEach((el, idx) => {
+                if (idx === 0) {
+                    el.textContent = `✅ ${counts.ownedCount}`;
+                } else {
+                    el.textContent = `📊 ${counts.totalCount}`;
+                }
+            });
         }
 
         function filterGames() {
@@ -362,7 +380,7 @@
                         return `
                         <div class="flex items-center gap-3 bg-gray-50 p-3 rounded border border-gray-200 hover:border-gray-300 transition">
                             <div class="w-12 h-12 bg-gray-200 rounded flex-shrink-0 overflow-hidden">
-                                ${data.thumbnail ? `<img src="${data.thumbnail}" alt="${i.name}" class="w-full h-full object-cover">` : '<div class="w-full h-full flex items-center justify-center text-gray-400 text-xs">No img</div>'}
+                                ${data.thumbnail ? `<img src="${data.thumbnail}" alt="${i.name}" class="w-full h-full object-contain">` : '<div class="w-full h-full flex items-center justify-center text-gray-400 text-xs">No img</div>'}
                             </div>
                             <div class="flex-1 min-w-0">
                                 <div class="flex items-center justify-between gap-2 mb-1">
