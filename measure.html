@@ -947,7 +947,7 @@
         let currentSortDirection = 'asc';
         let currentTab = 'all';
         let selectedMeasurements = {}; // Track which measurement variant to show for each game
-        let shelfPackingMode = 'basic-vertical'; // 'basic-vertical', 'smart-vertical', 'expert-vertical', 'expert-horizontal', 'super'
+        let shelfPackingMode = 'basic-vertical'; // 'basic-vertical', 'smart-vertical', 'expert-vertical', 'basic-horizontal', 'smart-horizontal', 'expert-horizontal'
         let showEvalLog = false; // Global toggle for evaluation log
 
         const statusDiv = document.getElementById('statusDiv');
@@ -1650,8 +1650,10 @@
             const validGames = gamesToProcess.filter(game => game.mid < MID_LIMIT);
 
             // Route to appropriate packing mode
-            if (shelfPackingMode === 'super') {
-                return calculateSuperShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
+            if (shelfPackingMode === 'basic-horizontal') {
+                return calculateBasicHorizontalPacking(validGames, skipped, skippedGames, SHORT_LIMIT);
+            } else if (shelfPackingMode === 'smart-horizontal') {
+                return calculateSmartHorizontalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
             } else if (shelfPackingMode === 'expert-horizontal') {
                 return calculateExpertHorizontalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT);
             } else if (shelfPackingMode === 'expert-vertical') {
@@ -1924,95 +1926,246 @@
             return { cubes, skipped, skippedGames, mode: 'expert-vertical' };
         }
 
+        function calculateBasicHorizontalPacking(validGames, skipped, skippedGames, SHORT_LIMIT) {
+            // Basic Horizontal: Flip of Basic Vertical - sort by SHORT descending, stack horizontally
+            // Instead of stacking by mid (vertical), stack by short (horizontal)
+            const sortedGames = [...validGames].sort((a, b) => b.short - a.short);
+
+            let cubes = [];
+            let currentCube = [];
+            let currentMidSum = 0; // Now accumulating MID instead of SHORT
+
+            sortedGames.forEach(game => {
+                // Check if Mid fits in current cube (rotated position becomes height)
+                if (currentMidSum + game.mid <= SHORT_LIMIT) {
+                    currentCube.push({...game, rotated: true, rotatedShort: game.mid, rotatedHeight: game.short});
+                    currentMidSum += game.mid;
+                } else {
+                    // Start new cube
+                    if (currentCube.length > 0) {
+                        cubes.push({
+                            games: currentCube,
+                            shortSum: currentMidSum
+                        });
+                    }
+                    currentCube = [{...game, rotated: true, rotatedShort: game.mid, rotatedHeight: game.short}];
+                    currentMidSum = game.mid;
+                }
+            });
+
+            // Push last cube if it has games
+            if (currentCube.length > 0) {
+                cubes.push({
+                    games: currentCube,
+                    shortSum: currentMidSum
+                });
+            }
+
+            return { cubes, skipped, skippedGames, mode: 'basic-horizontal' };
+        }
+
+        function calculateSmartHorizontalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
+            // Smart Horizontal: Flip of Smart Vertical - start with highest short, search ahead for fits in remaining MID space
+            const sortedGames = [...validGames].sort((a, b) => b.short - a.short);
+            const unpackedGames = [...sortedGames];
+            let cubes = [];
+            let currentCube = [];
+            let currentMidSum = 0;
+            let nextShortCandidate = null;
+
+            while (unpackedGames.length > 0) {
+                // If current shelf is empty, get highest short game
+                if (currentCube.length === 0) {
+                    const nextGame = unpackedGames.shift();
+                    currentCube.push({...nextGame, rotated: true, rotatedShort: nextGame.mid, rotatedHeight: nextGame.short});
+                    currentMidSum = nextGame.mid;
+                    nextShortCandidate = nextGame.short;
+                } else {
+                    // Try to find a game from remaining that fits in remaining mid space
+                    let foundFit = false;
+                    for (let i = 0; i < unpackedGames.length; i++) {
+                        const game = unpackedGames[i];
+                        if (currentMidSum + game.mid <= SHORT_LIMIT) {
+                            // Found a fit! Add it
+                            currentCube.push({...game, rotated: true, rotatedShort: game.mid, rotatedHeight: game.short});
+                            currentMidSum += game.mid;
+                            unpackedGames.splice(i, 1);
+                            foundFit = true;
+                            break;
+                        }
+                    }
+
+                    if (!foundFit) {
+                        // No fit found, close current shelf and start new one
+                        if (currentCube.length > 0) {
+                            cubes.push({
+                                games: currentCube,
+                                shortSum: currentMidSum
+                            });
+                        }
+                        currentCube = [];
+                        currentMidSum = 0;
+                        nextShortCandidate = null;
+                    }
+                }
+            }
+
+            // Push last cube if it has games
+            if (currentCube.length > 0) {
+                cubes.push({
+                    games: currentCube,
+                    shortSum: currentMidSum
+                });
+            }
+
+            return { cubes, skipped, skippedGames, mode: 'smart-horizontal' };
+        }
+
         function calculateExpertHorizontalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
-            // Expert Horizontal: Two-phase per shelf
-            // Phase 1: Pack games HORIZONTALLY (rotated) first to fill width
+            // Expert Horizontal: Two-phase per shelf - horizontal primary with vertical fill (flip of Expert Vertical)
+            // Phase 1: Pack games horizontally (rotated) on each shelf
             // Phase 2: Fill remaining vertical space below with vertical games
             
-            const sortedGames = [...validGames].sort((a, b) => b.mid - a.mid);
+            const sortedGames = [...validGames].sort((a, b) => b.short - a.short);
             let cubes = [];
             let unpackedGames = [...sortedGames];
             
-            while (unpackedGames.length > 0) {
-                let shelf = [];
-                let usedHorizontalSpace = 0;
-                let maxHorizontalHeight = 0;
-                let verticalGames = [];
-                let verticalShortSum = 0;
-                let remaining = [...unpackedGames];
+            // Helper function to evaluate vertical placement for current shelf
+            function tryVerticalPlacement(cube, unpackedGames, SHORT_LIMIT) {
+                const horizontalGames = cube.games.filter(g => g.rotated);
+                const firstGameShort = horizontalGames.length > 0 ? horizontalGames[0].rotatedHeight : 0;
+                const lowerSpaceHeight = SHORT_LIMIT - firstGameShort;
+                const lowerSpaceWidth = SHORT_LIMIT;
                 
-                // Phase 1: Pack games horizontally in a layer (sorted by short descending for tall games)
-                const sortedByShort = [...remaining].sort((a, b) => b.short - a.short);
-                remaining = remaining.filter(game => {
-                    const rotatedWidth = game.mid;
-                    const rotatedHeight = game.short;
+                cube.debugInfo = {
+                    lowerSpaceHeight: lowerSpaceHeight.toFixed(1),
+                    lowerSpaceWidth: lowerSpaceWidth.toFixed(1),
+                    evaluated: [],
+                    placed: []
+                };
+                
+                if (lowerSpaceHeight > 0.5 && unpackedGames.length > 0) {
+                    let currentLayerHeight = firstGameShort; // Start from bottom of horizontal layer
+                    const gamesToAdd = [];
                     
-                    if (usedHorizontalSpace + rotatedWidth <= SHORT_LIMIT) {
-                        shelf.push({...game, rotated: true, rotatedShort: game.mid, rotatedHeight: game.short, horizontalLayer: 0});
-                        usedHorizontalSpace += rotatedWidth;
-                        maxHorizontalHeight = Math.max(maxHorizontalHeight, rotatedHeight);
-                        return false;
-                    }
-                    return true;
-                });
-                
-                // Phase 2: Pack vertical games below horizontal layer
-                if (maxHorizontalHeight > 0) {
-                    const verticalSpaceHeight = SHORT_LIMIT - maxHorizontalHeight;
-                    remaining = remaining.filter(game => {
-                        if (verticalShortSum + game.short <= SHORT_LIMIT) {
-                            verticalGames.push(game);
-                            verticalShortSum += game.short;
-                            return false;
+                    // Try to fill remaining vertical space below
+                    while (currentLayerHeight < SHORT_LIMIT && unpackedGames.length > 0) {
+                        const sortedCandidates = [...unpackedGames].sort((a, b) => b.mid - a.mid);
+                        
+                        let usedWidth = 0;
+                        let layerMaxHeight = 0;
+                        let layerGames = [];
+                        
+                        // Try to fill this vertical layer
+                        for (const candidate of sortedCandidates) {
+                            const verticalWidth = candidate.short;
+                            const verticalHeight = candidate.mid;
+                            
+                            const fitsHeight = (currentLayerHeight + verticalHeight) <= SHORT_LIMIT;
+                            const fitsWidth = (usedWidth + verticalWidth) <= lowerSpaceWidth;
+                            const fits = fitsHeight && fitsWidth;
+                            
+                            cube.debugInfo.evaluated.push({
+                                name: candidate.name,
+                                mid: candidate.mid.toFixed(1),
+                                short: candidate.short.toFixed(1),
+                                fits: fits,
+                                reason: !fits ? 
+                                    (!fitsHeight ? 
+                                        `Height ${(currentLayerHeight + verticalHeight).toFixed(1)}" > ${SHORT_LIMIT}"` : 
+                                        `Width would exceed: ${(usedWidth + verticalWidth).toFixed(1)}" > ${lowerSpaceWidth}"`) 
+                                    : 'FITS!'
+                            });
+                            
+                            if (fits) {
+                                layerGames.push(candidate);
+                                usedWidth += verticalWidth;
+                                layerMaxHeight = Math.max(layerMaxHeight, verticalHeight);
+                                cube.debugInfo.placed.push(candidate.name);
+                                
+                                if (usedWidth >= lowerSpaceWidth) break;
+                            }
                         }
-                        return true;
-                    });
+                        
+                        if (layerGames.length === 0) break;
+                        
+                        layerGames.forEach(game => {
+                            gamesToAdd.push({
+                                ...game,
+                                rotated: false,
+                                verticalLayer: currentLayerHeight
+                            });
+                            const idx = unpackedGames.findIndex(g => g.gameId === game.gameId);
+                            if (idx >= 0) unpackedGames.splice(idx, 1);
+                        });
+                        
+                        currentLayerHeight += layerMaxHeight;
+                    }
+                    
+                    gamesToAdd.forEach(game => cube.games.push(game));
+                }
+            }
+            
+            while (unpackedGames.length > 0) {
+                let currentCube = [];
+                let currentMidSum = 0;
+                let currentShortStack = [];
+                
+                // Phase 1: Fill horizontal space on this shelf
+                while (unpackedGames.length > 0) {
+                    if (currentCube.length === 0) {
+                        const nextGame = unpackedGames.shift();
+                        currentCube.push({...nextGame, rotated: true, rotatedShort: nextGame.mid, rotatedHeight: nextGame.short});
+                        currentMidSum = nextGame.mid;
+                        currentShortStack = [nextGame.short];
+                    } else {
+                        const nextGame = unpackedGames[0];
+                        
+                        if (currentMidSum + nextGame.mid <= SHORT_LIMIT) {
+                            unpackedGames.shift();
+                            currentCube.push({...nextGame, rotated: true, rotatedShort: nextGame.mid, rotatedHeight: nextGame.short});
+                            currentMidSum += nextGame.mid;
+                            currentShortStack.push(nextGame.short);
+                        } else {
+                            // Smart search for best fit
+                            const remainingMid = SHORT_LIMIT - currentMidSum;
+                            let bestFitIdx = -1;
+                            let bestFitSize = 0;
+                            
+                            for (let i = 0; i < unpackedGames.length; i++) {
+                                const candidate = unpackedGames[i];
+                                if (candidate.mid <= remainingMid && candidate.mid > bestFitSize) {
+                                    bestFitIdx = i;
+                                    bestFitSize = candidate.mid;
+                                }
+                            }
+                            
+                            if (bestFitIdx >= 0) {
+                                const bestGame = unpackedGames.splice(bestFitIdx, 1)[0];
+                                currentCube.push({...bestGame, rotated: true, rotatedShort: bestGame.mid, rotatedHeight: bestGame.short});
+                                currentMidSum += bestGame.mid;
+                                currentShortStack.push(bestGame.short);
+                            } else {
+                                break;
+                            }
+                        }
+                    }
                 }
                 
-                unpackedGames = remaining;
-                shelf.push(...verticalGames);
-                
-                const maxMid = Math.max(...verticalGames.map(g => g.mid || 0), maxHorizontalHeight);
-                
+                const maxShortHeight = Math.max(...currentShortStack);
                 const cube = {
-                    games: shelf.length > 0 ? shelf : [unpackedGames.shift()],
-                    shortSum: verticalShortSum,
-                    maxMid: maxMid,
-                    debugInfo: {
-                        upperSpaceHeight: (SHORT_LIMIT - maxMid).toFixed(1),
-                        upperSpaceWidth: SHORT_LIMIT.toFixed(1),
-                        evaluated: [],
-                        placed: shelf.filter(g => g.rotated).map(g => g.name)
-                    }
+                    games: currentCube,
+                    shortSum: currentMidSum,
+                    maxMid: maxShortHeight
                 };
+                
+                // Phase 2: NOW evaluate vertical placement for THIS shelf
+                tryVerticalPlacement(cube, unpackedGames, SHORT_LIMIT);
                 
                 cubes.push(cube);
             }
 
             return { cubes, skipped, skippedGames, mode: 'expert-horizontal' };
-        }
-
-        function calculateSuperShelfPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT) {
-            // Super mode: Tests ALL strategies and picks the most efficient
-            // - Basic Vertical
-            // - Smart Vertical
-            // - Expert Vertical (vertical primary + horizontal fill)
-            // - Expert Horizontal (horizontal primary + vertical fill)
-            // Returns whichever uses the LEAST shelves
-            
-            const results = [
-                calculateBasicVerticalPacking(validGames, skipped, skippedGames, SHORT_LIMIT),
-                calculateSmartVerticalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT),
-                calculateExpertVerticalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT),
-                calculateExpertHorizontalPacking(validGames, skipped, skippedGames, MID_LIMIT, SHORT_LIMIT)
-            ];
-            
-            // Pick the one with fewest shelves
-            const bestResult = results.reduce((best, current) => 
-                current.cubes.length < best.cubes.length ? current : best
-            );
-            
-            return { ...bestResult, mode: 'super' };
         }
 
         function openShelfTimeModal() {
@@ -2026,11 +2179,12 @@
             // Mode selector
             html += `<div style="margin-bottom: 1rem; display: flex; gap: 0.5rem; align-items: center; flex-wrap: wrap;">
                 <label style="font-weight: 600;">Packing Mode:</label>
-                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'basic-vertical' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('basic-vertical')">📊 Basic</button>
-                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'smart-vertical' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('smart-vertical')">🧠 Smart</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'basic-vertical' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('basic-vertical')">📊 Basic V</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'smart-vertical' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('smart-vertical')">🧠 Smart V</button>
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'expert-vertical' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('expert-vertical')">⚡ Expert V</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'basic-horizontal' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('basic-horizontal')">📊 Basic H</button>
+                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'smart-horizontal' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('smart-horizontal')">🧠 Smart H</button>
                 <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'expert-horizontal' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('expert-horizontal')">⚡ Expert H</button>
-                <button class="btn" style="padding: 0.5rem 1rem; ${shelfPackingMode === 'super' ? 'background: #667eea; color: white;' : 'background: #f0f0f0;'}" onclick="switchShelfMode('super')">🚀 Super</button>
                 <button class="btn" style="padding: 0.5rem 1rem; background: ${showEvalLog ? '#27ae60' : '#f0f0f0'}; color: ${showEvalLog ? 'white' : 'black'};" onclick="toggleEvalLog()">📋 Logs</button>
             </div>`;
 
@@ -2046,8 +2200,9 @@
                         shelfPackingMode === 'basic-vertical' ? '📊 Basic Vertical' : 
                         shelfPackingMode === 'smart-vertical' ? '🧠 Smart Vertical' :
                         shelfPackingMode === 'expert-vertical' ? '⚡ Expert Vertical (V+H)' :
-                        shelfPackingMode === 'expert-horizontal' ? '⚡ Expert Horizontal (H+V)' :
-                        '🚀 Super (All Strategies)'
+                        shelfPackingMode === 'basic-horizontal' ? '📊 Basic Horizontal' :
+                        shelfPackingMode === 'smart-horizontal' ? '🧠 Smart Horizontal' :
+                        '⚡ Expert Horizontal (H+V)'
                     }</span>
                 </div>
                 <div class="shelf-summary-row">
@@ -2095,7 +2250,12 @@
                     const posY = 225 - boxHeight;
                     
                     const rotationIndicator = isRotated ? ' 🔄' : '';
-                    html += `<div class="cube-box" style="left: ${posX}px; top: ${posY}px; width: ${boxWidth}px; height: ${boxHeight}px; background-color: ${boxColor}; opacity: 1; border: 1px solid rgba(0,0,0,0.1); z-index: 10; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);" title="${game.name}" onclick="alert('${game.name}')">V${gameIdx + 1}</div>`;
+                    const thumbnail = game.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23ddd%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E';
+                    
+                    html += `<div class="cube-box" style="left: ${posX}px; top: ${posY}px; width: ${boxWidth}px; height: ${boxHeight}px; background-color: ${boxColor}; opacity: 1; border: 1px solid rgba(0,0,0,0.1); z-index: 10; display: flex; align-items: center; justify-content: center; font-size: 12px; font-weight: bold; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); flex-direction: column; gap: 2px;" title="${game.name}" onclick="alert('${game.name}')">
+                        <img src="${thumbnail}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23ddd%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'" alt="" style="width: 20px; height: 20px; border-radius: 2px; object-fit: cover; border: 1px solid rgba(255,255,255,0.5);">
+                        <span>V${gameIdx + 1}</span>
+                    </div>`;
                     posX += boxWidth;
                     maxHeightSoFar = Math.max(maxHeightSoFar, boxHeight);
                 });
@@ -2131,7 +2291,12 @@
                         // Layer height is distance FROM top of first game UPWARD (negative direction)
                         const posY = firstGameTopY - (layerHeight * scale) - rotatedBoxHeight;
                         
-                        html += `<div class="cube-box" style="left: ${rotatedPosX}px; top: ${posY}px; width: ${rotatedBoxWidth}px; height: ${rotatedBoxHeight}px; background-color: ${boxColor}; opacity: 0.8; border: 2px dashed rgba(0,0,0,0.3); z-index: 8; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5);" title="${game.name} (horizontal)" onclick="alert('${game.name} - HORIZONTAL')">H${rotIdx + 1}</div>`;
+                        const thumbnail = game.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23ddd%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E';
+                        
+                        html += `<div class="cube-box" style="left: ${rotatedPosX}px; top: ${posY}px; width: ${rotatedBoxWidth}px; height: ${rotatedBoxHeight}px; background-color: ${boxColor}; opacity: 0.8; border: 2px dashed rgba(0,0,0,0.3); z-index: 8; display: flex; align-items: center; justify-content: center; font-size: 11px; font-weight: bold; color: white; text-shadow: 1px 1px 2px rgba(0,0,0,0.5); flex-direction: column; gap: 2px;" title="${game.name} (horizontal)" onclick="alert('${game.name} - HORIZONTAL')">
+                            <img src="${thumbnail}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23ddd%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'" alt="" style="width: 16px; height: 16px; border-radius: 2px; object-fit: cover; border: 1px solid rgba(255,255,255,0.5);">
+                            <span>H${rotIdx + 1}</span>
+                        </div>`;
                         rotatedPosX += rotatedBoxWidth;
                     });
                 });
