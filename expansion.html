@@ -133,34 +133,59 @@
                     });
                 });
 
-                // Fetch expansion counts for each game
+                // Fetch expansion counts for each game (batched with delays to avoid rate limiting)
                 document.getElementById('loadingStatus').textContent = 'Loading expansion data...';
-                for (let game of allGames) {
-                    try {
-                        const expResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
-                        const expText = await expResponse.text();
-                        const expXml = parser.parseFromString(expText, 'text/xml');
-                        
-                        const expansions = Array.from(expXml.querySelectorAll('link[type="boardgameexpansion"]'));
-                        
-                        let ownedCount = 0;
-                        let totalCount = 0;
-
-                        expansions.forEach(link => {
-                            const isInbound = link.getAttribute('inbound') === 'true';
-                            if (!isInbound) {
-                                totalCount++;
-                                const expId = link.getAttribute('id');
-                                if (ownedGameIds.has(expId)) {
-                                    ownedCount++;
-                                }
+                const gameBatchSize = 5;
+                const delayBetweenGameBatches = 500; // 500ms delay between game batches
+                
+                for (let i = 0; i < allGames.length; i += gameBatchSize) {
+                    const gameBatch = allGames.slice(i, i + gameBatchSize);
+                    
+                    const batchPromises = gameBatch.map(async game => {
+                        try {
+                            const expResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
+                            if (!expResponse.ok) {
+                                throw new Error(`API error: ${expResponse.status}`);
                             }
-                        });
+                            
+                            const expText = await expResponse.text();
+                            const expXml = parser.parseFromString(expText, 'text/xml');
+                            
+                            // Check for XML parsing errors
+                            if (expXml.documentElement.tagName === 'parsererror') {
+                                throw new Error('Failed to parse XML response');
+                            }
+                            
+                            const expansions = Array.from(expXml.querySelectorAll('link[type="boardgameexpansion"]'));
+                            
+                            let ownedCount = 0;
+                            let totalCount = 0;
 
-                        game.ownedExpansions = ownedCount;
-                        game.totalExpansions = totalCount;
-                    } catch (e) {
-                        console.error('Error loading expansions for ' + game.name, e);
+                            expansions.forEach(link => {
+                                const isInbound = link.getAttribute('inbound') === 'true';
+                                if (!isInbound) {
+                                    totalCount++;
+                                    const expId = link.getAttribute('id');
+                                    if (ownedGameIds.has(expId)) {
+                                        ownedCount++;
+                                    }
+                                }
+                            });
+
+                            game.ownedExpansions = ownedCount;
+                            game.totalExpansions = totalCount;
+                        } catch (e) {
+                            console.error('Error loading expansions for ' + game.name, e);
+                            game.ownedExpansions = 0;
+                            game.totalExpansions = 0;
+                        }
+                    });
+                    
+                    await Promise.all(batchPromises);
+                    
+                    // Add delay between batches to avoid rate limiting
+                    if (i + gameBatchSize < allGames.length) {
+                        await new Promise(resolve => setTimeout(resolve, delayBetweenGameBatches));
                     }
                 }
 
@@ -270,6 +295,7 @@
                 // Fetch data for all expansions in batches (max 20 per batch to avoid 502 errors)
                 const allExpansions = [...owned, ...missing];
                 const batchSize = 20;
+                const delayBetweenBatches = 1000; // 1 second delay between batches
                 
                 for (let i = 0; i < allExpansions.length; i += batchSize) {
                     const batch = allExpansions.slice(i, i + batchSize);
@@ -278,11 +304,23 @@
                     try {
                         const batchResponse = await fetch(`/api/bgg-helper?endpoint=thing&id=${batchIds}&stats=1`);
                         const batchText = await batchResponse.text();
+                        
+                        if (!batchResponse.ok) {
+                            throw new Error(`API error: ${batchResponse.status}`);
+                        }
+                        
                         const batchXml = parser.parseFromString(batchText, 'text/xml');
+                        
+                        // Check for XML parsing errors
+                        if (batchXml.documentElement.tagName === 'parsererror') {
+                            throw new Error('Failed to parse XML response');
+                        }
                         
                         const items = Array.from(batchXml.querySelectorAll('item'));
                         items.forEach(item => {
                             const itemId = item.getAttribute('id');
+                            if (!itemId) return;
+                            
                             const imageEl = item.querySelector('image');
                             const yearEl = item.querySelector('yearpublished');
                             const statsEl = item.querySelector('statistics');
@@ -292,8 +330,8 @@
                             expansionData[itemId] = {
                                 thumbnail: imageEl ? imageEl.textContent : null,
                                 year: yearEl ? (yearEl.getAttribute('value') || yearEl.textContent || 'N/A') : 'N/A',
-                                rating: ratingEl ? parseFloat(ratingEl.getAttribute('value') || ratingEl.textContent).toFixed(1) : 'N/A',
-                                weight: weightEl ? parseFloat(weightEl.getAttribute('value') || weightEl.textContent).toFixed(1) : 'N/A'
+                                rating: ratingEl ? parseFloat(ratingEl.getAttribute('value') || ratingEl.textContent || 0).toFixed(1) : 'N/A',
+                                weight: weightEl ? parseFloat(weightEl.getAttribute('value') || weightEl.textContent || 0).toFixed(1) : 'N/A'
                             };
                         });
                     } catch (e) {
@@ -309,6 +347,11 @@
                                 };
                             }
                         });
+                    }
+                    
+                    // Add delay between batches to avoid rate limiting
+                    if (i + batchSize < allExpansions.length) {
+                        await new Promise(resolve => setTimeout(resolve, delayBetweenBatches));
                     }
                 }
 
