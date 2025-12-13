@@ -385,7 +385,7 @@
 
         let allGames = [];
         let typeData = { category: {}, mechanic: {}, designer: {} };
-        let currentUsername = 'sportomax';
+        let currentUsername = '';
         let selectedTypes = new Set();
         let gameState = {
             puzzle: [],
@@ -541,7 +541,7 @@
         // Start game
         startGameBtn.addEventListener('click', () => {
             if (selectedTypes.size === 0) {
-                alert('Please select at least one type');
+                showMessage('❌ Please select at least one type', 'error');
                 return;
             }
             generatePuzzle();
@@ -561,59 +561,54 @@
 
             const types = Array.from(selectedTypes);
             const groups = [];
-
-            // Try to find 4 valid groups with no overlapping games
             const usedGames = new Set();
 
-            for (const type of types) {
+            // Helper function to find a valid group for a type
+            function findGroupForType(type, excludeNames = []) {
                 const candidates = Object.values(typeData[type])
                     .filter(item => item.games.length >= 4)
+                    .filter(item => !excludeNames.includes(item.name))
                     .sort((a, b) => b.games.length - a.games.length);
 
                 for (const candidate of candidates) {
                     const availableGames = candidate.games.filter(g => !usedGames.has(g.id) && g.image);
                     if (availableGames.length >= 4) {
                         const selectedGames = availableGames.slice(0, 4);
-                        groups.push({
+                        selectedGames.forEach(g => usedGames.add(g.id));
+                        return {
                             type: type,
                             name: candidate.name,
                             games: selectedGames
-                        });
-                        selectedGames.forEach(g => usedGames.add(g.id));
-                        break;
+                        };
                     }
                 }
+                return null;
+            }
 
+            // Try to find 4 valid groups with no overlapping games
+            for (const type of types) {
+                const group = findGroupForType(type);
+                if (group) {
+                    groups.push(group);
+                }
                 if (groups.length >= 4) break;
             }
 
             // If we don't have 4 groups, fill with remaining types
             if (groups.length < 4) {
+                const usedNames = groups.map(g => g.name);
                 for (const type of types) {
                     if (groups.length >= 4) break;
-                    const candidates = Object.values(typeData[type])
-                        .filter(item => item.games.length >= 4)
-                        .sort((a, b) => b.games.length - a.games.length);
-
-                    for (const candidate of candidates) {
-                        const availableGames = candidate.games.filter(g => !usedGames.has(g.id) && g.image);
-                        if (availableGames.length >= 4) {
-                            const selectedGames = availableGames.slice(0, 4);
-                            if (groups.some(g => g.name === candidate.name)) continue;
-                            groups.push({
-                                type: type,
-                                name: candidate.name,
-                                games: selectedGames
-                            });
-                            selectedGames.forEach(g => usedGames.add(g.id));
-                            break;
-                        }
+                    const group = findGroupForType(type, usedNames);
+                    if (group) {
+                        groups.push(group);
+                        usedNames.push(group.name);
                     }
                 }
             }
 
             if (groups.length < 4) {
-                alert('Not enough unique groups found. Try selecting different types or loading more games.');
+                showMessage('❌ Not enough unique groups found. Try selecting different types or loading more games.', 'error');
                 setupSection.style.display = 'block';
                 gameArea.style.display = 'none';
                 return;
@@ -625,7 +620,12 @@
 
         // Render game
         function renderGame() {
-            const allGames = gameState.puzzle.flatMap(group => 
+            // Get remaining groups (not yet found)
+            const remainingGroups = gameState.puzzle.filter(
+                group => !gameState.found.some(found => found.name === group.name)
+            );
+
+            const allGames = remainingGroups.flatMap(group => 
                 group.games.map(game => ({ ...game, group: group.name, type: group.type }))
             );
 
@@ -678,16 +678,14 @@
                 const groupName = groups[0];
                 const groupType = selectedGames[0].type;
                 gameState.found.push({ name: groupName, type: groupType, games: selectedGames });
-                
-                // Remove found games
-                const remainingGames = allGames.filter((g, i) => !gameState.selected.has(i));
-                gameGrid.dataset.games = JSON.stringify(remainingGames);
                 gameState.selected.clear();
 
                 showMessage('🎉 Correct!', 'success');
 
                 if (gameState.found.length === 4) {
                     showMessage('🏆 You won! All groups found!', 'success');
+                    gameGrid.innerHTML = '';
+                    renderFoundGroups();
                 } else {
                     renderGame();
                 }
