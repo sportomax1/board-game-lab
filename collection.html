@@ -283,6 +283,24 @@
             color: #166534;
         }
 
+        .tag.kog {
+            background: #fecaca;
+            color: #991b1b;
+            font-weight: 600;
+        }
+
+        .tag.dog {
+            background: #c7d2fe;
+            color: #312e81;
+            font-weight: 600;
+        }
+
+        .tag.status {
+            background: #e0e7ff;
+            color: #3730a3;
+            font-weight: 600;
+        }
+
         .empty-state {
             text-align: center;
             padding: 3rem 1rem;
@@ -376,26 +394,22 @@
     </div>
 
     <script>
-        let allGames = [];
-        let filteredGames = [];
-        const typeMap = {
-            'boardgamecategory': 'category',
-            'boardgamemechanic': 'mechanic',
-            'boardgamedesigner': 'designer'
-        };
-
+        // Get DOM elements
         const usernameInput = document.getElementById('usernameInput');
+        const loadBtn = document.getElementById('loadBtn');
+        const status = document.getElementById('status');
+        const collectionInfo = document.getElementById('collectionInfo');
+        const gameGrid = document.getElementById('gameGrid');
         const searchInput = document.getElementById('searchInput');
         const sortSelect = document.getElementById('sortSelect');
         const categoryFilter = document.getElementById('categoryFilter');
         const mechanicFilter = document.getElementById('mechanicFilter');
-        const loadBtn = document.getElementById('loadBtn');
         const clearFiltersBtn = document.getElementById('clearFiltersBtn');
-        const gameGrid = document.getElementById('gameGrid');
-        const status = document.getElementById('status');
-        const collectionInfo = document.getElementById('collectionInfo');
 
-        // Fetch with retry
+        let allGames = [];
+        let filteredGames = [];
+
+        // Fetch with retry for rate limit handling
         async function fetchWithRetry(url, maxRetries = 5) {
             for (let i = 0; i < maxRetries; i++) {
                 try {
@@ -436,7 +450,7 @@
             }
         }
 
-        // Load collection
+        // Load collection using Collection API v2 with stats=1
         loadBtn.addEventListener('click', async () => {
             const username = usernameInput.value.trim();
             if (!username) {
@@ -449,82 +463,74 @@
             showStatus('📦 Loading collection...', 'loading');
 
             try {
-                // Fetch collection
+                // Fetch collection using v2 API with stats=1
                 const collResponse = await fetchWithRetry(
                     `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`
                 );
                 const collXml = new DOMParser().parseFromString(await collResponse.text(), 'text/xml');
                 const items = Array.from(collXml.querySelectorAll('item'));
 
-                // Extract basic game info
-                const gameIds = items.map(item => ({
-                    id: item.getAttribute('objectid'),
-                    name: item.querySelector('name')?.textContent || 'Unknown'
-                })).filter(g => g.id);
+                console.log(`📦 Found ${items.length} items in collection`);
+                showStatus(`📥 Processing ${items.length} games...`, 'loading');
 
-                showStatus(`📥 Fetching details for ${gameIds.length} games...`, 'loading');
+                // Parse games directly from collection API response
+                items.forEach(item => {
+                    const gameId = item.getAttribute('objectid');
+                    const name = item.querySelector('name')?.textContent || 'Unknown';
+                    const thumbnail = item.querySelector('thumbnail')?.textContent || '';
+                    const image = item.querySelector('image')?.textContent || thumbnail;
+                    const yearPublished = parseInt(item.querySelector('yearpublished')?.textContent) || 0;
 
-                // Fetch game details in batches (smaller batches to avoid rate limiting)
-                const batchSize = 10;
-                for (let i = 0; i < gameIds.length; i += batchSize) {
-                    const batch = gameIds.slice(i, i + batchSize);
-                    const ids = batch.map(g => g.id).join(',');
+                    // Extract stats from collection API v2
+                    const rating = item.querySelector('stats rating');
+                    const myRating = parseFloat(rating?.getAttribute('value') || 0);
+                    const average = parseFloat(rating?.querySelector('average')?.getAttribute('value') || 0);
+                    const bayesaverage = parseFloat(rating?.querySelector('bayesaverage')?.getAttribute('value') || 0);
+                    const usersRated = parseInt(rating?.querySelector('usersrated')?.getAttribute('value') || 0);
 
-                    try {
-                        showStatus(`📥 Loaded ${allGames.length}/${gameIds.length} games (batch ${Math.ceil((i + 1) / batchSize)}/${Math.ceil(gameIds.length / batchSize)})...`, 'loading');
-                        
-                        const response = await fetchWithRetry(
-                            `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`
-                        );
-                        const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                        const things = xml.querySelectorAll('item[type="boardgame"]');
-
-                        Array.from(things).forEach(item => {
-                            const game = {
-                                id: item.getAttribute('id'),
-                                name: item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown',
-                                image: item.querySelector('image')?.textContent || '',
-                                thumbnail: item.querySelector('thumbnail')?.textContent || '',
-                                description: item.querySelector('description')?.textContent || '',
-                                yearPublished: parseInt(item.querySelector('yearpublished')?.textContent) || 0,
-                                minPlayers: parseInt(item.querySelector('minplayers')?.textContent) || 0,
-                                maxPlayers: parseInt(item.querySelector('maxplayers')?.textContent) || 0,
-                                playingTime: parseInt(item.querySelector('playingtime')?.textContent) || 0,
-                                minPlayTime: parseInt(item.querySelector('minplaytime')?.textContent) || 0,
-                                maxPlayTime: parseInt(item.querySelector('maxplaytime')?.textContent) || 0,
-                                averageRating: parseFloat(item.querySelector('average')?.textContent) || 0,
-                                categories: [],
-                                mechanics: [],
-                                designers: [],
-                                artists: []
-                            };
-
-                            // Extract categories and mechanics
-                            item.querySelectorAll('link[type="boardgamecategory"]').forEach(link => {
-                                game.categories.push(link.getAttribute('value'));
-                            });
-                            item.querySelectorAll('link[type="boardgamemechanic"]').forEach(link => {
-                                game.mechanics.push(link.getAttribute('value'));
-                            });
-                            item.querySelectorAll('link[type="boardgamedesigner"]').forEach(link => {
-                                game.designers.push(link.getAttribute('value'));
-                            });
-                            item.querySelectorAll('link[type="boardgameartist"]').forEach(link => {
-                                game.artists.push(link.getAttribute('value'));
-                            });
-
-                            allGames.push(game);
-                        });
-
-                    } catch (error) {
-                        console.error(`Error loading batch at index ${i}:`, error);
-                        showStatus(`⚠️ Loaded ${allGames.length}/${gameIds.length} games (batch had errors, continuing...)`, 'loading');
+                    // Extract collection tags/statuses
+                    const collectionTags = [];
+                    
+                    // Check for collection tags (dog, kog, etc.)
+                    const statusElem = item.querySelector('status');
+                    if (statusElem?.getAttribute('lastplayed')) {
+                        collectionTags.push('⏰ Played');
+                    }
+                    if (statusElem?.getAttribute('lasttraded')) {
+                        collectionTags.push('🔄 Traded');
                     }
 
-                    // Longer delay between batches to respect BGG rate limits
-                    const delayMs = 2000 + Math.random() * 2000; // 2-4 seconds random delay
-                    await new Promise(r => setTimeout(r, delayMs));
-                }
+                    // Check for wish/want list status
+                    if (statusElem?.getAttribute('fortrade') === '1') {
+                        collectionTags.push('💰 For Trade');
+                    }
+                    if (statusElem?.getAttribute('want') === '1') {
+                        collectionTags.push('🎯 Want');
+                    }
+                    if (statusElem?.getAttribute('wanttoplay') === '1') {
+                        collectionTags.push('🎮 Want to Play');
+                    }
+                    if (statusElem?.getAttribute('preordered') === '1') {
+                        collectionTags.push('📦 Pre-ordered');
+                    }
+
+                    const game = {
+                        id: gameId,
+                        name: name,
+                        image: image,
+                        thumbnail: thumbnail,
+                        yearPublished: yearPublished,
+                        stats: {
+                            average: average,
+                            bayesaverage: bayesaverage,
+                            myRating: myRating,
+                            usersRated: usersRated
+                        },
+                        collectionTags: collectionTags
+                    };
+
+                    allGames.push(game);
+                });
 
                 filteredGames = [...allGames];
                 populateFilters();
@@ -538,24 +544,9 @@
             }
         });
 
-        // Populate filter dropdowns
+        // Populate filter dropdowns (collection API v2 doesn't provide categories/mechanics)
         function populateFilters() {
-            const categories = new Set();
-            const mechanics = new Set();
-
-            allGames.forEach(game => {
-                game.categories.forEach(c => categories.add(c));
-                game.mechanics.forEach(m => mechanics.add(m));
-            });
-
-            const categoriesList = Array.from(categories).sort();
-            const mechanicsList = Array.from(mechanics).sort();
-
-            categoryFilter.innerHTML = '<option value="">All Categories</option>' +
-                categoriesList.map(c => `<option value="${c}">${escapeHtml(c)}</option>`).join('');
-
-            mechanicFilter.innerHTML = '<option value="">All Mechanics</option>' +
-                mechanicsList.map(m => `<option value="${m}">${escapeHtml(m)}</option>`).join('');
+            // Filters disabled for collection API v2
         }
 
         // Apply filters and sorting
@@ -563,10 +554,7 @@
             filteredGames = allGames.filter(game => {
                 const searchTerm = searchInput.value.toLowerCase();
                 const nameMatch = game.name.toLowerCase().includes(searchTerm);
-                const categoryMatch = !categoryFilter.value || game.categories.includes(categoryFilter.value);
-                const mechanicMatch = !mechanicFilter.value || game.mechanics.includes(mechanicFilter.value);
-
-                return nameMatch && categoryMatch && mechanicMatch;
+                return nameMatch;
             });
 
             // Sort
@@ -583,16 +571,16 @@
                         bVal = b.yearPublished;
                         break;
                     case 'rating':
-                        aVal = a.averageRating;
-                        bVal = b.averageRating;
+                        aVal = a.stats.average;
+                        bVal = b.stats.average;
                         break;
                     case 'players':
-                        aVal = a.minPlayers;
-                        bVal = b.minPlayers;
+                        aVal = 0; // Not available in collection API
+                        bVal = 0;
                         break;
                     case 'time':
-                        aVal = a.minPlayTime || a.playingTime;
-                        bVal = b.minPlayTime || b.playingTime;
+                        aVal = 0; // Not available in collection API
+                        bVal = 0;
                         break;
                     default:
                         return 0;
@@ -621,35 +609,23 @@
                         <h3 class="game-card-title">${escapeHtml(game.name)}</h3>
                         <div class="game-card-year">${game.yearPublished || 'N/A'}</div>
 
-                        <div class="game-card-info">
-                            <div class="info-row">
-                                <span class="info-label">Players:</span>
-                                <span class="info-value">${game.minPlayers}-${game.maxPlayers}</span>
-                            </div>
-                            <div class="info-row">
-                                <span class="info-label">Time:</span>
-                                <span class="info-value">${game.minPlayTime || game.playingTime}'</span>
-                            </div>
-                        </div>
-
-                        ${game.averageRating ? `
+                        ${game.stats.average ? `
                         <div class="game-card-rating">
-                            <span class="rating-stars">${getRatingStars(game.averageRating)}</span>
-                            <span>${game.averageRating.toFixed(1)}/10</span>
+                            <span class="rating-stars">${getRatingStars(game.stats.average)}</span>
+                            <span>${game.stats.average.toFixed(1)}/10 (${game.stats.usersRated} ratings)</span>
                         </div>
                         ` : ''}
 
-                        ${game.description ? `<p class="game-card-description">${escapeHtml(game.description.substring(0, 150))}</p>` : ''}
-
-                        ${game.categories.length > 0 ? `
-                        <div class="game-card-categories">
-                            ${game.categories.map(c => `<span class="tag category">${escapeHtml(c)}</span>`).join('')}
+                        ${game.stats.myRating > 0 ? `
+                        <div class="game-card-rating" style="color: #9333ea;">
+                            <span style="font-weight: 600;">Your Rating:</span>
+                            <span>${game.stats.myRating}/10</span>
                         </div>
                         ` : ''}
 
-                        ${game.mechanics.length > 0 ? `
-                        <div class="game-card-mechanics">
-                            ${game.mechanics.map(m => `<span class="tag mechanic">${escapeHtml(m)}</span>`).join('')}
+                        ${game.collectionTags.length > 0 ? `
+                        <div class="game-card-categories" style="margin-top: 0.5rem;">
+                            ${game.collectionTags.map(tag => `<span class="tag status">${tag}</span>`).join('')}
                         </div>
                         ` : ''}
                     </div>
@@ -660,14 +636,10 @@
         // Event listeners
         searchInput.addEventListener('input', applyFiltersAndSort);
         sortSelect.addEventListener('change', applyFiltersAndSort);
-        categoryFilter.addEventListener('change', applyFiltersAndSort);
-        mechanicFilter.addEventListener('change', applyFiltersAndSort);
 
         clearFiltersBtn.addEventListener('click', () => {
             searchInput.value = '';
             sortSelect.value = 'name-asc';
-            categoryFilter.value = '';
-            mechanicFilter.value = '';
             applyFiltersAndSort();
         });
 
