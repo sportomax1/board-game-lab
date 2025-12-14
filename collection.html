@@ -396,19 +396,42 @@
         const collectionInfo = document.getElementById('collectionInfo');
 
         // Fetch with retry
-        async function fetchWithRetry(url, maxRetries = 3) {
+        async function fetchWithRetry(url, maxRetries = 5) {
             for (let i = 0; i < maxRetries; i++) {
                 try {
                     const response = await fetch(url);
+                    
+                    // BGG is busy - wait longer
                     if (response.status === 202) {
-                        await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+                        const waitTime = 3000 * (i + 1);
+                        console.log(`BGG busy (202), waiting ${waitTime}ms before retry ${i + 1}...`);
+                        await new Promise(r => setTimeout(r, waitTime));
                         continue;
                     }
+                    
+                    // Too many requests - significant backoff
+                    if (response.status === 429) {
+                        const waitTime = 5000 * (i + 1);
+                        console.log(`Rate limited (429), waiting ${waitTime}ms before retry ${i + 1}...`);
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
+                    // Bad gateway from helper - BGG API error
+                    if (response.status === 502) {
+                        const waitTime = 4000 * (i + 1);
+                        console.log(`Helper returned 502 (BGG API error), waiting ${waitTime}ms before retry ${i + 1}...`);
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     return response;
                 } catch (error) {
                     if (i === maxRetries - 1) throw error;
-                    await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+                    const waitTime = 2000 * (i + 1);
+                    console.log(`Error on attempt ${i + 1}, waiting ${waitTime}ms...`, error.message);
+                    await new Promise(r => setTimeout(r, waitTime));
                 }
             }
         }
@@ -441,13 +464,15 @@
 
                 showStatus(`📥 Fetching details for ${gameIds.length} games...`, 'loading');
 
-                // Fetch game details in batches
-                const batchSize = 25;
+                // Fetch game details in batches (smaller batches to avoid rate limiting)
+                const batchSize = 10;
                 for (let i = 0; i < gameIds.length; i += batchSize) {
                     const batch = gameIds.slice(i, i + batchSize);
                     const ids = batch.map(g => g.id).join(',');
 
                     try {
+                        showStatus(`📥 Loaded ${allGames.length}/${gameIds.length} games (batch ${Math.ceil((i + 1) / batchSize)}/${Math.ceil(gameIds.length / batchSize)})...`, 'loading');
+                        
                         const response = await fetchWithRetry(
                             `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`
                         );
@@ -491,12 +516,14 @@
                             allGames.push(game);
                         });
 
-                        showStatus(`📥 Loaded ${allGames.length}/${gameIds.length} games...`, 'loading');
                     } catch (error) {
-                        console.error(`Error loading batch ${i}:`, error);
+                        console.error(`Error loading batch at index ${i}:`, error);
+                        showStatus(`⚠️ Loaded ${allGames.length}/${gameIds.length} games (batch had errors, continuing...)`, 'loading');
                     }
 
-                    await new Promise(r => setTimeout(r, 200));
+                    // Longer delay between batches to respect BGG rate limits
+                    const delayMs = 2000 + Math.random() * 2000; // 2-4 seconds random delay
+                    await new Promise(r => setTimeout(r, delayMs));
                 }
 
                 filteredGames = [...allGames];

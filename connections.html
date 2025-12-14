@@ -475,25 +475,32 @@
             }
         });
 
-        async function fetchWithRetry(url, maxRetries = 3) {
+        async function fetchWithRetry(url, maxRetries = 5) {
             for (let i = 0; i < maxRetries; i++) {
                 try {
                     const response = await fetch(url);
-                    if (response.status === 202) {
-                        await new Promise(resolve => setTimeout(resolve, 2000 * (i + 1)));
+                    
+                    // BGG is busy (202) or rate limited (429) or helper error (502)
+                    if (response.status === 202 || response.status === 429 || response.status === 502) {
+                        const waitTime = 3000 * (i + 1);
+                        console.log(`Status ${response.status}, waiting ${waitTime}ms before retry ${i + 1}...`);
+                        await new Promise(resolve => setTimeout(resolve, waitTime));
                         continue;
                     }
+                    
                     if (!response.ok) throw new Error(`HTTP ${response.status}`);
                     return response;
                 } catch (error) {
                     if (i === maxRetries - 1) throw error;
-                    await new Promise(resolve => setTimeout(resolve, 1000 * (i + 1)));
+                    const waitTime = 2000 * (i + 1);
+                    console.log(`Attempt ${i + 1} failed, waiting ${waitTime}ms...`, error.message);
+                    await new Promise(resolve => setTimeout(resolve, waitTime));
                 }
             }
         }
 
         async function processGameBatches() {
-            const batchSize = 20;
+            const batchSize = 15;  // Reduced from 20 to respect rate limits
             let processed = 0;
 
             for (let i = 0; i < allGames.length; i += batchSize) {
@@ -529,9 +536,12 @@
 
                 } catch (error) {
                     console.error(`Error processing batch at ${i}:`, error);
+                    processingStatus.textContent = `⚠️ Error processing batch, retrying...`;
                 }
 
-                await new Promise(resolve => setTimeout(resolve, 200));
+                // Longer delay between batches
+                const delayMs = 2000 + Math.random() * 2000;
+                await new Promise(resolve => setTimeout(resolve, delayMs));
             }
 
             processingStatus.textContent = `✅ Ready! Select types and start game`;
