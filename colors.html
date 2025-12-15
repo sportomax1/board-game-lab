@@ -316,7 +316,7 @@
         <div class="controls">
             <div class="control-group">
                 <label for="usernameInput">BGG Username</label>
-                <input type="text" id="usernameInput" placeholder="Enter username">
+                <input type="text" id="usernameInput" placeholder="sportomax" value="sportomax">
             </div>
 
             <button class="btn" id="loadBtn">🔄 Load & Analyze</button>
@@ -377,7 +377,7 @@
             return new DOMParser().parseFromString(xmlText, 'text/xml');
         }
 
-        // Color analysis function using canvas
+        // Color analysis function using canvas - SIMPLIFIED for speed
         async function analyzeImageColors(imageUrl) {
             return new Promise((resolve) => {
                 // Use image proxy to avoid CORS issues
@@ -397,17 +397,21 @@
                 img.onload = () => {
                     try {
                         const canvas = document.createElement('canvas');
-                        canvas.width = 100;
-                        canvas.height = 100;
+                        // Smaller canvas for faster analysis
+                        canvas.width = 50;
+                        canvas.height = 50;
                         const ctx = canvas.getContext('2d');
                         ctx.drawImage(img, 0, 0, canvas.width, canvas.height);
                         
                         const imageData = ctx.getImageData(0, 0, canvas.width, canvas.height);
                         const data = imageData.data;
                         
-                        // Sample every pixel and collect colors
+                        // Sample every other pixel for speed
                         const colorMap = {};
-                        for (let i = 0; i < data.length; i += 4) {
+                        const step = 8; // Sample less frequently
+                        let pixelCount = 0;
+                        
+                        for (let i = 0; i < data.length; i += (step * 4)) {
                             const r = data[i];
                             const g = data[i + 1];
                             const b = data[i + 2];
@@ -418,6 +422,15 @@
                             
                             const hex = rgbToHex(r, g, b);
                             colorMap[hex] = (colorMap[hex] || 0) + 1;
+                            pixelCount++;
+                        }
+                        
+                        if (pixelCount === 0) {
+                            resolve({
+                                colors: [{ hex: '#999999', count: 0, percentage: 100 }],
+                                primary: { hex: '#999999', count: 0, percentage: 100 }
+                            });
+                            return;
                         }
                         
                         // Convert to array and sort by frequency
@@ -425,7 +438,7 @@
                             .map(([hex, count]) => ({
                                 hex: hex,
                                 count: count,
-                                percentage: ((count / Object.values(colorMap).reduce((a, b) => a + b, 0)) * 100).toFixed(1)
+                                percentage: ((count / pixelCount) * 100).toFixed(1)
                             }))
                             .sort((a, b) => b.count - a.count)
                             .slice(0, 6); // Top 6 colors
@@ -479,29 +492,35 @@
         // Load collection and analyze colors
         loadBtn.addEventListener('click', async () => {
             const username = usernameInput.value.trim() || 'sportomax';
+            console.log(`👤 Loading collection for user: ${username}`);
             
             allGames = [];
             showStatus('📦 Loading collection...', 'loading');
 
             try {
+                console.log(`📡 Fetching collection from BGG API...`);
                 const collXml = await fetchBGG('collection', {
                     username: username,
                     own: '1',
                     stats: '1'
                 });
                 
+                console.log(`📄 Parsing XML response...`);
                 const collDoc = parseXML(collXml);
                 const items = Array.from(collDoc.querySelectorAll('item'));
 
                 console.log(`📦 Found ${items.length} items in collection`);
+                console.log(`🎨 Starting color analysis...`);
                 showStatus(`🎨 Analyzing ${items.length} games...`, 'loading');
 
                 // Process items
-                items.forEach(item => {
+                items.forEach((item, idx) => {
                     const gameId = item.getAttribute('objectid');
                     const name = item.querySelector('name')?.textContent || 'Unknown';
                     const thumbnail = item.querySelector('thumbnail')?.textContent || '';
                     const image = item.querySelector('image')?.textContent || thumbnail;
+
+                    console.log(`  [${idx + 1}/${items.length}] ${name} (ID: ${gameId})`);
 
                     allGames.push({
                         id: gameId,
@@ -511,11 +530,12 @@
                     });
                 });
 
+                console.log(`🚀 Beginning analysis loop...`);
                 // Analyze colors for each game
                 await analyzeAllGames();
                 
             } catch (error) {
-                console.error('Error:', error);
+                console.error('❌ Error:', error);
                 showStatus(`❌ Error: ${error.message}`, 'error');
             }
         });
@@ -523,21 +543,27 @@
         async function analyzeAllGames() {
             if (allGames.length === 0) return;
 
+            console.log(`🎨 Starting color analysis for ${allGames.length} games`);
             colorGrid.innerHTML = '';
             let processed = 0;
 
             for (const game of allGames) {
+                console.log(`[${processed + 1}/${allGames.length}] Analyzing: ${game.name}`);
+                
                 try {
                     if (game.thumbnail) {
+                        console.log(`  📥 Fetching thumbnail...`);
                         game.colors = await analyzeImageColors(game.thumbnail);
+                        console.log(`  ✅ Colors extracted: Primary = ${game.colors.primary.hex} (${game.colors.primary.percentage}%)`);
                     } else {
+                        console.log(`  ⚠️ No thumbnail available, using default color`);
                         game.colors = {
                             colors: [{ hex: '#cccccc', count: 0, percentage: 100 }],
                             primary: { hex: '#cccccc', count: 0, percentage: 100 }
                         };
                     }
                 } catch (error) {
-                    console.error(`Error analyzing ${game.name}:`, error);
+                    console.error(`  ❌ Error analyzing ${game.name}:`, error);
                     game.colors = {
                         colors: [{ hex: '#999999', count: 0, percentage: 100 }],
                         primary: { hex: '#999999', count: 0, percentage: 100 }
@@ -545,15 +571,20 @@
                 }
 
                 processed++;
+                
+                // Render card immediately after analysis
+                console.log(`  🎴 Rendering card...`);
+                renderGameCard(game);
+                
                 showStatus(`🎨 Analyzed ${processed} of ${allGames.length} games...`, 'loading');
-
-                // Add small delay to prevent blocking
-                if (processed % 5 === 0) {
-                    await new Promise(r => setTimeout(r, 100));
+                
+                // Small delay to avoid blocking (allows UI to update)
+                if (processed % 3 === 0) {
+                    await new Promise(r => setTimeout(r, 50));
                 }
             }
 
-            renderGames();
+            console.log(`✅ All ${allGames.length} games analyzed!`);
             showStatus(`✅ Successfully analyzed ${allGames.length} games!`, 'success');
         }
 
@@ -563,47 +594,60 @@
                 return;
             }
 
-            colorGrid.innerHTML = allGames.map(game => {
-                const colors = game.colors || { colors: [], primary: {} };
-                const primary = colors.primary || {};
-                const proxiedThumbnail = game.thumbnail 
-                    ? `${IMAGE_PROXY}${encodeURIComponent(game.thumbnail)}`
-                    : 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 60 80%22%3E%3Crect fill=%22%23f0f0f0%22 width=%2260%22 height=%2280%22/%3E%3C/svg%3E';
+            colorGrid.innerHTML = allGames.map(game => buildGameCard(game)).join('');
+        }
 
-                return `
-                    <div class="color-card">
-                        <img src="${escapeHtml(proxiedThumbnail)}" 
-                             alt="${escapeHtml(game.name)}" 
-                             class="color-card-thumbnail"
-                             onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 60 80%22%3E%3Crect fill=%22%23f0f0f0%22 width=%2260%22 height=%2280%22/%3E%3C/svg%3E'">
-                        <div class="color-card-content">
-                            <h3 class="color-card-name">${escapeHtml(game.name)}</h3>
-                            
-                            <div class="color-palette">
-                                ${colors.colors.map((color, idx) => `
-                                    <div class="color-swatch">
-                                        <div class="color-box" 
-                                             style="background-color: ${color.hex};"
-                                             title="${color.hex} - ${color.percentage}%"></div>
-                                        <div class="color-label">
-                                            ${idx === 0 ? '<span class="primary-badge">Primary</span>' : ''}
-                                            <div class="color-hex">${color.hex}</div>
-                                            <div class="color-percentage">${color.percentage}%</div>
-                                        </div>
+        function renderGameCard(game) {
+            // If grid is empty, clear it first
+            if (colorGrid.innerHTML.includes('empty-state')) {
+                colorGrid.innerHTML = '';
+            }
+
+            const cardHTML = buildGameCard(game);
+            colorGrid.innerHTML += cardHTML;
+        }
+
+        function buildGameCard(game) {
+            const colors = game.colors || { colors: [], primary: {} };
+            const proxiedThumbnail = game.thumbnail 
+                ? `${IMAGE_PROXY}${encodeURIComponent(game.thumbnail)}`
+                : 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 60 80%22%3E%3Crect fill=%22%23f0f0f0%22 width=%2260%22 height=%2280%22/%3E%3C/svg%3E';
+
+            return `
+                <div class="color-card">
+                    <img src="${escapeHtml(proxiedThumbnail)}" 
+                         alt="${escapeHtml(game.name)}" 
+                         class="color-card-thumbnail"
+                         onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 60 80%22%3E%3Crect fill=%22%23f0f0f0%22 width=%2260%22 height=%2280%22/%3E%3C/svg%3E'">
+                    <div class="color-card-content">
+                        <h3 class="color-card-name">${escapeHtml(game.name)}</h3>
+                        
+                        <div class="color-palette">
+                            ${colors.colors.map((color, idx) => `
+                                <div class="color-swatch">
+                                    <div class="color-box" 
+                                         style="background-color: ${color.hex};"
+                                         title="${color.hex} - ${color.percentage}%"></div>
+                                    <div class="color-label">
+                                        ${idx === 0 ? '<span class="primary-badge">Primary</span>' : ''}
+                                        <div class="color-hex">${color.hex}</div>
+                                        <div class="color-percentage">${color.percentage}%</div>
                                     </div>
-                                `).join('')}
-                            </div>
+                                </div>
+                            `).join('')}
                         </div>
                     </div>
-                `;
-            }).join('');
+                </div>
+            `;
         }
 
         clearBtn.addEventListener('click', () => {
-            usernameInput.value = '';
+            console.log('🗑️ Clearing collection...');
+            usernameInput.value = 'sportomax';
             allGames = [];
             colorGrid.innerHTML = '<div class="empty-state"><p>Click "Load & Analyze" to fetch and analyze your collection</p></div>';
             status.className = 'status';
+            console.log('✅ Cleared! Ready for new analysis');
             usernameInput.focus();
         });
 
