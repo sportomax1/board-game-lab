@@ -194,6 +194,72 @@
             document.getElementById('buddyListContainer').innerHTML = '';
         }
 
+        // Robust API fetch with retry logic and timeout handling
+        async function fetchBGGWithRetry(url, maxRetries = 5, timeoutMs = 15000) {
+            let lastError;
+            
+            for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                try {
+                    console.log(`🔄 Fetch attempt ${attempt}/${maxRetries}: ${url.substring(0, 50)}...`);
+                    
+                    // Create abort controller for timeout
+                    const controller = new AbortController();
+                    const timeoutId = setTimeout(() => controller.abort(), timeoutMs);
+                    
+                    const res = await fetch(url, { signal: controller.signal });
+                    clearTimeout(timeoutId);
+                    
+                    // Handle 202 Accepted (BGG still processing)
+                    if (res.status === 202) {
+                        console.log(`⏳ BGG busy (202), waiting before retry...`);
+                        const waitTime = Math.min(3000 * attempt, 15000);
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
+                    if (!res.ok) {
+                        console.warn(`⚠️ HTTP ${res.status}`);
+                        const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                        if (attempt < maxRetries) {
+                            await new Promise(r => setTimeout(r, waitTime));
+                            continue;
+                        }
+                        throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                    }
+                    
+                    const text = await res.text();
+                    if (!text || text.trim().length === 0) {
+                        console.warn(`⚠️ Empty response`);
+                        const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                        if (attempt < maxRetries) {
+                            await new Promise(r => setTimeout(r, waitTime));
+                            continue;
+                        }
+                        throw new Error('Empty response from server');
+                    }
+                    
+                    console.log(`✅ Success on attempt ${attempt}`);
+                    return text;
+                    
+                } catch (error) {
+                    lastError = error;
+                    console.error(`❌ Attempt ${attempt} failed:`, error.message);
+                    
+                    if (error.name === 'AbortError') {
+                        console.log(`⏱️ Request timeout (${timeoutMs}ms)`);
+                    }
+                    
+                    if (attempt < maxRetries) {
+                        const waitTime = Math.min(1000 * Math.pow(2, attempt - 1), 10000);
+                        console.log(`⏳ Retrying in ${waitTime}ms...`);
+                        await new Promise(r => setTimeout(r, waitTime));
+                    }
+                }
+            }
+            
+            throw new Error(`Failed after ${maxRetries} attempts: ${lastError.message}`);
+        }
+
         async function loadBuddyList() {
             const username = document.getElementById('buddyCheckerUsername').value.trim();
             if (!username) {
@@ -202,12 +268,17 @@
             }
 
             const container = document.getElementById('buddyListContainer');
-            container.innerHTML = '<p class="text-gray-500 text-sm">Loading buddies...</p>';
+            container.innerHTML = '<p class="text-gray-500 text-sm">🔄 Loading buddies...</p>';
 
             try {
-                const res = await fetch(`/api/bgg-helper?endpoint=user&name=${encodeURIComponent(username)}&buddies=1`);
-                const xml = await res.text();
+                const xml = await fetchBGGWithRetry(`/api/bgg-helper?endpoint=user&name=${encodeURIComponent(username)}&buddies=1`);
                 const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                
+                // Check for XML parse errors
+                if (parser.getElementsByTagName('parsererror').length > 0) {
+                    throw new Error('Invalid XML response from server');
+                }
+                
                 const buddies = Array.from(parser.querySelectorAll('buddy')).map(b => ({
                     id: b.getAttribute('id'),
                     name: b.getAttribute('name')
@@ -225,7 +296,8 @@
                     </label>
                 `).join('');
             } catch (error) {
-                container.innerHTML = '<p class="text-red-500 text-sm">Error loading buddies: ' + error.message + '</p>';
+                console.error('Buddy list error:', error);
+                container.innerHTML = '<p class="text-red-500 text-sm">⚠️ Error loading buddies: ' + error.message + '</p>';
             }
         }
 
@@ -312,8 +384,8 @@
                             queryParams += '&includeexpansions=1';
                         }
 
-                        const res = await fetch(`/api/bgg-helper?${queryParams}`);
-                        const text = await res.text();
+                        console.log(`📡 Fetching collection for ${player} with retries...`);
+                        const text = await fetchBGGWithRetry(`/api/bgg-helper?${queryParams}`, 5, 15000);
                         console.log(`📥 Raw response for ${player}:`, text.substring(0, 500));
                         
                         const xml = new DOMParser().parseFromString(text, 'text/xml');
