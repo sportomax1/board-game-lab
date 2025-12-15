@@ -461,14 +461,24 @@
             </div>
 
             <div class="control-group">
-                <label for="statusFilter">Collection Status</label>
-                <select id="statusFilter">
-                    <option value="own">Own</option>
-                    <option value="want">Want</option>
-                    <option value="wanttoplay">Want to Play</option>
-                    <option value="fortrade">For Trade</option>
-                    <option value="all">All</option>
-                </select>
+                <label>Collection Status (Multi-select)</label>
+                <div id="statusCheckboxes" style="display: flex; flex-wrap: wrap; gap: 0.75rem; padding: 0.5rem 0;">
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: normal; text-transform: none;">
+                        <input type="checkbox" class="status-filter-checkbox" value="own" checked> Own
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: normal; text-transform: none;">
+                        <input type="checkbox" class="status-filter-checkbox" value="fortrade"> For Trade
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: normal; text-transform: none;">
+                        <input type="checkbox" class="status-filter-checkbox" value="want"> Want
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: normal; text-transform: none;">
+                        <input type="checkbox" class="status-filter-checkbox" value="wanttoplay"> Want to Play
+                    </label>
+                    <label style="display: flex; align-items: center; gap: 0.5rem; font-size: 0.9rem; font-weight: normal; text-transform: none;">
+                        <input type="checkbox" class="status-filter-checkbox" value="preordered"> Pre-ordered
+                    </label>
+                </div>
             </div>
 
             <button class="btn" id="loadBtn">🔄 Load Collection</button>
@@ -497,6 +507,19 @@
             <div class="modal-tags" id="modalTags"></div>
             
             <button class="modal-bgg-btn" id="modalBGGBtn" target="_blank">🔗 View on BoardGameGeek</button>
+            <button class="modal-bgg-btn" style="background: #7c3aed; margin-top: 0.5rem;" id="modalAPIBtn">📋 View Full API Details</button>
+        </div>
+    </div>
+
+    <!-- API Details Modal -->
+    <div id="apiModal" class="modal">
+        <div class="modal-content">
+            <div class="modal-header">
+                <h2 class="modal-title" id="apiModalTitle">API Details</h2>
+                <button class="modal-close" id="apiModalClose">&times;</button>
+            </div>
+            
+            <div id="apiModalBody" style="max-height: 600px; overflow-y: auto; font-family: monospace; font-size: 0.85rem; white-space: pre-wrap; word-break: break-word; background: #f9fafb; padding: 1rem; border-radius: 8px; border: 1px solid #eee;"></div>
         </div>
     </div>
 
@@ -519,9 +542,17 @@
         const modalStats = document.getElementById('modalStats');
         const modalTags = document.getElementById('modalTags');
         const modalBGGBtn = document.getElementById('modalBGGBtn');
+        const modalAPIBtn = document.getElementById('modalAPIBtn');
+        
+        // API Modal elements
+        const apiModal = document.getElementById('apiModal');
+        const apiModalClose = document.getElementById('apiModalClose');
+        const apiModalTitle = document.getElementById('apiModalTitle');
+        const apiModalBody = document.getElementById('apiModalBody');
 
         let allGames = [];
         let filteredGames = [];
+        let currentGameXML = null;
 
         // Fetch with retry for rate limit handling
         async function fetchWithRetry(url, maxRetries = 5) {
@@ -590,40 +621,55 @@
                     const image = item.querySelector('image')?.textContent || thumbnail;
                     const yearPublished = parseInt(item.querySelector('yearpublished')?.textContent) || 0;
 
-                    // Extract all stats from collection API v2
+                    // Extract ALL stats from the API
+                    const statsElem = item.querySelector('stats');
+                    const minPlayers = parseInt(statsElem?.getAttribute('minplayers') || 2);
+                    const maxPlayers = parseInt(statsElem?.getAttribute('maxplayers') || 2);
+                    const minPlaytime = parseInt(statsElem?.getAttribute('minplaytime') || 0);
+                    const maxPlaytime = parseInt(statsElem?.getAttribute('maxplaytime') || 0);
+                    const playingTime = parseInt(statsElem?.getAttribute('playingtime') || 0);
+                    const numOwned = parseInt(statsElem?.getAttribute('numowned') || 0);
+
+                    // Extract rating details
                     const rating = item.querySelector('stats rating');
                     const myRating = parseFloat(rating?.getAttribute('value') || 0);
                     const average = parseFloat(rating?.querySelector('average')?.getAttribute('value') || 0);
                     const bayesaverage = parseFloat(rating?.querySelector('bayesaverage')?.getAttribute('value') || 0);
+                    const stddev = parseFloat(rating?.querySelector('stddev')?.getAttribute('value') || 0);
+                    const median = parseFloat(rating?.querySelector('median')?.getAttribute('value') || 0);
                     const usersRated = parseInt(rating?.querySelector('usersrated')?.getAttribute('value') || 0);
-                    const numweights = parseInt(rating?.querySelector('numweights')?.getAttribute('value') || 0);
-                    const averageweight = parseFloat(rating?.querySelector('averageweight')?.getAttribute('value') || 0);
 
-                    // Extract collection status flags and tags
+                    // Extract board game rank
+                    const rankElem = rating?.querySelector('rank[name="boardgame"]');
+                    const boardGameRank = rankElem?.getAttribute('value') || 'Not Ranked';
+
+                    // Extract collection status flags
                     const statusElem = item.querySelector('status');
-                    const isOwn = true; // All items from collection API are in user's collection
+                    const isOwn = statusElem?.getAttribute('own') === '1';
+                    const isPrevOwned = statusElem?.getAttribute('prevowned') === '1';
                     const isWant = statusElem?.getAttribute('want') === '1';
                     const isWantToPlay = statusElem?.getAttribute('wanttoplay') === '1';
                     const isForTrade = statusElem?.getAttribute('fortrade') === '1';
+                    const isWantToBuy = statusElem?.getAttribute('wanttobuy') === '1';
+                    const isWishlist = statusElem?.getAttribute('wishlist') === '1';
+                    const wishlistPriority = parseInt(statusElem?.getAttribute('wishlistpriority') || 0);
                     const isPreordered = statusElem?.getAttribute('preordered') === '1';
+                    const lastModified = statusElem?.getAttribute('lastmodified') || 'N/A';
+
+                    // Extract plays
+                    const numPlays = parseInt(item.querySelector('numplays')?.textContent || 0);
 
                     // Build collection tags
                     const collectionTags = [];
-                    if (isOwn) {
-                        collectionTags.push('📦 Owned');
-                    }
-                    if (isForTrade) {
-                        collectionTags.push('💰 For Trade');
-                    }
-                    if (isWant) {
-                        collectionTags.push('🎯 Want');
-                    }
-                    if (isWantToPlay) {
-                        collectionTags.push('🎮 Want to Play');
-                    }
-                    if (isPreordered) {
-                        collectionTags.push('📋 Pre-ordered');
-                    }
+                    if (isOwn) collectionTags.push('📦 Owned');
+                    if (isPrevOwned) collectionTags.push('📦 Previously Owned');
+                    if (isForTrade) collectionTags.push('💰 For Trade');
+                    if (isWant) collectionTags.push('🎯 Want');
+                    if (isWantToPlay) collectionTags.push('🎮 Want to Play');
+                    if (isWantToBuy) collectionTags.push('🛒 Want to Buy');
+                    if (isWishlist) collectionTags.push('⭐ Wishlist');
+                    if (isPreordered) collectionTags.push('📋 Pre-ordered');
+                    if (numPlays > 0) collectionTags.push(`🎲 ${numPlays} plays`);
 
                     const game = {
                         id: gameId,
@@ -636,17 +682,31 @@
                             bayesaverage: bayesaverage,
                             myRating: myRating,
                             usersRated: usersRated,
-                            numweights: numweights,
-                            averageweight: averageweight
+                            stddev: stddev,
+                            median: median,
+                            boardGameRank: boardGameRank,
+                            minPlayers: minPlayers,
+                            maxPlayers: maxPlayers,
+                            minPlaytime: minPlaytime,
+                            maxPlaytime: maxPlaytime,
+                            playingTime: playingTime,
+                            numOwned: numOwned,
+                            numPlays: numPlays
                         },
                         status: {
                             own: isOwn,
+                            prevowned: isPrevOwned,
                             want: isWant,
                             wanttoplay: isWantToPlay,
                             fortrade: isForTrade,
-                            preordered: isPreordered
+                            wanttobuy: isWantToBuy,
+                            wishlist: isWishlist,
+                            wishlistpriority: wishlistPriority,
+                            preordered: isPreordered,
+                            lastmodified: lastModified
                         },
-                        collectionTags: collectionTags
+                        collectionTags: collectionTags,
+                        rawXML: new XMLSerializer().serializeToString(item)
                     };
 
                     allGames.push(game);
@@ -665,24 +725,19 @@
 
         // Apply filters and sorting
         function applyFiltersAndSort() {
-            const selectedStatus = statusFilter.value;
+            // Get selected status filters (multi-select)
+            const selectedStatuses = Array.from(document.querySelectorAll('.status-filter-checkbox:checked')).map(cb => cb.value);
             
             filteredGames = allGames.filter(game => {
                 const searchTerm = searchInput.value.toLowerCase();
                 const nameMatch = game.name.toLowerCase().includes(searchTerm);
                 
-                // Filter by collection status
-                let statusMatch = true;
-                if (selectedStatus === 'own') {
-                    statusMatch = game.status.own;
-                } else if (selectedStatus === 'want') {
-                    statusMatch = game.status.want;
-                } else if (selectedStatus === 'wanttoplay') {
-                    statusMatch = game.status.wanttoplay;
-                } else if (selectedStatus === 'fortrade') {
-                    statusMatch = game.status.fortrade;
-                } else if (selectedStatus === 'all') {
-                    statusMatch = true;
+                // Filter by collection status - match ANY selected status (OR logic)
+                let statusMatch = false;
+                if (selectedStatuses.length === 0) {
+                    statusMatch = true; // If none selected, show all
+                } else {
+                    statusMatch = selectedStatuses.some(status => game.status[status]);
                 }
                 
                 return nameMatch && statusMatch;
@@ -720,7 +775,7 @@
         function showGameModal(game) {
             modalGameTitle.textContent = game.name;
             
-            // Build stats grid
+            // Build comprehensive stats grid
             modalStats.innerHTML = `
                 <div class="stat-item">
                     <span class="stat-label">📊 BGG Rating</span>
@@ -742,13 +797,26 @@
                     <span class="stat-label">📅 Year Published</span>
                     <div class="stat-value">${game.yearPublished || 'N/A'}</div>
                 </div>
-                ${game.stats.numweights > 0 ? `
                 <div class="stat-item">
-                    <span class="stat-label">⚖️ Complexity</span>
-                    <div class="stat-value">${game.stats.averageweight.toFixed(2)}</div>
-                    <div class="stat-subtitle">${game.stats.numweights} weights</div>
+                    <span class="stat-label">🎲 Players</span>
+                    <div class="stat-value">${game.stats.minPlayers}-${game.stats.maxPlayers}</div>
                 </div>
-                ` : ''}
+                <div class="stat-item">
+                    <span class="stat-label">⏱️ Playtime</span>
+                    <div class="stat-value">${game.stats.minPlaytime}-${game.stats.maxPlaytime}m</div>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">🎮 Your Plays</span>
+                    <div class="stat-value">${game.stats.numPlays}</div>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">📊 Board Game Rank</span>
+                    <div class="stat-value">${game.stats.boardGameRank}</div>
+                </div>
+                <div class="stat-item">
+                    <span class="stat-label">👥 Total Owned</span>
+                    <div class="stat-value">${game.stats.numOwned.toLocaleString()}</div>
+                </div>
             `;
             
             // Build tags
@@ -759,12 +827,26 @@
             // Set BGG link
             modalBGGBtn.href = `https://boardgamegeek.com/boardgame/${game.id}`;
             
+            // Store current game for API details modal
+            currentGameXML = game.rawXML;
+            
             gameModal.classList.add('active');
         }
 
-        // Close modal
+        // Show API details modal
+        function showAPIModal(game) {
+            apiModalTitle.textContent = `${game.name} - API Details`;
+            apiModalBody.textContent = currentGameXML;
+            apiModal.classList.add('active');
+        }
+
+        // Close modals
         function closeGameModal() {
             gameModal.classList.remove('active');
+        }
+
+        function closeAPIModal() {
+            apiModal.classList.remove('active');
         }
 
         // Render games
@@ -823,18 +905,34 @@
         // Event listeners
         searchInput.addEventListener('input', applyFiltersAndSort);
         sortSelect.addEventListener('change', applyFiltersAndSort);
-        statusFilter.addEventListener('change', applyFiltersAndSort);
+        
+        // Multi-select status filter listeners
+        document.querySelectorAll('.status-filter-checkbox').forEach(checkbox => {
+            checkbox.addEventListener('change', applyFiltersAndSort);
+        });
 
         clearFiltersBtn.addEventListener('click', () => {
             searchInput.value = '';
             sortSelect.value = 'name-asc';
-            statusFilter.value = 'own';
+            document.querySelectorAll('.status-filter-checkbox').forEach(cb => {
+                cb.checked = cb.value === 'own';
+            });
             applyFiltersAndSort();
         });
 
         modalClose.addEventListener('click', closeGameModal);
         gameModal.addEventListener('click', (e) => {
             if (e.target === gameModal) closeGameModal();
+        });
+        
+        modalAPIBtn.addEventListener('click', () => {
+            closeGameModal();
+            showAPIModal(filteredGames.find(g => g.name === modalGameTitle.textContent));
+        });
+        
+        apiModalClose.addEventListener('click', closeAPIModal);
+        apiModal.addEventListener('click', (e) => {
+            if (e.target === apiModal) closeAPIModal();
         });
 
         // Utilities
