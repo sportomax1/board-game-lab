@@ -341,48 +341,56 @@
         const colorGrid = document.getElementById('colorGrid');
 
         let allGames = [];
+        const IMAGE_PROXY = 'https://images.weserv.nl/?url=';
 
-        // Fetch with retry for rate limit handling
-        async function fetchWithRetry(url, maxRetries = 5) {
-            for (let i = 0; i < maxRetries; i++) {
-                try {
-                    const response = await fetch(url);
-                    
-                    if (response.status === 202) {
-                        const waitTime = 3000 * (i + 1);
-                        console.log(`BGG busy (202), waiting ${waitTime}ms before retry ${i + 1}...`);
-                        await new Promise(r => setTimeout(r, waitTime));
-                        continue;
-                    }
-                    
-                    if (response.status === 429) {
-                        const waitTime = 5000 * (i + 1);
-                        console.log(`Rate limited (429), waiting ${waitTime}ms before retry ${i + 1}...`);
-                        await new Promise(r => setTimeout(r, waitTime));
-                        continue;
-                    }
-                    
-                    if (response.status === 502) {
-                        const waitTime = 4000 * (i + 1);
-                        console.log(`Helper returned 502 (BGG API error), waiting ${waitTime}ms before retry ${i + 1}...`);
-                        await new Promise(r => setTimeout(r, waitTime));
-                        continue;
-                    }
-                    
-                    if (!response.ok) throw new Error(`HTTP ${response.status}`);
-                    return response;
-                } catch (error) {
-                    if (i === maxRetries - 1) throw error;
-                    const waitTime = 2000 * (i + 1);
-                    console.log(`Error on attempt ${i + 1}, waiting ${waitTime}ms...`, error.message);
-                    await new Promise(r => setTimeout(r, waitTime));
+        // Fetch BGG API with retry logic
+        async function fetchBGG(endpoint, params = {}, retries = 5) {
+            const queryParams = new URLSearchParams(params).toString();
+            const fullUrl = `/api/bgg-helper?endpoint=${endpoint}&${queryParams}`;
+            
+            try {
+                const response = await fetch(fullUrl);
+
+                if (response.status === 202 && retries > 0) {
+                    console.log(`BGG busy (202), waiting 3s before retry ${6 - retries}...`);
+                    await new Promise(r => setTimeout(r, 3000));
+                    return fetchBGG(endpoint, params, retries - 1);
                 }
+
+                if (!response.ok) {
+                    throw new Error(`BGG API fetch failed: Status ${response.status} ${response.statusText}`);
+                }
+
+                return await response.text();
+
+            } catch (error) {
+                console.error('Fetch error:', error);
+                if (retries > 0) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    return fetchBGG(endpoint, params, retries - 1);
+                }
+                throw error;
             }
+        }
+
+        function parseXML(xmlText) {
+            return new DOMParser().parseFromString(xmlText, 'text/xml');
         }
 
         // Color analysis function using canvas
         async function analyzeImageColors(imageUrl) {
             return new Promise((resolve) => {
+                // Use image proxy to avoid CORS issues
+                const proxiedUrl = imageUrl ? `${IMAGE_PROXY}${encodeURIComponent(imageUrl)}` : null;
+                
+                if (!proxiedUrl) {
+                    resolve({
+                        colors: [{ hex: '#cccccc', count: 0, percentage: 100 }],
+                        primary: { hex: '#cccccc', count: 0, percentage: 100 }
+                    });
+                    return;
+                }
+
                 const img = new Image();
                 img.crossOrigin = 'anonymous';
                 
@@ -439,14 +447,14 @@
                 };
                 
                 img.onerror = () => {
-                    console.warn('Failed to load image:', imageUrl);
+                    console.warn('Failed to load image:', proxiedUrl);
                     resolve({
                         colors: [{ hex: '#cccccc', count: 0, percentage: 100 }],
                         primary: { hex: '#cccccc', count: 0, percentage: 100 }
                     });
                 };
                 
-                img.src = imageUrl;
+                img.src = proxiedUrl;
             });
         }
 
@@ -470,21 +478,20 @@
 
         // Load collection and analyze colors
         loadBtn.addEventListener('click', async () => {
-            const username = usernameInput.value.trim();
-            if (!username) {
-                showStatus('❌ Please enter a username', 'error');
-                return;
-            }
-
+            const username = usernameInput.value.trim() || 'sportomax';
+            
             allGames = [];
             showStatus('📦 Loading collection...', 'loading');
 
             try {
-                const collResponse = await fetchWithRetry(
-                    `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`
-                );
-                const collXml = new DOMParser().parseFromString(await collResponse.text(), 'text/xml');
-                const items = Array.from(collXml.querySelectorAll('item'));
+                const collXml = await fetchBGG('collection', {
+                    username: username,
+                    own: '1',
+                    stats: '1'
+                });
+                
+                const collDoc = parseXML(collXml);
+                const items = Array.from(collDoc.querySelectorAll('item'));
 
                 console.log(`📦 Found ${items.length} items in collection`);
                 showStatus(`🎨 Analyzing ${items.length} games...`, 'loading');
@@ -559,10 +566,13 @@
             colorGrid.innerHTML = allGames.map(game => {
                 const colors = game.colors || { colors: [], primary: {} };
                 const primary = colors.primary || {};
+                const proxiedThumbnail = game.thumbnail 
+                    ? `${IMAGE_PROXY}${encodeURIComponent(game.thumbnail)}`
+                    : 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 60 80%22%3E%3Crect fill=%22%23f0f0f0%22 width=%2260%22 height=%2280%22/%3E%3C/svg%3E';
 
                 return `
                     <div class="color-card">
-                        <img src="${escapeHtml(game.thumbnail)}" 
+                        <img src="${escapeHtml(proxiedThumbnail)}" 
                              alt="${escapeHtml(game.name)}" 
                              class="color-card-thumbnail"
                              onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 60 80%22%3E%3Crect fill=%22%23f0f0f0%22 width=%2260%22 height=%2280%22/%3E%3C/svg%3E'">
