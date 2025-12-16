@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+    <title>Wonder Walk - Thumbnails</title>
+    <style>
+        :root{--bg:#0f172a;--card:#0b1220;--accent:#7c3aed}
+        html,body{height:100%;margin:0;font-family:Inter,system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial,sans-serif;background:linear-gradient(180deg,#071034 0%,#08132a 100%);color:#e6eef8}
+        .wrap{max-width:1100px;margin:0 auto;padding:18px}
+        header{display:flex;align-items:center;gap:16px;margin-bottom:14px}
+        h1{margin:0;font-size:20px}
+        .controls{display:flex;gap:12px;flex-wrap:wrap;background:rgba(255,255,255,0.03);padding:12px;border-radius:12px}
+        input[type=text]{padding:8px 10px;border-radius:8px;border:1px solid rgba(255,255,255,0.06);background:transparent;color:inherit}
+        label{font-size:13px;color:#cfe3ff}
+        .btn{background:linear-gradient(90deg,var(--accent),#4f46e5);border:none;padding:10px 14px;border-radius:10px;color:white;font-weight:700;cursor:pointer}
+        .btn-secondary{background:transparent;border:1px solid rgba(255,255,255,0.06);color:#cfe3ff}
+        .settings{display:flex;align-items:center;gap:10px}
+        .canvas-wrap{margin-top:16px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));padding:14px;border-radius:12px;min-height:420px}
+        .grid{position:relative;margin:0 auto;background:transparent;display:block}
+        .cell-img{position:absolute;width:64px;height:88px;border-radius:6px;object-fit:cover;box-shadow:0 6px 18px rgba(2,6,23,0.6);transition:transform .08s linear}
+        .stacked{transform:translateZ(0) scale(.98)}
+        .status{margin-top:10px;color:#9fb7ff;font-size:13px}
+        .options{display:flex;gap:12px;align-items:center}
+        .small{font-size:13px;color:#9fb7ff}
+        @media(max-width:640px){.cell-img{width:52px;height:72px}}
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <header>
+            <h1>Wonder Walk — Random thumbnail path</h1>
+            <div style="flex:1"></div>
+        </header>
+
+        <div class="controls">
+            <div>
+                <label for="username">BGG Username</label><br>
+                <input id="username" type="text" value="sportomax">
+            </div>
+            <div>
+                <label for="stacking">Allow stacking (if path crosses)</label><br>
+                <input id="stacking" type="checkbox"> <span class="small">(disabled by default)</span>
+            </div>
+            <div>
+                <label for="delay">Delay per placement (ms)</label><br>
+                <input id="delay" type="text" value="60" style="width:80px">
+            </div>
+            <div style="margin-left:auto" class="settings">
+                <button id="runBtn" class="btn">▶️ Run</button>
+                <button id="stopBtn" class="btn-secondary">Stop</button>
+            </div>
+        </div>
+
+        <div class="canvas-wrap">
+            <div id="grid" class="grid"></div>
+            <div id="status" class="status">Idle — press Run to load collection and begin.</div>
+        </div>
+    </div>
+
+    <script>
+    // Wonder Walk: random-walk placement of collection thumbnails
+    (function(){
+        const runBtn = document.getElementById('runBtn');
+        const stopBtn = document.getElementById('stopBtn');
+        const usernameEl = document.getElementById('username');
+        const stackingEl = document.getElementById('stacking');
+        const delayEl = document.getElementById('delay');
+        const statusEl = document.getElementById('status');
+        const gridEl = document.getElementById('grid');
+
+        let aborted = false;
+
+        function setStatus(s){ statusEl.textContent = s }
+
+        function parseCollectionXml(xmlText){
+            const parser = new DOMParser();
+            const doc = parser.parseFromString(xmlText,'text/xml');
+            const items = Array.from(doc.querySelectorAll('item')).map(it=>{
+                const name = it.querySelector('name')?.textContent || '';
+                const id = it.getAttribute('objectid') || it.getAttribute('id') || '';
+                const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
+                return {id,name,thumb};
+            }).filter(i=>i.thumb);
+            return items;
+        }
+
+        function shuffle(arr){ for(let i=arr.length-1;i>0;i--){const j=Math.floor(Math.random()*(i+1));[arr[i],arr[j]]=[arr[j],arr[i]]}return arr }
+
+        function key(x,y){return x+','+y}
+
+        async function run(){
+            aborted=false;
+            gridEl.innerHTML='';
+            setStatus('Loading collection...');
+            const username = (usernameEl.value || 'sportomax').trim();
+            try{
+                const res = await fetch('/api/bgg-helper?endpoint=collection&username='+encodeURIComponent(username)+'&own=1&stats=1');
+                const text = await res.text();
+                const items = parseCollectionXml(text);
+                if(!items.length){ setStatus('No thumbnails found in collection.'); return }
+                setStatus('Collection loaded: '+items.length+' images. Preparing walk...');
+                await startWalk(items);
+            }catch(e){ setStatus('Error loading collection: '+(e.message||e)); console.error(e) }
+        }
+
+        function ensureSize(cells){
+            // compute bounds
+            const xs = cells.map(c=>c.x); const ys = cells.map(c=>c.y);
+            const minX = Math.min(...xs); const maxX = Math.max(...xs);
+            const minY = Math.min(...ys); const maxY = Math.max(...ys);
+            const cellW = getCellSize();
+            const width = (maxX - minX +1)*cellW; const height = (maxY - minY +1)*cellW*1.4;
+            gridEl.style.width = width + 'px'; gridEl.style.height = height + 'px';
+            gridEl.dataset.minx = minX; gridEl.dataset.miny = minY; gridEl.dataset.cell = cellW;
+            gridEl.style.margin = '0 auto';
+            return {minX,maxX,minY,maxY,cellW}
+        }
+
+        function getCellSize(){ return window.innerWidth < 640 ? 52 : 64 }
+
+        function renderPlaced(placed){
+            // placed is array of {x,y,imgs: [item,...]}
+            gridEl.innerHTML='';
+            const {minX,minY,cellW} = {minX:parseInt(gridEl.dataset.minx||0), minY:parseInt(gridEl.dataset.miny||0), cellW: parseInt(gridEl.dataset.cell||getCellSize())};
+            placed.forEach(cell=>{
+                const fx = (cell.x - minX)*cellW;
+                const fy = (cell.y - minY)*cellW*1.15;
+                // show stacked images: topmost last
+                cell.imgs.forEach((it,idx)=>{
+                    const img = document.createElement('img');
+                    img.src = it.thumb;
+                    img.className = 'cell-img';
+                    img.style.left = (fx + (idx*4)) + 'px';
+                    img.style.top = (fy - (idx*6)) + 'px';
+                    img.style.zIndex = 100 + idx;
+                    if(idx>0) img.classList.add('stacked');
+                    gridEl.appendChild(img);
+                });
+            });
+        }
+
+        async function startWalk(items){
+            const allowStack = stackingEl.checked;
+            const delay = Math.max(0, parseInt(delayEl.value) || 60);
+            const imgs = shuffle(items.slice());
+
+            const placedMap = new Map(); // key-> array of imgs
+            const placedList = [];
+            let cx = 0, cy = 0;
+            const first = imgs.shift();
+            placedMap.set(key(cx,cy), [first]);
+            placedList.push({x:cx,y:cy,imgs:[first]});
+            let currentX = cx, currentY = cy;
+            setStatus('Placing 1 / '+(placedList.length + imgs.length));
+
+            // track bounds for layout calculation
+            const cells = [{x:cx,y:cy}];
+
+            // As we proceed, attempt random walk; if blocked, teleport to random placed cell
+            for(let i=0;i<imgs.length;i++){
+                if(aborted) { setStatus('Stopped by user.'); return }
+                const it = imgs[i];
+                // try up to 8 random direction attempts
+                const dirs = shuffle([[1,0],[-1,0],[0,1],[0,-1]]);
+                let placed=false;
+                for(let attempt=0;attempt<dirs.length;attempt++){
+                    const [dx,dy] = dirs[attempt];
+                    const nx = currentX + dx, ny = currentY + dy;
+                    const k = key(nx,ny);
+                    if(placedMap.has(k)){
+                        if(allowStack){ // stacking allowed -> push
+                            const arr = placedMap.get(k);
+                            arr.push(it);
+                            // update list entry
+                            const idx = placedList.findIndex(c=>c.x===nx && c.y===ny);
+                            if(idx>=0) placedList[idx].imgs.push(it); else placedList.push({x:nx,y:ny,imgs:[...arr]});
+                            currentX = nx; currentY = ny; placed=true; break;
+                        } else {
+                            // cannot place here, continue
+                            continue;
+                        }
+                    } else {
+                        // place new
+                        placedMap.set(k,[it]);
+                        placedList.push({x:nx,y:ny,imgs:[it]});
+                        currentX = nx; currentY = ny; placed=true; cells.push({x:nx,y:ny}); break;
+                    }
+                }
+
+                if(!placed){
+                    // blocked: try additional random attempts (choose random direction multiple times)
+                    let extraPlaced=false;
+                    for(let t=0;t<12;t++){
+                        const rnd = Math.floor(Math.random()*4); const [dx,dy]=[[1,0],[-1,0],[0,1],[0,-1]][rnd];
+                        const nx = currentX + dx, ny = currentY + dy; const k=key(nx,ny);
+                        if(placedMap.has(k) && !allowStack) continue;
+                        if(placedMap.has(k) && allowStack){ placedMap.get(k).push(it); const idx=placedList.findIndex(c=>c.x===nx&&c.y===ny); if(idx>=0) placedList[idx].imgs.push(it); currentX=nx; currentY=ny; extraPlaced=true; break }
+                        if(!placedMap.has(k)){ placedMap.set(k,[it]); placedList.push({x:nx,y:ny,imgs:[it]}); currentX=nx; currentY=ny; cells.push({x:nx,y:ny}); extraPlaced=true; break }
+                    }
+                    if(!extraPlaced){
+                        // teleport: pick random placed cell as new current
+                        const randIdx = Math.floor(Math.random()*placedList.length);
+                        currentX = placedList[randIdx].x; currentY = placedList[randIdx].y;
+                        // now place adjacent if possible next loop will handle
+                        i--; // retry same image
+                    }
+                }
+
+                // update bounds and render
+                ensureSize(cells);
+                renderPlaced(placedList);
+                setStatus('Placed '+ (1 + i) +' / '+ (1 + imgs.length));
+                await new Promise(r=>setTimeout(r, delay));
+            }
+
+            setStatus('Done — placed '+(placedList.length)+' positions.');
+        }
+
+        runBtn.addEventListener('click', ()=>{ if(!aborted) run(); });
+        stopBtn.addEventListener('click', ()=>{ aborted=true; setStatus('Stopping...') });
+    })();
+    </script>
+</body>
+</html>
