@@ -1,0 +1,74 @@
+name: Log Game Ranks Daily
+
+on:
+  schedule:
+    # Run daily at 1:00 AM UTC
+    - cron: '0 1 * * *'
+  workflow_dispatch:
+    inputs:
+      username:
+        description: 'BGG username (defaults to sportomax)'
+        required: false
+        default: 'sportomax'
+      dryRun:
+        description: 'Dry run (test without saving)'
+        required: false
+        default: 'false'
+
+jobs:
+  log-ranks:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    
+    steps:
+      - name: Check workflow trigger time
+        run: echo "⏰ Starting rank logging workflow at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+
+      - name: Call log-ranks endpoint
+        run: |
+          USERNAME="${{ github.event.inputs.username || 'sportomax' }}"
+          DRY_RUN="${{ github.event.inputs.dryRun || 'false' }}"
+          ENDPOINT="https://${{ secrets.VERCEL_DOMAIN || 'your-site.com' }}/api/log-ranks"
+          
+          echo "📊 Logging ranks for user: $USERNAME"
+          echo "🔗 Endpoint: $ENDPOINT"
+          
+          QUERY_STRING="username=$USERNAME&dryRun=$DRY_RUN"
+          if [ ! -z "${{ secrets.CRON_SECRET }}" ]; then
+            QUERY_STRING="$QUERY_STRING&secret=${{ secrets.CRON_SECRET }}"
+          fi
+          
+          echo "🚀 Triggering endpoint..."
+          RESPONSE=$(curl -s -X GET \
+            -H "Authorization: Bearer ${{ secrets.CRON_SECRET }}" \
+            -H "User-Agent: GitHub-Actions-Workflow" \
+            "$ENDPOINT?$QUERY_STRING")
+          
+          echo "📋 Response:"
+          echo "$RESPONSE" | jq . || echo "$RESPONSE"
+          
+          # Extract success status
+          SUCCESS=$(echo "$RESPONSE" | jq -r '.success // false')
+          
+          if [ "$SUCCESS" = "true" ]; then
+            echo "✅ Rank logging completed successfully"
+            exit 0
+          else
+            echo "❌ Rank logging failed"
+            exit 1
+          fi
+
+      - name: Notify on failure
+        if: failure()
+        run: |
+          echo "❌ Workflow failed at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
+          echo "⚠️  Check your Firebase and BGG API configuration"
+
+  verify-firestore:
+    needs: log-ranks
+    runs-on: ubuntu-latest
+    if: success()
+    
+    steps:
+      - name: Log completion
+        run: echo "✅ Game rank logging workflow completed successfully at $(date -u +'%Y-%m-%d %H:%M:%S UTC')"
