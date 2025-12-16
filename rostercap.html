@@ -32,6 +32,12 @@
                         <option value="30">$30</option>
                     </select>
                 </div>
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Select Rank Categories</label>
+                    <div id="rankCheckboxes" class="space-y-2 max-h-48 overflow-y-auto border-2 border-gray-300 rounded-lg p-3">
+                        <!-- Populated dynamically -->
+                    </div>
+                </div>
                 <button onclick="startGame()" class="w-full bg-teal-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-teal-700 transition shadow-lg">Start Game</button>
             </div>
         </div>
@@ -88,10 +94,13 @@
     </div>
     <script>
         let collection = [];
-        let rankCategories = {};
+        let allRankCategories = {};
+        let selectedRanks = {}; // Track which ranks are enabled
+        let rankCategories = {}; // Filtered based on selection
         let roster = {};
         let budget = 25;
         let ratingPercentiles = {}; // Store rating ranges for each tier
+        const defaultExcludedRanks = ['War Game Rank', 'Thematic Rank', "Children's Game Rank"];
 
         async function startGame() {
             const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -142,15 +151,21 @@
                 });
                 
                 // Group games by rank type and calculate price tiers based on average rating percentiles
-                rankCategories = {};
+                allRankCategories = {};
                 rankSet.forEach(rankName => {
-                    rankCategories[rankName] = collection.filter(g => 
+                    allRankCategories[rankName] = collection.filter(g => 
                         g.ranks.some(r => r.name === rankName)
                     );
                 });
                 
+                // Initialize selected ranks with defaults (all except excluded ones)
+                selectedRanks = {};
+                rankSet.forEach(rankName => {
+                    selectedRanks[rankName] = !defaultExcludedRanks.includes(rankName);
+                });
+                
                 console.log('Rank categories found:', Array.from(rankSet));
-                console.log('Games per rank:', Object.entries(rankCategories).map(([k,v]) => `${k}: ${v.length}`));
+                console.log('Games per rank:', Object.entries(allRankCategories).map(([k,v]) => `${k}: ${v.length}`));
                 
                 // Calculate rating percentiles for pricing (5 tiers)
                 const allRatings = collection.map(g => g.average).filter(r => r > 0).sort((a,b) => b-a);
@@ -170,12 +185,29 @@
                     console.log('Rating percentiles:', ratingPercentiles);
                 }
                 
+                // Update rankCategories with selected ranks only
+                updateRankCategories();
                 render();
             } catch (error) {
                 console.error('Error loading collection:', error);
                 alert('Error: ' + error.message);
                 location.reload();
             }
+        }
+
+        function updateRankCategories() {
+            rankCategories = {};
+            Object.entries(allRankCategories).forEach(([rankName, games]) => {
+                if (selectedRanks[rankName]) {
+                    rankCategories[rankName] = games;
+                }
+            });
+        }
+
+        function toggleRank(rankName) {
+            selectedRanks[rankName] = !selectedRanks[rankName];
+            updateRankCategories();
+            render();
         }
 
         function getCostTier(averageRating) {
@@ -189,10 +221,10 @@
 
         function render() {
             if (Object.keys(rankCategories).length === 0) {
-                document.getElementById('roster').innerHTML = '<p class="text-gray-600 text-center py-8">No rank categories found. Please check your username and try again.</p>';
+                document.getElementById('roster').innerHTML = '<p class="text-gray-600 text-center py-8">No rank categories selected. Please adjust settings.</p>';
                 return;
             }
-            const html = Object.entries(rankCategories).slice(0, 10).map(([rankName, games]) => {
+            const html = Object.entries(rankCategories).map(([rankName, games]) => {
                 const selected = roster[rankName];
                 const rankKey = rankName.replace(/'/g, "\\'");
                 return `
@@ -201,7 +233,7 @@
                         ${selected ? `
                             <div class="bg-green-100 border-2 border-green-500 rounded-lg p-3 mb-2">
                                 <div class="flex items-center gap-3">
-                                    ${selected.image ? `<img src="${selected.image}" class="w-12 h-12 rounded object-cover">` : ''}
+                                    ${selected.image ? `<img src="${selected.image}" class="w-12 h-12 rounded object-cover" alt="${selected.name}">` : '<div class="w-12 h-12 bg-gray-300 rounded"></div>'}
                                     <div class="flex-1">
                                         <p class="font-bold text-sm">${selected.name}</p>
                                         <p class="text-xs text-gray-600">Cost: $${selected.cost} | Rating: ${selected.average.toFixed(1)}</p>
@@ -210,13 +242,18 @@
                                 </div>
                             </div>
                         ` : ''}
-                        <select onchange="addToRoster('${rankKey}', this.value)" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2 text-sm">
-                            <option value="">Select game...</option>
-                            ${games.map(g => {
-                                const cost = getCostTier(g.average);
-                                return `<option value="${g.id}">${g.name} - $${cost} (${g.average.toFixed(1)}★)</option>`;
-                            }).join('')}
-                        </select>
+                        <div class="relative">
+                            <select onchange="addToRoster('${rankKey}', this.value)" class="w-full border-2 border-gray-300 rounded-lg px-3 py-2 text-sm appearance-none bg-white pr-8">
+                                <option value="">Select game...</option>
+                                ${games.map(g => {
+                                    const cost = getCostTier(g.average);
+                                    return `<option value="${g.id}" data-image="${g.image}">${g.name} - $${cost} (${g.average.toFixed(1)}★)</option>`;
+                                }).join('')}
+                            </select>
+                            <div class="pointer-events-none absolute inset-y-0 right-0 flex items-center px-2 text-gray-700">
+                                <svg class="fill-current h-4 w-4" xmlns="http://www.w3.org/2000/svg" viewBox="0 0 20 20"><path d="M9.293 12.95l.707.707L15.657 8l-1.414-1.414L10 10.828 5.757 6.586 4.343 8z"/></svg>
+                            </div>
+                        </div>
                     </div>
                 `;
             }).join('');
@@ -254,7 +291,23 @@
             render();
         }
 
-        function showSettings() { document.getElementById('settingsModal').classList.remove('hidden'); }
+        function showSettings() { 
+            document.getElementById('settingsModal').classList.remove('hidden');
+            // Populate rank checkboxes
+            if (Object.keys(allRankCategories).length > 0) {
+                const checkboxesHtml = Object.keys(allRankCategories).sort().map(rankName => {
+                    const isChecked = selectedRanks[rankName] ? 'checked' : '';
+                    return `
+                        <label class="flex items-center gap-2 cursor-pointer hover:bg-gray-100 p-2 rounded">
+                            <input type="checkbox" ${isChecked} onchange="toggleRank('${rankName.replace(/'/g, "\\'")}')">
+                            <span class="text-sm text-gray-700">${rankName}</span>
+                        </label>
+                    `;
+                }).join('');
+                document.getElementById('rankCheckboxes').innerHTML = checkboxesHtml;
+            }
+        }
+        
         function showInfo() { document.getElementById('infoModal').classList.remove('hidden'); }
         function closeInfo() { document.getElementById('infoModal').classList.add('hidden'); }
     </script>
