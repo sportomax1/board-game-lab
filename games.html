@@ -170,14 +170,25 @@
                         <option value="tictactoe">Tic Tac Toe</option>
                         <option value="ultimatetictactoe">Ultimate Tic Tac Toe</option>
                         <option value="gomoku">Gomoku (5 in a row)</option>
+                        <option value="blokus">Blokus</option>
                     </select>
                     <p id="gameDesc" class="text-xs text-gray-500 mt-2"></p>
                 </div>
                 
                 <div>
-                    <label class="block text-sm font-bold text-gray-700 mb-2">BGG Username</label>
-                    <input type="text" id="username" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-blue-500 outline-none" value="sportomax" placeholder="Enter BGG username">
-                    <p class="text-xs text-gray-500 mt-1">Leave empty to search all BGG games</p>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Game Source</label>
+                    <div class="space-y-2">
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" id="sourceCollection" name="gameSource" value="collection" checked onchange="toggleGameSource()">
+                            <span class="text-sm text-gray-700">My BGG Collection (sportomax)</span>
+                        </label>
+                        <label class="flex items-center gap-2 cursor-pointer">
+                            <input type="radio" id="sourceSearch" name="gameSource" value="search" onchange="toggleGameSource()">
+                            <span class="text-sm text-gray-700">Search All BGG Games</span>
+                        </label>
+                    </div>
+                    <input type="text" id="username" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-blue-500 outline-none mt-2" value="sportomax" placeholder="BGG username" style="display: none;">
+                    <p class="text-xs text-gray-500 mt-1" id="sourceNote">Using your BGG collection (sportomax)</p>
                 </div>
                 
                 <div>
@@ -262,8 +273,25 @@
             chinesecheckers: { name: '⭐ Chinese Checkers', cols: 17, rows: 17, desc: 'Place pieces on the star board - simplified rules!' },
             tictactoe: { name: '⭕❌ Tic Tac Toe', cols: 3, rows: 3, desc: '3 in a row wins!' },
             ultimatetictactoe: { name: '🎯 Ultimate Tic Tac Toe', cols: 3, rows: 3, desc: 'Win 3x3 grids to win overall!' },
-            gomoku: { name: '⚫⚪ Gomoku', cols: 15, rows: 15, desc: '5 in a row wins!' }
+            gomoku: { name: '⚫⚪ Gomoku', cols: 15, rows: 15, desc: '5 in a row wins!' },
+            blokus: { name: '🟨 Blokus', cols: 10, rows: 10, desc: 'Place pieces on board, edges must match colors, corners OK!' }
         };
+
+        function toggleGameSource() {
+            const isCollection = document.getElementById('sourceCollection').checked;
+            const usernameInput = document.getElementById('username');
+            const sourceNote = document.getElementById('sourceNote');
+            
+            if (isCollection) {
+                usernameInput.style.display = 'none';
+                usernameInput.value = 'sportomax';
+                sourceNote.textContent = 'Using your BGG collection (sportomax)';
+            } else {
+                usernameInput.style.display = 'none';
+                usernameInput.value = '';
+                sourceNote.textContent = 'Searching all BGG games (will fetch additional details)';
+            }
+        }
 
         function updateGameDescription() {
             const game = document.getElementById('gameSelect').value;
@@ -289,14 +317,15 @@
             resultsDiv.innerHTML = '<p class="text-center text-gray-600 text-sm py-2">Searching...</p>';
             resultsDiv.classList.remove('hidden');
             
-            const username = document.getElementById('username').value.trim();
+            const isCollection = document.getElementById('sourceCollection').checked;
             
             try {
                 let items = [];
                 
-                // If username is provided, search user collection
-                if (username) {
-                    const res = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&own=1&stats=1');
+                // Use only the selected source (not both)
+                if (isCollection) {
+                    // Use user's collection
+                    const res = await fetch('/api/bgg-helper?endpoint=collection&username=sportomax&own=1&stats=1');
                     const xml = await res.text();
                     const parser = new DOMParser().parseFromString(xml, 'text/xml');
                     const collectionItems = Array.from(parser.querySelectorAll('item'));
@@ -308,7 +337,7 @@
                         return name.toLowerCase().includes(query.toLowerCase());
                     });
                 } else {
-                    // Otherwise search all BGG games
+                    // Search all BGG games
                     const res = await fetch('/api/bgg-helper?endpoint=search&query=' + encodeURIComponent(query));
                     const xml = await res.text();
                     const parser = new DOMParser().parseFromString(xml, 'text/xml');
@@ -486,8 +515,72 @@
             
             if (gameType === 'connectfour') {
                 dropPiece(col);
+            } else if (gameType === 'blokus') {
+                placeBlokusBlock(row, col);
             } else {
                 placePiece(row, col);
+            }
+        }
+
+        function placeBlokusBlock(row, col) {
+            // Blokus: Can't place where someone already is
+            if (board[row][col] !== 0) return;
+            
+            // First move must be in corner
+            const isFirstMove = board.every(r => r.every(c => c === 0));
+            if (isFirstMove) {
+                // Place at corners for simplicity (top-left, top-right, bottom-left, bottom-right)
+                const corners = [[0, 0], [0, 9], [9, 0], [9, 9]];
+                const isCorner = corners.some(([r, c]) => r === row && c === col);
+                if (!isCorner && currentPlayer === 1) return; // Player 1 starts at 0,0
+                if (row !== 0 || col !== 0) {
+                    if (currentPlayer === 1) return;
+                }
+            } else {
+                // Must be adjacent to own piece at corner/edge or be first placement
+                let hasAdjacentOwn = false;
+                const directions = [[0, 1], [0, -1], [1, 0], [-1, 0], [1, 1], [1, -1], [-1, 1], [-1, -1]];
+                for (let [dr, dc] of directions) {
+                    const nr = row + dr;
+                    const nc = col + dc;
+                    if (nr >= 0 && nr < 10 && nc >= 0 && nc < 10 && board[nr][nc] === currentPlayer) {
+                        hasAdjacentOwn = true;
+                        break;
+                    }
+                }
+                if (!hasAdjacentOwn) return;
+            }
+            
+            board[row][col] = currentPlayer;
+            renderBoard();
+            
+            // Blokus end condition: Can't place anymore
+            let canMove = false;
+            for (let r = 0; r < 10; r++) {
+                for (let c = 0; c < 10; c++) {
+                    if (board[r][c] === 0) {
+                        const dirs = [[0,1], [0,-1], [1,0], [-1,0], [1,1], [1,-1], [-1,1], [-1,-1]];
+                        for (let [dr, dc] of dirs) {
+                            const nr = r + dr;
+                            const nc = c + dc;
+                            if (nr >= 0 && nr < 10 && nc >= 0 && nc < 10 && board[nr][nc] === currentPlayer) {
+                                canMove = true;
+                                break;
+                            }
+                        }
+                        if (canMove) break;
+                    }
+                }
+                if (canMove) break;
+            }
+            
+            if (!canMove) {
+                gameOver = true;
+                const playerName = currentPlayer === 1 ? player1Game.name : player2Game.name;
+                document.getElementById('status').textContent = playerName + ' cannot move. Game Over!';
+            } else {
+                currentPlayer = currentPlayer === 1 ? 2 : 1;
+                updateDisplay();
             }
         }
 
@@ -617,6 +710,8 @@
                 content = '<p>• Play tic tac toe in 3x3 grid</p><p>• Win smaller grids to claim them</p><p>• Win 3 grids in a row to win</p>';
             } else if (gameType === 'gomoku') {
                 content = '<p>• Click empty cell to place</p><p>• First to connect 5 wins</p><p>• Row, column, or diagonal</p>';
+            } else if (gameType === 'blokus') {
+                content = '<p>• Player 1 starts at top-left corner</p><p>• Place pieces adjacent to your own</p><p>• First player unable to move loses</p><p>• Most pieces on board wins</p>';
             }
             document.getElementById('infoContent').innerHTML = content;
             document.getElementById('infoModal').classList.remove('hidden');

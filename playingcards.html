@@ -573,6 +573,70 @@
                 width: 100%;
             }
         }
+
+        .debug-panel {
+            background: #1e1e1e;
+            color: #d4d4d4;
+            font-family: 'Courier New', monospace;
+            font-size: 0.7rem;
+            padding: 0.75rem;
+            border-radius: 6px;
+            max-height: 120px;
+            overflow-y: auto;
+            margin-top: 0.75rem;
+            border: 1px solid #444;
+            line-height: 1.4;
+        }
+
+        .debug-log {
+            margin: 2px 0;
+            padding: 2px 4px;
+            border-left: 3px solid #667eea;
+            padding-left: 6px;
+        }
+
+        .debug-log.info {
+            color: #4ec9b0;
+            border-left-color: #4ec9b0;
+        }
+
+        .debug-log.success {
+            color: #6a9955;
+            border-left-color: #6a9955;
+        }
+
+        .debug-log.error {
+            color: #f48771;
+            border-left-color: #f48771;
+        }
+
+        .debug-log.warn {
+            color: #dcdcaa;
+            border-left-color: #dcdcaa;
+        }
+
+        @media (max-width: 480px) {
+            .header h1 {
+                font-size: 1.2rem;
+            }
+
+            .setup-section {
+                padding: 0.75rem;
+            }
+
+            .input-group {
+                flex-direction: column;
+                gap: 0.5rem;
+            }
+
+            .input-field {
+                min-width: unset;
+            }
+
+            .btn {
+                width: 100%;
+            }
+        }
     </style>
 </head>
 <body>
@@ -670,6 +734,7 @@
             </div>
 
             <div class="status" id="status" style="display: none;"></div>
+            <div class="debug-panel" id="debugPanel" style="display: none;"></div>
         </div>
 
         <div class="main-content">
@@ -684,15 +749,34 @@
 
     <script>
         const statusEl = document.getElementById('status');
+        const debugPanel = document.getElementById('debugPanel');
         const fetchBtn = document.getElementById('fetchBtn');
         const printBtn = document.getElementById('printBtn');
         const printContainer = document.getElementById('printContainer');
         let currentGames = [];
+        let debugLogs = [];
+
+        function addDebugLog(message, type = 'info') {
+            const timestamp = new Date().toLocaleTimeString();
+            const logEntry = `[${timestamp}] ${message}`;
+            debugLogs.push({ message: logEntry, type });
+            if (debugLogs.length > 30) debugLogs.shift();
+            
+            const logHtml = debugLogs.map(log => 
+                `<div class="debug-log ${log.type}">${log.message}</div>`
+            ).join('');
+            
+            debugPanel.innerHTML = logHtml;
+            debugPanel.style.display = 'block';
+            debugPanel.scrollTop = debugPanel.scrollHeight;
+            console.log(`[${type.toUpperCase()}] ${message}`);
+        }
 
         function showStatus(message, type = 'info') {
             statusEl.textContent = message;
             statusEl.className = `status ${type}`;
             statusEl.style.display = 'block';
+            addDebugLog(message, type);
         }
 
         function hideStatus() {
@@ -708,14 +792,22 @@
         }
 
         function filterAndRender() {
+            addDebugLog(`=== FILTER CALLED ===`, 'info');
+            addDebugLog(`currentGames.length: ${currentGames.length}`, 'info');
+            
             if (currentGames.length > 0) {
                 const statusOwned = document.getElementById('statusOwned').checked;
                 const statusPrevOwned = document.getElementById('statusPrevOwned').checked;
+                addDebugLog(`statusOwned: ${statusOwned}, statusPrevOwned: ${statusPrevOwned}`, 'info');
+                
                 const statusText = statusOwned && statusPrevOwned ? 'Owned + Prevowned' : statusOwned ? 'Owned' : 'Prevowned';
+                addDebugLog(`Applied filter: ${statusText}`, 'info');
                 
                 renderCards(currentGames);
                 showStatus(`✓ Filtered: ${statusText}`, 'success');
                 setTimeout(hideStatus, 3000);
+            } else {
+                addDebugLog(`No games loaded yet!`, 'error');
             }
         }
 
@@ -746,12 +838,18 @@
 
             fetchBtn.disabled = true;
             printBtn.style.display = 'none';
+            addDebugLog(`=== FETCH STARTED ===`, 'info');
+            addDebugLog(`Username: ${username}`, 'info');
             showStatus('Fetching collection...', 'loading');
 
             try {
                 // Fetch all collection items with stats=1 (no collection status filters)
                 const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
+                addDebugLog(`API URL: ${collectionUrl}`, 'info');
+                
                 const collectionText = await fetchWithRetry(collectionUrl);
+                addDebugLog(`API response received (${collectionText.length} bytes)`, 'success');
+                
                 const parser = new DOMParser();
                 const collectionXml = parser.parseFromString(collectionText, 'text/xml');
 
@@ -760,6 +858,8 @@
                 }
 
                 let items = Array.from(collectionXml.querySelectorAll('item'));
+                addDebugLog(`XML parsed: ${items.length} items found`, 'success');
+                
                 if (items.length === 0) {
                     throw new Error('No games found in collection');
                 }
@@ -800,17 +900,24 @@
                     throw new Error('No games with thumbnails found');
                 }
 
+                addDebugLog(`Games extracted: ${games.length} games with thumbnails`, 'success');
+                
+                // Check attributes on first game
+                if (games.length > 0) {
+                    const firstGame = games[0];
+                    addDebugLog(`Sample: "${firstGame.name}" - own:${firstGame.own} prevowned:${firstGame.prevowned}`, 'info');
+                }
+
                 currentGames = games;
-                // DEBUG: Log first few games to check own/prevowned attributes
-                console.log('Sample games:', games.slice(0, 3).map(g => ({
-                    name: g.name,
-                    own: g.own,
-                    prevowned: g.prevowned
-                })));
+                addDebugLog(`currentGames array populated (${currentGames.length} total)`, 'success');
+                
                 renderCards(games);
+                addDebugLog(`renderCards() called`, 'success');
+                
                 showStatus(`✓ Generated ${games.length} cards`, 'success');
                 printBtn.style.display = 'inline-block';
             } catch (error) {
+                addDebugLog(`ERROR: ${error.message}`, 'error');
                 showStatus(`Error: ${error.message}`, 'error');
                 console.error(error);
             } finally {
@@ -837,23 +944,35 @@
         }
 
         function renderCards(games) {
+            addDebugLog(`=== RENDERCARDS CALLED ===`, 'info');
+            addDebugLog(`Input games: ${games.length}`, 'info');
+            
             // Apply collection status filters based on checkboxes
             let statusOwned = document.getElementById('statusOwned').checked;
             let statusPrevOwned = document.getElementById('statusPrevOwned').checked;
             
+            addDebugLog(`Checkbox state - Owned: ${statusOwned}, PrevOwned: ${statusPrevOwned}`, 'info');
+            
             // Default to owned if neither selected
             if (!statusOwned && !statusPrevOwned) {
                 statusOwned = true;
+                addDebugLog(`Both unchecked, defaulting to owned only`, 'warn');
             }
             
             // Check if API returned own/prevowned attributes
             const hasStatusAttributes = games.length > 0 && (games[0].own !== undefined || games[0].prevowned !== undefined);
+            addDebugLog(`hasStatusAttributes: ${hasStatusAttributes}`, 'info');
+            
+            if (hasStatusAttributes) {
+                addDebugLog(`First game - own: ${games[0].own}, prevowned: ${games[0].prevowned}`, 'info');
+            }
             
             // Filter games by collection status attributes from API response
             let filteredGames;
             if (!hasStatusAttributes) {
                 // If attributes don't exist, show all games (ignore filters)
                 filteredGames = games;
+                addDebugLog(`Attributes missing, showing all ${games.length} games`, 'warn');
             } else {
                 // Filter based on checkbox states
                 filteredGames = games.filter(game => {
@@ -873,6 +992,7 @@
                     // Fallback (shouldn't happen due to default above)
                     return isOwned;
                 });
+                addDebugLog(`After filtering: ${filteredGames.length} games`, 'success');
             }
             
             const dims = getCardDimensions();
@@ -888,9 +1008,12 @@
             const showYear = document.getElementById('showYear').checked;
             
             if (filteredGames.length === 0) {
+                addDebugLog(`No games to display!`, 'error');
                 printContainer.innerHTML = '<div class="empty-state"><p>No games found matching current filters</p></div>';
                 return;
             }
+            
+            addDebugLog(`Rendering ${filteredGames.length} cards with size ${cardSize}`, 'success');
             
             // Determine grid layout based on card size
             let cols, rows;
