@@ -578,16 +578,24 @@
 <body>
     <div class="container">
         <div class="header">
-            <h1>🎴 Game Deck Printer</h1>
-            <p>Create printable game cards from your collection</p>
+            <div style="display: flex; justify-content: space-between; align-items: center; gap: 1rem;">
+                <div>
+                    <h1>🎴 Game Deck Printer</h1>
+                    <p>Create printable game cards from your collection</p>
+                </div>
+                <div style="display: flex; gap: 0.75rem; align-items: flex-end;">
+                    <div style="min-width: 200px;">
+                        <label for="username" style="display: block; font-size: 0.8rem; font-weight: 600; margin-bottom: 0.3rem; color: rgba(255,255,255,0.9);">BGG Username</label>
+                        <input type="text" id="username" placeholder="e.g., sportomax" value="sportomax" style="width: 100%; padding: 0.6rem; border: 2px solid rgba(255,255,255,0.3); border-radius: 6px; font-size: 0.95rem; background: rgba(255,255,255,0.95); color: #333;">
+                    </div>
+                    <button class="btn" id="fetchBtn" onclick="fetchAndRender()" style="padding: 0.6rem 1.2rem;">Get Data</button>
+                    <button class="btn btn-print" id="printBtn" onclick="window.print()" style="display: none; padding: 0.6rem 1.2rem;">🖨️ Print</button>
+                </div>
+            </div>
         </div>
 
         <div class="setup-section">
             <div class="input-group">
-                <div class="input-field" style="min-width: 200px;">
-                    <label for="username">BGG Username</label>
-                    <input type="text" id="username" placeholder="e.g., sportomax" value="sportomax">
-                </div>
                 <div class="input-field">
                     <label for="cardSize">Card Size</label>
                     <select id="cardSize" onchange="updatePreview()">
@@ -623,18 +631,16 @@
                         <option value="0.5">Wide (0.5")</option>
                     </select>
                 </div>
-                <button class="btn" id="fetchBtn" onclick="fetchAndRender()">Generate Deck</button>
-                <button class="btn btn-print" id="printBtn" onclick="window.print()" style="display: none;">🖨️ Print</button>
             </div>
 
             <div class="section-title">Collection Status</div>
             <div class="checkbox-group">
                 <div class="checkbox-field">
-                    <input type="checkbox" id="statusOwned" checked onchange="fetchAndRender()">
+                    <input type="checkbox" id="statusOwned" checked onchange="filterAndRender()">
                     <label for="statusOwned">Owned</label>
                 </div>
                 <div class="checkbox-field">
-                    <input type="checkbox" id="statusPrevOwned" onchange="fetchAndRender()">
+                    <input type="checkbox" id="statusPrevOwned" onchange="filterAndRender()">
                     <label for="statusPrevOwned">Prevowned</label>
                 </div>
             </div>
@@ -701,6 +707,14 @@
             }
         }
 
+        function filterAndRender() {
+            if (currentGames.length > 0) {
+                renderCards(currentGames);
+                showStatus(`✓ Filtered`, 'success');
+                setTimeout(hideStatus, 2000);
+            }
+        }
+
         async function fetchWithRetry(url, maxRetries = 3) {
             for (let i = 0; i < maxRetries; i++) {
                 try {
@@ -731,22 +745,8 @@
             showStatus('Fetching collection...', 'loading');
 
             try {
-                // Get collection status preferences
-                const statusOwned = document.getElementById('statusOwned').checked;
-                const statusPrevOwned = document.getElementById('statusPrevOwned').checked;
-                
-                // Build status params - own=1 and/or preowned=1 based on selections
-                let statusParams = [];
-                if (statusOwned) statusParams.push('own=1');
-                if (statusPrevOwned) statusParams.push('preowned=1');
-                
-                // If neither selected, default to owned
-                if (statusParams.length === 0) statusParams.push('own=1');
-                
-                const statusParam = statusParams.join('&');
-                
-                // Fetch collection with status filters AND stats
-                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&${statusParam}&stats=1`;
+                // Fetch all collection items with stats=1 (no collection status filters)
+                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
                 const collectionText = await fetchWithRetry(collectionUrl);
                 const parser = new DOMParser();
                 const collectionXml = parser.parseFromString(collectionText, 'text/xml');
@@ -757,7 +757,7 @@
 
                 let items = Array.from(collectionXml.querySelectorAll('item'));
                 if (items.length === 0) {
-                    throw new Error('No games found in collection with selected status');
+                    throw new Error('No games found in collection');
                 }
 
                 // Extract game data
@@ -827,6 +827,25 @@
         }
 
         function renderCards(games) {
+            // Apply collection status filters based on checkboxes
+            let statusOwned = document.getElementById('statusOwned').checked;
+            let statusPrevOwned = document.getElementById('statusPrevOwned').checked;
+            
+            // Default to owned if neither selected
+            if (!statusOwned && !statusPrevOwned) {
+                statusOwned = true;
+            }
+            
+            // Filter games by collection status attributes
+            let filteredGames = games.filter(game => {
+                const own = parseInt(game.own || 0);
+                const preowned = parseInt(game.preowned || 0);
+                
+                if (statusOwned && own === 1) return true;
+                if (statusPrevOwned && preowned === 1) return true;
+                return false;
+            });
+            
             const dims = getCardDimensions();
             const gap = parseFloat(document.getElementById('cardGap').value);
             const printMargin = parseFloat(document.getElementById('printMargin').value);
@@ -839,8 +858,8 @@
             const showStats = document.getElementById('showStats').checked;
             const showYear = document.getElementById('showYear').checked;
             
-            if (games.length === 0) {
-                printContainer.innerHTML = '<div class="empty-state"><p>No games found</p></div>';
+            if (filteredGames.length === 0) {
+                printContainer.innerHTML = '<div class="empty-state"><p>No games found matching current filters</p></div>';
                 return;
             }
             
@@ -878,7 +897,7 @@
 
             // Create pages
             let html = '';
-            for (let pageNum = 0; pageNum < Math.ceil(games.length / cardsPerPage); pageNum++) {
+            for (let pageNum = 0; pageNum < Math.ceil(filteredGames.length / cardsPerPage); pageNum++) {
                 html += '<div class="page" style="';
                 html += `grid-template-columns: repeat(${cols}, ${dims.width}in);`;
                 html += `gap: ${gap}in;`;
@@ -886,10 +905,10 @@
                 html += '">';
 
                 const startIdx = pageNum * cardsPerPage;
-                const endIdx = Math.min(startIdx + cardsPerPage, games.length);
+                const endIdx = Math.min(startIdx + cardsPerPage, filteredGames.length);
 
                 for (let i = startIdx; i < endIdx; i++) {
-                    const game = games[i];
+                    const game = filteredGames[i];
                     const playerStr = game.minPlayers === game.maxPlayers 
                         ? `${game.minPlayers}` 
                         : `${game.minPlayers}-${game.maxPlayers}`;
