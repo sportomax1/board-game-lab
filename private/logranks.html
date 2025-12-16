@@ -522,7 +522,7 @@
     <!-- Firebase SDK -->
     <script type="module">
         import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy, where, Timestamp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+        import { getFirestore, collection, addDoc, getDocs, deleteDoc, doc, query, orderBy, where, Timestamp, updateDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
 
         let db;
         let allGames = [];
@@ -846,9 +846,12 @@
                 for (const docSnap of snapshot.docs) {
                     await deleteDoc(doc(db, 'game_ranks', docSnap.id));
                 }
-                showSuccess('Batch deleted');
+                showSuccess('✅ Batch deleted');
+                // Real-time refresh all affected tabs
                 loadHistory();
                 loadReview();
+                loadTrends();
+                loadUniqueGames();
             } catch (error) {
                 showError('Failed to delete batch: ' + error.message);
             }
@@ -984,7 +987,7 @@
             if (tabName === 'games') loadUniqueGames();
         };
 
-        // View detailed batch records
+        // View detailed batch records with full editing capability
         window.viewBatchDetails = async (batchId) => {
             try {
                 const q = query(collection(db, 'game_ranks'), where('batchId', '==', batchId));
@@ -998,48 +1001,96 @@
                 // Create modal content with unique ID
                 const modalId = 'batch-modal-' + Date.now();
                 let html = `
-                    <div id="${modalId}" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem;">
-                        <div style="background: white; border-radius: 12px; padding: 2rem; max-width: 900px; max-height: 80vh; overflow-y: auto; width: 100%;">
+                    <div id="${modalId}" style="position: fixed; top: 0; left: 0; right: 0; bottom: 0; background: rgba(0,0,0,0.7); display: flex; align-items: center; justify-content: center; z-index: 1000; padding: 1rem; overflow-y: auto;">
+                        <div style="background: white; border-radius: 12px; padding: 2rem; max-width: 1200px; width: 100%; margin: auto;">
                             <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 1.5rem;">
                                 <h2 style="color: #333; margin: 0;">📦 Batch Details (${games.length} games)</h2>
                                 <button onclick="document.getElementById('${modalId}').remove()" style="background: #f3f4f6; border: none; padding: 0.5rem 1rem; border-radius: 6px; cursor: pointer; font-weight: 600; color: #333;">✕ Close</button>
                             </div>
-                            <table style="width: 100%; border-collapse: collapse; font-size: 0.9rem;">
-                                <thead>
-                                    <tr style="background: #f9f9f9; border-bottom: 2px solid #eee;">
-                                        <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Thumbnail</th>
-                                        <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Game Name</th>
-                                        <th style="padding: 0.75rem; text-align: right; font-weight: 600;">Rank</th>
-                                        <th style="padding: 0.75rem; text-align: right; font-weight: 600;">Rating</th>
-                                        <th style="padding: 0.75rem; text-align: right; font-weight: 600;">User Votes</th>
-                                    </tr>
-                                </thead>
-                                <tbody>
-                                    ${games.map(g => {
-                                        const mainRank = g.data.ranks && g.data.ranks.length > 0 ? g.data.ranks[0].value : '—';
-                                        const thumbnail = g.data.thumbnail || '';
-                                        return `
-                                            <tr style="border-bottom: 1px solid #eee;">
-                                                <td style="padding: 0.75rem;">
-                                                    ${thumbnail ? `<img src="${thumbnail}" style="height: 40px; border-radius: 4px;" alt="${g.data.gameName}" />` : '—'}
-                                                </td>
-                                                <td style="padding: 0.75rem;">${g.data.gameName}</td>
-                                                <td style="padding: 0.75rem; text-align: right;">
-                                                    ${mainRank !== '—' ? '#' + mainRank : '—'}
-                                                </td>
-                                                <td style="padding: 0.75rem; text-align: right;">${g.data.rating?.value?.toFixed(2) || '—'}</td>
-                                                <td style="padding: 0.75rem; text-align: right;">${g.data.rating?.usersrated?.toLocaleString() || '—'}</td>
-                                            </tr>
-                                        `;
-                                    }).join('')}
-                                </tbody>
-                            </table>
+                            <div style="overflow-x: auto;">
+                                <table style="width: 100%; border-collapse: collapse; font-size: 0.85rem;">
+                                    <thead>
+                                        <tr style="background: #f9f9f9; border-bottom: 2px solid #eee; sticky; top: 0;">
+                                            <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Thumb</th>
+                                            <th style="padding: 0.75rem; text-align: left; font-weight: 600;">Game Name</th>
+                                            <th style="padding: 0.75rem; text-align: center; font-weight: 600;">Rank</th>
+                                            <th style="padding: 0.75rem; text-align: center; font-weight: 600;">Rating</th>
+                                            <th style="padding: 0.75rem; text-align: center; font-weight: 600;">Votes</th>
+                                            <th style="padding: 0.75rem; text-align: center; font-weight: 600;">Year</th>
+                                            <th style="padding: 0.75rem; text-align: center; font-weight: 600;">Actions</th>
+                                        </tr>
+                                    </thead>
+                                    <tbody>
+                                        ${games.map(g => {
+                                            const mainRank = g.data.ranks && g.data.ranks.length > 0 ? g.data.ranks[0].value : null;
+                                            const thumbnail = g.data.thumbnail || '';
+                                            return `
+                                                <tr style="border-bottom: 1px solid #eee;" id="game-row-${g.id}">
+                                                    <td style="padding: 0.75rem;">
+                                                        ${thumbnail ? `<img src="${thumbnail}" style="height: 35px; border-radius: 4px;" alt="${g.data.gameName}" />` : '—'}
+                                                    </td>
+                                                    <td style="padding: 0.75rem; cursor: pointer;" onclick="editField('${modalId}', '${g.id}', 'gameName', '${g.data.gameName.replace(/'/g, "\\'")}')">
+                                                        <span id="val-gameName-${g.id}">${g.data.gameName}</span>
+                                                        <span style="color: #999; font-size: 0.75rem; margin-left: 0.5rem;">✏️</span>
+                                                    </td>
+                                                    <td style="padding: 0.75rem; text-align: center; cursor: pointer;" onclick="editField('${modalId}', '${g.id}', 'rank', '${mainRank || ''}')">
+                                                        <span id="val-rank-${g.id}">${mainRank ? '#' + mainRank : '—'}</span>
+                                                        <span style="color: #999; font-size: 0.75rem; margin-left: 0.25rem;">✏️</span>
+                                                    </td>
+                                                    <td style="padding: 0.75rem; text-align: center; cursor: pointer;" onclick="editField('${modalId}', '${g.id}', 'rating', '${g.data.rating?.value?.toFixed(2) || ''}')">
+                                                        <span id="val-rating-${g.id}">${g.data.rating?.value?.toFixed(2) || '—'}</span>
+                                                        <span style="color: #999; font-size: 0.75rem; margin-left: 0.25rem;">✏️</span>
+                                                    </td>
+                                                    <td style="padding: 0.75rem; text-align: center;">
+                                                        ${g.data.rating?.usersrated?.toLocaleString() || '—'}
+                                                    </td>
+                                                    <td style="padding: 0.75rem; text-align: center;">
+                                                        ${g.data.year || '—'}
+                                                    </td>
+                                                    <td style="padding: 0.75rem; text-align: center;">
+                                                        <button class="btn-danger btn-small" onclick="deleteGame('${g.id}'); document.getElementById('${modalId}').remove(); loadReview();" style="font-size: 0.75rem; padding: 0.3rem 0.6rem;">Delete</button>
+                                                    </td>
+                                                </tr>
+                                            `;
+                                        }).join('')}
+                                    </tbody>
+                                </table>
+                            </div>
                         </div>
                     </div>
                 `;
                 document.body.insertAdjacentHTML('beforeend', html);
             } catch (error) {
                 showError('Failed to load batch details: ' + error.message);
+            }
+        };
+
+        // Edit field inline
+        window.editField = async (modalId, gameId, fieldName, currentValue) => {
+            const newValue = prompt(`Edit ${fieldName}:`, currentValue);
+            if (newValue === null || newValue === currentValue) return;
+
+            try {
+                const gameRef = doc(db, 'game_ranks', gameId);
+                const updateData = {};
+                
+                if (fieldName === 'gameName') {
+                    updateData.gameName = newValue;
+                    document.getElementById(`val-${fieldName}-${gameId}`).textContent = newValue;
+                } else if (fieldName === 'rank') {
+                    const rankValue = parseInt(newValue);
+                    updateData['ranks.0.value'] = rankValue;
+                    document.getElementById(`val-rank-${gameId}`).textContent = newValue ? '#' + newValue : '—';
+                } else if (fieldName === 'rating') {
+                    const ratingValue = parseFloat(newValue);
+                    updateData['rating.value'] = ratingValue;
+                    document.getElementById(`val-rating-${gameId}`).textContent = ratingValue.toFixed(2);
+                }
+                
+                await updateDoc(gameRef, updateData);
+                showSuccess(`✅ ${fieldName} updated`);
+            } catch (error) {
+                showError(`Failed to update ${fieldName}: ${error.message}`);
             }
         };
 
