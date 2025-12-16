@@ -166,11 +166,18 @@
                         <option value="">Select a game...</option>
                         <option value="connectfour">Connect Four</option>
                         <option value="checkers">Checkers</option>
+                        <option value="chinesecheckers">Chinese Checkers</option>
                         <option value="tictactoe">Tic Tac Toe</option>
                         <option value="ultimatetictactoe">Ultimate Tic Tac Toe</option>
                         <option value="gomoku">Gomoku (5 in a row)</option>
                     </select>
                     <p id="gameDesc" class="text-xs text-gray-500 mt-2"></p>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">BGG Username</label>
+                    <input type="text" id="username" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-blue-500 outline-none" value="sportomax" placeholder="Enter BGG username">
+                    <p class="text-xs text-gray-500 mt-1">Leave empty to search all BGG games</p>
                 </div>
                 
                 <div>
@@ -252,6 +259,7 @@
         const GAMES = {
             connectfour: { name: '🔴🟡 Connect Four', cols: 7, rows: 6, desc: 'Drop pieces from top, first to connect 4 wins!' },
             checkers: { name: '🏁 Checkers', cols: 8, rows: 8, desc: 'Jump pieces to capture, reach opposite side for king!' },
+            chinesecheckers: { name: '⭐ Chinese Checkers', cols: 17, rows: 17, desc: 'Place pieces on the star board - simplified rules!' },
             tictactoe: { name: '⭕❌ Tic Tac Toe', cols: 3, rows: 3, desc: '3 in a row wins!' },
             ultimatetictactoe: { name: '🎯 Ultimate Tic Tac Toe', cols: 3, rows: 3, desc: 'Win 3x3 grids to win overall!' },
             gomoku: { name: '⚫⚪ Gomoku', cols: 15, rows: 15, desc: '5 in a row wins!' }
@@ -281,11 +289,31 @@
             resultsDiv.innerHTML = '<p class="text-center text-gray-600 text-sm py-2">Searching...</p>';
             resultsDiv.classList.remove('hidden');
             
+            const username = document.getElementById('username').value.trim();
+            
             try {
-                const res = await fetch('/api/bgg-helper?endpoint=search&query=' + encodeURIComponent(query));
-                const xml = await res.text();
-                const parser = new DOMParser().parseFromString(xml, 'text/xml');
-                const items = Array.from(parser.querySelectorAll('item[id]'));
+                let items = [];
+                
+                // If username is provided, search user collection
+                if (username) {
+                    const res = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&own=1&stats=1');
+                    const xml = await res.text();
+                    const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                    const collectionItems = Array.from(parser.querySelectorAll('item'));
+                    
+                    // Filter by query
+                    items = collectionItems.filter(item => {
+                        const nameEl = item.querySelector('name');
+                        const name = nameEl ? nameEl.textContent : '';
+                        return name.toLowerCase().includes(query.toLowerCase());
+                    });
+                } else {
+                    // Otherwise search all BGG games
+                    const res = await fetch('/api/bgg-helper?endpoint=search&query=' + encodeURIComponent(query));
+                    const xml = await res.text();
+                    const parser = new DOMParser().parseFromString(xml, 'text/xml');
+                    items = Array.from(parser.querySelectorAll('item[id]'));
+                }
                 
                 const dropdownDiv = document.createElement('div');
                 dropdownDiv.className = 'dropdown-results';
@@ -293,22 +321,17 @@
                 let count = 0;
                 for (const item of items) {
                     if (count >= 15) break;
-                    const id = item.getAttribute('id');
                     
-                    const nameEls = item.querySelectorAll('name');
-                    let name = 'Unknown';
-                    if (nameEls.length > 0) {
-                        name = nameEls[0].getAttribute('value') || nameEls[0].textContent || 'Unknown';
-                    }
+                    let id, name, imgUrl;
                     
-                    try {
-                        const thingRes = await fetch('/api/bgg-helper?endpoint=thing&id=' + id);
-                        const thingXml = await thingRes.text();
-                        const thingParser = new DOMParser().parseFromString(thingXml, 'text/xml');
-                        const thumbnail = thingParser.querySelector('thumbnail');
-                        const image = thingParser.querySelector('image');
-                        
-                        const imgUrl = (thumbnail ? thumbnail.textContent : null) || (image ? image.textContent : null);
+                    if (username) {
+                        // Collection item
+                        id = item.getAttribute('objectid');
+                        const nameEl = item.querySelector('name');
+                        name = nameEl ? nameEl.textContent : 'Unknown';
+                        const imageEl = item.querySelector('image');
+                        const thumbnailEl = item.querySelector('thumbnail');
+                        imgUrl = (thumbnailEl ? thumbnailEl.textContent : null) || (imageEl ? imageEl.textContent : null);
                         
                         if (!imgUrl) continue;
                         
@@ -322,8 +345,40 @@
                         })(player, id, name, imgUrl);
                         dropdownDiv.appendChild(dropdownItem);
                         count++;
-                    } catch (err) {
-                        continue;
+                    } else {
+                        // Search result
+                        id = item.getAttribute('id');
+                        
+                        const nameEls = item.querySelectorAll('name');
+                        name = 'Unknown';
+                        if (nameEls.length > 0) {
+                            name = nameEls[0].getAttribute('value') || nameEls[0].textContent || 'Unknown';
+                        }
+                        
+                        try {
+                            const thingRes = await fetch('/api/bgg-helper?endpoint=thing&id=' + id);
+                            const thingXml = await thingRes.text();
+                            const thingParser = new DOMParser().parseFromString(thingXml, 'text/xml');
+                            const thumbnail = thingParser.querySelector('thumbnail');
+                            const image = thingParser.querySelector('image');
+                            
+                            imgUrl = (thumbnail ? thumbnail.textContent : null) || (image ? image.textContent : null);
+                            
+                            if (!imgUrl) continue;
+                            
+                            const dropdownItem = document.createElement('div');
+                            dropdownItem.className = 'dropdown-item';
+                            dropdownItem.innerHTML = '<img src="' + imgUrl + '" alt="' + name + '" onerror="this.src=\'https://via.placeholder.com/50\'"><div class="dropdown-item-text">' + name + '</div>';
+                            dropdownItem.onclick = (function(p, i, n, img) {
+                                return function() {
+                                    selectGame(p, i, n, img);
+                                };
+                            })(player, id, name, imgUrl);
+                            dropdownDiv.appendChild(dropdownItem);
+                            count++;
+                        } catch (err) {
+                            continue;
+                        }
                     }
                 }
                 
@@ -554,6 +609,8 @@
                 content = '<p>• Click column to drop piece</p><p>• First to connect 4 wins</p><p>• Row, column, or diagonal</p>';
             } else if (gameType === 'checkers') {
                 content = '<p>• Click piece then destination</p><p>• Jump opponents to capture</p><p>• Reach opposite side for king</p>';
+            } else if (gameType === 'chinesecheckers') {
+                content = '<p>• Click empty cell to place</p><p>• Large board for strategic play</p><p>• Simplified rules - same win conditions</p>';
             } else if (gameType === 'tictactoe') {
                 content = '<p>• Click empty cell to place</p><p>• First to get 3 in row wins</p><p>• Row, column, or diagonal</p>';
             } else if (gameType === 'ultimatetictactoe') {
