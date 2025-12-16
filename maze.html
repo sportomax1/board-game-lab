@@ -1,0 +1,389 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>BGG Maze Game</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>🌀</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body { 
+            padding: max(env(safe-area-inset-top), 0) max(env(safe-area-inset-right), 0) max(env(safe-area-inset-bottom), 0) max(env(safe-area-inset-left), 0); 
+        }
+        input, select, button { font-size: 16px; }
+        
+        .maze-cell {
+            width: 60px;
+            height: 60px;
+            border: 1px solid #e5e7eb;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            position: relative;
+            overflow: hidden;
+        }
+        
+        .maze-cell.wall {
+            background-size: cover;
+            background-position: center;
+            background-repeat: no-repeat;
+        }
+        
+        .maze-cell.path {
+            background-color: #f9fafb;
+        }
+        
+        .maze-cell.entrance {
+            background: linear-gradient(135deg, #10b981 0%, #059669 100%);
+            font-size: 24px;
+        }
+        
+        .maze-cell.exit {
+            background: linear-gradient(135deg, #ef4444 0%, #dc2626 100%);
+            font-size: 24px;
+        }
+        
+        .maze-cell.wall:hover {
+            transform: scale(1.1);
+            z-index: 10;
+            box-shadow: 0 4px 6px -1px rgba(0, 0, 0, 0.3);
+            cursor: pointer;
+        }
+        
+        .maze-container {
+            display: inline-grid;
+            gap: 2px;
+            padding: 10px;
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            border-radius: 12px;
+            box-shadow: 0 10px 25px rgba(0, 0, 0, 0.3);
+        }
+        
+        .game-info-tooltip {
+            position: absolute;
+            bottom: 100%;
+            left: 50%;
+            transform: translateX(-50%) translateY(-8px);
+            background: rgba(0, 0, 0, 0.95);
+            color: white;
+            padding: 8px 12px;
+            border-radius: 8px;
+            white-space: nowrap;
+            font-size: 12px;
+            font-weight: 600;
+            pointer-events: none;
+            opacity: 0;
+            transition: opacity 0.2s;
+            z-index: 100;
+        }
+        
+        .maze-cell.wall:hover .game-info-tooltip {
+            opacity: 1;
+        }
+        
+        @media (max-width: 768px) {
+            .maze-cell {
+                width: 40px;
+                height: 40px;
+            }
+        }
+        
+        @media (max-width: 480px) {
+            .maze-cell {
+                width: 30px;
+                height: 30px;
+            }
+        }
+    </style>
+</head>
+<body class="bg-gray-50 min-h-screen">
+    <!-- Settings Modal -->
+    <div id="settingsModal" class="fixed inset-0 bg-gradient-to-br from-purple-900 to-indigo-900 z-50 flex items-center justify-center p-4 overflow-y-auto">
+        <div class="bg-white rounded-3xl shadow-2xl p-6 md:p-8 max-w-md w-full my-4">
+            <h1 class="text-3xl md:text-4xl font-bold text-gray-900 mb-2 text-center">🌀 Maze Game</h1>
+            <p class="text-gray-500 text-center text-base mb-6">Navigate through board game thumbnails!</p>
+            
+            <div class="space-y-4">
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">BGG Username</label>
+                    <input type="text" id="username" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none" value="sportomax" placeholder="Enter BGG username">
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Maze Size</label>
+                    <select id="mazeSize" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none">
+                        <option value="10">Small (10x10)</option>
+                        <option value="15" selected>Medium (15x15)</option>
+                        <option value="20">Large (20x20)</option>
+                        <option value="25">Extra Large (25x25)</option>
+                    </select>
+                </div>
+                
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Difficulty</label>
+                    <select id="difficulty" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none">
+                        <option value="easy">Easy (Few dead ends)</option>
+                        <option value="medium" selected>Medium (Some dead ends)</option>
+                        <option value="hard">Hard (Many dead ends)</option>
+                    </select>
+                </div>
+                
+                <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
+                    <input type="checkbox" id="excludeExpansions" class="w-4 h-4" checked>
+                    <label for="excludeExpansions" class="text-sm font-bold text-gray-700">Exclude Expansions</label>
+                </div>
+                
+                <button onclick="startGame()" class="w-full bg-purple-600 text-white py-4 rounded-xl font-bold text-lg hover:bg-purple-700 transition shadow-lg">
+                    Generate Maze
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Loading Screen -->
+    <div id="loadingScreen" class="hidden fixed inset-0 bg-white z-40 flex flex-col items-center justify-center">
+        <div class="animate-spin rounded-full h-16 w-16 border-b-4 border-purple-600 mb-4"></div>
+        <h2 class="text-xl font-bold text-gray-800">Loading Collection...</h2>
+        <p id="loadingStatus" class="text-gray-500 mt-2">Fetching games from BoardGameGeek</p>
+    </div>
+
+    <!-- Main App -->
+    <div id="app" class="hidden flex flex-col min-h-screen">
+        <header class="bg-white shadow-sm sticky top-0 z-30 px-4 py-3">
+            <div class="max-w-7xl mx-auto flex items-center justify-between">
+                <div>
+                    <h1 class="font-bold text-xl text-gray-900">🌀 Maze Game</h1>
+                    <p class="text-xs text-gray-500" id="headerInfo">Find your way from entrance to exit!</p>
+                </div>
+                <div class="flex gap-2">
+                    <button onclick="generateNewMaze()" class="px-4 py-2 bg-purple-500 text-white rounded-lg font-medium hover:bg-purple-600 text-sm">
+                        🔄 New Maze
+                    </button>
+                    <button onclick="showSettings()" class="px-4 py-2 bg-gray-100 text-gray-700 rounded-lg font-medium hover:bg-gray-200 text-sm">
+                        ⚙️ Settings
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <main class="flex-1 flex items-center justify-center p-4 overflow-auto">
+            <div class="flex flex-col items-center">
+                <div class="bg-white rounded-xl shadow-sm p-4 mb-4 flex gap-6 items-center">
+                    <div class="flex items-center gap-2">
+                        <div class="w-8 h-8 bg-gradient-to-br from-green-500 to-green-600 rounded flex items-center justify-center text-white text-lg">🚪</div>
+                        <span class="text-sm font-medium text-gray-700">Entrance</span>
+                    </div>
+                    <div class="flex items-center gap-2">
+                        <div class="w-8 h-8 bg-gradient-to-br from-red-500 to-red-600 rounded flex items-center justify-center text-white text-lg">🎯</div>
+                        <span class="text-sm font-medium text-gray-700">Exit</span>
+                    </div>
+                    <div class="text-sm text-gray-600">
+                        <span class="font-bold" id="gameCount">0</span> games loaded
+                    </div>
+                </div>
+                
+                <div id="mazeContainer" class="overflow-auto max-w-full">
+                    <!-- Maze will be rendered here -->
+                </div>
+                
+                <div class="mt-4 text-center text-sm text-gray-500">
+                    Hover over walls to see game names
+                </div>
+            </div>
+        </main>
+    </div>
+
+    <script>
+        let collection = [];
+        let mazeGrid = [];
+        let mazeSize = 15;
+        let difficulty = 'medium';
+
+        async function startGame() {
+            const username = document.getElementById('username').value.trim() || 'sportomax';
+            mazeSize = parseInt(document.getElementById('mazeSize').value);
+            difficulty = document.getElementById('difficulty').value;
+            const excludeExpansions = document.getElementById('excludeExpansions').checked;
+            
+            document.getElementById('settingsModal').classList.add('hidden');
+            document.getElementById('loadingScreen').classList.remove('hidden');
+            document.getElementById('loadingStatus').textContent = 'Fetching games from BoardGameGeek...';
+            
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                
+                if (!res.ok) {
+                    throw new Error(`Failed to fetch collection: ${res.status} ${res.statusText}`);
+                }
+                
+                const xml = await res.text();
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xml, 'text/xml');
+                
+                let items = Array.from(xmlDoc.querySelectorAll('item'));
+                
+                // Filter expansions if requested
+                if (excludeExpansions) {
+                    items = items.filter(item => {
+                        const subtype = item.getAttribute('subtype');
+                        return subtype !== 'boardgameexpansion';
+                    });
+                }
+                
+                collection = items.map(item => ({
+                    id: item.getAttribute('objectid'),
+                    name: item.querySelector('name')?.textContent || 'Unknown Game',
+                    thumbnail: item.querySelector('thumbnail')?.textContent || '',
+                    image: item.querySelector('image')?.textContent || ''
+                })).filter(g => g.thumbnail || g.image);
+                
+                if (collection.length < 10) {
+                    throw new Error('Not enough games with images in collection. Need at least 10 games.');
+                }
+                
+                console.log(`Loaded ${collection.length} games with images`);
+                document.getElementById('gameCount').textContent = collection.length;
+                
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+                
+                generateNewMaze();
+            } catch (error) {
+                console.error('Error:', error);
+                alert('Failed to load collection: ' + error.message);
+                document.getElementById('loadingScreen').classList.add('hidden');
+                document.getElementById('settingsModal').classList.remove('hidden');
+            }
+        }
+
+        function generateNewMaze() {
+            document.getElementById('loadingStatus').textContent = 'Generating maze...';
+            document.getElementById('loadingScreen').classList.remove('hidden');
+            
+            // Small delay to show loading
+            setTimeout(() => {
+                mazeGrid = generateMaze(mazeSize, mazeSize);
+                renderMaze();
+                document.getElementById('loadingScreen').classList.add('hidden');
+            }, 100);
+        }
+
+        function generateMaze(width, height) {
+            // Initialize grid with all walls
+            const grid = Array(height).fill(null).map(() => Array(width).fill(1));
+            
+            // Recursive backtracking maze generation
+            function carve(x, y) {
+                grid[y][x] = 0; // Mark as path
+                
+                // Randomize directions
+                const directions = [
+                    [0, -2], [2, 0], [0, 2], [-2, 0]
+                ].sort(() => Math.random() - 0.5);
+                
+                for (const [dx, dy] of directions) {
+                    const nx = x + dx;
+                    const ny = y + dy;
+                    
+                    if (nx >= 0 && nx < width && ny >= 0 && ny < height && grid[ny][nx] === 1) {
+                        // Carve path between cells
+                        grid[y + dy/2][x + dx/2] = 0;
+                        carve(nx, ny);
+                    }
+                }
+            }
+            
+            // Start from top-left area
+            const startX = 1;
+            const startY = 1;
+            carve(startX, startY);
+            
+            // Add additional dead ends based on difficulty
+            const deadEndCount = difficulty === 'easy' ? 5 : difficulty === 'medium' ? 15 : 30;
+            for (let i = 0; i < deadEndCount; i++) {
+                const x = Math.floor(Math.random() * (width - 2)) + 1;
+                const y = Math.floor(Math.random() * (height - 2)) + 1;
+                
+                if (grid[y][x] === 0) {
+                    // Create a short dead end
+                    const dirs = [[1,0], [-1,0], [0,1], [0,-1]].sort(() => Math.random() - 0.5);
+                    for (const [dx, dy] of dirs) {
+                        const nx = x + dx;
+                        const ny = y + dy;
+                        if (nx > 0 && nx < width-1 && ny > 0 && ny < height-1 && grid[ny][nx] === 1) {
+                            grid[ny][nx] = 0;
+                            break;
+                        }
+                    }
+                }
+            }
+            
+            // Ensure entrance at top-left
+            grid[0][0] = 2; // Entrance
+            if (grid[0][1] === 1) grid[0][1] = 0;
+            if (grid[1][0] === 1) grid[1][0] = 0;
+            
+            // Ensure exit at bottom-right
+            grid[height-1][width-1] = 3; // Exit
+            if (grid[height-1][width-2] === 1) grid[height-1][width-2] = 0;
+            if (grid[height-2][width-1] === 1) grid[height-2][width-1] = 0;
+            
+            return grid;
+        }
+
+        function renderMaze() {
+            const container = document.getElementById('mazeContainer');
+            const height = mazeGrid.length;
+            const width = mazeGrid[0].length;
+            
+            const mazeDiv = document.createElement('div');
+            mazeDiv.className = 'maze-container';
+            mazeDiv.style.gridTemplateColumns = `repeat(${width}, 1fr)`;
+            
+            for (let y = 0; y < height; y++) {
+                for (let x = 0; x < width; x++) {
+                    const cell = document.createElement('div');
+                    cell.className = 'maze-cell';
+                    
+                    const cellValue = mazeGrid[y][x];
+                    
+                    if (cellValue === 1) {
+                        // Wall - use random game thumbnail
+                        cell.classList.add('wall');
+                        const randomGame = collection[Math.floor(Math.random() * collection.length)];
+                        cell.style.backgroundImage = `url('${randomGame.thumbnail || randomGame.image}')`;
+                        
+                        // Add tooltip with game name
+                        const tooltip = document.createElement('div');
+                        tooltip.className = 'game-info-tooltip';
+                        tooltip.textContent = randomGame.name;
+                        cell.appendChild(tooltip);
+                    } else if (cellValue === 0) {
+                        // Path
+                        cell.classList.add('path');
+                    } else if (cellValue === 2) {
+                        // Entrance
+                        cell.classList.add('entrance');
+                        cell.textContent = '🚪';
+                    } else if (cellValue === 3) {
+                        // Exit
+                        cell.classList.add('exit');
+                        cell.textContent = '🎯';
+                    }
+                    
+                    mazeDiv.appendChild(cell);
+                }
+            }
+            
+            container.innerHTML = '';
+            container.appendChild(mazeDiv);
+        }
+
+        function showSettings() {
+            document.getElementById('settingsModal').classList.remove('hidden');
+        }
+    </script>
+</body>
+</html>
