@@ -43,12 +43,35 @@
                 <input id="stacking" type="checkbox"> <span class="small">(disabled by default)</span>
             </div>
             <div>
+                <label for="filters">Collection Filters</label><br>
+                <div style="display:flex;gap:6px;margin-top:6px;flex-wrap:wrap">
+                    <label style="font-size:13px"><input type="checkbox" id="f-own" checked> Own</label>
+                    <label style="font-size:13px"><input type="checkbox" id="f-want"> Want</label>
+                    <label style="font-size:13px"><input type="checkbox" id="f-wanttoplay"> WantToPlay</label>
+                    <label style="font-size:13px"><input type="checkbox" id="f-fortrade"> ForTrade</label>
+                    <label style="font-size:13px"><input type="checkbox" id="f-preordered"> Preordered</label>
+                </div>
+            </div>
+            <div>
                 <label for="delay">Delay per placement (ms)</label><br>
                 <input id="delay" type="text" value="60" style="width:80px">
+            </div>
+            <div>
+                <label for="zoom">Preview scale</label><br>
+                <input type="range" id="zoom" min="0.4" max="2" step="0.05" value="1" style="width:140px">
+            </div>
+            <div>
+                <label for="centerToggle">Center final layout</label><br>
+                <input id="centerToggle" type="checkbox" checked>
+            </div>
+            <div>
+                <label for="canvasMode">Use canvas renderer</label><br>
+                <input id="canvasMode" type="checkbox">
             </div>
             <div style="margin-left:auto" class="settings">
                 <button id="runBtn" class="btn">▶️ Run</button>
                 <button id="stopBtn" class="btn-secondary">Stop</button>
+                <button id="exportBtn" class="btn-secondary" style="margin-left:8px">Export Image</button>
             </div>
         </div>
 
@@ -63,13 +86,25 @@
     (function(){
         const runBtn = document.getElementById('runBtn');
         const stopBtn = document.getElementById('stopBtn');
+        const exportBtn = document.getElementById('exportBtn');
         const usernameEl = document.getElementById('username');
         const stackingEl = document.getElementById('stacking');
         const delayEl = document.getElementById('delay');
         const statusEl = document.getElementById('status');
         const gridEl = document.getElementById('grid');
+        const zoomEl = document.getElementById('zoom');
+        const centerEl = document.getElementById('centerToggle');
+        const canvasModeEl = document.getElementById('canvasMode');
+        const filterOwn = document.getElementById('f-own');
+        const filterWant = document.getElementById('f-want');
+        const filterWantToPlay = document.getElementById('f-wanttoplay');
+        const filterForTrade = document.getElementById('f-fortrade');
+        const filterPreordered = document.getElementById('f-preordered');
 
         let aborted = false;
+        let lastPlacedList = null; // store last placed list for export
+        let useCanvas = false;
+        const imgCache = {}; // thumb url -> Image object (preloaded)
 
         function setStatus(s){ statusEl.textContent = s }
 
@@ -80,7 +115,15 @@
                 const name = it.querySelector('name')?.textContent || '';
                 const id = it.getAttribute('objectid') || it.getAttribute('id') || '';
                 const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
-                return {id,name,thumb};
+                const statusEl = it.querySelector('status');
+                const status = {
+                    own: statusEl ? statusEl.getAttribute('own')==='1' : false,
+                    fortrade: statusEl ? statusEl.getAttribute('fortrade')==='1' : false,
+                    want: statusEl ? statusEl.getAttribute('want')==='1' : false,
+                    wanttoplay: statusEl ? statusEl.getAttribute('wanttoplay')==='1' : false,
+                    preordered: statusEl ? statusEl.getAttribute('preordered')==='1' : false,
+                };
+                return {id,name,thumb,status};
             }).filter(i=>i.thumb);
             return items;
         }
@@ -98,9 +141,22 @@
                 const res = await fetch('/api/bgg-helper?endpoint=collection&username='+encodeURIComponent(username)+'&own=1&stats=1');
                 const text = await res.text();
                 const items = parseCollectionXml(text);
-                if(!items.length){ setStatus('No thumbnails found in collection.'); return }
+                // apply filters
+                const filters = {
+                    own: filterOwn.checked,
+                    want: filterWant.checked,
+                    wanttoplay: filterWantToPlay.checked,
+                    fortrade: filterForTrade.checked,
+                    preordered: filterPreordered.checked
+                };
+                const filtered = items.filter(it=>{
+                    // if any filter is true, only keep items matching at least one true filter
+                    if(Object.values(filters).every(v=>!v)) return true; // no filter set -> keep all
+                    return (filters.own && it.status.own) || (filters.want && it.status.want) || (filters.wanttoplay && it.status.wanttoplay) || (filters.fortrade && it.status.fortrade) || (filters.preordered && it.status.preordered);
+                });
+                if(!filtered.length){ setStatus('No thumbnails found with selected filters.'); return }
                 setStatus('Collection loaded: '+items.length+' images. Preparing walk...');
-                await startWalk(items);
+                await startWalk(filtered);
             }catch(e){ setStatus('Error loading collection: '+(e.message||e)); console.error(e) }
         }
 
@@ -122,10 +178,32 @@
         function renderPlaced(placed){
             // placed is array of {x,y,imgs: [item,...]}
             gridEl.innerHTML='';
-            const {minX,minY,cellW} = {minX:parseInt(gridEl.dataset.minx||0), minY:parseInt(gridEl.dataset.miny||0), cellW: parseInt(gridEl.dataset.cell||getCellSize())};
+            // compute bounds from placed in case dataset is missing
+            const xs = placed.map(c=>c.x); const ys = placed.map(c=>c.y);
+            const minX = Math.min(...xs); const maxX = Math.max(...xs);
+            const minY = Math.min(...ys); const maxY = Math.max(...ys);
+            const cellW = parseInt(gridEl.dataset.cell || getCellSize());
+
+            // scale handling
+            const scale = parseFloat(zoomEl.value || '1');
+            gridEl.style.transform = `scale(${scale})`;
+            gridEl.style.transformOrigin = 'top left';
+
+            // when centering is requested, compute a left margin to visually center the scaled grid
+            const parentWidth = gridEl.parentElement.clientWidth;
+            const rawWidth = (maxX - minX + 1) * cellW;
+            const scaledWidth = rawWidth * scale;
+            if(centerEl.checked){
+                const ml = Math.max(0, Math.floor((parentWidth - scaledWidth) / 2));
+                gridEl.style.marginLeft = ml + 'px';
+            } else {
+                gridEl.style.marginLeft = '0px';
+            }
+
+            // render images
             placed.forEach(cell=>{
-                const fx = (cell.x - minX)*cellW;
-                const fy = (cell.y - minY)*cellW*1.15;
+                const fx = (cell.x - minX) * cellW;
+                const fy = (cell.y - minY) * cellW * 1.15;
                 // show stacked images: topmost last
                 cell.imgs.forEach((it,idx)=>{
                     const img = document.createElement('img');
@@ -138,6 +216,9 @@
                     gridEl.appendChild(img);
                 });
             });
+
+            // store last placed layout for export (deep clone)
+            try{ lastPlacedList = JSON.parse(JSON.stringify(placed)); }catch(e){ lastPlacedList = placed.slice(); }
         }
 
         async function startWalk(items){
@@ -145,10 +226,18 @@
             const delay = Math.max(0, parseInt(delayEl.value) || 60);
             const imgs = shuffle(items.slice());
 
+            // preload unique thumbnails into imgCache for canvas rendering
+            const uniqueUrls = Array.from(new Set(items.map(i=>i.thumb)));
+            try{
+                await Promise.all(uniqueUrls.map(u=>loadImage(u).then(im=>{ imgCache[u]=im }).catch(e=>{ /* ignore individual failures */ })));
+            }catch(e){ console.warn('preload warning',e) }
+
             const placedMap = new Map(); // key-> array of imgs
             const placedList = [];
             let cx = 0, cy = 0;
-            const first = imgs.shift();
+            function mkPlacedItem(it){ return {thumb: it.thumb, id: it.id, name: it.name, placedAt: Date.now()} }
+            const firstRaw = imgs.shift();
+            const first = mkPlacedItem(firstRaw);
             placedMap.set(key(cx,cy), [first]);
             placedList.push({x:cx,y:cy,imgs:[first]});
             let currentX = cx, currentY = cy;
@@ -171,10 +260,11 @@
                     if(placedMap.has(k)){
                         if(allowStack){ // stacking allowed -> push
                             const arr = placedMap.get(k);
-                            arr.push(it);
+                            const p = mkPlacedItem(it);
+                            arr.push(p);
                             // update list entry
                             const idx = placedList.findIndex(c=>c.x===nx && c.y===ny);
-                            if(idx>=0) placedList[idx].imgs.push(it); else placedList.push({x:nx,y:ny,imgs:[...arr]});
+                            if(idx>=0) placedList[idx].imgs.push(p); else placedList.push({x:nx,y:ny,imgs:[...arr]});
                             currentX = nx; currentY = ny; placed=true; break;
                         } else {
                             // cannot place here, continue
@@ -182,8 +272,9 @@
                         }
                     } else {
                         // place new
-                        placedMap.set(k,[it]);
-                        placedList.push({x:nx,y:ny,imgs:[it]});
+                        const p = mkPlacedItem(it);
+                        placedMap.set(k,[p]);
+                        placedList.push({x:nx,y:ny,imgs:[p]});
                         currentX = nx; currentY = ny; placed=true; cells.push({x:nx,y:ny}); break;
                     }
                 }
@@ -195,8 +286,8 @@
                         const rnd = Math.floor(Math.random()*4); const [dx,dy]=[[1,0],[-1,0],[0,1],[0,-1]][rnd];
                         const nx = currentX + dx, ny = currentY + dy; const k=key(nx,ny);
                         if(placedMap.has(k) && !allowStack) continue;
-                        if(placedMap.has(k) && allowStack){ placedMap.get(k).push(it); const idx=placedList.findIndex(c=>c.x===nx&&c.y===ny); if(idx>=0) placedList[idx].imgs.push(it); currentX=nx; currentY=ny; extraPlaced=true; break }
-                        if(!placedMap.has(k)){ placedMap.set(k,[it]); placedList.push({x:nx,y:ny,imgs:[it]}); currentX=nx; currentY=ny; cells.push({x:nx,y:ny}); extraPlaced=true; break }
+                        if(placedMap.has(k) && allowStack){ const p = mkPlacedItem(it); placedMap.get(k).push(p); const idx=placedList.findIndex(c=>c.x===nx&&c.y===ny); if(idx>=0) placedList[idx].imgs.push(p); currentX=nx; currentY=ny; extraPlaced=true; break }
+                        if(!placedMap.has(k)){ const p = mkPlacedItem(it); placedMap.set(k,[p]); placedList.push({x:nx,y:ny,imgs:[p]}); currentX=nx; currentY=ny; cells.push({x:nx,y:ny}); extraPlaced=true; break }
                     }
                     if(!extraPlaced){
                         // teleport: pick random placed cell as new current
@@ -207,9 +298,13 @@
                     }
                 }
 
-                // update bounds and render
+                // update bounds and render (choose canvas or DOM)
                 ensureSize(cells);
-                renderPlaced(placedList);
+                if(canvasModeEl.checked){
+                    renderCanvas(placedList);
+                } else {
+                    renderPlaced(placedList);
+                }
                 setStatus('Placed '+ (1 + i) +' / '+ (1 + imgs.length));
                 await new Promise(r=>setTimeout(r, delay));
             }
@@ -219,6 +314,158 @@
 
         runBtn.addEventListener('click', ()=>{ if(!aborted) run(); });
         stopBtn.addEventListener('click', ()=>{ aborted=true; setStatus('Stopping...') });
+
+        // helper: load image into an Image object (promise)
+        function loadImage(url){
+            return new Promise((resolve,reject)=>{
+                const im = new Image(); im.crossOrigin = 'anonymous';
+                im.onload = ()=>resolve(im); im.onerror = (e)=>reject(e); im.src = url;
+            });
+        }
+
+        // Canvas renderer: create/get canvas element and size it
+        function ensureCanvas(minX,maxX,minY,maxY,cellW){
+            let cv = document.getElementById('cv');
+            const cols = (maxX - minX + 1);
+            const rows = (maxY - minY + 1);
+            const scale = parseFloat(zoomEl.value || '1');
+            const rawW = cols * cellW;
+            const rawH = Math.round(rows * cellW * 1.15);
+            const outW = Math.max(1, Math.round(rawW * scale));
+            const outH = Math.max(1, Math.round(rawH * scale));
+
+            if(!cv){
+                cv = document.createElement('canvas');
+                cv.id = 'cv';
+                cv.style.display = 'block';
+                cv.style.margin = '0 auto';
+                gridEl.parentElement.insertBefore(cv, gridEl);
+            }
+
+            cv.width = outW; cv.height = outH;
+            cv.style.width = outW + 'px'; cv.style.height = outH + 'px';
+
+            // hide the DOM grid when using canvas
+            gridEl.style.display = canvasModeEl.checked ? 'none' : 'block';
+            cv.style.display = canvasModeEl.checked ? 'block' : 'none';
+
+            return cv;
+        }
+
+        // Draw placed layout to canvas (live renderer)
+        function renderCanvas(placed){
+            // compute bounds
+            const xs = placed.map(c=>c.x); const ys = placed.map(c=>c.y);
+            const minX = Math.min(...xs); const maxX = Math.max(...xs);
+            const minY = Math.min(...ys); const maxY = Math.max(...ys);
+            const cellW = parseInt(gridEl.dataset.cell || getCellSize());
+            const scale = parseFloat(zoomEl.value || '1');
+
+            const cv = ensureCanvas(minX,maxX,minY,maxY,cellW);
+            const ctx = cv.getContext('2d');
+            // clear and draw background
+            ctx.fillStyle = '#071034'; ctx.fillRect(0,0,cv.width,cv.height);
+            ctx.imageSmoothingEnabled = true;
+
+            const imgW = cellW; const imgH = Math.round(cellW * (88/64));
+
+            // draw each cell
+            const now = Date.now();
+            const animMs = 600; // animation duration
+            placed.forEach(cell=>{
+                const fx = Math.round((cell.x - minX) * cellW * scale);
+                const fy = Math.round((cell.y - minY) * cellW * 1.15 * scale);
+                cell.imgs.forEach((it,idx)=>{
+                    const im = imgCache[it.thumb];
+                    const placedAt = it.placedAt || 0;
+                    const elapsed = Math.max(0, now - placedAt);
+                    const t = Math.min(1, elapsed / animMs);
+                    // ease-out
+                    const ease = 1 - Math.pow(1 - t, 2);
+                    const alpha = ease;
+                    const scaleAnim = 0.7 + 0.3 * ease; // start slightly smaller
+
+                    const dw = Math.round(imgW * scale * scaleAnim);
+                    const dh = Math.round(imgH * scale * scaleAnim);
+                    const dx = Math.round(fx + (idx*4*scale) - (dw - imgW*scale)/2);
+                    const dy = Math.round(fy - (idx*6*scale) - (dh - imgH*scale)/2);
+
+                    if(im){
+                        ctx.save();
+                        ctx.globalAlpha = alpha;
+                        ctx.drawImage(im, dx, dy, dw, dh);
+                        ctx.restore();
+                    } else {
+                        ctx.save();
+                        ctx.globalAlpha = alpha;
+                        ctx.fillStyle = '#22314a';
+                        ctx.fillRect(dx, dy, dw, dh);
+                        ctx.restore();
+                    }
+                });
+            });
+
+            // keep lastPlacedList for export
+            try{ lastPlacedList = JSON.parse(JSON.stringify(placed)); }catch(e){ lastPlacedList = placed.slice(); }
+        }
+
+        // Export current layout (lastPlacedList) to PNG using canvas
+        async function exportImage(){
+            const placed = lastPlacedList;
+            if(!placed || !placed.length){ setStatus('Nothing to export — run first.'); return }
+
+            // compute bounds
+            const xs = placed.map(c=>c.x); const ys = placed.map(c=>c.y);
+            const minX = Math.min(...xs); const maxX = Math.max(...xs);
+            const minY = Math.min(...ys); const maxY = Math.max(...ys);
+            const cellW = parseInt(gridEl.dataset.cell || getCellSize());
+            const imgW = cellW; const imgH = Math.round(cellW * (88/64));
+
+            const scale = parseFloat(zoomEl.value || '1');
+            const outW = Math.max(1, Math.round((maxX - minX + 1) * cellW * scale));
+            const outH = Math.max(1, Math.round((maxY - minY + 1) * cellW * 1.15 * scale));
+
+            setStatus('Preparing export...');
+
+            // load all unique images
+            const urls = Array.from(new Set(placed.flatMap(c=>c.imgs.map(i=>i.thumb))));
+            const imgMap = {};
+            try{
+                const loads = await Promise.all(urls.map(u=>loadImage(u).then(im=>{ imgMap[u]=im })))
+            }catch(e){ setStatus('Error loading images for export.'); console.error(e); return }
+
+            // draw
+            const canvas = document.createElement('canvas');
+            canvas.width = outW; canvas.height = outH;
+            const ctx = canvas.getContext('2d');
+            ctx.fillStyle = '#071034'; ctx.fillRect(0,0,outW,outH);
+            ctx.imageSmoothingEnabled = true;
+            // draw each cell and stacked items
+            placed.forEach(cell=>{
+                const fx = Math.round((cell.x - minX) * cellW * scale);
+                const fy = Math.round((cell.y - minY) * cellW * 1.15 * scale);
+                cell.imgs.forEach((it,idx)=>{
+                    const im = imgMap[it.thumb];
+                    if(!im) return;
+                    const dx = Math.round(fx + (idx*4*scale));
+                    const dy = Math.round(fy - (idx*6*scale));
+                    const dw = Math.round(imgW * scale);
+                    const dh = Math.round(imgH * scale);
+                    ctx.drawImage(im, dx, dy, dw, dh);
+                });
+            });
+
+            // download
+            canvas.toBlob(function(blob){
+                const a = document.createElement('a');
+                a.href = URL.createObjectURL(blob);
+                a.download = 'wonder-export.png';
+                document.body.appendChild(a); a.click(); a.remove();
+                setStatus('Export ready.');
+            });
+        }
+
+        exportBtn.addEventListener('click', ()=>{ exportImage().catch(e=>{ setStatus('Export failed'); console.error(e) }) });
     })();
     </script>
 </body>
