@@ -38,6 +38,30 @@
             <button onclick="closeInfo()" class="w-full mt-6 bg-indigo-600 text-white py-3 rounded-lg font-bold hover:bg-indigo-700">Got it!</button>
         </div>
     </div>
+    <!-- Guess modal (replaces prompt) -->
+    <div id="guessModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full">
+            <h2 class="text-xl font-bold text-gray-900 mb-4">🎯 Guess the Game</h2>
+            <input id="guessInput" type="text" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-indigo-500 outline-none" placeholder="Enter your guess...">
+            <div class="flex gap-2 mt-4">
+                <button onclick="submitGuess()" class="flex-1 bg-green-500 text-white py-3 rounded-lg font-bold hover:bg-green-600">Submit Guess</button>
+                <button onclick="closeGuessModal()" class="flex-1 bg-gray-200 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-300">Cancel</button>
+            </div>
+        </div>
+    </div>
+    <!-- Reveal modal (shows answer and thumbnail) -->
+    <div id="revealModal" class="hidden fixed inset-0 bg-black bg-opacity-50 z-50 flex items-center justify-center p-4">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 max-w-md w-full text-center">
+            <h2 id="revealTitle" class="text-2xl font-bold text-gray-900 mb-2">Answer</h2>
+            <img id="revealThumb" src="" alt="thumbnail" style="width:140px;height:140px;border-radius:10px;object-fit:cover;margin:8px auto;display:block;">
+            <p id="revealName" class="font-bold text-lg mt-2"></p>
+            <p id="revealMsg" class="text-sm text-gray-600 mt-1"></p>
+            <div class="flex gap-2 mt-6">
+                <button onclick="newGameFromReveal()" class="flex-1 bg-indigo-600 text-white py-3 rounded-lg font-bold hover:bg-indigo-700">Play Again</button>
+                <button onclick="closeRevealModal()" class="flex-1 bg-gray-200 text-gray-800 py-3 rounded-lg font-bold hover:bg-gray-300">Close</button>
+            </div>
+        </div>
+    </div>
     <div id="app" class="hidden flex-1 flex flex-col">
         <header class="bg-white shadow-sm sticky top-0 z-30 px-4 py-3">
             <div class="max-w-4xl mx-auto flex items-center justify-between">
@@ -111,6 +135,7 @@
                     return {
                         id: item.getAttribute('objectid'),
                         name: item.querySelector('name').textContent,
+                        image: item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '',
                         year: parseInt(item.querySelector('yearpublished')?.textContent || '0'),
                         minPlayers: parseInt(stats?.querySelector('minplayers')?.getAttribute('value') || '1'),
                         maxPlayers: parseInt(stats?.querySelector('maxplayers')?.getAttribute('value') || '1'),
@@ -152,16 +177,67 @@
         }
 
         function evaluateQuestion(q, game) {
-            q = q.toLowerCase();
-            if (q.includes('above 7') && q.includes('rating')) return game.average > 7;
-            if (q.includes('above 8') && q.includes('rating')) return game.average > 8;
-            if (q.includes('above 3') && q.includes('weight')) return game.weight > 3;
-            if (q.includes('2 player')) return game.minPlayers <= 2 && game.maxPlayers >= 2;
-            if (q.includes('4') && q.includes('play')) return game.maxPlayers >= 4;
-            if (q.includes('2010')) return game.year > 2010;
-            if (q.includes('2015')) return game.year > 2015;
-            if (q.includes('2020')) return game.year > 2020;
+            q = q.toLowerCase().trim();
+
+            // Numeric comparisons for rating/weight: "is average rating above 7" or "is weight above 3"
+            let m;
+            m = q.match(/average\s+rating\s+above\s+(\d+(?:\.\d+)?)/);
+            if (m) return game.average > parseFloat(m[1]);
+            m = q.match(/weight\s+above\s+(\d+(?:\.\d+)?)/);
+            if (m) return game.weight > parseFloat(m[1]);
+
+            // General "above N" that mentions rating
+            m = q.match(/rating\s+above\s+(\d+(?:\.\d+)?)/);
+            if (m) return game.average > parseFloat(m[1]);
+
+            // Year checks: "released after 2010" or just a year mentioned
+            m = q.match(/(released\s+after|after)\s*(\d{3,4})/);
+            if (m) return game.year > parseInt(m[2]);
+            m = q.match(/(\b)(19|20)\d{2}\b/);
+            if (m) return game.year > parseInt(m[0]);
+
+            // Player count: "does it play 2 players", "can 4+ people play", "plays 2" etc.
+            m = q.match(/(\d+)\s*\+?\s*(people|players)?/);
+            if (m && q.includes('play')) {
+                const n = parseInt(m[1]);
+                if (q.includes('+')) return game.maxPlayers >= n;
+                // exact or at least: if phrasing includes 'can' or '+', treat as at least
+                if (q.includes('can') || q.includes('+') || q.includes('or more') || q.includes(' or ')) return game.maxPlayers >= n;
+                return game.minPlayers <= n && game.maxPlayers >= n;
+            }
+
+            // Specific 2-player phrasing
+            if (q.includes('2 player') || q.includes('two player') || q.includes('plays 2')) return game.minPlayers <= 2 && game.maxPlayers >= 2;
+
+            // Rank / family heuristics
             if (q.includes('family')) return game.rank < 1000;
+            m = q.match(/rank\s*(?:below|under|<)\s*(\d+)/);
+            if (m) return game.rank > 0 && game.rank < parseInt(m[1]);
+
+            // Name-based checks: "does it start with X" or "starts with 'C'"
+            m = q.match(/start(s)?\s*with\s+['\"]?([a-z0-9 ]+)['\"]?/i) || q.match(/does it start with\s+['\"]?([a-z0-9 ])['\"]?/i);
+            if (m) {
+                const prefix = (m[2] || m[1] || '').trim();
+                if (!prefix) return false;
+                return game.name.toLowerCase().startsWith(prefix.toLowerCase());
+            }
+
+            // Simple keywords
+            if (q.includes('family game') || q.includes('family')) return game.rank < 1000;
+
+            // Generic keywords: year ranges, weight, rating
+            if (q.includes('rating')) {
+                if (q.includes('above 7')) return game.average > 7;
+                if (q.includes('above 8')) return game.average > 8;
+            }
+            if (q.includes('weight') || q.includes('heav')) {
+                if (q.includes('above 3')) return game.weight > 3;
+            }
+
+            // Fallback: try to make a reasonable guess based on simple keywords
+            if (q.includes('classic') || q.includes('abstract')) return Math.random() > 0.5;
+
+            // If we don't recognize the pattern, return a deterministic but varied response
             return Math.random() > 0.5;
         }
 
@@ -176,21 +252,54 @@
             `).join('');
             document.getElementById('historyList').innerHTML = historyHTML || '<p class="text-gray-400 text-sm">No questions yet...</p>';
         }
-
         function guessGame() {
-            const guess = prompt('What game is it?');
+            // Open guess modal instead of prompt
+            document.getElementById('guessInput').value = '';
+            document.getElementById('guessModal').classList.remove('hidden');
+        }
+
+        function closeGuessModal() {
+            document.getElementById('guessModal').classList.add('hidden');
+        }
+
+        function submitGuess() {
+            const guess = document.getElementById('guessInput').value.trim();
             if (!guess) return;
+            document.getElementById('guessModal').classList.add('hidden');
             if (guess.toLowerCase() === currentGame.name.toLowerCase()) {
                 gamesWon++;
-                alert('🎉 Correct! It was ' + currentGame.name);
-                newGame();
+                showRevealModal(true, 'Correct! 🎉', `It was ${currentGame.name}`);
             } else {
-                alert('❌ Wrong! Keep asking questions or give up to see the answer.');
+                showRevealModal(false, 'Wrong guess', 'Keep asking questions or try again.');
             }
         }
 
         function giveUp() {
-            alert('The game was: ' + currentGame.name);
+            showRevealModal(true, 'You gave up', `The game was ${currentGame.name}`);
+        }
+
+        function showRevealModal(revealed, title, msg) {
+            document.getElementById('revealTitle').textContent = title;
+            document.getElementById('revealMsg').textContent = msg;
+            document.getElementById('revealName').textContent = revealed ? currentGame.name : '';
+            const thumb = currentGame.image || '';
+            const imgEl = document.getElementById('revealThumb');
+            if (thumb) {
+                imgEl.src = thumb;
+                imgEl.style.display = 'block';
+            } else {
+                imgEl.style.display = 'none';
+            }
+            document.getElementById('revealModal').classList.remove('hidden');
+            if (revealed) newGame();
+        }
+
+        function closeRevealModal() {
+            document.getElementById('revealModal').classList.add('hidden');
+        }
+
+        function newGameFromReveal() {
+            closeRevealModal();
             newGame();
         }
 
