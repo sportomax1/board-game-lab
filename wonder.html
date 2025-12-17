@@ -18,12 +18,12 @@
         .settings{display:flex;align-items:center;gap:10px}
         .canvas-wrap{margin-top:16px;background:linear-gradient(180deg,rgba(255,255,255,0.02),rgba(255,255,255,0.01));padding:14px;border-radius:12px;min-height:420px}
         .grid{position:relative;margin:0 auto;background:transparent;display:block}
-        .cell-img{position:absolute;width:64px;height:88px;border-radius:6px;object-fit:cover;box-shadow:0 6px 18px rgba(2,6,23,0.6);transition:transform .08s linear}
+        .cell-img{position:absolute;width:64px;height:64px;border-radius:6px;object-fit:cover;box-shadow:0 6px 18px rgba(2,6,23,0.6);transition:transform .08s linear}
         .stacked{transform:translateZ(0) scale(.98)}
         .status{margin-top:10px;color:#9fb7ff;font-size:13px}
         .options{display:flex;gap:12px;align-items:center}
         .small{font-size:13px;color:#9fb7ff}
-        @media(max-width:640px){.cell-img{width:52px;height:72px}}
+        @media(max-width:640px){.cell-img{width:52px;height:52px}}
     </style>
 </head>
 <body>
@@ -57,8 +57,8 @@
                 <input id="delay" type="text" value="60" style="width:80px">
             </div>
             <div>
-                <label for="zoom">Preview scale</label><br>
-                <input type="range" id="zoom" min="0.4" max="2" step="0.05" value="1" style="width:140px">
+                <label for="gridLimit">Grid limit (max cols/rows)</label><br>
+                <input id="gridLimit" type="text" value="25" style="width:80px"> <span class="small">(e.g. 25)</span>
             </div>
             <div>
                 <label for="centerToggle">Center final layout</label><br>
@@ -76,6 +76,7 @@
         </div>
 
         <div class="canvas-wrap">
+            <progress id="progressBar" value="0" max="100" style="width:100%;height:10px;border-radius:6px;margin-bottom:8px"></progress>
             <div id="grid" class="grid"></div>
             <div id="status" class="status">Idle — press Run to load collection and begin.</div>
         </div>
@@ -92,7 +93,7 @@
         const delayEl = document.getElementById('delay');
         const statusEl = document.getElementById('status');
         const gridEl = document.getElementById('grid');
-        const zoomEl = document.getElementById('zoom');
+        const gridLimitEl = document.getElementById('gridLimit');
         const centerEl = document.getElementById('centerToggle');
         const canvasModeEl = document.getElementById('canvasMode');
         const filterOwn = document.getElementById('f-own');
@@ -184,17 +185,11 @@
             const minY = Math.min(...ys); const maxY = Math.max(...ys);
             const cellW = parseInt(gridEl.dataset.cell || getCellSize());
 
-            // scale handling
-            const scale = parseFloat(zoomEl.value || '1');
-            gridEl.style.transform = `scale(${scale})`;
-            gridEl.style.transformOrigin = 'top left';
-
-            // when centering is requested, compute a left margin to visually center the scaled grid
+            // no zoom: compute centering based on raw size
             const parentWidth = gridEl.parentElement.clientWidth;
             const rawWidth = (maxX - minX + 1) * cellW;
-            const scaledWidth = rawWidth * scale;
             if(centerEl.checked){
-                const ml = Math.max(0, Math.floor((parentWidth - scaledWidth) / 2));
+                const ml = Math.max(0, Math.floor((parentWidth - rawWidth) / 2));
                 gridEl.style.marginLeft = ml + 'px';
             } else {
                 gridEl.style.marginLeft = '0px';
@@ -225,6 +220,10 @@
             const allowStack = stackingEl.checked;
             const delay = Math.max(0, parseInt(delayEl.value) || 60);
             const imgs = shuffle(items.slice());
+            const gridLimit = Math.max(1, parseInt(gridLimitEl.value||25));
+            const progressBar = document.getElementById('progressBar');
+
+            const totalItems = imgs.length + 1; // include first placed
 
             // preload unique thumbnails into imgCache for canvas rendering
             const uniqueUrls = Array.from(new Set(items.map(i=>i.thumb)));
@@ -242,6 +241,7 @@
             placedList.push({x:cx,y:cy,imgs:[first]});
             let currentX = cx, currentY = cy;
             setStatus('Placing 1 / '+(placedList.length + imgs.length));
+            try{ if(progressBar) progressBar.value = 0 }catch(e){}
 
             // track bounds for layout calculation
             const cells = [{x:cx,y:cy}];
@@ -256,6 +256,10 @@
                 for(let attempt=0;attempt<dirs.length;attempt++){
                     const [dx,dy] = dirs[attempt];
                     const nx = currentX + dx, ny = currentY + dy;
+                    // check grid limit if placing at nx,ny would expand bounds beyond limit
+                    const minX = Math.min(...cells.map(c=>c.x), nx); const maxX = Math.max(...cells.map(c=>c.x), nx);
+                    const minY = Math.min(...cells.map(c=>c.y), ny); const maxY = Math.max(...cells.map(c=>c.y), ny);
+                    if((maxX - minX + 1) > gridLimit || (maxY - minY + 1) > gridLimit) { continue; }
                     const k = key(nx,ny);
                     if(placedMap.has(k)){
                         if(allowStack){ // stacking allowed -> push
@@ -267,7 +271,7 @@
                             if(idx>=0) placedList[idx].imgs.push(p); else placedList.push({x:nx,y:ny,imgs:[...arr]});
                             currentX = nx; currentY = ny; placed=true; break;
                         } else {
-                            // cannot place here, continue
+                            // cannot place here, continue trying other directions
                             continue;
                         }
                     } else {
@@ -285,31 +289,47 @@
                     for(let t=0;t<12;t++){
                         const rnd = Math.floor(Math.random()*4); const [dx,dy]=[[1,0],[-1,0],[0,1],[0,-1]][rnd];
                         const nx = currentX + dx, ny = currentY + dy; const k=key(nx,ny);
+                        // check grid limit when attempting random adjacent
+                        const minX2 = Math.min(...cells.map(c=>c.x), nx); const maxX2 = Math.max(...cells.map(c=>c.x), nx);
+                        const minY2 = Math.min(...cells.map(c=>c.y), ny); const maxY2 = Math.max(...cells.map(c=>c.y), ny);
+                        if((maxX2 - minX2 + 1) > gridLimit || (maxY2 - minY2 + 1) > gridLimit) continue;
                         if(placedMap.has(k) && !allowStack) continue;
                         if(placedMap.has(k) && allowStack){ const p = mkPlacedItem(it); placedMap.get(k).push(p); const idx=placedList.findIndex(c=>c.x===nx&&c.y===ny); if(idx>=0) placedList[idx].imgs.push(p); currentX=nx; currentY=ny; extraPlaced=true; break }
                         if(!placedMap.has(k)){ const p = mkPlacedItem(it); placedMap.set(k,[p]); placedList.push({x:nx,y:ny,imgs:[p]}); currentX=nx; currentY=ny; cells.push({x:nx,y:ny}); extraPlaced=true; break }
                     }
                     if(!extraPlaced){
-                        // teleport: pick random placed cell as new current
-                        const randIdx = Math.floor(Math.random()*placedList.length);
-                        currentX = placedList[randIdx].x; currentY = placedList[randIdx].y;
-                        // now place adjacent if possible next loop will handle
-                        i--; // retry same image
+                        // no adjacent placement found within grid/attempts
+                        if(allowStack){
+                            // stack onto a random placed cell
+                            const randIdx = Math.floor(Math.random()*placedList.length);
+                            const nx = placedList[randIdx].x; const ny = placedList[randIdx].y;
+                            const p = mkPlacedItem(it);
+                            placedMap.get(key(nx,ny)).push(p);
+                            const idx = placedList.findIndex(c=>c.x===nx&&c.y===ny);
+                            if(idx>=0) placedList[idx].imgs.push(p);
+                            currentX = nx; currentY = ny;
+                        } else {
+                            // skip this item (can't place within grid limit and stacking disabled)
+                            // do nothing and continue to next image
+                        }
                     }
                 }
 
-                // update bounds and render (choose canvas or DOM)
+                // update bounds and render (choose canvas or DOM) and update progress
                 ensureSize(cells);
                 if(canvasModeEl.checked){
                     renderCanvas(placedList);
                 } else {
                     renderPlaced(placedList);
                 }
-                setStatus('Placed '+ (1 + i) +' / '+ (1 + imgs.length));
+                // update progress bar
+                try{ if(progressBar){ const pct = Math.round((placedList.length / totalItems) * 100); progressBar.value = Math.min(100,pct); } }catch(e){}
+                setStatus('Placed '+ (placedList.length) +' / '+ (totalItems));
                 await new Promise(r=>setTimeout(r, delay));
             }
 
             setStatus('Done — placed '+(placedList.length)+' positions.');
+            try{ if(progressBar) progressBar.value = 100 }catch(e){}
         }
 
         runBtn.addEventListener('click', ()=>{ if(!aborted) run(); });
@@ -328,7 +348,7 @@
             let cv = document.getElementById('cv');
             const cols = (maxX - minX + 1);
             const rows = (maxY - minY + 1);
-            const scale = parseFloat(zoomEl.value || '1');
+            const scale = 1; // no zoom
             const rawW = cols * cellW;
             const rawH = Math.round(rows * cellW * 1.15);
             const outW = Math.max(1, Math.round(rawW * scale));
@@ -359,7 +379,7 @@
             const minX = Math.min(...xs); const maxX = Math.max(...xs);
             const minY = Math.min(...ys); const maxY = Math.max(...ys);
             const cellW = parseInt(gridEl.dataset.cell || getCellSize());
-            const scale = parseFloat(zoomEl.value || '1');
+            const scale = 1;
 
             const cv = ensureCanvas(minX,maxX,minY,maxY,cellW);
             const ctx = cv.getContext('2d');
@@ -367,7 +387,7 @@
             ctx.fillStyle = '#071034'; ctx.fillRect(0,0,cv.width,cv.height);
             ctx.imageSmoothingEnabled = true;
 
-            const imgW = cellW; const imgH = Math.round(cellW * (88/64));
+            const imgW = cellW; const imgH = Math.round(cellW * 1); // square thumbs
 
             // draw each cell
             const now = Date.now();
@@ -421,20 +441,35 @@
             const cellW = parseInt(gridEl.dataset.cell || getCellSize());
             const imgW = cellW; const imgH = Math.round(cellW * (88/64));
 
-            const scale = parseFloat(zoomEl.value || '1');
+            const scale = 1;
             const outW = Math.max(1, Math.round((maxX - minX + 1) * cellW * scale));
             const outH = Math.max(1, Math.round((maxY - minY + 1) * cellW * 1.15 * scale));
 
             setStatus('Preparing export...');
 
-            // load all unique images
+            // If we have an on-screen canvas (canvas mode), use it directly for export
+            const cv = document.getElementById('cv');
+            if(cv && canvasModeEl.checked){
+                cv.toBlob(function(blob){
+                    const a = document.createElement('a');
+                    a.href = URL.createObjectURL(blob);
+                    a.download = 'wonder-export.png';
+                    document.body.appendChild(a); a.click(); a.remove();
+                    setStatus('Export ready.');
+                });
+                return;
+            }
+
+            // build image map using cache if available, else load missing
             const urls = Array.from(new Set(placed.flatMap(c=>c.imgs.map(i=>i.thumb))));
             const imgMap = {};
+            const missing = [];
+            urls.forEach(u=>{ if(imgCache[u]) imgMap[u]=imgCache[u]; else missing.push(u) });
             try{
-                const loads = await Promise.all(urls.map(u=>loadImage(u).then(im=>{ imgMap[u]=im })))
-            }catch(e){ setStatus('Error loading images for export.'); console.error(e); return }
+                const loads = await Promise.all(missing.map(u=>loadImage(u).then(im=>{ imgMap[u]=im }).catch(e=>{ console.warn('export load fail',u); })))
+            }catch(e){ console.error(e) }
 
-            // draw
+            // draw onto offscreen canvas
             const canvas = document.createElement('canvas');
             canvas.width = outW; canvas.height = outH;
             const ctx = canvas.getContext('2d');
