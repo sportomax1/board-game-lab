@@ -161,7 +161,7 @@
             <!-- Tab Navigation -->
             <div style="display: flex; gap: 0.5em; margin-bottom: 1.5em; border-bottom: 2px solid #e0e0e0; overflow-x: auto; flex-wrap: wrap;">
                 <button id="menuTabBtn" class="no-print" style="flex: 1; min-width: 110px; padding: 1em; border: none; background: none; font-size: 1em; font-weight: 600; border-bottom: 3px solid #1976d2; color: #1976d2; cursor: pointer;">👥 Player Count Menu</button>
-                <button id="coverTabBtn" class="no-print" style="flex: 1; min-width: 110px; padding: 1em; border: none; background: none; font-size: 1em; font-weight: 600; border-bottom: 3px solid transparent; color: #666; cursor: pointer;">📸 Cover Collage</button>
+                <button id="coverTabBtn" class="no-print" style="flex: 1; min-width: 110px; padding: 1em; border: none; background: none; font-size: 1em; font-weight: 600; border-bottom: 3px solid transparent; color: #666; cursor: pointer;">🖼️ Mosaic</button>
                 <button id="privateTabBtn" class="no-print" style="flex: 1; min-width: 110px; padding: 1em; border: none; background: none; font-size: 1em; font-weight: 600; border-bottom: 3px solid transparent; color: #666; cursor: pointer;">📋 Private Collection</button>
             </div>
 
@@ -199,7 +199,7 @@
 
             <!-- Cover Tab Content -->
             <div id="coverTabContent" style="display: none;">
-                <h1 style="text-align: center;">🎲 My Collection</h1>
+                <h1 style="text-align: center;">🖼️ Mosaic</h1>
                 
                 <div class="form-container">
                     <div class="form-group">
@@ -215,6 +215,30 @@
                             <option value="rating">Your Rating</option>
                             <option value="rank">BGG Rank</option>
                         </select>
+                    </div>
+                    <div class="form-group" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                        <div style="flex:1;min-width:110px">
+                            <label class="form-label">Columns</label>
+                            <input id="printColumnsInput" type="number" class="form-input" value="10" min="1" style="width:100%">
+                        </div>
+                        <div style="flex:1;min-width:110px">
+                            <label class="form-label">Rows (optional)</label>
+                            <input id="printRowsInput" type="number" class="form-input" placeholder="auto" min="1" style="width:100%">
+                        </div>
+                    </div>
+                    <div class="form-group" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
+                        <div style="flex:1;min-width:200px">
+                            <label class="form-label">Header Text</label>
+                            <input id="printHeaderInput" class="form-input" placeholder="Header (printed at top)" />
+                        </div>
+                        <div style="flex:1;min-width:200px">
+                            <label class="form-label">Footer Text</label>
+                            <input id="printFooterInput" class="form-input" placeholder="Footer (printed at bottom)" />
+                        </div>
+                    </div>
+                    <div class="form-group" style="max-width:220px">
+                        <label class="form-label">Page Margin (inches)</label>
+                        <input id="printMarginInput" type="number" step="0.05" class="form-input" value="0.1" min="0" style="width:100%">
                     </div>
                     
                     <div class="form-group">
@@ -1215,7 +1239,7 @@
             privateTabBtn.style.color = '#1976d2';
         });
 
-        // Cover Collage Functions
+        // Mosaic Functions
         async function loadCoverCollection() {
             const username = document.getElementById('coverUsername').value.trim();
             if (!username) {
@@ -1226,20 +1250,28 @@
             document.getElementById('coverLoadBtn').disabled = true;
 
             try {
-                const xml = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`)
-                    .then(r => r.text());
-                
+                // Fetch all pages of the user's collection (own=1), merging items across pages
                 const parser = new DOMParser();
-                const doc = parser.parseFromString(xml, 'text/xml');
-                
-                let items = Array.from(doc.querySelectorAll('item'));
+                let allItems = [];
+                let page = 1;
+                while (page <= 50) { // safety cap
+                    const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1&page=${page}`;
+                    const xml = await fetch(url).then(r => r.text());
+                    const doc = parser.parseFromString(xml, 'text/xml');
+                    const items = Array.from(doc.querySelectorAll('item'));
+                    if (!items.length) break;
+                    allItems = allItems.concat(items);
+                    // If fewer than expected, assume last page
+                    if (items.length < 100) break;
+                    page++;
+                }
                 
                 if (document.getElementById('coverExcludeExpansions').checked) {
-                    items = items.filter(item => item.getAttribute('subtype') !== 'boardgameexpansion');
+                    allItems = allItems.filter(item => item.getAttribute('subtype') !== 'boardgameexpansion');
                 }
 
                 const games = [];
-                items.forEach(item => {
+                allItems.forEach(item => {
                     const name = item.querySelector('name')?.textContent || 'Unknown';
                     const thumbnail = item.querySelector('thumbnail')?.textContent || '';
                     
@@ -1300,45 +1332,66 @@
         function printCoverCollage() {
             const username = document.getElementById('coverUsername').value;
             const sortOrder = document.getElementById('sortOrder').value;
+            const cols = Math.max(1, parseInt(document.getElementById('printColumnsInput')?.value || 10));
+            const rowsInput = parseInt(document.getElementById('printRowsInput')?.value || 0);
+            const headerText = (document.getElementById('printHeaderInput')?.value || (username + "'s Collection")).trim();
+            const footerText = (document.getElementById('printFooterInput')?.value || '').trim();
+            const marginIn = Math.max(0, parseFloat(document.getElementById('printMarginInput')?.value || 0.1));
+
+            const items = coverGames.slice(0, 120);
+            const count = items.length;
+            // compute rows automatically if not provided
+            const rows = rowsInput && rowsInput > 0 ? rowsInput : Math.ceil(count / cols);
+
             const printWindow = window.open('', 'print_collage', 'width=8.5in,height=11in');
-            
+            const pageW = 8.5; const pageH = 11; // inches
+            const usableW = Math.max(0.1, pageW - (marginIn * 2));
+            const usableH = Math.max(0.1, pageH - (marginIn * 2));
+
+            // CSS to size the grid so tiles fill the printable area; images use contain (do not crop photos)
             let html = `
             <!DOCTYPE html>
             <html>
             <head>
+                <meta name="viewport" content="width=device-width,initial-scale=1">
                 <style>
-                    @page { margin: 0.25in; size: letter; }
-                    body { margin: 0; padding: 0.25in; background: white; font-family: Arial, sans-serif; }
-                    .header { text-align: center; margin-bottom: 0.3in; }
-                    .header h1 { margin: 0; font-size: 18px; }
-                    .header p { margin: 0; font-size: 11px; color: #666; }
-                    .collage { display: grid; grid-template-columns: repeat(10, 1fr); gap: 2px; }
-                    .tile { aspect-ratio: 0.7; overflow: hidden; border: 1px solid #ddd; }
-                    .tile img { width: 100%; height: 100%; object-fit: contain; display: block; pointer-events: none; user-select: none; -webkit-user-select: none; }
+                    @page { margin: ${marginIn}in; size: ${pageW}in ${pageH}in; }
+                    html,body { width: ${pageW}in; height: ${pageH}in; margin: 0; padding: 0; }
+                    body { background: white; font-family: Arial, sans-serif; }
+                    .page { box-sizing: border-box; width: ${usableW}in; height: ${usableH}in; margin: 0 auto; display: flex; flex-direction: column; }
+                    .header { text-align: center; padding: 0.05in 0; }
+                    .header h1 { margin: 0; font-size: 14pt; }
+                    .header p { margin: 0; font-size: 9pt; color: #333; }
+                    .footer { text-align: center; padding: 0.05in 0; font-size: 9pt; color: #333; }
+                    .grid-wrap { flex: 1 1 auto; display: grid; grid-template-columns: repeat(${cols}, 1fr); grid-template-rows: repeat(${rows}, 1fr); gap: 2px; align-items: stretch; justify-items: stretch; }
+                    .tile { width: 100%; height: 100%; overflow: hidden; display: block; }
+                    /* Use contain so photos aren't cropped/zoomed — tiles will be sized to fill page */
+                    .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
+                    /* Ensure printed colors and text are readable */
+                    a { color: #000; }
                 </style>
             </head>
             <body>
-                <div class="header">
-                    <h1>` + username + `'s Collection</h1>
-                    <p>Sorted by ` + sortOrder + ` | Generated ` + new Date().toLocaleDateString() + `</p>
-                </div>
-                <div class="collage">
+                <div class="page">
+                    <div class="header"><h1>` + escapeHtml(headerText) + `</h1><p>Sorted by ` + escapeHtml(sortOrder) + ` | Generated ` + new Date().toLocaleDateString() + `</p></div>
+                    <div class="grid-wrap">
             `;
 
-            coverGames.slice(0, 120).forEach(game => {
-                html += `<div class="tile"><img src="` + game.thumbnail + `" alt="` + game.name + `"></div>`;
-            });
+            // fill grid with items; if fewer items than cells, leave blanks
+            const totalCells = cols * rows;
+            for (let i = 0; i < totalCells; i++) {
+                const g = items[i];
+                if (g && g.thumbnail) html += `<div class="tile"><img src="${g.thumbnail}" alt="${escapeHtml(g.name)}"></div>`;
+                else html += `<div class="tile"></div>`;
+            }
 
+            html += `</div>`;
+            if (footerText) html += `<div class="footer">` + escapeHtml(footerText) + `</div>`;
             html += `</div></body></html>`;
-            
+
             printWindow.document.write(html);
             printWindow.document.close();
-            
-            printWindow.copyImageToClipboard = function() {
-                alert('To copy as image: Take a screenshot (Windows: Win+Shift+S, Mac: Cmd+Shift+4) or right-click and Save Image');
-            };
-            
-            setTimeout(() => printWindow.print(), 500);
+            setTimeout(()=>{ printWindow.focus(); printWindow.print(); }, 600);
         }
 
         document.getElementById('coverLoadBtn').addEventListener('click', loadCoverCollection);
@@ -1375,6 +1428,11 @@
             if (!dateStr) return '-';
             const date = new Date(dateStr);
             return date.toLocaleDateString('en-US', { year: 'numeric', month: 'short', day: 'numeric' });
+        }
+
+        function escapeHtml(str){
+            if(!str) return '';
+            return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         }
 
         function updatePrivateProgress(percent, text) {
