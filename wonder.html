@@ -57,6 +57,10 @@
                 <input id="delay" type="text" value="60" style="width:80px">
             </div>
             <div>
+                <label for="enableGridLimit">Enable grid limit</label><br>
+                <input id="enableGridLimit" type="checkbox"> <span class="small">(check to enforce max grid size)</span>
+            </div>
+            <div>
                 <label for="gridLimit">Grid limit (max cols/rows)</label><br>
                 <input id="gridLimit" type="text" value="25" style="width:80px"> <span class="small">(e.g. 25)</span>
             </div>
@@ -64,10 +68,7 @@
                 <label for="centerToggle">Center final layout</label><br>
                 <input id="centerToggle" type="checkbox" checked>
             </div>
-            <div>
-                <label for="canvasMode">Use canvas renderer</label><br>
-                <input id="canvasMode" type="checkbox">
-            </div>
+            <!-- canvas renderer removed: rendering is DOM-based only -->
             <div style="margin-left:auto" class="settings">
                 <button id="runBtn" class="btn">▶️ Run</button>
                 <button id="stopBtn" class="btn-secondary">Stop</button>
@@ -94,8 +95,8 @@
         const statusEl = document.getElementById('status');
         const gridEl = document.getElementById('grid');
         const gridLimitEl = document.getElementById('gridLimit');
+        const enableGridLimitEl = document.getElementById('enableGridLimit');
         const centerEl = document.getElementById('centerToggle');
-        const canvasModeEl = document.getElementById('canvasMode');
         const filterOwn = document.getElementById('f-own');
         const filterWant = document.getElementById('f-want');
         const filterWantToPlay = document.getElementById('f-wanttoplay');
@@ -195,21 +196,57 @@
                 gridEl.style.marginLeft = '0px';
             }
 
-            // render images
+            // render images into per-cell containers so we can show stacks on hover/click
+            // ensure tooltip element exists
+            let tooltip = document.getElementById('stackTooltip');
+            if(!tooltip){
+                tooltip = document.createElement('div'); tooltip.id = 'stackTooltip';
+                tooltip.style.position = 'absolute'; tooltip.style.pointerEvents = 'none';
+                tooltip.style.background = 'rgba(6,10,20,0.9)'; tooltip.style.color = '#e6eef8';
+                tooltip.style.padding = '8px'; tooltip.style.borderRadius = '8px'; tooltip.style.fontSize = '13px';
+                tooltip.style.boxShadow = '0 6px 20px rgba(0,0,0,0.6)'; tooltip.style.zIndex = 9999; tooltip.style.display = 'none';
+                document.body.appendChild(tooltip);
+            }
+
             placed.forEach(cell=>{
                 const fx = (cell.x - minX) * cellW;
                 const fy = (cell.y - minY) * cellW * 1.15;
-                // show stacked images: topmost last
+                const wrapper = document.createElement('div');
+                wrapper.style.position = 'absolute'; wrapper.style.left = fx + 'px'; wrapper.style.top = fy + 'px';
+                wrapper.style.width = cellW + 'px'; wrapper.style.height = Math.round(cellW * 1.15) + 'px';
+                wrapper.style.pointerEvents = 'auto';
+
+                const names = cell.imgs.map(i=>i.name || 'Unknown');
+                wrapper.dataset.names = names.join('\n');
+
                 cell.imgs.forEach((it,idx)=>{
                     const img = document.createElement('img');
                     img.src = it.thumb;
                     img.className = 'cell-img';
-                    img.style.left = (fx + (idx*4)) + 'px';
-                    img.style.top = (fy - (idx*6)) + 'px';
+                    img.style.left = (idx*4) + 'px';
+                    img.style.top = (-(idx*6)) + 'px';
                     img.style.zIndex = 100 + idx;
                     if(idx>0) img.classList.add('stacked');
-                    gridEl.appendChild(img);
+                    wrapper.appendChild(img);
                 });
+
+                if(cell.imgs.length > 1){
+                    wrapper.style.cursor = 'pointer';
+                    wrapper.addEventListener('mouseenter', (ev)=>{
+                        tooltip.textContent = wrapper.dataset.names;
+                        tooltip.style.left = (ev.pageX + 12) + 'px'; tooltip.style.top = (ev.pageY + 12) + 'px'; tooltip.style.display = 'block';
+                    });
+                    wrapper.addEventListener('mousemove', (ev)=>{
+                        tooltip.style.left = (ev.pageX + 12) + 'px'; tooltip.style.top = (ev.pageY + 12) + 'px';
+                    });
+                    wrapper.addEventListener('mouseleave', ()=>{ tooltip.style.display = 'none'; });
+                    wrapper.addEventListener('click', (ev)=>{
+                        // on click show a simple modal-like list (reuse tooltip but persist)
+                        tooltip.style.display = 'block'; tooltip.style.left = (ev.pageX + 12) + 'px'; tooltip.style.top = (ev.pageY + 12) + 'px';
+                    });
+                }
+
+                gridEl.appendChild(wrapper);
             });
 
             // store last placed layout for export (deep clone)
@@ -256,24 +293,14 @@
                 for(let attempt=0;attempt<dirs.length;attempt++){
                     const [dx,dy] = dirs[attempt];
                     const nx = currentX + dx, ny = currentY + dy;
-                    // check grid limit if placing at nx,ny would expand bounds beyond limit
-                    const minX = Math.min(...cells.map(c=>c.x), nx); const maxX = Math.max(...cells.map(c=>c.x), nx);
-                    const minY = Math.min(...cells.map(c=>c.y), ny); const maxY = Math.max(...cells.map(c=>c.y), ny);
-                    if((maxX - minX + 1) > gridLimit || (maxY - minY + 1) > gridLimit) { continue; }
+                        // check grid limit if enabled: skip candidate if it would exceed the configured grid
+                        const minX = Math.min(...cells.map(c=>c.x), nx); const maxX = Math.max(...cells.map(c=>c.x), nx);
+                        const minY = Math.min(...cells.map(c=>c.y), ny); const maxY = Math.max(...cells.map(c=>c.y), ny);
+                        if(enableGridLimitEl && enableGridLimitEl.checked){ if((maxX - minX + 1) > gridLimit || (maxY - minY + 1) > gridLimit) { continue; } }
                     const k = key(nx,ny);
                     if(placedMap.has(k)){
-                        if(allowStack){ // stacking allowed -> push
-                            const arr = placedMap.get(k);
-                            const p = mkPlacedItem(it);
-                            arr.push(p);
-                            // update list entry
-                            const idx = placedList.findIndex(c=>c.x===nx && c.y===ny);
-                            if(idx>=0) placedList[idx].imgs.push(p); else placedList.push({x:nx,y:ny,imgs:[...arr]});
-                            currentX = nx; currentY = ny; placed=true; break;
-                        } else {
-                            // cannot place here, continue trying other directions
-                            continue;
-                        }
+                        // treat occupied as blocked during initial attempts (prefer empty cell)
+                        continue;
                     } else {
                         // place new
                         const p = mkPlacedItem(it);
@@ -292,15 +319,18 @@
                         // check grid limit when attempting random adjacent
                         const minX2 = Math.min(...cells.map(c=>c.x), nx); const maxX2 = Math.max(...cells.map(c=>c.x), nx);
                         const minY2 = Math.min(...cells.map(c=>c.y), ny); const maxY2 = Math.max(...cells.map(c=>c.y), ny);
-                        if((maxX2 - minX2 + 1) > gridLimit || (maxY2 - minY2 + 1) > gridLimit) continue;
-                        if(placedMap.has(k) && !allowStack) continue;
-                        if(placedMap.has(k) && allowStack){ const p = mkPlacedItem(it); placedMap.get(k).push(p); const idx=placedList.findIndex(c=>c.x===nx&&c.y===ny); if(idx>=0) placedList[idx].imgs.push(p); currentX=nx; currentY=ny; extraPlaced=true; break }
-                        if(!placedMap.has(k)){ const p = mkPlacedItem(it); placedMap.set(k,[p]); placedList.push({x:nx,y:ny,imgs:[p]}); currentX=nx; currentY=ny; cells.push({x:nx,y:ny}); extraPlaced=true; break }
+                        if(enableGridLimitEl && enableGridLimitEl.checked){ if((maxX2 - minX2 + 1) > gridLimit || (maxY2 - minY2 + 1) > gridLimit) continue; }
+                        if(placedMap.has(k)){
+                            // occupied -> skip for now
+                            continue;
+                        }
+                        // place new
+                        const p = mkPlacedItem(it); placedMap.set(k,[p]); placedList.push({x:nx,y:ny,imgs:[p]}); currentX=nx; currentY=ny; cells.push({x:nx,y:ny}); extraPlaced=true; break;
                     }
                     if(!extraPlaced){
-                        // no adjacent placement found within grid/attempts
+                        // no adjacent empty placement found within attempts
                         if(allowStack){
-                            // stack onto a random placed cell
+                            // stack onto a random placed cell (last-resort)
                             const randIdx = Math.floor(Math.random()*placedList.length);
                             const nx = placedList[randIdx].x; const ny = placedList[randIdx].y;
                             const p = mkPlacedItem(it);
@@ -317,11 +347,8 @@
 
                 // update bounds and render (choose canvas or DOM) and update progress
                 ensureSize(cells);
-                if(canvasModeEl.checked){
-                    renderCanvas(placedList);
-                } else {
-                    renderPlaced(placedList);
-                }
+                // DOM-only rendering
+                renderPlaced(placedList);
                 // update progress bar
                 try{ if(progressBar){ const pct = Math.round((placedList.length / totalItems) * 100); progressBar.value = Math.min(100,pct); } }catch(e){}
                 setStatus('Placed '+ (placedList.length) +' / '+ (totalItems));
@@ -460,13 +487,29 @@
                 return;
             }
 
-            // build image map using cache if available, else load missing
+            // helper: proxied URL for image-proxy fallback
+            function proxiedUrl(u){ return '/api/image-proxy?url=' + encodeURIComponent(u); }
+
+            // build image map using cache if available, else load missing (try direct then proxy)
             const urls = Array.from(new Set(placed.flatMap(c=>c.imgs.map(i=>i.thumb))));
             const imgMap = {};
             const missing = [];
             urls.forEach(u=>{ if(imgCache[u]) imgMap[u]=imgCache[u]; else missing.push(u) });
             try{
-                const loads = await Promise.all(missing.map(u=>loadImage(u).then(im=>{ imgMap[u]=im }).catch(e=>{ console.warn('export load fail',u); })))
+                await Promise.all(missing.map(async (u) => {
+                    try{
+                        const im = await loadImage(u);
+                        imgMap[u] = im;
+                    }catch(e){
+                        // try the image proxy as a fallback (helps with CORS-blocked hosts)
+                        try{
+                            const im2 = await loadImage(proxiedUrl(u));
+                            imgMap[u] = im2;
+                        }catch(e2){
+                            console.warn('export load fail (direct+proxy)', u, e2);
+                        }
+                    }
+                }));
             }catch(e){ console.error(e) }
 
             // draw onto offscreen canvas

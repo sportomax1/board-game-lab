@@ -37,7 +37,7 @@
             </div>
             <div>
                 <label class="small">Min plays</label><br>
-                <input id="minPlays" value="0" style="width:80px">
+                <input id="minPlays" value="1" style="width:80px">
             </div>
             <div>
                 <label class="small">Min avg rating</label><br>
@@ -58,6 +58,28 @@
                 <select id="model">
                     <option value="elo">ELO (update ratings)</option>
                     <option value="wins">Win-Count (simple)</option>
+                </select>
+            </div>
+            <div>
+                <label class="small">Seed Mode</label><br>
+                <select id="seedMode">
+                    <option value="none">None (random/1500)</option>
+                    <option value="avg">Seed by Average Rating</option>
+                    <option value="avg_scaled">Seed by Avg (scaled)</option>
+                    <option value="position">Seed by Position (sorted by avg)</option>
+                </select>
+            </div>
+            <div>
+                <label class="small">Match Preset</label><br>
+                <select id="matchPreset">
+                    <option value="preset_500">~500 comparisons</option>
+                    <option value="preset_750">~750 comparisons</option>
+                    <option value="preset_1000">~1,000 comparisons</option>
+                    <option value="preset_2000">~2,000 comparisons</option>
+                    <option value="mergesort">MergeSort-like (N log2 N)</option>
+                    <option value="quicksort">QuickSort avg (~2 N ln N)</option>
+                    <option value="singleelim">Single-elimination (N-1)</option>
+                    <option value="roundrobin">Round-robin (N*(N-1)/2)</option>
                 </select>
             </div>
             <div>
@@ -96,8 +118,8 @@
 
             <div style="margin-top:12px;display:flex;gap:12px">
                 <div style="flex:1">
-                    <div class="small">Leaderboard</div>
-                    <table id="leaderboard"><thead><tr><th>#</th><th>Thumb</th><th>Name</th><th>Rating</th><th>Wins</th></tr></thead><tbody></tbody></table>
+                            <div class="small">Leaderboard</div>
+                            <table id="leaderboard"><thead><tr><th>#</th><th>Thumb</th><th>Name</th><th>Seed</th><th>Rating</th><th>Wins</th></tr></thead><tbody></tbody></table>
                 </div>
                 <div style="width:320px">
                     <div class="small">Log</div>
@@ -120,6 +142,8 @@
         const topByRatingEl = document.getElementById('topByRating');
         const excludeExpansionsEl = document.getElementById('excludeExpansions');
         const useRatingBiasEl = document.getElementById('useRatingBias');
+        const seedModeEl = document.getElementById('seedMode');
+        const matchPresetEl = document.getElementById('matchPreset');
         const leftThumb = document.getElementById('leftThumb');
         const rightThumb = document.getElementById('rightThumb');
         const leftWin = document.getElementById('leftWin');
@@ -131,7 +155,7 @@
         const shareBtn = document.getElementById('shareBtn');
         const downloadBtn = document.getElementById('downloadBtn');
 
-        let items = []; // {id,name,thumb,trueStrength,elo,wins}
+        let items = []; // {id,name,thumb,trueStrength,elo,wins,seedValue}
         let running = false; let simTimer = null;
         let currentPair = [];
         let history = [];
@@ -179,9 +203,28 @@
                     filtered = filtered.slice().sort((a,b)=> (b.avg||0) - (a.avg||0)).slice(0, topBy);
                 }
 
+                // determine seeding choice
+                const seedMode = document.getElementById('seedMode')?.value || 'none';
+
+                // if position-based seeding, pre-sort by avg
+                let posSorted = filtered.slice();
+                posSorted.sort((a,b)=> (b.avg||0) - (a.avg||0));
+
                 items = filtered.map((it,idx)=>{
-                    const baseStrength = it.avg ? (parseFloat(it.avg)*40) : (1500 + (Math.random()-0.5)*300);
-                    return {id:it.id,name:it.name,thumb:it.thumb,trueStrength:baseStrength,elo:1500,wins:0}
+                    // default seedValue and initial elo
+                    let seedValue = null;
+                    if(seedMode === 'avg' && it.avg){ seedValue = 1000 + (parseFloat(it.avg) * 100); }
+                    else if(seedMode === 'avg_scaled' && it.avg){ seedValue = 1200 + ((parseFloat(it.avg)-5) * 120); }
+                    else if(seedMode === 'position'){
+                        const pos = posSorted.findIndex(x=>x.id===it.id);
+                        // map position to seed between 1600 (top) and 1000 (bottom)
+                        const max = Math.max(1, posSorted.length-1);
+                        seedValue = 1600 - ((pos / max) * 600);
+                    }
+                    // fallback random-ish
+                    if(seedValue === null) seedValue = 1500 + (Math.random()-0.5)*200;
+
+                    return {id:it.id,name:it.name,thumb:it.thumb,avg:it.avg,subtype:it.subtype,numplays:it.numplays,seedValue:Math.round(seedValue),trueStrength:seedValue,elo:Math.round(seedValue),wins:0}
                 });
                 updateLeaderboard();
                 computeProjections();
@@ -198,7 +241,8 @@
             leaderboardBody.innerHTML = '';
             sorted.forEach((it,i)=>{
                 const tr = document.createElement('tr');
-                tr.innerHTML = `<td>${i+1}</td><td><img src="${it.thumb}" style="width:48px;height:66px;object-fit:cover;border-radius:4px"></td><td>${it.name}</td><td>${Math.round(it.elo)}</td><td>${it.wins}</td>`;
+                const seedDisplay = it.seedValue ? it.seedValue : '';
+                tr.innerHTML = `<td>${i+1}</td><td><img src="${it.thumb}" style="width:48px;height:66px;object-fit:cover;border-radius:4px"></td><td>${it.name}</td><td>${seedDisplay}</td><td>${Math.round(it.elo)}</td><td>${it.wins}</td>`;
                 leaderboardBody.appendChild(tr);
             });
         }
@@ -256,10 +300,27 @@
             if(running) return; running=true; setStatus('Start simulation');
             const depth = depthEl.value || 'medium';
             const N = items.length;
+            // determine total comparisons by matchPreset first, fallback to depth
+            const preset = document.getElementById('matchPreset')?.value || '';
             let total = 1000;
-            if(depth==='light') total = Math.min(500, Math.max(100, Math.round(N * 5)));
-            else if(depth==='medium') total = Math.min(2000, Math.max(500, Math.round(N * 20)));
-            else if(depth==='deep') total = Math.min(100000, Math.round(N * (N-1) / 2));
+            if(preset.startsWith('preset_')){
+                if(preset==='preset_500') total = 500;
+                else if(preset==='preset_750') total = 750;
+                else if(preset==='preset_1000') total = 1000;
+                else if(preset==='preset_2000') total = 2000;
+            } else if(preset==='mergesort'){
+                total = Math.round(N * (Math.log2(N)||0));
+            } else if(preset==='quicksort'){
+                total = Math.round(2 * N * Math.log(N));
+            } else if(preset==='singleelim'){
+                total = Math.max(0, N-1);
+            } else if(preset==='roundrobin'){
+                total = Math.round(N*(N-1)/2);
+            } else {
+                if(depth==='light') total = Math.min(500, Math.max(100, Math.round(N * 5)));
+                else if(depth==='medium') total = Math.min(2000, Math.max(500, Math.round(N * 20)));
+                else if(depth==='deep') total = Math.min(100000, Math.round(N * (N-1) / 2));
+            }
             let done = 0;
             const batch = 20; const delay = 60;
             function loop(){
@@ -278,6 +339,10 @@
         }
 
         fetchBtn.addEventListener('click', loadCollection);
+        // recompute projections when presets change
+        if(matchPresetEl) matchPresetEl.addEventListener('change', computeProjections);
+        if(depthEl) depthEl.addEventListener('change', computeProjections);
+        if(seedModeEl) seedModeEl.addEventListener('change', ()=>{ setStatus('Seed mode changed'); });
         nextPair.addEventListener('click', ()=>{ showPair(chooseRandomPair()) });
         leftWin.addEventListener('click', ()=>{ if(currentPair.length){ applyOutcome(currentPair[0], currentPair[1]); updateLeaderboard(); log(`Manual: ${currentPair[0].name} > ${currentPair[1].name}`) } });
         rightWin.addEventListener('click', ()=>{ if(currentPair.length){ applyOutcome(currentPair[1], currentPair[0]); updateLeaderboard(); log(`Manual: ${currentPair[1].name} > ${currentPair[0].name}`) } });
@@ -286,17 +351,35 @@
 
         function computeProjections(){
             const N = Math.max(1, items.length);
-            const rr = N*(N-1)/2;
+            const rr = Math.round(N*(N-1)/2);
             const elim = Math.max(0, N-1);
             const mergesort = Math.round(N * (Math.log2(N)||0));
             const quick = Math.round(2 * N * Math.log(N));
+
+            // preset match counts helpful ranges
+            const preset500 = 500;
+            const preset750 = 750;
+            const preset1000 = 1000;
+            const preset2000 = 2000;
+
             projectionsEl.innerHTML = `
                 <div class="small">Items: ${N}</div>
                 <div>Round-robin comparisons: <strong>${rr}</strong></div>
                 <div>Single-elimination comparisons: <strong>${elim}</strong></div>
                 <div>MergeSort-like comparisons (N log2 N): <strong>${mergesort}</strong></div>
                 <div>QuickSort average ~ 2 N ln N: <strong>${quick}</strong></div>
+                <div style="margin-top:8px" class="small">Quick presets:</div>
+                <div><button class="btn-secondary" data-val="${preset500}">~${preset500}</button> <button class="btn-secondary" data-val="${preset750}">~${preset750}</button> <button class="btn-secondary" data-val="${preset1000}">~${preset1000}</button> <button class="btn-secondary" data-val="${preset2000}">~${preset2000}</button></div>
             `;
+
+            // wire preset buttons to set matchPreset selection
+            Array.from(projectionsEl.querySelectorAll('button[data-val]')).forEach(b=>{
+                b.addEventListener('click', ()=>{
+                    const v = parseInt(b.dataset.val || '1000');
+                    document.getElementById('matchPreset').value = (v===500? 'preset_500' : v===750? 'preset_750' : v===1000? 'preset_1000' : 'preset_2000');
+                    setStatus('Match preset set to '+v+' comparisons');
+                });
+            });
         }
 
         shareBtn.addEventListener('click', ()=>{
