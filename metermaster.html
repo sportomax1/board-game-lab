@@ -31,6 +31,13 @@
                         <option value="userrating">My Rating (1-10)</option>
                     </select>
                 </div>
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Bucket Size for 1-10 (points)</label>
+                    <select id="bucketSize" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-orange-500 outline-none">
+                        <option value="1">1-point buckets (0-1,1-2,...)</option>
+                        <option value="2">2-point buckets (0-2,2-4,...)</option>
+                    </select>
+                </div>
                 <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-lg">
                     <input type="checkbox" id="excludeExpansions" class="w-4 h-4">
                     <label for="excludeExpansions" class="text-sm font-bold text-gray-700">Exclude Expansions</label>
@@ -144,14 +151,34 @@
                 collection = items.map(item => {
                     const stats = item.querySelector('stats');
                     const rating = stats?.querySelector('rating');
+                    // Rank fallback: prefer named boardgame rank, otherwise first rank
+                    let rank = 999999;
+                    try {
+                        const rankElem = stats?.querySelector('rank[name="boardgame"]') || stats?.querySelector('rank');
+                        rank = rankElem ? parseInt(rankElem.getAttribute('value') || '999999') : 999999;
+                    } catch (e) { rank = 999999; }
+
+                    // User rating fallback attempts
+                    let userrating = 0;
+                    try {
+                        const ur = stats?.querySelector('rating');
+                        if (ur) {
+                            userrating = parseFloat(ur.getAttribute('value') || ur.textContent || '0');
+                        } else {
+                            userrating = parseFloat(rating?.querySelector('rating[username]')?.getAttribute('value') || '0');
+                        }
+                    } catch (e) { userrating = 0; }
+
+                    const weightVal = parseFloat(rating?.querySelector('averageweight')?.getAttribute('value') || '0');
+
                     return {
                         id: item.getAttribute('objectid'),
                         name: item.querySelector('name').textContent,
                         image: item.querySelector('thumbnail')?.textContent || '',
-                        weight: parseFloat(rating?.querySelector('averageweight')?.getAttribute('value') || '0'),
+                        weight: weightVal,
                         average: parseFloat(rating?.querySelector('average')?.getAttribute('value') || '0'),
-                        rank: parseInt(rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || '999999'),
-                        userrating: parseFloat(rating?.querySelector('rating[username]')?.getAttribute('value') || '0')
+                        rank: rank,
+                        userrating: userrating
                     };
                 }).slice(0, 20);
                 
@@ -159,11 +186,16 @@
                 shuffledCollection = [...collection].sort(() => Math.random() - 0.5);
                 document.getElementById('total').textContent = shuffledCollection.length;
                 
-                // Setup ranges
+                // Setup ranges (respect bucket size for 1-10 categories)
+                const bucketSize = parseInt(document.getElementById('bucketSize')?.value || '1', 10);
                 if (category === 'weight') {
                     ranges = [[1,2],[2,3],[3,4],[4,5]];
                 } else if (category === 'average' || category === 'userrating') {
-                    ranges = [[0,2],[2,4],[4,6],[6,8],[8,10]];
+                    ranges = [];
+                    for (let start = 0; start < 10; start += bucketSize) {
+                        const end = Math.min(start + bucketSize, 10);
+                        ranges.push([start, end]);
+                    }
                 } else {
                     ranges = [[1,100],[101,500],[501,1000],[1001,5000],[5001,999999]];
                 }
@@ -191,20 +223,36 @@
             document.getElementById('ranges').innerHTML = html;
         }
 
-        function displayGame() {
+        async function displayGame() {
             if (currentGameIndex >= shuffledCollection.length) {
                 finishGame();
                 return;
             }
             
             const game = shuffledCollection[currentGameIndex];
-            document.getElementById('gameImage').src = game.image;
+            const imgEl = document.getElementById('gameImage');
+            imgEl.className = 'w-32 h-32 rounded-lg object-contain';
+            imgEl.src = game.image;
             document.getElementById('gameName').textContent = game.name;
             document.getElementById('current').textContent = currentGameIndex + 1;
             document.getElementById('feedback').classList.add('hidden');
             document.getElementById('nextBtn').classList.add('hidden');
             guessed = false;
             renderRanges();
+
+            // If weight is missing (0), fetch thing details for a better weight value (on-demand)
+            try {
+                if ((category === 'weight') && (!game.weight || game.weight === 0)) {
+                    const thingText = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&stats=1`).then(r => r.text());
+                    const doc = new DOMParser().parseFromString(thingText, 'text/xml');
+                    const weightEl = doc.querySelector('statistics ratings averageweight');
+                    if (weightEl) {
+                        game.weight = parseFloat(weightEl.getAttribute('value') || '0');
+                    }
+                }
+            } catch (e) {
+                console.log('Failed to fetch thing for weight:', e.message);
+            }
         }
 
         function selectRange(min, max) {

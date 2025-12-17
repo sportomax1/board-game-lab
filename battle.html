@@ -75,6 +75,27 @@
             
             <div class="space-y-4 max-h-96 overflow-y-auto">
                 <div id="teamInputsContainer"></div>
+
+                <div class="mt-4 bg-gray-50 md:bg-gray-900 rounded-lg p-3">
+                    <label class="flex items-center gap-2">
+                        <input type="checkbox" id="blacktopMode" class="w-4 h-4" />
+                        <span class="text-sm md:text-gray-300">Blacktop 21 mode (3v3 or 5v5 from single collection)</span>
+                    </label>
+
+                    <div id="blacktopOptions" class="mt-3 hidden">
+                        <label class="block text-xs font-bold text-gray-600 md:text-gray-300 mb-1">Team Size</label>
+                        <select id="blacktopTeamSize" class="w-full rounded-lg px-2 py-2 mb-2 bg-white md:bg-gray-700 md:text-white">
+                            <option value="3">3v3</option>
+                            <option value="5">5v5</option>
+                        </select>
+
+                        <label class="block text-xs font-bold text-gray-600 md:text-gray-300 mb-1">Collection Username</label>
+                        <input type="text" id="blacktopUsername" class="w-full rounded-lg px-2 py-2 bg-white md:bg-gray-700 md:text-white mb-2" placeholder="sportomax" value="sportomax">
+
+                        <label class="block text-xs font-bold text-gray-600 md:text-gray-300 mb-1">Favorite Game (optional)</label>
+                        <input type="text" id="blacktopFavorite" class="w-full rounded-lg px-2 py-2 bg-white md:bg-gray-700 md:text-white" placeholder="Exact game name to include on Team A">
+                    </div>
+                </div>
             </div>
 
             <div class="grid grid-cols-2 gap-3 md:gap-4 mt-6">
@@ -217,6 +238,17 @@
             }
         }
 
+        // Toggle blacktop options visibility
+        document.addEventListener('DOMContentLoaded', () => {
+            const blacktopCheckbox = document.getElementById('blacktopMode');
+            if (blacktopCheckbox) {
+                blacktopCheckbox.addEventListener('change', (e) => {
+                    const opts = document.getElementById('blacktopOptions');
+                    if (opts) opts.classList.toggle('hidden', !e.target.checked);
+                });
+            }
+        });
+
         async function startBattle() {
             const usernames = [];
             const starters = [];
@@ -246,6 +278,13 @@
             document.getElementById('setupUsersStarters').classList.add('hidden');
             document.getElementById('battleApp').classList.remove('hidden');
 
+            // If Blacktop mode is enabled, use single-collection 3v3/5v5 simulation
+            const blacktopEnabled = document.getElementById('blacktopMode')?.checked;
+            if (blacktopEnabled) {
+                await startBlacktopBattle();
+                return;
+            }
+
             await loadAllTeamCollections(usernames);
             
             teamStarters = [];
@@ -262,6 +301,109 @@
 
             renderScoreBoard();
             nextRound();
+        }
+
+        async function startBlacktopBattle() {
+            // Single collection used for both teams
+            const username = document.getElementById('blacktopUsername')?.value.trim() || 'sportomax';
+            const teamSize = parseInt(document.getElementById('blacktopTeamSize')?.value || '3', 10);
+            const favoriteName = document.getElementById('blacktopFavorite')?.value.trim();
+
+            document.getElementById('setupUsersStarters').classList.add('hidden');
+            document.getElementById('battleApp').classList.remove('hidden');
+
+            // Load single collection
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
+                const items = Array.from(xml.querySelectorAll('item'));
+                const all = items.map(item => ({
+                    id: item.getAttribute('objectid'),
+                    name: item.querySelector('name')?.textContent || 'Unknown',
+                    thumbnail: item.querySelector('thumbnail')?.textContent || '',
+                    yearpublished: item.querySelector('yearpublished')?.textContent || ''
+                })).filter(g => g.id);
+
+                if (all.length < teamSize * 2) {
+                    alert('Not enough games in collection for Blacktop teams');
+                    return;
+                }
+
+                // Pick unique games for both teams
+                const pool = [...all].sort(() => Math.random() - 0.5);
+                const selected = [];
+
+                // If favorite provided, try to find and include it on Team A
+                if (favoriteName) {
+                    const fav = pool.find(g => g.name.toLowerCase() === favoriteName.toLowerCase());
+                    if (fav) {
+                        selected.push(fav);
+                        pool.splice(pool.indexOf(fav), 1);
+                    }
+                }
+
+                while (selected.length < teamSize * 2) {
+                    selected.push(pool.shift());
+                }
+
+                // Split into two teams
+                const teamA = selected.slice(0, teamSize);
+                const teamB = selected.slice(teamSize, teamSize * 2);
+
+                // Enrich selected games with ratings
+                await enrichWithBayesRatings(selected, 'Blacktop');
+
+                // Save teams
+                teamStarters = [teamA, teamB];
+                teamScores = [0, 0];
+                teamCount = 2;
+                teamUsernames = [username, username + "'s Pool"]; // display labels
+
+                renderScoreBoard();
+                renderBlacktopLineups();
+                simulateBlacktop21(teamA, teamB);
+
+            } catch (e) {
+                console.error('Blacktop load error', e);
+                alert('Failed to load collection for Blacktop: ' + e.message);
+            }
+        }
+
+        function renderBlacktopLineups() {
+            // show currentMatchup as first players for display
+            currentMatchup = [];
+            const combined = [...teamStarters[0], ...teamStarters[1]];
+            currentMatchup = combined;
+            renderGameCards();
+        }
+
+        function simulateBlacktop21(teamA, teamB) {
+            // Simple possession simulation: each possession pick random player from each team
+            let scoreA = 0, scoreB = 0;
+            const max = 21;
+            // compute strengths from bayesAverage (fallback to 5)
+            const strength = (g) => (parseFloat(g.bayesAverage || g.average || 5) || 5);
+
+            while (scoreA < max && scoreB < max) {
+                const a = teamA[Math.floor(Math.random() * teamA.length)];
+                const b = teamB[Math.floor(Math.random() * teamB.length)];
+                const sa = strength(a);
+                const sb = strength(b);
+                const p = sa / (sa + sb);
+                if (Math.random() < p) scoreA++; else scoreB++;
+            }
+
+            teamScores = [scoreA, scoreB];
+            document.getElementById('score0').textContent = scoreA;
+            document.getElementById('score1').textContent = scoreB;
+
+            // Prepare winner modal
+            const winnerIdx = scoreA > scoreB ? 0 : 1;
+            const winnerEmojis = TEAM_COLORS[winnerIdx].emoji;
+            document.getElementById('winnerText').textContent = `${winnerEmojis} TEAM WIN!`;
+            document.getElementById('finalScoreText').textContent = `${scoreA} - ${scoreB}`;
+            document.getElementById('battleStatsText').textContent = `Blacktop 21 — ${teamA.length}v${teamB.length} | ${teamA[0].name} vs ${teamB[0].name}`;
+            document.getElementById('battleOverModal').classList.remove('hidden');
         }
 
         async function loadAllTeamCollections(usernames) {

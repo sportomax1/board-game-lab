@@ -491,6 +491,12 @@
                     <input type="text" id="username" placeholder="e.g., sportomax" value="sportomax">
                 </div>
             </div>
+            <div style="margin-top:0.5rem; display:flex; gap:0.5rem; align-items:center;">
+                <label style="display:flex; align-items:center; gap:0.5rem; color:#666; font-weight:600;">
+                    <input type="checkbox" id="excludeExpansionsLMS" checked />
+                    <span style="font-size:0.95rem;">Exclude Expansions</span>
+                </label>
+            </div>
             <button class="btn" onclick="initiateTournament()">Load Games & Start</button>
             <div id="statusDiv" class="status loading hidden" style="margin-top: 1rem;"></div>
         </div>
@@ -583,7 +589,10 @@
 
             try {
                 console.log(`[lastmanstanding.html] 📡 Requesting collection API...`);
-                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                let collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                if (document.getElementById('excludeExpansionsLMS') && document.getElementById('excludeExpansionsLMS').checked) {
+                    collectionUrl += '&excludesubtype=boardgameexpansion';
+                }
                 const collectionText = await fetchWithRetry(collectionUrl);
 
                 console.log(`[lastmanstanding.html] ✓ Collection response received (${collectionText.length} bytes)`);
@@ -758,7 +767,8 @@
                         winner = game2;
                         loser = game1;
                     }
-                    method = `weighted random (${rnd.toFixed(3)} of ${sum.toFixed(3)})`;
+                    const upset = (winner.avgRating < loser.avgRating);
+                    method = `weighted random (${rnd.toFixed(3)} of ${sum.toFixed(3)})${upset ? ' (UPSET)' : ''}`;
                 } else {
                     if (game1.avgRating > game2.avgRating) {
                         winner = game1;
@@ -776,7 +786,9 @@
                     }
                 }
 
-                winner.matchupResult = `✅ <span class="winner-badge">WINNER</span> ${method}`;
+                // mark upset for weighted underdog wins
+                const isUpsetNow = (weightedMode && winner.avgRating < loser.avgRating);
+                winner.matchupResult = `${isUpsetNow ? '⭐' : '✅'} <span class="winner-badge">WINNER</span> ${method}`;
                 loser.matchupResult = `❌ <span class="loser-badge">ELIMINATED</span> ${method}`;
                 winners.push(winner);
 
@@ -785,7 +797,8 @@
                     game2: game2,
                     winner: winner,
                     loser: loser,
-                    method: method
+                    method: method,
+                    upset: !!isUpsetNow
                 });
             }
 
@@ -850,7 +863,7 @@
                                             <div class="matchup-game-name">${m.game1.name}</div>
                                             <div class="matchup-game-rating">Rating: ${m.game1.avgRating.toFixed(2)}</div>
                                         </div>
-                                        <div class="vs-text">${m.winner === m.game1 ? '✅' : '❌'}</div>
+                                                                <div class="vs-text">${m.upset ? '⭐' : (m.winner === m.game1 ? '✅' : '❌')}</div>
                                         <div class="matchup-thumbnail">
                                             <img src="${m.game2.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" 
                                                  onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'">
@@ -955,6 +968,30 @@
             `;
             
             crosswalkContent.innerHTML = tableHtml;
+
+            // Post-process: mark audit log matchups as upset if the winner is considered an upset by crosswalk logic
+            const upsetWinners = new Set();
+            allGames.forEach(game => {
+                const rounds = gameRoundHistory[game.id] || [1];
+                for (let round = 2; round <= totalRounds; round++) {
+                    const expectedSurvivors = Math.ceil(allGames.length / Math.pow(2, round - 1));
+                    if (rounds.includes(round) && game.originalIndex >= expectedSurvivors) {
+                        upsetWinners.add(game.id);
+                        break;
+                    }
+                }
+            });
+
+            if (upsetWinners.size > 0) {
+                auditLog.forEach(r => {
+                    r.matchups.forEach(m => {
+                        if (m && m.winner && upsetWinners.has(m.winner.id)) {
+                            m.upset = true;
+                        }
+                    });
+                });
+                updateAuditLog();
+            }
         }
 
         function showStatus(message, type) {
