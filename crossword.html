@@ -267,12 +267,17 @@
                         return true;
                     })
                     .map(item => ({
-                        name: item.querySelector('name').textContent,
-                    }))
-                    .slice(0, wordCount * 3);
+                            id: item.getAttribute('objectid'),
+                            name: item.querySelector('name').textContent,
+                        }))
+                        .slice(0, wordCount * 3);
 
-                collection = shuffleArray(collection).slice(0, wordCount);
-                words = collection.map(g => cleanName(g.name)).filter(w => w.length > 3);
+                    collection = shuffleArray(collection).slice(0, wordCount);
+
+                    // fetch descriptions for the selected games to use as hints
+                    await fetchDescriptionsForCollection(collection);
+
+                    words = collection.map(g => cleanName(g.name)).filter(w => w.length > 3);
 
                 if (words.length < wordCount) {
                     alert(`Only found ${words.length} valid words. Using those instead.`);
@@ -366,7 +371,8 @@
                 grid[row][col + i] = word[i];
                 cellMap[`${row},${col + i}`] = word;
             }
-            acrossClues[cellNumber] = `${cellNumber}. ${collection[wordIdx].name}`;
+            const hint = collection[wordIdx]?.description || collection[wordIdx]?.name || '';
+            acrossClues[cellNumber] = `${cellNumber}. ${hint}`;
             cellNumber++;
         }
 
@@ -375,7 +381,8 @@
                 grid[row + i][col] = word[i];
                 cellMap[`${row + i},${col}`] = word;
             }
-            downClues[cellNumber] = `${cellNumber}. ${collection[wordIdx].name}`;
+            const hint = collection[wordIdx]?.description || collection[wordIdx]?.name || '';
+            downClues[cellNumber] = `${cellNumber}. ${hint}`;
             cellNumber++;
         }
 
@@ -466,14 +473,17 @@
             Object.entries(acrossClues).forEach(([num, clue]) => {
                 const div = document.createElement('div');
                 div.className = 'clue-item';
-                div.innerHTML = `<span class="clue-number">${num}.</span> ${clue.split('. ')[1]}`;
+                // clue already contains numbering and description; render full text after the number
+                const text = clue.replace(/^\d+\.\s*/, '');
+                div.innerHTML = `<span class="clue-number">${num}.</span> ${text}`;
                 acrossContainer.appendChild(div);
             });
 
             Object.entries(downClues).forEach(([num, clue]) => {
                 const div = document.createElement('div');
                 div.className = 'clue-item';
-                div.innerHTML = `<span class="clue-number">${num}.</span> ${clue.split('. ')[1]}`;
+                const text = clue.replace(/^\d+\.\s*/, '');
+                div.innerHTML = `<span class="clue-number">${num}.</span> ${text}`;
                 downContainer.appendChild(div);
             });
         }
@@ -508,6 +518,33 @@
             const elapsed = Math.floor((Date.now() - gameStartTime) / 1000);
             document.getElementById('finalTime').textContent = elapsed;
             document.getElementById('winModal').classList.remove('hidden');
+        }
+
+        async function fetchDescriptionsForCollection(arr) {
+            // fetch short descriptions for items in arr (array of {id,name})
+            const concurrency = 4;
+            const queue = [...arr];
+            async function worker() {
+                while (queue.length) {
+                    const it = queue.shift();
+                    try {
+                        if (!it.id) continue;
+                        const res = await fetch('/api/bgg-thing?id=' + encodeURIComponent(it.id));
+                        const text = await res.text();
+                        const doc = new DOMParser().parseFromString(text, 'text/xml');
+                        const desc = doc.querySelector('description')?.textContent || '';
+                        // strip tags and long whitespace, shorten
+                        const clean = desc.replace(/<[^>]+>/g, '').replace(/\s+/g, ' ').trim();
+                        it.description = clean.length > 200 ? clean.slice(0, 197) + '...' : clean;
+                    } catch (e) {
+                        console.warn('desc fetch failed for', it.id, e);
+                        it.description = it.name;
+                    }
+                }
+            }
+            const workers = [];
+            for (let i=0;i<concurrency;i++) workers.push(worker());
+            await Promise.all(workers);
         }
 
         function goHome() {
