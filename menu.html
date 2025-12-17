@@ -153,6 +153,9 @@
             .modal-buttons { flex-direction: column; gap: 0.5em; }
             .modal-btn { width: 100%; padding: 1em; }
         }
+        /* Debug overlay for on-screen logs (temporary) */
+        .debug-overlay { position: fixed; right: 8px; bottom: 8px; max-width: 360px; max-height: 40vh; overflow: auto; background: rgba(0,0,0,0.85); color: #d1ffd1; font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, 'Roboto Mono', 'Segoe UI Mono', monospace; font-size: 12px; padding: 8px; border-radius: 8px; z-index: 2147483647; box-shadow: 0 6px 24px rgba(0,0,0,0.6); }
+        .debug-overlay .line { margin-bottom: 6px; white-space: pre-wrap; word-break: break-word; }
     </style>
 </head>
 <body>
@@ -1271,22 +1274,31 @@
                 }
 
                 const games = [];
+                const seenIds = new Set();
                 allItems.forEach(item => {
+                    // try to get stable id from collection item
+                    const id = item.getAttribute('objectid') || item.getAttribute('objectid') || item.getAttribute('id') || '';
+                    if (!id) return;
+                    if (seenIds.has(id)) return; // skip duplicates
                     const name = item.querySelector('name')?.textContent || 'Unknown';
                     const thumbnail = item.querySelector('thumbnail')?.textContent || '';
-                    
                     if (thumbnail) {
                         const stats = item.querySelector('stats');
                         const rating = stats?.querySelector('rating');
                         games.push({
+                            id,
                             name,
                             thumbnail,
                             userRating: parseFloat(rating?.getAttribute('value') || '0'),
                             average: parseFloat(rating?.querySelector('average')?.getAttribute('value') || '0'),
                             rank: parseInt(rating?.querySelector('rank[name="boardgame"]')?.getAttribute('value') || '999999')
                         });
+                        seenIds.add(id);
                     }
                 });
+
+                // debug output
+                try { window.debugLog && window.debugLog(`Loaded ${games.length} unique games (from ${allItems.length} collection items)`); } catch(e){}
 
                 if (games.length === 0) {
                     alert('No games found');
@@ -1319,20 +1331,28 @@
         function renderCoverCollage() {
             const collage = document.getElementById('collage');
             collage.innerHTML = '';
-            collage.style.gridTemplateColumns = 'repeat(5, 1fr)';
-            
-            coverGames.slice(0, 50).forEach(game => {
+            // determine columns automatically to make a reasonable preview grid
+            const previewMax = 50;
+            const items = coverGames.slice(0, previewMax);
+            const containerWidth = collage.clientWidth || document.getElementById('collageContainer')?.clientWidth || window.innerWidth;
+            const approxTilePx = 80; // target tile width in px for preview
+            const cols = Math.max(1, Math.floor(containerWidth / approxTilePx));
+            collage.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
+
+            items.forEach(game => {
                 const tile = document.createElement('div');
                 tile.style.cssText = 'aspect-ratio: 0.7; border-radius: 8px; overflow: hidden; background: #f5f5f5;';
-                tile.innerHTML = `<img src="${game.thumbnail}" alt="${game.name}" style="width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; -webkit-user-select: none;">`;
+                tile.innerHTML = `<img src="${game.thumbnail}" alt="${escapeHtml(game.name)}" style="width: 100%; height: 100%; object-fit: contain; pointer-events: none; user-select: none; -webkit-user-select: none;">`;
                 collage.appendChild(tile);
             });
+            try { window.debugLog && window.debugLog(`Preview grid: ${items.length} tiles, cols=${cols}`); } catch(e){}
         }
 
         function printCoverCollage() {
             const username = document.getElementById('coverUsername').value;
             const sortOrder = document.getElementById('sortOrder').value;
-            const cols = Math.max(1, parseInt(document.getElementById('printColumnsInput')?.value || 10));
+            const colsInputVal = document.getElementById('printColumnsInput')?.value;
+            const cols = colsInputVal ? Math.max(1, parseInt(colsInputVal)) : 0;
             const rowsInput = parseInt(document.getElementById('printRowsInput')?.value || 0);
             const headerText = (document.getElementById('printHeaderInput')?.value || (username + "'s Collection")).trim();
             const footerText = (document.getElementById('printFooterInput')?.value || '').trim();
@@ -1340,8 +1360,21 @@
 
             const items = coverGames.slice(0, 120);
             const count = items.length;
-            // compute rows automatically if not provided
-            const rows = rowsInput && rowsInput > 0 ? rowsInput : Math.ceil(count / cols);
+            // If user provided cols, respect it; otherwise compute cols/rows to best fit the printable area
+            let finalCols = cols;
+            let finalRows = rowsInput && rowsInput > 0 ? rowsInput : 0;
+            if (!finalCols) {
+                // balance columns/rows according to page aspect ratio
+                const ratio = usableW / usableH;
+                finalCols = Math.max(1, Math.ceil(Math.sqrt(count * ratio)));
+                finalRows = Math.ceil(count / finalCols);
+            } else {
+                finalRows = finalRows || Math.ceil(count / finalCols);
+            }
+            // safety cap
+            finalCols = Math.min(finalCols, count);
+            finalRows = Math.max(1, finalRows);
+            try { window.debugLog && window.debugLog(`Print grid calc: count=${count}, cols=${finalCols}, rows=${finalRows}, usableW=${usableW}in, usableH=${usableH}in`); } catch(e){}
 
             const printWindow = window.open('', 'print_collage', 'width=8.5in,height=11in');
             const pageW = 8.5; const pageH = 11; // inches
@@ -1363,7 +1396,7 @@
                     .header h1 { margin: 0; font-size: 14pt; }
                     .header p { margin: 0; font-size: 9pt; color: #333; }
                     .footer { text-align: center; padding: 0.05in 0; font-size: 9pt; color: #333; }
-                    .grid-wrap { flex: 1 1 auto; display: grid; grid-template-columns: repeat(${cols}, 1fr); grid-template-rows: repeat(${rows}, 1fr); gap: 2px; align-items: stretch; justify-items: stretch; }
+                    .grid-wrap { flex: 1 1 auto; display: grid; grid-template-columns: repeat(${finalCols}, 1fr); grid-template-rows: repeat(${finalRows}, 1fr); gap: 2px; align-items: stretch; justify-items: stretch; }
                     .tile { width: 100%; height: 100%; overflow: hidden; display: block; }
                     /* Use contain so photos aren't cropped/zoomed — tiles will be sized to fill page */
                     .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
@@ -1434,6 +1467,35 @@
             if(!str) return '';
             return String(str).replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;').replace(/'/g,'&#39;');
         }
+
+        // create a debug overlay and wire console.log to it (temporary helper for visual debugging)
+        (function(){
+            try {
+                const overlay = document.createElement('div');
+                overlay.id = 'debugOverlay';
+                overlay.className = 'debug-overlay';
+                overlay.style.display = 'none';
+                document.addEventListener('DOMContentLoaded', () => document.body.appendChild(overlay));
+
+                window.debugLog = function(msg){
+                    try {
+                        overlay.style.display = 'block';
+                        const line = document.createElement('div');
+                        line.className = 'line';
+                        const text = (typeof msg === 'object') ? JSON.stringify(msg) : String(msg);
+                        line.textContent = (new Date()).toLocaleTimeString() + ' — ' + text;
+                        overlay.appendChild(line);
+                        overlay.scrollTop = overlay.scrollHeight;
+                    } catch(e) { /* no-op */ }
+                };
+
+                const _log = console.log.bind(console);
+                console.log = function(...args){
+                    _log(...args);
+                    try { window.debugLog(args.map(a=> typeof a === 'object' ? JSON.stringify(a) : String(a)).join(' ')); } catch(e){}
+                };
+            } catch (e) { /* ignore overlay errors */ }
+        })();
 
         function updatePrivateProgress(percent, text) {
             document.getElementById('privateProgressFill').style.width = `${percent}%`;
