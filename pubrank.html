@@ -36,8 +36,22 @@
                 <input id="username" value="sportomax">
             </div>
             <div>
-                <label class="small">Max items</label><br>
-                <input id="limit" value="120" style="width:80px">
+                <label class="small">Min plays</label><br>
+                <input id="minPlays" value="0" style="width:80px">
+            </div>
+            <div>
+                <label class="small">Min avg rating</label><br>
+                <input id="minRating" value="0" style="width:80px">
+            </div>
+            <div>
+                <label class="small">Top by rating (0 = all)</label><br>
+                <input id="topByRating" value="0" style="width:80px">
+            </div>
+            <div>
+                <label class="small"><input id="excludeExpansions" type="checkbox" checked> Exclude expansions</label>
+            </div>
+            <div>
+                <label class="small"><input id="useRatingBias" type="checkbox"> Use rating bias for pairing</label>
             </div>
             <div>
                 <label class="small">Model</label><br>
@@ -47,12 +61,12 @@
                 </select>
             </div>
             <div>
-                <label class="small">ELO K</label><br>
-                <input id="kval" value="32" style="width:80px">
-            </div>
-            <div>
-                <label class="small">Comparisons</label><br>
-                <input id="comparisons" value="1000" style="width:120px">
+                <label class="small">Depth</label><br>
+                <select id="depth">
+                    <option value="light">Light (quick)</option>
+                    <option value="medium" selected>Medium (balanced)</option>
+                    <option value="deep">Deep (thorough)</option>
+                </select>
             </div>
             <div style="margin-left:auto;display:flex;gap:8px;align-items:center">
                 <button id="fetchBtn" class="btn">Load Collection</button>
@@ -99,10 +113,13 @@
         const startBtn = document.getElementById('startBtn');
         const stopBtn = document.getElementById('stopBtn');
         const usernameEl = document.getElementById('username');
-        const limitEl = document.getElementById('limit');
         const modelEl = document.getElementById('model');
-        const kvalEl = document.getElementById('kval');
-        const comparisonsEl = document.getElementById('comparisons');
+        const depthEl = document.getElementById('depth');
+        const minPlaysEl = document.getElementById('minPlays');
+        const minRatingEl = document.getElementById('minRating');
+        const topByRatingEl = document.getElementById('topByRating');
+        const excludeExpansionsEl = document.getElementById('excludeExpansions');
+        const useRatingBiasEl = document.getElementById('useRatingBias');
         const leftThumb = document.getElementById('leftThumb');
         const rightThumb = document.getElementById('rightThumb');
         const leftWin = document.getElementById('leftWin');
@@ -130,12 +147,14 @@
                 const name = n.querySelector('name')?.textContent || 'Unknown';
                 const id = n.getAttribute('objectid') || n.getAttribute('id') || '';
                 const thumb = n.querySelector('thumbnail')?.textContent || n.querySelector('image')?.textContent || '';
+                const subtype = n.getAttribute('subtype') || '';
                 // attempt to read stats/avg rating if present
                 const stats = n.querySelector('stats');
                 let avg = null;
                 if(stats){ avg = parseFloat(stats.getAttribute('rating') || stats.getAttribute('average') || '') || null }
-                return {id,name,thumb,avg};
-            }).filter(i=>i.thumb).slice(0, parseInt(limitEl.value||120));
+                const numplays = parseInt(n.querySelector('numplays')?.textContent || '0');
+                return {id,name,thumb,avg,subtype,numplays};
+            }).filter(i=>i.thumb);
         }
 
         async function loadCollection(){
@@ -145,7 +164,22 @@
                 const res = await fetch('/api/bgg-helper?endpoint=collection&username='+encodeURIComponent(username)+'&own=1&stats=1');
                 const text = await res.text();
                 const parsed = parseCollectionXml(text);
-                items = parsed.map((it,idx)=>{
+                // apply filters
+                const minPlays = Math.max(0, parseInt(minPlaysEl.value||0));
+                const minRating = Math.max(0, parseFloat(minRatingEl.value||0));
+                const topBy = Math.max(0, parseInt(topByRatingEl.value||0));
+                const excludeExp = !!excludeExpansionsEl.checked;
+                let filtered = parsed.filter(it=>{
+                    if(excludeExp && it.subtype === 'boardgameexpansion') return false;
+                    if((it.numplays||0) < minPlays) return false;
+                    if(minRating>0 && (it.avg===null || it.avg < minRating)) return false;
+                    return true;
+                });
+                if(topBy>0){
+                    filtered = filtered.slice().sort((a,b)=> (b.avg||0) - (a.avg||0)).slice(0, topBy);
+                }
+
+                items = filtered.map((it,idx)=>{
                     const baseStrength = it.avg ? (parseFloat(it.avg)*40) : (1500 + (Math.random()-0.5)*300);
                     return {id:it.id,name:it.name,thumb:it.thumb,trueStrength:baseStrength,elo:1500,wins:0}
                 });
@@ -171,6 +205,15 @@
 
         function chooseRandomPair(){
             if(items.length<2) return [];
+            // if rating bias is enabled, do weighted sampling by elo
+            if(useRatingBiasEl && useRatingBiasEl.checked){
+                const total = items.reduce((s,i)=>s + (i.elo||1500), 0);
+                function weightedPick(){
+                    let r = Math.random() * total; for(const it of items){ r -= (it.elo||1500); if(r<=0) return it } return items[items.length-1];
+                }
+                const a = weightedPick(); let b = weightedPick(); let tries=0; while(b===a && tries<12){ b = weightedPick(); tries++ }
+                return [a,b];
+            }
             const a = items[Math.floor(Math.random()*items.length)];
             let b = items[Math.floor(Math.random()*items.length)];
             let tries = 0; while(b===a && tries<12){ b = items[Math.floor(Math.random()*items.length)]; tries++ }
@@ -188,7 +231,7 @@
         function applyOutcome(winner,loser){
             winner.wins = (winner.wins||0) + 1;
             if(modelEl.value==='elo'){
-                const K = parseFloat(kvalEl.value||32);
+                const K = 32;
                 const Ra = winner.elo, Rb = loser.elo;
                 const Ea = 1/(1+Math.pow(10, (Rb-Ra)/400));
                 const Eb = 1/(1+Math.pow(10, (Ra-Rb)/400));
@@ -211,7 +254,12 @@
 
         function runSimulation(){
             if(running) return; running=true; setStatus('Start simulation');
-            const total = parseInt(comparisonsEl.value||1000);
+            const depth = depthEl.value || 'medium';
+            const N = items.length;
+            let total = 1000;
+            if(depth==='light') total = Math.min(500, Math.max(100, Math.round(N * 5)));
+            else if(depth==='medium') total = Math.min(2000, Math.max(500, Math.round(N * 20)));
+            else if(depth==='deep') total = Math.min(100000, Math.round(N * (N-1) / 2));
             let done = 0;
             const batch = 20; const delay = 60;
             function loop(){
