@@ -257,14 +257,37 @@
         let speedMap = { slow: 1500, normal: 1000, fast: 600 };
         let selectedGamesForChoose = [];
 
-        // Load collection on page load
-        async function loadCollection() {
-            try {
-                const res = await fetch('library_sportomax.xml');
-                if (!res.ok) {
-                    throw new Error(`Failed to fetch collection (HTTP ${res.status})`);
+        // Fetch with retry for 202 status
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                const response = await fetch(url);
+                
+                if (response.status === 202) {
+                    console.log(`⏳ API processing... retry ${i + 1}/${maxRetries}`);
+                    const waitTime = 3000; // Wait 3 seconds for BGG to process
+                    await new Promise(r => setTimeout(r, waitTime));
+                } else {
+                    return response;
                 }
-                const xml = await res.text();
+            }
+            throw new Error('Max retries reached for API request');
+        }
+
+        // Load collection using Collection API v2 with own=1
+        async function loadCollection() {
+            const username = 'sportomax'; // Default username
+            
+            try {
+                console.log('Loading collection from BGG API...');
+                const response = await fetchWithRetry(
+                    `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`
+                );
+                
+                if (!response.ok) {
+                    throw new Error(`Failed to fetch collection (HTTP ${response.status})`);
+                }
+                
+                const xml = await response.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(xml, 'text/xml');
                 
@@ -276,7 +299,7 @@
                 
                 const items = Array.from(doc.querySelectorAll('item'));
                 if (items.length === 0) {
-                    throw new Error('No games found in collection file');
+                    throw new Error('No games found in collection');
                 }
                 
                 collection = items.map(item => ({
@@ -297,7 +320,7 @@
                 document.getElementById('highScore').textContent = highScore;
             } catch (error) {
                 console.error('Error loading collection:', error);
-                alert(`Error loading game collection: ${error.message}\n\nPlease refresh the page or check that library_sportomax.xml exists.`);
+                alert(`Error loading game collection: ${error.message}\n\nPlease refresh the page or check your connection.`);
             }
         }
 
@@ -327,7 +350,9 @@
             grid.innerHTML = collection.map((game, idx) => `
                 <div class="bg-gray-800 rounded-lg p-2 cursor-pointer hover:bg-gray-700 border-2 border-transparent hover:border-purple-500 transition" 
                      onclick="toggleGameSelection(${idx})" data-game-idx="${idx}">
-                    <img src="${game.image}" alt="${game.name}" class="w-full h-24 object-cover rounded mb-2">
+                    <div class="w-full aspect-square bg-gray-900 flex items-center justify-center p-1 rounded mb-2">
+                        <img src="${game.image}" alt="${game.name}" class="w-full h-full object-contain">
+                    </div>
                     <p class="text-xs text-white text-center truncate">${game.name}</p>
                 </div>
             `).join('');
@@ -426,7 +451,9 @@
             grid.innerHTML = currentGames.map((game, idx) => `
                 <div class="game-card bg-gray-800 rounded-2xl overflow-hidden shadow-2xl border-4 border-purple-500" 
                      data-idx="${idx}" onclick="handleGameClick(${idx})">
-                    <img src="${game.image}" alt="${game.name}" class="w-full h-32 md:h-48 object-cover">
+                    <div class="w-full aspect-square bg-gray-900 flex items-center justify-center p-2">
+                        <img src="${game.image}" alt="${game.name}" class="w-full h-full object-contain">
+                    </div>
                     <div class="p-2 bg-gradient-to-t from-black to-transparent">
                         <p class="text-xs md:text-sm font-bold text-white text-center truncate">${game.name}</p>
                     </div>
