@@ -247,6 +247,7 @@
         let isPlaying = false;
         let isPlayerTurn = false;
         let isPaused = false;
+        let resumeResolve = null;
         let settings = {
             numGames: 4,
             gameMode: 'random',
@@ -260,10 +261,23 @@
         async function loadCollection() {
             try {
                 const res = await fetch('library_sportomax.xml');
+                if (!res.ok) {
+                    throw new Error(`Failed to fetch collection (HTTP ${res.status})`);
+                }
                 const xml = await res.text();
                 const parser = new DOMParser();
                 const doc = parser.parseFromString(xml, 'text/xml');
+                
+                // Check for XML parsing errors
+                const parseError = doc.querySelector('parsererror');
+                if (parseError) {
+                    throw new Error('Failed to parse XML collection file');
+                }
+                
                 const items = Array.from(doc.querySelectorAll('item'));
+                if (items.length === 0) {
+                    throw new Error('No games found in collection file');
+                }
                 
                 collection = items.map(item => ({
                     id: item.getAttribute('objectid'),
@@ -272,6 +286,10 @@
                     year: item.querySelector('yearpublished')?.textContent || ''
                 })).filter(g => g.image); // Only games with images
                 
+                if (collection.length === 0) {
+                    throw new Error('No games with images found in collection');
+                }
+                
                 console.log('Loaded collection:', collection.length, 'games');
                 
                 // Load high score from localStorage
@@ -279,7 +297,7 @@
                 document.getElementById('highScore').textContent = highScore;
             } catch (error) {
                 console.error('Error loading collection:', error);
-                alert('Error loading game collection. Please refresh the page.');
+                alert(`Error loading game collection: ${error.message}\n\nPlease refresh the page or check that library_sportomax.xml exists.`);
             }
         }
 
@@ -365,7 +383,12 @@
         async function selectRandomGames() {
             if (collection.length === 0) await loadCollection();
             
-            const shuffled = [...collection].sort(() => Math.random() - 0.5);
+            // Fisher-Yates shuffle for proper randomization
+            const shuffled = [...collection];
+            for (let i = shuffled.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [shuffled[i], shuffled[j]] = [shuffled[j], shuffled[i]];
+            }
             currentGames = shuffled.slice(0, settings.numGames);
         }
 
@@ -541,11 +564,17 @@
             isPaused = false;
             document.getElementById('pausedOverlay').classList.remove('active');
             document.getElementById('pauseIcon').textContent = '⏸️';
+            if (resumeResolve) {
+                resumeResolve();
+                resumeResolve = null;
+            }
         }
 
         async function waitForResume() {
-            while (isPaused) {
-                await sleep(100);
+            if (isPaused) {
+                await new Promise(resolve => {
+                    resumeResolve = resolve;
+                });
             }
         }
 
