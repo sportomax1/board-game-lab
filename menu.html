@@ -229,10 +229,16 @@
                             <input id="printRowsInput" type="number" class="form-input" placeholder="auto" min="1" style="width:100%">
                         </div>
                     </div>
+                    <div class="form-group">
+                        <label class="form-label">Card Scale (0.5-1.0)</label>
+                        <input id="cardScaleInput" type="number" step="0.05" class="form-input" value="0.95" min="0.5" max="1.0" style="max-width:200px">
+                        <p style="font-size: 0.85em; color: #666; margin-top: 0.3em;">NanDeck-style card sizing: 0.95 = 95% size for better printing</p>
+                    </div>
                     <div class="form-group" style="display:flex;gap:8px;flex-wrap:wrap;align-items:center">
                         <div style="flex:1;min-width:200px">
                             <label class="form-label">Header Text</label>
-                            <input id="printHeaderInput" class="form-input" placeholder="Header (printed at top)" />
+                            <input id="printHeaderInput" class="form-input" placeholder="e.g., OWNED GAMES AS OF 12/20/2025" />
+                            <p style="font-size: 0.85em; color: #666; margin-top: 0.3em;">Leave blank for default: USERNAME OWNED GAMES AS OF [date]</p>
                         </div>
                         <div style="flex:1;min-width:200px">
                             <label class="form-label">Footer Text</label>
@@ -1352,9 +1358,15 @@
             const username = document.getElementById('coverUsername').value;
             const sortOrder = document.getElementById('sortOrder').value;
             const colsInputVal = document.getElementById('printColumnsInput')?.value;
-            const cols = colsInputVal ? Math.max(1, parseInt(colsInputVal)) : 0;
+            const cols = colsInputVal ? Math.max(1, parseInt(colsInputVal)) : 10; // Default to 10 columns
             const rowsInput = parseInt(document.getElementById('printRowsInput')?.value || 0);
-            const headerText = (document.getElementById('printHeaderInput')?.value || (username + "'s Collection")).trim();
+            const cardScale = Math.max(0.5, Math.min(1.0, parseFloat(document.getElementById('cardScaleInput')?.value || 0.95)));
+            
+            // Format date as M/D/YYYY like NanDeck style
+            const today = new Date();
+            const dateStr = `${today.getMonth() + 1}/${today.getDate()}/${today.getFullYear()}`;
+            const defaultHeader = `${username.toUpperCase()} OWNED GAMES AS OF ${dateStr}`;
+            const headerText = (document.getElementById('printHeaderInput')?.value || defaultHeader).trim();
             const footerText = (document.getElementById('printFooterInput')?.value || '').trim();
             const marginIn = Math.max(0, parseFloat(document.getElementById('printMarginInput')?.value || 0.1));
 
@@ -1370,7 +1382,7 @@
             let finalRows = rowsInput && rowsInput > 0 ? rowsInput : 0;
             if (!finalCols) {
                 // balance columns/rows according to page aspect ratio
-                const ratio = usableW / usableH;
+                const ratio = printUsableW / printUsableH;
                 finalCols = Math.max(1, Math.ceil(Math.sqrt(count * ratio)));
                 finalRows = Math.ceil(count / finalCols);
             } else {
@@ -1379,10 +1391,14 @@
             // safety cap
             finalCols = Math.min(finalCols, count);
             finalRows = Math.max(1, finalRows);
-            try { window.debugLog && window.debugLog(`Print grid calc: count=${count}, cols=${finalCols}, rows=${finalRows}, usableW=${printUsableW}in, usableH=${printUsableH}in`); } catch(e){}
+            try { window.debugLog && window.debugLog(`Print grid calc: count=${count}, cols=${finalCols}, rows=${finalRows}, usableW=${printUsableW}in, usableH=${printUsableH}in, cardScale=${cardScale}`); } catch(e){}
 
             const printWindow = window.open('', 'print_collage', 'width=8.5in,height=11in');
 
+            // Calculate gap size based on card scale (NanDeck-style sizing)
+            // With cardScale=0.95, tiles are 95% of their grid cell size, leaving small gaps for easier cutting
+            const gapSize = (1 - cardScale) * 0.1; // Gap in inches
+            
             // CSS to size the grid so tiles fill the printable area; images use contain (do not crop photos)
             let html = `
             <!DOCTYPE html>
@@ -1394,21 +1410,22 @@
                     html,body { width: ${printPageW}in; height: ${printPageH}in; margin: 0; padding: 0; }
                     body { background: white; font-family: Arial, sans-serif; }
                     .page { box-sizing: border-box; width: ${printUsableW}in; height: ${printUsableH}in; margin: 0 auto; display: flex; flex-direction: column; }
-                    .header { text-align: center; padding: 0.05in 0; }
-                    .header h1 { margin: 0; font-size: 14pt; }
+                    .header { text-align: center; padding: 0.1in 0; font-weight: bold; }
+                    .header h1 { margin: 0; font-size: 12pt; font-weight: bold; letter-spacing: 0.5px; }
                     .header p { margin: 0; font-size: 9pt; color: #333; }
                     .footer { text-align: center; padding: 0.05in 0; font-size: 9pt; color: #333; }
-                    .grid-wrap { flex: 1 1 auto; display: grid; grid-template-columns: repeat(${finalCols}, 1fr); grid-template-rows: repeat(${finalRows}, 1fr); gap: 2px; align-items: stretch; justify-items: stretch; }
-                    .tile { width: 100%; height: 100%; overflow: hidden; display: block; }
+                    .grid-wrap { flex: 1 1 auto; display: grid; grid-template-columns: repeat(${finalCols}, 1fr); grid-template-rows: repeat(${finalRows}, 1fr); gap: ${gapSize}in; align-items: center; justify-items: center; }
+                    .tile { width: ${cardScale * 100}%; height: ${cardScale * 100}%; overflow: hidden; display: block; background: #f9f9f9; border: 1px solid #e0e0e0; }
                     /* Use contain so photos aren't cropped/zoomed — tiles will be sized to fill page */
                     .tile img { width: 100%; height: 100%; object-fit: contain; display: block; }
                     /* Ensure printed colors and text are readable */
                     a { color: #000; }
+                    * { -webkit-print-color-adjust: exact; print-color-adjust: exact; }
                 </style>
             </head>
             <body>
                 <div class="page">
-                    <div class="header"><h1>` + escapeHtml(headerText) + `</h1><p>Sorted by ` + escapeHtml(sortOrder) + ` | Generated ` + new Date().toLocaleDateString() + `</p></div>
+                    <div class="header"><h1>` + escapeHtml(headerText) + `</h1><p>Sorted by ` + escapeHtml(sortOrder) + ` | Generated ` + new Date().toLocaleDateString() + ` | Card Scale: ${(cardScale * 100).toFixed(0)}%</p></div>
                     <div class="grid-wrap">
             `;
 
