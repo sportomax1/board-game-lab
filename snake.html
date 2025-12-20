@@ -299,6 +299,14 @@
                 </select>
             </div>
 
+            <div class="form-group">
+                <label for="thumbnailModeSelect">Thumbnail Mode</label>
+                <select id="thumbnailModeSelect">
+                    <option value="per-block" selected>Different thumbnail per block</option>
+                    <option value="same">Same thumbnail for all blocks</option>
+                </select>
+            </div>
+
             <div class="checkbox-group">
                 <input type="checkbox" id="excludeExpansions" checked>
                 <label for="excludeExpansions" style="margin-bottom: 0;">Exclude Expansions</label>
@@ -382,6 +390,10 @@
         let currentGameIndex = 0;
         let foodImage = new Image();
         let loadedImages = [];
+
+        // Thumbnail mode: 'per-block' (different per segment) or 'same' (one thumbnail for all blocks)
+        let thumbnailMode = 'per-block';
+        let sharedThumbnailImage = null;
 
         // API helper
         const IMAGE_PROXY = 'https://images.weserv.nl/?url=';
@@ -495,7 +507,16 @@
                 // Shuffle collection
                 collection.sort(() => Math.random() - 0.5);
 
-                // Preload first few images
+                // Read and persist thumbnail mode preference, then preload first few images
+                const selectEl = document.getElementById('thumbnailModeSelect');
+                const savedMode = localStorage.getItem('snake_thumbnailMode');
+                if (savedMode) selectEl.value = savedMode;
+                thumbnailMode = selectEl.value;
+                selectEl.addEventListener('change', () => {
+                    thumbnailMode = selectEl.value;
+                    localStorage.setItem('snake_thumbnailMode', thumbnailMode);
+                });
+
                 statusEl.textContent = 'Loading images...';
                 await preloadImages(5);
 
@@ -540,13 +561,28 @@
             // Initialize snake in the middle with thumbnails on each segment
             const mid = Math.floor(gridSize / 2);
             snake = [];
-            // seed initial segments with thumbnails from collection (wrap if needed)
+
+            // If user selected 'same' mode, prepare a shared image
+            if (thumbnailMode === 'same') {
+                const thumbUrl = collection[0] && collection[0].thumbnail ? collection[0].thumbnail : null;
+                if (thumbUrl) {
+                    sharedThumbnailImage = new Image();
+                    sharedThumbnailImage.crossOrigin = 'Anonymous';
+                    sharedThumbnailImage.src = IMAGE_PROXY + thumbUrl;
+                }
+            }
+
+            // seed initial segments
             for (let i = 0; i < 3; i++) {
-                const idx = i % collection.length;
-                const img = new Image();
-                img.crossOrigin = 'Anonymous';
-                img.src = IMAGE_PROXY + collection[idx].thumbnail;
-                snake.push({ x: mid - i, y: mid, img });
+                if (thumbnailMode === 'same' && sharedThumbnailImage) {
+                    snake.push({ x: mid - i, y: mid, img: sharedThumbnailImage });
+                } else {
+                    const idx = i % collection.length;
+                    const img = new Image();
+                    img.crossOrigin = 'Anonymous';
+                    img.src = IMAGE_PROXY + collection[idx].thumbnail;
+                    snake.push({ x: mid - i, y: mid, img });
+                }
             }
 
             direction = 'RIGHT';
@@ -606,6 +642,8 @@
                 foodImage.crossOrigin = 'Anonymous';
                 foodImage.src = IMAGE_PROXY + game.thumbnail;
                 foodImage.onload = () => draw();
+                // store thumb url for later assignment when eaten
+                food.thumbUrl = game.thumbnail;
             }
         }
 
@@ -632,7 +670,7 @@
             }
 
             // Add new head (carry head image forward)
-            const newHead = { x: head.x, y: head.y, img: snake[0] && snake[0].img ? snake[0].img : null };
+            const newHead = { x: head.x, y: head.y, img: (thumbnailMode === 'same' ? (sharedThumbnailImage || (snake[0] && snake[0].img)) : (snake[0] && snake[0].img ? snake[0].img : null)) };
             snake.unshift(newHead);
 
             // Check food collision
@@ -643,10 +681,15 @@
                 const thumbUrl = food && food.thumbUrl ? food.thumbUrl : null;
                 if (thumbUrl) {
                     const tailIdx = snake.length - 1;
-                    const img = new Image();
-                    img.crossOrigin = 'Anonymous';
-                    img.src = IMAGE_PROXY + thumbUrl;
-                    if (snake[tailIdx]) snake[tailIdx].img = img;
+                    if (thumbnailMode === 'same') {
+                        // in same mode, ensure tail uses the shared image
+                        if (sharedThumbnailImage && snake[tailIdx]) snake[tailIdx].img = sharedThumbnailImage;
+                    } else {
+                        const img = new Image();
+                        img.crossOrigin = 'Anonymous';
+                        img.src = IMAGE_PROXY + thumbUrl;
+                        if (snake[tailIdx]) snake[tailIdx].img = img;
+                    }
                 }
                 currentGameIndex++;
                 updateStats();
