@@ -388,6 +388,14 @@
                 <label for="includeExpansions" style="margin: 0;">Include expansions</label>
             </div>
 
+            <div class="form-group">
+                <label for="boxCoverMode">Box Cover Mode</label>
+                <select id="boxCoverMode">
+                    <option value="random">Random per box (consistent)</option>
+                    <option value="player">Use player's thumbnail for all boxes</option>
+                </select>
+            </div>
+
             <div style="margin-top: 1.5rem;">
                 <button class="btn" onclick="startGame()">Start Game</button>
             </div>
@@ -444,6 +452,13 @@
         let player2Score = 0;
         let gameActive = false;
 
+        // Cover selection mode and persisted choices
+        let boxCoverMode = localStorage.getItem('dots_boxCoverMode') || 'random';
+        let selectedPlayer1CoverIndex = parseInt(localStorage.getItem('dots_p1_cover_idx') || '-1', 10);
+        let selectedPlayer2CoverIndex = parseInt(localStorage.getItem('dots_p2_cover_idx') || '-1', 10);
+        let selectedPlayer1Cover = localStorage.getItem('dots_p1_cover') || '';
+        let selectedPlayer2Cover = localStorage.getItem('dots_p2_cover') || '';
+
         async function startGame() {
             const username1 = document.getElementById('username1').value.trim() || 'sportomax';
             const username2 = document.getElementById('username2').value.trim() || 'sportomax';
@@ -483,6 +498,45 @@
                     return;
                 }
 
+                // Initialize box cover mode from UI or persisted value
+                const modeSelect = document.getElementById('boxCoverMode');
+                if (modeSelect) {
+                    boxCoverMode = localStorage.getItem('dots_boxCoverMode') || modeSelect.value || 'random';
+                    modeSelect.value = boxCoverMode;
+                    modeSelect.onchange = () => {
+                        boxCoverMode = modeSelect.value;
+                        localStorage.setItem('dots_boxCoverMode', boxCoverMode);
+                    };
+                }
+
+                // If we have persisted selected cover thumbs, but they aren't valid in the current collection, reset index
+                if (selectedPlayer1Cover && !player1Games.some(g=>g.thumbnail===selectedPlayer1Cover)) {
+                    selectedPlayer1Cover = '';
+                    selectedPlayer1CoverIndex = -1;
+                    localStorage.removeItem('dots_p1_cover');
+                    localStorage.removeItem('dots_p1_cover_idx');
+                }
+                if (selectedPlayer2Cover && !player2Games.some(g=>g.thumbnail===selectedPlayer2Cover)) {
+                    selectedPlayer2Cover = '';
+                    selectedPlayer2CoverIndex = -1;
+                    localStorage.removeItem('dots_p2_cover');
+                    localStorage.removeItem('dots_p2_cover_idx');
+                }
+
+                // Ensure we have a default selected cover (use a random one) for player's thumbnail mode
+                if (!selectedPlayer1Cover && player1Games.length) {
+                    selectedPlayer1CoverIndex = Math.floor(Math.random()*player1Games.length);
+                    selectedPlayer1Cover = player1Games[selectedPlayer1CoverIndex].thumbnail;
+                    localStorage.setItem('dots_p1_cover', selectedPlayer1Cover);
+                    localStorage.setItem('dots_p1_cover_idx', selectedPlayer1CoverIndex);
+                }
+                if (!selectedPlayer2Cover && player2Games.length) {
+                    selectedPlayer2CoverIndex = Math.floor(Math.random()*player2Games.length);
+                    selectedPlayer2Cover = player2Games[selectedPlayer2CoverIndex].thumbnail;
+                    localStorage.setItem('dots_p2_cover', selectedPlayer2Cover);
+                    localStorage.setItem('dots_p2_cover_idx', selectedPlayer2CoverIndex);
+                }
+
                 document.getElementById('player1Name').textContent = username1;
                 document.getElementById('player2Name').textContent = username2;
 
@@ -502,25 +556,42 @@
             gameActive = true;
             document.getElementById('winnerModal').classList.remove('active');
 
-            // Pick random thumbnails for display
-            const p1Game = player1Games[Math.floor(Math.random() * player1Games.length)];
-            const p2Game = player2Games[Math.floor(Math.random() * player2Games.length)];
-            document.getElementById('player1Thumb').src = p1Game.thumbnail;
-            document.getElementById('player2Thumb').src = p2Game.thumbnail;
+            // Set player thumbnails based on selected cover or a random default
+            if (!selectedPlayer1Cover && player1Games.length) {
+                selectedPlayer1CoverIndex = Math.floor(Math.random() * player1Games.length);
+                selectedPlayer1Cover = player1Games[selectedPlayer1CoverIndex].thumbnail;
+                localStorage.setItem('dots_p1_cover', selectedPlayer1Cover);
+                localStorage.setItem('dots_p1_cover_idx', selectedPlayer1CoverIndex);
+            }
+            if (!selectedPlayer2Cover && player2Games.length) {
+                selectedPlayer2CoverIndex = Math.floor(Math.random() * player2Games.length);
+                selectedPlayer2Cover = player2Games[selectedPlayer2CoverIndex].thumbnail;
+                localStorage.setItem('dots_p2_cover', selectedPlayer2Cover);
+                localStorage.setItem('dots_p2_cover_idx', selectedPlayer2CoverIndex);
+            }
+
+            document.getElementById('player1Thumb').src = selectedPlayer1Cover || (player1Games[0] && player1Games[0].thumbnail) || '';
+            document.getElementById('player2Thumb').src = selectedPlayer2Cover || (player2Games[0] && player2Games[0].thumbnail) || '';
 
             // Initialize lines and boxes
             lines = [];
             boxes = [];
 
             const totalBoxes = (gridSize - 1) * (gridSize - 1);
+
+            // Initialize boxes and deterministic per-player thumbnails for each box (used in random mode)
             for (let i = 0; i < totalBoxes; i++) {
+                const thumbFor = {};
+                if (player1Games.length) thumbFor[1] = player1Games[deterministicIndex(i, player1Games.length)].thumbnail;
+                if (player2Games.length) thumbFor[2] = player2Games[deterministicIndex(i + 1000, player2Games.length)].thumbnail;
                 boxes.push({
                     top: false,
                     right: false,
                     bottom: false,
                     left: false,
                     complete: false,
-                    player: null
+                    player: null,
+                    thumbFor
                 });
             }
 
@@ -599,9 +670,14 @@
                     box.style.top = `${30 + row * 60}px`;
                     
                     const img = document.createElement('img');
-                    const games = boxes[i].player === 1 ? player1Games : player2Games;
-                    const game = games[Math.floor(Math.random() * games.length)];
-                    img.src = game.thumbnail;
+                    // Choose thumbnail according to mode and owner
+                    const owner = boxes[i].player;
+                    if (boxCoverMode === 'player') {
+                        img.src = owner === 1 ? (selectedPlayer1Cover || (player1Games[0] && player1Games[0].thumbnail)) : (selectedPlayer2Cover || (player2Games[0] && player2Games[0].thumbnail));
+                    } else {
+                        // random mode: use precomputed deterministic thumbFor for the owner
+                        img.src = boxes[i].thumbFor && boxes[i].thumbFor[owner] ? boxes[i].thumbFor[owner] : ((owner === 1 ? (player1Games[0] && player1Games[0].thumbnail) : (player2Games[0] && player2Games[0].thumbnail)) || '');
+                    }
                     box.appendChild(img);
                     
                     board.appendChild(box);
@@ -732,6 +808,39 @@
             document.getElementById('winnerThumb').style.display = 'block';
             document.getElementById('winnerModal').classList.add('active');
         }
+
+        // Deterministic index helper for consistent random selection
+        function deterministicIndex(seed, range) {
+            if (!range || range <= 0) return 0;
+            // simple LCG-like operation for determinism
+            const a = 1664525;
+            const c = 1013904223;
+            let x = (seed >>> 0);
+            x = (a * x + c) >>> 0;
+            return x % range;
+        }
+
+        // Allow user to click player thumbnails to cycle their selected cover
+        document.addEventListener('click', function (e) {
+            if (e.target && e.target.id === 'player1Thumb') {
+                if (!player1Games.length) return;
+                selectedPlayer1CoverIndex = (selectedPlayer1CoverIndex + 1) % player1Games.length;
+                selectedPlayer1Cover = player1Games[selectedPlayer1CoverIndex].thumbnail;
+                localStorage.setItem('dots_p1_cover', selectedPlayer1Cover);
+                localStorage.setItem('dots_p1_cover_idx', selectedPlayer1CoverIndex);
+                document.getElementById('player1Thumb').src = selectedPlayer1Cover;
+                renderBoxes();
+            }
+            if (e.target && e.target.id === 'player2Thumb') {
+                if (!player2Games.length) return;
+                selectedPlayer2CoverIndex = (selectedPlayer2CoverIndex + 1) % player2Games.length;
+                selectedPlayer2Cover = player2Games[selectedPlayer2CoverIndex].thumbnail;
+                localStorage.setItem('dots_p2_cover', selectedPlayer2Cover);
+                localStorage.setItem('dots_p2_cover_idx', selectedPlayer2CoverIndex);
+                document.getElementById('player2Thumb').src = selectedPlayer2Cover;
+                renderBoxes();
+            }
+        });
 
         function backToSettings() {
             if (confirm('Are you sure you want to go back to settings? Current game will be lost.')) {
