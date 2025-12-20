@@ -586,8 +586,8 @@
             <div class="input-group">
                 <label class="label">Year Published</label>
                 <div style="display: flex; gap: 10px;">
-                    <input type="number" id="filterYearMin" class="text-input" placeholder="Min year" min="1800" oninput="applyFilters()">
-                    <input type="number" id="filterYearMax" class="text-input" placeholder="Max year" min="1800" oninput="applyFilters()">
+                    <select id="filterYearMin" class="text-input" onchange="applyFilters()"><option value="">Min</option></select>
+                    <select id="filterYearMax" class="text-input" onchange="applyFilters()"><option value="">Max</option></select>
                 </div>
             </div>
             <button class="primary-btn" style="background: #E5E5EA; color: #000;" onclick="clearFilters()">Clear Filters</button>
@@ -688,19 +688,20 @@
                 
                 if (state.plays.length === 0) throw new Error("No plays found.");
                 
-                // 2. Fetch Deep Stats (Rank, Bayes, etc)
+                // 2. Fetch Collection first to capture any yearpublished/thumb info
                 updateProgress(40);
                 const uniqueIds = [...new Set(state.plays.map(p => p.gameId))].filter(Boolean);
-                await fetchThingStats(uniqueIds);
-                
-                // 3. Fetch Collection (User Ratings)
+                await fetchCollection(user, uniqueIds);
+
+                // 3. Fetch Deep Stats (Rank, Bayes, etc) — allow stats fetch to preserve yearPublished if collection provided it
                 updateProgress(70);
-                await fetchCollection(user);
+                await fetchThingStats(uniqueIds);
                 
                 updateProgress(100);
                 setTimeout(() => { els.progress.style.display = 'none'; }, 500);
 
                 applyFilters();
+                populateYearFilters();
 
             } catch (err) {
                 els.gameList.innerHTML = `<div style="text-align:center; padding:40px; color:#FF3B30;">Error: ${err.message}</div>`;
@@ -791,16 +792,17 @@
                         }
                     }
 
-                    state.statsMap[id] = {
-                        thumb: thumb,
-                        avg: avg ? parseFloat(avg).toFixed(1) : "-",
-                        bayes: bayes ? parseFloat(bayes).toFixed(2) : "-",
-                        usersRated: usersRated ? parseInt(usersRated) : 0,
-                        rankVal: rankVal,
-                        rankDisp: rankDisp,
-                        weight: weight ? parseFloat(weight).toFixed(2) : "-",
-                        time: time,
-                        yearPublished: yearPublished
+                    state.statsMap[id] = state.statsMap[id] || {};
+                    // merge without overwriting yearPublished if already set by collection
+                    state.statsMap[id].thumb = state.statsMap[id].thumb || thumb;
+                    state.statsMap[id].yearPublished = state.statsMap[id].yearPublished || yearPublished;
+                    state.statsMap[id].avg = state.statsMap[id].avg || (avg ? parseFloat(avg).toFixed(1) : "-");
+                    state.statsMap[id].bayes = state.statsMap[id].bayes || (bayes ? parseFloat(bayes).toFixed(2) : "-");
+                    state.statsMap[id].usersRated = state.statsMap[id].usersRated || (usersRated ? parseInt(usersRated) : 0);
+                    state.statsMap[id].rankVal = state.statsMap[id].rankVal || rankVal;
+                    state.statsMap[id].rankDisp = state.statsMap[id].rankDisp || rankDisp;
+                    state.statsMap[id].weight = state.statsMap[id].weight || (weight ? parseFloat(weight).toFixed(2) : "-");
+                    state.statsMap[id].time = state.statsMap[id].time || time;
                     };
                 });
             }
@@ -812,13 +814,20 @@
                 const xml = await fetchAPI('collection', user, `&username=${encodeURIComponent(user)}&stats=1`);
                 const doc = new DOMParser().parseFromString(xml, "text/xml");
                 state.userRatings = {};
-                
+
+                // merge collection info (user rating, yearpublished, thumbnail) into statsMap where available
                 doc.querySelectorAll("item").forEach(item => {
                     const id = item.getAttribute("objectid");
                     const rating = item.querySelector("stats rating")?.getAttribute("value");
-                    if (rating && rating !== "N/A") {
-                        state.userRatings[id] = rating;
-                    }
+                    if (rating && rating !== "N/A") state.userRatings[id] = rating;
+
+                    const thumb = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
+                    const yearText = item.querySelector('yearpublished')?.textContent || item.getAttribute('publishyear') || null;
+                    const yearPublished = yearText ? parseInt(yearText) : null;
+
+                    if (!state.statsMap[id]) state.statsMap[id] = {};
+                    if (thumb) state.statsMap[id].thumb = state.statsMap[id].thumb || thumb;
+                    if (yearPublished) state.statsMap[id].yearPublished = state.statsMap[id].yearPublished || yearPublished;
                 });
             } catch (e) {
                 console.warn("Collection fetch error", e);
@@ -895,6 +904,25 @@
             document.querySelectorAll('.sort-option').forEach(d => d.classList.remove('active'));
             el.classList.add('active');
             applyFilters();
+
+                // populate year dropdowns for filtering
+                populateYearFilters();
+        }
+
+        function populateYearFilters(){
+            const years = new Set();
+            Object.values(state.statsMap).forEach(s => { if (s && s.yearPublished) years.add(s.yearPublished); });
+            const yearArr = Array.from(years).filter(y=>!!y).sort((a,b)=>a-b);
+            const minSel = document.getElementById('filterYearMin');
+            const maxSel = document.getElementById('filterYearMax');
+            if(!minSel || !maxSel) return;
+            // Clear existing options except first
+            const clearOptions = (sel)=>{ while(sel.options.length>1) sel.remove(1); };
+            clearOptions(minSel); clearOptions(maxSel);
+            yearArr.forEach(y=>{
+                const o1 = document.createElement('option'); o1.value = String(y); o1.text = String(y); minSel.appendChild(o1);
+                const o2 = document.createElement('option'); o2.value = String(y); o2.text = String(y); maxSel.appendChild(o2);
+            });
         }
 
         function render() {
