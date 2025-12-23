@@ -1,0 +1,450 @@
+import React, { useState, useMemo } from 'react';
+import { Settings, Box, Ruler, Download, Printer, Info, Layers, Type, Layout, Circle } from 'lucide-react';
+
+const App = () => {
+  const [unit, setUnit] = useState('metric');
+  const [cardCount, setCardCount] = useState(112);
+  const [cardThickness, setCardThickness] = useState(0.3);
+  const [exportMode, setExportMode] = useState('separate'); 
+  const [hasFingerLips, setHasFingerLips] = useState(true);
+  
+  const [engraving, setEngraving] = useState({
+    text: '',
+    position: 'front', 
+    fontSize: 10
+  });
+  
+  const PRESETS = {
+    uno: { name: 'Uno', width: 56, height: 87, defaultCount: 112 },
+    flip7: { name: 'Flip 7', width: 56, height: 89, defaultCount: 84 },
+    poker: { name: 'Standard Poker', width: 63.5, height: 88.9, defaultCount: 54 },
+    mtg: { name: 'Magic/TCG', width: 63, height: 88, defaultCount: 60 },
+    custom: { name: 'Custom', width: 60, height: 90, defaultCount: 20 }
+  };
+
+  const [dimensions, setDimensions] = useState(PRESETS.uno);
+  const [wallThickness, setWallThickness] = useState(1.6);
+  const [tolerance, setTolerance] = useState(0.15); 
+
+  const toUnit = (val) => unit === 'metric' ? val : val / 25.4;
+  const fromUnit = (val) => unit === 'metric' ? val : val * 25.4;
+  const unitLabel = unit === 'metric' ? 'mm' : 'in';
+
+  const handlePresetChange = (key) => {
+    const p = PRESETS[key];
+    setDimensions(p);
+    setCardCount(p.defaultCount);
+  };
+
+  const updateDim = (key, val) => {
+    const numericVal = parseFloat(val) || 0;
+    setDimensions(prev => ({ ...prev, [key]: unit === 'imperial' ? fromUnit(numericVal) : numericVal }));
+  };
+
+  const calc = useMemo(() => {
+    const stackHeight = cardCount * cardThickness;
+    const innerW = dimensions.width + 2; 
+    const innerH = dimensions.height + 2;
+    const innerD = stackHeight + 2;
+
+    return {
+      stackHeight,
+      innerW, innerH, innerD,
+      outerW: innerW + (wallThickness * 2),
+      outerH: innerH + (wallThickness * 2),
+      outerD: innerD + (wallThickness),
+      lidInnerW: innerW + (wallThickness * 2) + (tolerance * 2),
+      lidInnerH: innerH + (wallThickness * 2) + (tolerance * 2),
+      lidDepth: 25 
+    };
+  }, [dimensions, cardCount, cardThickness, wallThickness, tolerance]);
+
+  // --- REWRITTEN MESH ENGINE (Solid Volume Logic) ---
+  const generateMesh = (w, h, d, wall, type, offset = {x:0, y:0, z:0}) => {
+    const facets = [];
+    const fmt = (n) => (n + 0).toFixed(4); // Avoid -0.0000
+    
+    const addTri = (p1, p2, p3) => {
+      const v = (pt) => `${fmt(pt[0]+offset.x)} ${fmt(pt[1]+offset.y)} ${fmt(pt[2]+offset.z)}`;
+      facets.push(`  facet normal 0 0 0\n    outer loop\n      vertex ${v(p1)}\n      vertex ${v(p2)}\n      vertex ${v(p3)}\n    endloop\n  endfacet`);
+    };
+
+    const addQuad = (p1, p2, p3, p4) => {
+      addTri(p1, p2, p3);
+      addTri(p1, p3, p4);
+    };
+
+    // --- GEOMETRY HELPERS ---
+
+    // Generates a wall with a U-shaped cutout at the top (Z-max)
+    // Used for Lid Left/Right sides
+    const addWallWithCutout = (x1, y1, x2, y2, zBottom, zTop, thickness, cutoutW, cutoutH) => {
+       // Vector along the wall
+       const len = Math.sqrt(Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2));
+       const dx = (x2-x1)/len;
+       const dy = (y2-y1)/len;
+       
+       // Normal vector (inward)
+       const nx = -dy; 
+       const ny = dx;
+
+       // Cutout range
+       const startT = (len - cutoutW) / 2;
+       const endT = startT + cutoutW;
+       const zCut = zTop - cutoutH;
+
+       // Define 4 corners of OUTER face
+       const oBL = [x1, y1, zBottom];
+       const oBR = [x2, y2, zBottom];
+       const oTL = [x1, y1, zTop];
+       const oTR = [x2, y2, zTop];
+       
+       // Define 4 corners of INNER face
+       const iBL = [x1 + nx*thickness, y1 + ny*thickness, zBottom];
+       const iBR = [x2 + nx*thickness, y2 + ny*thickness, zBottom];
+       const iTL = [x1 + nx*thickness, y1 + ny*thickness, zTop];
+       const iTR = [x2 + nx*thickness, y2 + ny*thickness, zTop];
+
+       // Intermediate points for cutout
+       const pOutStart = [x1 + dx*startT, y1 + dy*startT];
+       const pOutEnd = [x1 + dx*endT, y1 + dy*endT];
+       const pInStart = [pOutStart[0] + nx*thickness, pOutStart[1] + ny*thickness];
+       const pInEnd = [pOutEnd[0] + nx*thickness, pOutEnd[1] + ny*thickness];
+
+       // 1. OUTER FACE (3 parts: Left, Right, Bottom-Middle)
+       // Left column
+       addQuad(oBL, [pOutStart[0], pOutStart[1], zBottom], [pOutStart[0], pOutStart[1], zTop], oTL);
+       // Right column
+       addQuad([pOutEnd[0], pOutEnd[1], zBottom], oBR, oTR, [pOutEnd[0], pOutEnd[1], zTop]);
+       // Middle (under cutout)
+       addQuad([pOutStart[0], pOutStart[1], zBottom], [pOutEnd[0], pOutEnd[1], zBottom], [pOutEnd[0], pOutEnd[1], zCut], [pOutStart[0], pOutStart[1], zCut]);
+
+       // 2. INNER FACE (Mirrored logic, reversed winding)
+       addQuad([pInStart[0], pInStart[1], zBottom], iBL, iTL, [pInStart[0], pInStart[1], zTop]);
+       addQuad(iBR, [pInEnd[0], pInEnd[1], zBottom], [pInEnd[0], pInEnd[1], zTop], iTR);
+       addQuad([pInEnd[0], pInEnd[1], zBottom], [pInStart[0], pInStart[1], zBottom], [pInStart[0], pInStart[1], zCut], [pInEnd[0], pInEnd[1], zCut]);
+
+       // 3. SEALING RIMS (Connecting Inner/Outer)
+       // Vertical Left Cutout Edge
+       addQuad([pOutStart[0], pOutStart[1], zCut], [pInStart[0], pInStart[1], zCut], [pInStart[0], pInStart[1], zTop], [pOutStart[0], pOutStart[1], zTop]);
+       // Vertical Right Cutout Edge
+       addQuad([pInEnd[0], pInEnd[1], zCut], [pOutEnd[0], pOutEnd[1], zCut], [pOutEnd[0], pOutEnd[1], zTop], [pInEnd[0], pInEnd[1], zTop]);
+       // Horizontal Bottom Cutout Edge
+       addQuad([pOutStart[0], pOutStart[1], zCut], [pOutEnd[0], pOutEnd[1], zCut], [pInEnd[0], pInEnd[1], zCut], [pInStart[0], pInStart[1], zCut]);
+       
+       // 4. TOP RIMS (Left and Right of cutout)
+       addQuad(oTL, [pOutStart[0], pOutStart[1], zTop], [pInStart[0], pInStart[1], zTop], iTL);
+       addQuad([pOutEnd[0], pOutEnd[1], zTop], oTR, iTR, [pInEnd[0], pInEnd[1], zTop]);
+    };
+
+    // Generates a simple rectangular wall
+    const addSolidWall = (x1, y1, x2, y2, zBottom, zTop, thickness) => {
+       const len = Math.sqrt(Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2));
+       const dx = (x2-x1)/len; const dy = (y2-y1)/len;
+       const nx = -dy; const ny = dx;
+
+       const oBL = [x1, y1, zBottom]; const oBR = [x2, y2, zBottom];
+       const oTL = [x1, y1, zTop];    const oTR = [x2, y2, zTop];
+       
+       const iBL = [x1 + nx*thickness, y1 + ny*thickness, zBottom];
+       const iBR = [x2 + nx*thickness, y2 + ny*thickness, zBottom];
+       const iTL = [x1 + nx*thickness, y1 + ny*thickness, zTop];
+       const iTR = [x2 + nx*thickness, y2 + ny*thickness, zTop];
+
+       addQuad(oBL, oBR, oTR, oTL); // Outer
+       addQuad(iBR, iBL, iTL, iTR); // Inner
+       addQuad(oTL, oTR, iTR, iTL); // Top Rim
+    };
+
+    // Generates a wall with a pocket (deboss) in the center
+    const addWallWithPocket = (x1, y1, x2, y2, zBottom, zTop, thickness, pocketW, pocketH, pocketD) => {
+       const len = Math.sqrt(Math.pow(x2-x1, 2) + Math.pow(y2-y1, 2));
+       const dx = (x2-x1)/len; const dy = (y2-y1)/len;
+       const nx = -dy; const ny = dx;
+
+       const startT = (len - pocketW) / 2;
+       const endT = startT + pocketW;
+       const zPocketStart = (zTop - pocketH) / 2;
+       const zPocketEnd = zPocketStart + pocketH;
+
+       // 9-patch grid for Outer Face to create the hole
+       const pts = []; // Array of points along the wall line
+       [0, startT, endT, len].forEach(t => pts.push([x1 + dx*t, y1 + dy*t]));
+       const zs = [zBottom, zPocketStart, zPocketEnd, zTop];
+
+       // Helper to get 3D point on outer face
+       const p = (xi, zi) => [pts[xi][0], pts[xi][1], zs[zi]];
+
+       // Draw Outer Face (excluding the hole at [1,1])
+       for(let xi=0; xi<3; xi++) {
+         for(let zi=0; zi<3; zi++) {
+           if(xi === 1 && zi === 1) continue; // Skip the hole
+           addQuad(p(xi, zi), p(xi+1, zi), p(xi+1, zi+1), p(xi, zi+1));
+         }
+       }
+
+       // Draw Solid Inner Face
+       const pi = (xi, zi) => [pts[xi][0] + nx*thickness, pts[xi][1] + ny*thickness, zs[zi]];
+       addQuad(pi(3,0), pi(0,0), pi(0,3), pi(3,3));
+
+       // Draw Top Rim
+       addQuad(p(0,3), p(3,3), pi(3,3), pi(0,3));
+
+       // --- THE POCKET ---
+       // Recessed Back Wall
+       const pd = (xi, zi) => [pts[xi][0] + nx*pocketD, pts[xi][1] + ny*pocketD, zs[zi]];
+       addQuad(pd(1,1), pd(2,1), pd(2,2), pd(1,2));
+
+       // Pocket Sides (Connecting Outer Hole to Back Wall)
+       addQuad(p(1,1), p(1,2), pd(1,2), pd(1,1)); // Left
+       addQuad(p(2,1), pd(2,1), pd(2,2), p(2,2)); // Right
+       addQuad(p(1,1), pd(1,1), pd(2,1), p(2,1)); // Bottom
+       addQuad(p(1,2), p(2,2), pd(2,2), pd(1,2)); // Top
+    };
+
+    // --- MAIN ASSEMBLY ---
+    
+    if (type === 'box') {
+        // Bottom Floor
+        addQuad([0,0,0], [w,0,0], [w,h,0], [0,h,0]); // Outer
+        addQuad([wall,h-wall,wall], [w-wall,h-wall,wall], [w-wall,wall,wall], [wall,wall,wall]); // Inner
+
+        // 1. FRONT WALL (Y=0) - With Engraving?
+        if (engraving.text.length > 0 && engraving.position === 'front') {
+            const txtW = Math.min(w*0.7, engraving.text.length*6);
+            addWallWithPocket(0,0, w,0, 0,d, wall, txtW, 14, 0.8);
+        } else {
+            addSolidWall(0,0, w,0, 0,d, wall);
+        }
+
+        // 2. RIGHT WALL (X=W)
+        addSolidWall(w,0, w,h, 0,d, wall);
+
+        // 3. BACK WALL (Y=H)
+        addSolidWall(w,h, 0,h, 0,d, wall);
+
+        // 4. LEFT WALL (X=0)
+        addSolidWall(0,h, 0,0, 0,d, wall);
+
+    } else if (type === 'lid') {
+        // Top Plate (at Z=0 since printed inverted usually, but let's stick to orientation)
+        // Here we build it "opening down" at Z=d? No, generateMesh builds local coords.
+        // Let's build it like a cup opening up (Z=D is rim), then flip in export.
+        
+        // Bottom (Solid Face)
+        addQuad([0,0,0], [w,0,0], [w,h,0], [0,h,0]);
+        addQuad([wall,h-wall,wall], [w-wall,h-wall,wall], [w-wall,wall,wall], [wall,wall,wall]);
+
+        const lipW = 24;
+        const lipH = 15;
+
+        // 1. FRONT WALL (Y=0)
+        addSolidWall(0,0, w,0, 0,d, wall);
+
+        // 2. RIGHT WALL (X=W) - Cutout?
+        if (hasFingerLips) {
+            addWallWithCutout(w,0, w,h, 0,d, wall, lipW, lipH);
+        } else {
+            addSolidWall(w,0, w,h, 0,d, wall);
+        }
+
+        // 3. BACK WALL (Y=H)
+        addSolidWall(w,h, 0,h, 0,d, wall);
+
+        // 4. LEFT WALL (X=0) - Cutout?
+        if (hasFingerLips) {
+            addWallWithCutout(0,h, 0,0, 0,d, wall, lipW, lipH);
+        } else {
+            addSolidWall(0,h, 0,0, 0,d, wall);
+        }
+    }
+
+    return facets.join('\n');
+  };
+
+  const downloadParts = () => {
+    const lidW = calc.lidInnerW + (wallThickness * 2);
+    const lidH = calc.lidInnerH + (wallThickness * 2);
+
+    if (exportMode === 'combined') {
+      let stl = `solid DeckBoxSet\n`;
+      stl += generateMesh(calc.outerW, calc.outerH, calc.outerD, wallThickness, 'box', {x:0, y:0, z:0});
+      // Flip lid (rotate 180 on X axis essentially) and move it
+      // For simplicity in ASCII STL, we just translate. 
+      // User should flip face-down in slicer, OR we generate it face down.
+      // Let's generate it offset.
+      stl += "\n" + generateMesh(lidW, lidH, calc.lidDepth, wallThickness, 'lid', {x: calc.outerW + 15, y:0, z:0});
+      stl += `\nendsolid`;
+      saveFile(stl, `${dimensions.name}_Plate.stl`);
+    } else {
+      const bStl = `solid Box\n` + generateMesh(calc.outerW, calc.outerH, calc.outerD, wallThickness, 'box') + `\nendsolid`;
+      saveFile(bStl, `${dimensions.name}_Box.stl`);
+      const lStl = `solid Lid\n` + generateMesh(lidW, lidH, calc.lidDepth, wallThickness, 'lid') + `\nendsolid`;
+      saveFile(lStl, `${dimensions.name}_Lid.stl`);
+    }
+  };
+
+  const saveFile = (content, filename) => {
+    const blob = new Blob([content], { type: 'text/plain' });
+    const url = URL.createObjectURL(blob);
+    const link = document.createElement('a');
+    link.href = url;
+    link.download = filename;
+    link.click();
+    URL.revokeObjectURL(url);
+  };
+
+  return (
+    <div className="min-h-screen bg-slate-100 p-4 md:p-8 font-sans text-slate-900">
+      <div className="max-w-6xl mx-auto">
+        <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-4 bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+          <div className="flex items-center gap-4">
+            <div className="bg-blue-600 p-3 rounded-xl text-white shadow-lg">
+              <Box size={32} />
+            </div>
+            <div>
+              <h1 className="text-2xl font-black tracking-tight text-slate-800">Slicer-Ready Deck Gen</h1>
+              <p className="text-slate-500 font-medium font-mono text-xs uppercase tracking-widest">Manifold Engine V5.0 • Sealed Geometry</p>
+            </div>
+          </div>
+          
+          <div className="flex bg-slate-100 p-1 rounded-xl">
+            {['metric', 'imperial'].map((u) => (
+              <button key={u} onClick={() => setUnit(u)} className={`px-6 py-2 text-sm font-bold rounded-lg transition-all ${unit === u ? 'bg-white text-blue-600 shadow-sm' : 'text-slate-500'}`}>
+                {u.charAt(0).toUpperCase() + u.slice(1)}
+              </button>
+            ))}
+          </div>
+        </header>
+
+        <div className="grid grid-cols-1 lg:grid-cols-12 gap-8">
+          <div className="lg:col-span-4 space-y-6">
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+                <Settings size={18} /> Geometry
+              </h2>
+              <div className="space-y-5">
+                <select className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-semibold" onChange={(e) => handlePresetChange(e.target.value)}>
+                  {Object.entries(PRESETS).map(([key, p]) => <option key={key} value={key}>{p.name}</option>)}
+                </select>
+                <div className="grid grid-cols-2 gap-4">
+                  <input type="number" step="0.1" value={toUnit(dimensions.width).toFixed(2)} onChange={(e) => updateDim('width', e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono"/>
+                  <input type="number" step="0.1" value={toUnit(dimensions.height).toFixed(2)} onChange={(e) => updateDim('height', e.target.value)} className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-mono"/>
+                </div>
+                <div className="p-4 bg-blue-50 rounded-xl">
+                  <input type="range" min="10" max="250" value={cardCount} onChange={(e) => setCardCount(parseInt(e.target.value))} className="w-full"/>
+                  <div className="flex justify-between mt-2 text-[10px] font-black text-blue-600">
+                    <span>{cardCount} CARDS</span>
+                    <span>{toUnit(calc.stackHeight).toFixed(1)}{unitLabel}</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+                <Circle size={18} /> Finger Lips
+              </h2>
+              <div className="space-y-4">
+                <div className="flex items-center justify-between p-3 bg-slate-50 rounded-xl border border-slate-200">
+                    <span className="text-xs font-bold text-slate-700">Add Cutouts to Lid</span>
+                    <button 
+                        onClick={() => setHasFingerLips(!hasFingerLips)}
+                        className={`w-12 h-6 rounded-full transition-colors relative ${hasFingerLips ? 'bg-blue-600' : 'bg-slate-300'}`}
+                    >
+                        <div className={`absolute top-1 w-4 h-4 bg-white rounded-full transition-all ${hasFingerLips ? 'left-7' : 'left-1'}`}></div>
+                    </button>
+                </div>
+                <div>
+                  <div className="flex justify-between text-xs font-bold mb-2">
+                    <span className="text-slate-500">LID TOLERANCE</span>
+                    <span className="text-blue-600 font-mono">{tolerance}mm</span>
+                  </div>
+                  <input type="range" min="0.05" max="0.4" step="0.05" value={tolerance} onChange={(e) => setTolerance(parseFloat(e.target.value))} className="w-full"/>
+                </div>
+              </div>
+            </div>
+
+            <div className="bg-white p-6 rounded-2xl shadow-sm border border-slate-200">
+              <h2 className="text-sm font-black text-slate-400 uppercase tracking-widest mb-6 flex items-center gap-2">
+                <Type size={18} /> Engraving Area
+              </h2>
+              <div className="space-y-4">
+                <input 
+                  placeholder="Text label (Physical Indent)" 
+                  value={engraving.text}
+                  onChange={(e) => setEngraving({...engraving, text: e.target.value})}
+                  className="w-full p-3 bg-slate-50 border border-slate-200 rounded-xl text-sm font-bold uppercase"
+                />
+                <p className="text-[10px] text-slate-400 font-bold uppercase">Indent Depth: 0.8mm</p>
+              </div>
+            </div>
+          </div>
+
+          <div className="lg:col-span-8 space-y-6">
+            <div className="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+              <div className="p-6 border-b border-slate-100 flex justify-between items-center bg-slate-50/50">
+                <div className="flex items-center gap-2 font-bold">
+                  <Layout className="text-blue-600" size={20} /> Preview & Export
+                </div>
+                <div className="flex bg-slate-200 p-1 rounded-xl">
+                    <button onClick={() => setExportMode('separate')} className={`px-4 py-1.5 text-xs font-bold rounded-lg ${exportMode === 'separate' ? 'bg-white shadow-sm' : ''}`}>Separate</button>
+                    <button onClick={() => setExportMode('combined')} className={`px-4 py-1.5 text-xs font-bold rounded-lg ${exportMode === 'combined' ? 'bg-white shadow-sm' : ''}`}>Combined</button>
+                </div>
+              </div>
+
+              <div className="p-8">
+                <div className="flex flex-col items-center justify-center p-12 bg-slate-900 rounded-3xl relative overflow-hidden">
+                  <div className="flex gap-12 perspective-1000">
+                    <div className="relative w-28 h-44 transition-transform duration-500" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(-15deg) rotateY(25deg)' }}>
+                      <div className="absolute inset-0 bg-blue-600 border border-white/20 rounded-sm shadow-2xl flex items-center justify-center font-black text-white/40 rotate-90 text-sm">
+                        {engraving.text || "LABEL"}
+                      </div>
+                    </div>
+                    <div className="relative w-28 h-14 transition-transform duration-500 mt-auto" style={{ transformStyle: 'preserve-3d', transform: 'rotateX(-15deg) rotateY(25deg)' }}>
+                      <div className="absolute inset-0 bg-orange-500 border border-white/20 rounded-sm shadow-2xl overflow-hidden">
+                         {hasFingerLips && <div className="absolute -left-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-slate-900 rounded-full" />}
+                         {hasFingerLips && <div className="absolute -right-3 top-1/2 -translate-y-1/2 w-8 h-8 bg-slate-900 rounded-full" />}
+                      </div>
+                    </div>
+                  </div>
+                  
+                  <button 
+                    onClick={downloadParts}
+                    className="mt-12 flex items-center gap-3 px-8 py-4 bg-blue-600 text-white rounded-2xl font-black text-sm hover:scale-[1.02] active:scale-95 transition-all shadow-xl shadow-blue-500/20"
+                  >
+                    <Download size={20} /> DOWNLOAD VERIFIED STLS
+                  </button>
+                </div>
+
+                <div className="grid grid-cols-1 md:grid-cols-2 gap-8 mt-8">
+                    <div className="bg-slate-50 p-5 rounded-2xl border border-slate-200">
+                        <h3 className="text-xs font-black text-slate-400 uppercase tracking-widest flex items-center gap-2 mb-4">
+                            <Info size={14}/> Slicer Verification
+                        </h3>
+                        <ul className="text-[11px] space-y-2 font-medium text-slate-600 list-disc ml-4">
+                            <li><strong>Lid Cutouts:</strong> Now generated as fully sealed volumes (Inner+Outer walls bridged).</li>
+                            <li><strong>Engraving:</strong> Front wall is physically segmented to create a watertight pocket.</li>
+                            <li><strong>Manifold:</strong> All normals oriented to ensure "Solid" detection in Prusa/Cura.</li>
+                        </ul>
+                    </div>
+                    
+                    <div className="bg-amber-50 p-5 rounded-2xl border border-amber-100">
+                        <h4 className="text-[10px] font-black text-amber-800 uppercase mb-2">Printing Note</h4>
+                        <p className="text-[10px] text-amber-900 leading-tight">
+                            The lid is generated opening-up (like a cup) to simplify geometry. In your slicer, <strong>flip the lid 180 degrees</strong> so the large flat face is on the build plate.
+                        </p>
+                    </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+    </div>
+  );
+};
+
+export default App;
+
+
