@@ -514,12 +514,49 @@
             const boxSize = 40;
             const gap = 2;
             
+            // Create elevated platforms
+            const platforms = [
+                { x: 300, y: GROUND_Y - 80, width: 150, height: 10 },
+                { x: 500, y: GROUND_Y - 150, width: 120, height: 10 }
+            ];
+            
             let gameIndex = 0;
-            // Calculate rows for pyramid: sqrt(targetCount * 2) gives approximate triangular number
-            // For a pyramid with n rows, total boxes = n(n+1)/2, so n ≈ sqrt(2 * targetCount)
+            // Calculate rows for pyramid
             let rows = Math.ceil(Math.sqrt(targetCount * 2));
             
-            // Create pyramid from bottom to top
+            // Create boxes on platforms
+            let targetCountOnPlatforms = Math.floor(targetCount / 2);
+            let platformIndex = 0;
+            
+            // Place some targets on elevated platforms
+            for (let i = 0; i < targetCountOnPlatforms && gameIndex < targetCount; i++) {
+                const platform = platforms[platformIndex % platforms.length];
+                const xOffset = (i % 3) * (boxSize + gap);
+                const yLayer = Math.floor(i / 3);
+                
+                if (platform.x + xOffset + boxSize <= platform.x + platform.width) {
+                    targets.push({
+                        x: platform.x + xOffset,
+                        y: platform.y - boxSize - (yLayer * (boxSize + gap)),
+                        width: boxSize,
+                        height: boxSize,
+                        vx: 0,
+                        vy: 0,
+                        rotation: 0,
+                        rotationSpeed: 0,
+                        active: true,
+                        game: collection[gameIndex] || null,
+                        grounded: false,
+                        onPlatform: true
+                    });
+                    gameIndex++;
+                    
+                    if (i % 3 === 2) platformIndex++;
+                }
+            }
+            
+            // Create remaining targets in pyramid on ground
+            rows = Math.ceil(Math.sqrt((targetCount - gameIndex) * 2));
             for (let row = 0; row < rows; row++) {
                 const boxesInRow = rows - row;
                 const rowY = startY - (row * (boxSize + gap));
@@ -540,7 +577,8 @@
                         rotationSpeed: 0,
                         active: true,
                         game: collection[gameIndex] || null,
-                        grounded: false
+                        grounded: false,
+                        onPlatform: false
                     });
                     
                     gameIndex++;
@@ -548,6 +586,12 @@
                 
                 if (gameIndex >= targetCount) break;
             }
+            
+            // Store platforms for collision detection
+            window.gamePlatforms = [
+                { x: 300, y: GROUND_Y - 80, width: 150, height: 10 },
+                { x: 500, y: GROUND_Y - 150, width: 120, height: 10 }
+            ];
         }
 
         function resetProjectile() {
@@ -728,8 +772,10 @@
                 });
             }
             
-            // Update targets
-            targets.forEach(target => {
+            // Update targets (including hit ones that are falling)
+            // Use reverse loop with splice for better performance
+            for (let i = targets.length - 1; i >= 0; i--) {
+                const target = targets[i];
                 if (!target.active && !target.grounded) {
                     target.vx *= FRICTION;
                     target.vy += GRAVITY;
@@ -745,7 +791,25 @@
                         
                         if (Math.abs(target.vy) < 1) {
                             target.grounded = true;
+                            // Remove from display once grounded
+                            targets.splice(i, 1);
+                            continue;
                         }
+                    }
+                    
+                    // Check platform collisions
+                    if (window.gamePlatforms) {
+                        window.gamePlatforms.forEach(platform => {
+                            if (target.x + target.width > platform.x && 
+                                target.x < platform.x + platform.width &&
+                                target.y + target.height > platform.y && 
+                                target.y + target.height < platform.y + platform.height + 5 &&
+                                target.vy > 0) {
+                                target.y = platform.y - target.height;
+                                target.vy *= -0.3;
+                                target.vx *= 0.7;
+                            }
+                        });
                     }
                     
                     // Wall collisions
@@ -757,8 +821,13 @@
                         target.x = canvas.width - target.width;
                         target.vx *= -0.5;
                     }
+                    
+                    // Remove if fallen off screen
+                    if (target.y > canvas.height) {
+                        targets.splice(i, 1);
+                    }
                 }
-            });
+            }
         }
 
         function checkCollision(proj, target) {
@@ -787,6 +856,18 @@
             // Draw grass
             ctx.fillStyle = '#228B22';
             ctx.fillRect(0, GROUND_Y, canvas.width, 5);
+            
+            // Draw platforms
+            if (window.gamePlatforms) {
+                ctx.fillStyle = '#654321';
+                window.gamePlatforms.forEach(platform => {
+                    ctx.fillRect(platform.x, platform.y, platform.width, platform.height);
+                    // Add platform edge highlight
+                    ctx.fillStyle = '#8B7355';
+                    ctx.fillRect(platform.x, platform.y, platform.width, 2);
+                    ctx.fillStyle = '#654321';
+                });
+            }
             
             // Draw slingshot
             drawSlingshot();
