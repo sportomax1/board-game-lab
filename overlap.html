@@ -1,0 +1,198 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>Overlap & Pixel Guess</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800&display=swap');
+        body { font-family: 'Inter', sans-serif; background-color: #0a0a0a; color: white; overflow-x: hidden; }
+        
+        /* Overlap Engine */
+        .image-stage {
+            position: relative;
+            width: 100%;
+            aspect-ratio: 16/9;
+            background: #111;
+            border-radius: 1rem;
+            overflow: hidden;
+            border: 2px solid #333;
+        }
+        .game-img {
+            position: absolute;
+            inset: 0;
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            transition: all 0.5s ease;
+        }
+        .img-top { z-index: 10; opacity: 0.5; mix-blend-mode: screen; }
+        .img-bottom { z-index: 5; opacity: 1; }
+
+        /* Pixelation Effect */
+        .pixelated {
+            filter: blur(2px); /* Slight blur to help the pixelation look "retro" */
+            image-rendering: pixelated;
+            transform: scale(1.05); /* Hide edges */
+        }
+
+        .pixel-canvas {
+            width: 100%;
+            height: 100%;
+            image-rendering: pixelated;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8 flex flex-col items-center">
+
+    <div id="setup" class="w-full max-w-md space-y-6">
+        <h1 class="text-3xl font-extrabold text-transparent bg-clip-text bg-gradient-to-r from-blue-400 to-purple-500">
+            Overlap Challenge
+        </h1>
+        
+        <div class="space-y-4 bg-gray-900 p-6 rounded-2xl border border-gray-800">
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">BGG Username</label>
+                <input type="text" id="username" value="sportomax" class="w-full bg-gray-800 p-3 rounded-lg border border-gray-700 outline-none focus:border-blue-500">
+            </div>
+
+            <div>
+                <label class="block text-sm text-gray-400 mb-1">Game Mode</label>
+                <select id="mode" class="w-full bg-gray-800 p-3 rounded-lg border border-gray-700">
+                    <option value="overlap">Twin Blend (Overlap)</option>
+                    <option value="pixel">Pixel Alteration</option>
+                </select>
+            </div>
+
+            <button id="startBtn" class="w-full bg-blue-600 hover:bg-blue-500 py-4 rounded-xl font-bold transition-all active:scale-95">
+                START CHALLENGE
+            </button>
+        </div>
+    </div>
+
+    <div id="game" class="hidden w-full max-w-2xl space-y-6">
+        <div class="flex justify-between items-center">
+            <span id="counter" class="text-gray-400 font-mono">Game 1/10</span>
+            <button onclick="location.reload()" class="text-xs text-gray-500 hover:text-white">EXIT</button>
+        </div>
+
+        <div class="image-stage" id="stage">
+            <img id="img1" class="game-img img-bottom" src="">
+            <img id="img2" class="game-img img-top" src="">
+        </div>
+
+        <div id="controls" class="space-y-4">
+            <div id="answerArea" class="hidden text-center p-4 bg-blue-900/20 rounded-xl border border-blue-500/30">
+                <p class="text-xs text-blue-400 uppercase tracking-widest mb-2">The Games were:</p>
+                <p id="gameNames" class="font-bold text-lg"></p>
+                <div class="flex gap-2 mt-4 justify-center">
+                    <button onclick="nextGame(false)" class="px-6 py-2 bg-red-600 rounded-lg text-sm font-bold">I Missed It</button>
+                    <button onclick="nextGame(true)" class="px-6 py-2 bg-green-600 rounded-lg text-sm font-bold">Got It!</button>
+                </div>
+            </div>
+
+            <button id="revealBtn" class="w-full py-4 bg-white text-black font-black rounded-xl hover:bg-gray-200 transition-colors">
+                REVEAL NAMES
+            </button>
+        </div>
+    </div>
+
+    <script>
+        let games = [];
+        let currentIdx = 0;
+        let score = 0;
+
+        const startBtn = document.getElementById('startBtn');
+        const revealBtn = document.getElementById('revealBtn');
+        const setup = document.getElementById('setup');
+        const gameSection = document.getElementById('game');
+        const img1 = document.getElementById('img1');
+        const img2 = document.getElementById('img2');
+        const modeSelect = document.getElementById('mode');
+
+        async function fetchGames(user) {
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${user}&own=1&stats=1`);
+                const text = await response.text();
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                return Array.from(xml.querySelectorAll('item')).map(i => ({
+                    name: i.querySelector('name')?.textContent,
+                    image: i.querySelector('image')?.textContent
+                })).filter(g => g.image);
+            } catch (e) {
+                alert("Error fetching BGG collection. Using fallback.");
+                return [];
+            }
+        }
+
+        startBtn.onclick = async () => {
+            const user = document.getElementById('username').value;
+            startBtn.innerText = "LOADING...";
+            games = await fetchGames(user);
+            if (games.length < 2) return alert("Not enough games found!");
+            
+            // Shuffle
+            games.sort(() => Math.random() - 0.5);
+            
+            setup.classList.add('hidden');
+            gameSection.classList.remove('hidden');
+            loadRound();
+        };
+
+        function loadRound() {
+            const mode = modeSelect.value;
+            const g1 = games[currentIdx];
+            const g2 = games[(currentIdx + 1) % games.length];
+
+            document.getElementById('counter').innerText = `Game ${currentIdx + 1}`;
+            document.getElementById('answerArea').classList.add('hidden');
+            revealBtn.classList.remove('hidden');
+            
+            img1.src = g1.image;
+            img1.classList.remove('pixelated');
+
+            if (mode === 'overlap') {
+                img2.src = g2.image;
+                img2.classList.remove('hidden');
+                img1.style.opacity = "1";
+                img1.style.filter = "none";
+            } else {
+                img2.classList.add('hidden');
+                img1.classList.add('pixelated');
+                // Apply heavy pixelation via CSS transform/scale hack or filter
+                img1.style.filter = "blur(15px) contrast(150%)";
+            }
+        }
+
+        revealBtn.onclick = () => {
+            const mode = modeSelect.value;
+            const g1 = games[currentIdx];
+            const g2 = games[(currentIdx + 1) % games.length];
+
+            revealBtn.classList.add('hidden');
+            document.getElementById('answerArea').classList.remove('hidden');
+            
+            // Show clear images
+            img1.style.filter = "none";
+            img1.style.opacity = "1";
+            img1.classList.remove('pixelated');
+            img2.style.opacity = "0.3"; 
+
+            document.getElementById('gameNames').innerText = 
+                mode === 'overlap' ? `${g1.name} + ${g2.name}` : g1.name;
+        };
+
+        function nextGame(correct) {
+            if (correct) score++;
+            currentIdx++;
+            if (currentIdx < 10 && currentIdx < games.length) {
+                loadRound();
+            } else {
+                alert(`Challenge Over! Final Score: ${score}/10`);
+                location.reload();
+            }
+        }
+    </script>
+</body>
+</html>
