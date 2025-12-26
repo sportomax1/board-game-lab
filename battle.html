@@ -1,6 +1,278 @@
 <!DOCTYPE html>
 <html lang="en">
 <head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1" />
+    <title>BGG Battle</title>
+    <style>
+        body{font-family:Inter,system-ui,Arial;margin:0;background:#0f1724;color:#e6eef8;display:flex;align-items:flex-start;justify-content:center;padding:2rem}
+        .card{background:#0b1220;border:1px solid #1f2a44;padding:1rem;border-radius:12px;width:100%;max-width:980px}
+        h1{margin:0 0 0.5rem 0;font-size:1.2rem}
+        .controls{display:flex;gap:0.5rem;flex-wrap:wrap;margin-bottom:1rem}
+        .controls input{padding:0.5rem;border-radius:8px;border:1px solid #263248;background:#081022;color:#dfe9ff}
+        .btn{background:#2563eb;color:white;padding:0.6rem 0.9rem;border-radius:8px;border:none;cursor:pointer;font-weight:700}
+        .btn.secondary{background:#10b981}
+        .teams{display:flex;gap:1rem;margin-bottom:1rem}
+        .team{flex:1;background:#071226;border-radius:10px;padding:0.6rem;border:1px solid #1b2a40}
+        .team.clickable{cursor:pointer; transition:box-shadow 0.15s, transform 0.12s}
+        .team.clickable:hover{box-shadow:0 6px 18px rgba(0,120,220,0.12); transform:translateY(-3px); border-color:#2b6cb0}
+        .thumbs{display:flex;gap:6px;flex-wrap:wrap}
+        .thumbs img{width:90px;height:90px;object-fit:contain;border-radius:8px;background:#0b1622;border:1px solid #213145}
+        .meta{display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem}
+        .history{margin-top:1rem;background:#071827;padding:0.6rem;border-radius:8px;border:1px solid #123042;max-height:240px;overflow:auto}
+        .history .item{padding:0.35rem;border-bottom:1px dashed #0f2940;font-size:0.9rem}
+        .summary{display:flex;gap:1rem;align-items:center}
+        .label{font-size:0.85rem;color:#9fb3d6}
+        .winner-badge{background:#052e14;color:#b7f7cf;padding:4px 8px;border-radius:999px;font-weight:800}
+        .underdog-badge{background:#3b0820;color:#ffb7c2;padding:4px 8px;border-radius:999px;font-weight:800}
+        small.note{color:#7f95b4}
+        .center{display:flex;justify-content:center;align-items:center}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <h1>BGG Battle — build two teams and pick a winner</h1>
+        <div class="controls">
+            <div>
+                <div class="label">Team 1 Username</div>
+                <input id="user1" value="sportomax" />
+            </div>
+            <div>
+                <div class="label">Team 2 Username</div>
+                <input id="user2" value="sportomax" />
+            </div>
+            <div>
+                <div class="label">Team Size</div>
+                <input id="teamSize" type="number" min="1" max="10" value="5" style="width:72px" />
+            </div>
+            <div>
+                <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="excludeExpansions" /> Exclude Expansions</label>
+            </div>
+            <div class="center">
+                <button id="startBtn" class="btn">Create Teams</button>
+            </div>
+            <div class="center">
+                <button id="pickBtn" class="btn secondary" disabled>Pick Winner</button>
+            </div>
+            <div class="center">
+                <button id="againBtn" class="btn" disabled>Winner Stays (Next Match)</button>
+            </div>
+            <div class="center">
+                <button id="newBtn" class="btn" disabled>New Match (Shuffle Both)</button>
+            </div>
+        </div>
+
+        <div class="teams">
+            <div class="team" id="team1">
+                <div class="label">Team 1 (<span id="t1user">sportomax</span>)</div>
+                <div class="thumbs" id="t1thumbs"></div>
+                <div class="meta"><div class="label">Avg:</div><div id="t1avg">-</div></div>
+            </div>
+            <div class="team" id="team2">
+                <div class="label">Team 2 (<span id="t2user">sportomax</span>)</div>
+                <div class="thumbs" id="t2thumbs"></div>
+                <div class="meta"><div class="label">Avg:</div><div id="t2avg">-</div></div>
+            </div>
+        </div>
+
+        <div class="center summary">
+            <div class="label">Result:</div>
+            <div id="resultArea">No match yet</div>
+        </div>
+        <div style="margin-top:0.5rem"><small class="note">After picking a winner: history stored for this session. Click "Winner Stays" to keep the winner team and respawn a new opponent. A favorite is determined by higher combined average.</small></div>
+
+        <div class="history" id="history">
+            <div style="font-weight:800;margin-bottom:6px">Session History</div>
+        </div>
+    </div>
+
+    <script>
+    // Battle page (copied from compete)
+    // - Fetch collections using /api/bgg-helper?endpoint=collection&username=...&own=1&stats=1
+    // - Build two random teams of specified size from each user's owned games
+    // - Compute averages (use bayesaverage where available) and display thumbnails
+    // - Pick winner (weighted by team avg), support winner-stays, and record session history
+
+    const startBtn = document.getElementById('startBtn');
+    const pickBtn = document.getElementById('pickBtn');
+    const againBtn = document.getElementById('againBtn');
+    const newBtn = document.getElementById('newBtn');
+    const historyEl = document.getElementById('history');
+
+    let coll1 = [], coll2 = [];
+    let team1 = [], team2 = [];
+    let history = [];
+
+    function parseCollectionXml(xmlText){
+        const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+        const items = Array.from(doc.querySelectorAll('item'));
+        return items.map(item => {
+            const id = item.getAttribute('objectid') || item.getAttribute('id') || '';
+            const name = item.querySelector('name')?.textContent || '';
+            const thumb = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
+            const subtype = item.getAttribute('subtype') || '';
+            let bayes = 0;
+            const stats = item.querySelector('stats') || item.querySelector('statistics');
+            if(stats){
+                const bay = stats.querySelector('bayesaverage') || stats.querySelector('rating > bayesaverage');
+                if(bay) bayes = parseFloat(bay.getAttribute('value') || bay.getAttribute('value') || bay.textContent) || 0;
+            }
+            return { id, name, thumb, bayes, subtype };
+        }).filter(g=>g.thumb);
+    }
+
+    async function fetchCollection(username){
+        try{
+            const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+            const res = await fetch(url);
+            const txt = await res.text();
+            return parseCollectionXml(txt);
+        }catch(e){
+            console.error('collection error',e);
+            return [];
+        }
+    }
+
+    function sampleTeam(coll, size, excludeIds=new Set()){
+        const pool = coll.filter(g => !excludeIds.has(g.id));
+        if(pool.length === 0) return [];
+        const out = [];
+        const used = new Set();
+        for(let i=0;i<Math.min(size,pool.length);i++){
+            let tries=0;let pick;
+            do{ pick = pool[Math.floor(Math.random()*pool.length)]; tries++; } while(used.has(pick.id) && tries<30);
+            used.add(pick.id); out.push(pick);
+        }
+        return out;
+    }
+
+    function teamAverage(team){
+        if(!team || team.length===0) return 0;
+        const vals = team.map(g => parseFloat(g.bayes) || 0);
+        const sum = vals.reduce((a,b)=>a+b,0);
+        return sum / team.length;
+    }
+
+    function renderTeam(elThumbs, team){
+        elThumbs.innerHTML = '';
+        team.forEach(g=>{
+            const img = document.createElement('img');
+            img.src = g.thumb; img.alt = g.name;
+            elThumbs.appendChild(img);
+        })
+    }
+
+    function updateUI(){
+        document.getElementById('t1user').innerText = document.getElementById('user1').value || '';
+        document.getElementById('t2user').innerText = document.getElementById('user2').value || '';
+        renderTeam(document.getElementById('t1thumbs'), team1);
+        renderTeam(document.getElementById('t2thumbs'), team2);
+        document.getElementById('t1avg').innerText = teamAverage(team1).toFixed(2);
+        document.getElementById('t2avg').innerText = teamAverage(team2).toFixed(2);
+    }
+
+    function addHistory(item){
+        history.unshift(item);
+        const node = document.createElement('div'); node.className='item';
+        const fav = item.favorite === item.winner;
+        node.innerHTML = `<strong>Match</strong> — Winner: ${item.winnerName} (${item.winnerTag}) — ${fav?'<span class="winner-badge">Favorite Won</span>':'<span class="underdog-badge">Underdog Won</span>'} <br/><small>t1 avg:${item.t1avg.toFixed(2)} t2 avg:${item.t2avg.toFixed(2)}</small>`;
+        historyEl.insertBefore(node, historyEl.childNodes[1] || null);
+    }
+
+    function pickWeightedWinner(){
+        const a = Math.max(0, teamAverage(team1));
+        const b = Math.max(0, teamAverage(team2));
+        let winner;
+        if(a===0 && b===0){ winner = Math.random() < 0.5 ? 1 : 2; }
+        else {
+            const p = a / (a + b);
+            winner = Math.random() < p ? 1 : 2;
+        }
+        return winner;
+    }
+
+    function pickWinner(explicitIndex){
+        const winnerIndex = explicitIndex || pickWeightedWinner();
+        const winnerTeam = winnerIndex===1?team1:team2;
+        const winnerName = winnerIndex===1?document.getElementById('t1user').innerText:document.getElementById('t2user').innerText;
+        const winnerTag = winnerIndex===1? 'Team1' : 'Team2';
+        const t1avg = teamAverage(team1);
+        const t2avg = teamAverage(team2);
+        const favorite = t1avg === t2avg ? (Math.random()<0.5?1:2) : (t1avg>t2avg?1:2);
+        const favWon = favorite === winnerIndex;
+
+        // display
+        document.getElementById('resultArea').innerHTML = `<strong>${winnerName} wins!</strong> ` + (favWon?'<span class="winner-badge">Favorite Won</span>':'<span class="underdog-badge">Underdog Won</span>');
+
+        // record history
+        const h = { time: Date.now(), winner: winnerIndex, winnerName, winnerTag, t1avg, t2avg, favorite };
+        addHistory(h);
+
+        // store last winnerIndex for winner-stays logic
+        window._lastWinner = winnerIndex;
+    }
+
+    startBtn.addEventListener('click', async ()=>{
+        startBtn.disabled = true; startBtn.innerText='Loading...';
+        const u1 = document.getElementById('user1').value || 'sportomax';
+        const u2 = document.getElementById('user2').value || 'sportomax';
+        const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
+
+        [coll1, coll2] = await Promise.all([fetchCollection(u1), fetchCollection(u2)]);
+
+        if(document.getElementById('excludeExpansions')?.checked){
+            coll1 = coll1.filter(g => (g.subtype || '').toLowerCase() !== 'boardgameexpansion');
+            coll2 = coll2.filter(g => (g.subtype || '').toLowerCase() !== 'boardgameexpansion');
+        }
+
+        team1 = sampleTeam(coll1, size);
+        team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
+
+        updateUI();
+        history = [];
+        historyEl.querySelectorAll('.item').forEach(n=>n.remove());
+        pickBtn.disabled = false; againBtn.disabled = false; newBtn.disabled = false;
+        startBtn.disabled = false; startBtn.innerText='Create Teams';
+        document.getElementById('resultArea').innerText = 'Teams created — pick a winner';
+    });
+
+    pickBtn.addEventListener('click', ()=>{ pickWinner(); });
+
+    againBtn.addEventListener('click', ()=>{
+        const last = window._lastWinner || 0;
+        if(!last){ alert('Pick a winner first'); return; }
+        const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
+        document.getElementById('resultArea').innerText = 'Loading next matchup...';
+        setTimeout(()=>{
+            if(last===1){ team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id))); }
+            else { team1 = sampleTeam(coll1, size, new Set(team2.map(g=>g.id))); }
+            updateUI();
+            document.getElementById('resultArea').innerText = 'Spawned next match (winner stayed)';
+        }, 250);
+    });
+
+    newBtn.addEventListener('click', ()=>{
+        const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
+        document.getElementById('resultArea').innerText = 'Loading next matchup...';
+        setTimeout(()=>{
+            team1 = sampleTeam(coll1, size);
+            team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
+            updateUI();
+            document.getElementById('resultArea').innerText = 'New match created';
+        }, 250);
+    });
+
+    document.getElementById('team1').classList.add('clickable');
+    document.getElementById('team2').classList.add('clickable');
+    document.getElementById('team1').addEventListener('click', ()=>{ if(team1.length) pickWinner(1); });
+    document.getElementById('team2').addEventListener('click', ()=>{ if(team2.length) pickWinner(2); });
+
+    </script>
+</body>
+</html>
+<!DOCTYPE html>
+<html lang="en">
+<head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
     <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>⚔️</text></svg>">
