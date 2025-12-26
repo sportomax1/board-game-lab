@@ -14,6 +14,8 @@
         .btn.secondary{background:#10b981}
         .teams{display:flex;gap:1rem;margin-bottom:1rem}
         .team{flex:1;background:#071226;border-radius:10px;padding:0.6rem;border:1px solid #1b2a40}
+        .team.clickable{cursor:pointer; transition:box-shadow 0.15s, transform 0.12s}
+        .team.clickable:hover{box-shadow:0 6px 18px rgba(0,120,220,0.12); transform:translateY(-3px); border-color:#2b6cb0}
         .thumbs{display:flex;gap:6px;flex-wrap:wrap}
         .thumbs img{width:90px;height:90px;object-fit:contain;border-radius:8px;background:#0b1622;border:1px solid #213145}
         .meta{display:flex;align-items:center;gap:0.5rem;margin-top:0.5rem}
@@ -42,6 +44,9 @@
             <div>
                 <div class="label">Team Size</div>
                 <input id="teamSize" type="number" min="1" max="10" value="5" style="width:72px" />
+            </div>
+            <div>
+                <label style="display:flex;align-items:center;gap:6px"><input type="checkbox" id="excludeExpansions" /> Exclude Expansions</label>
             </div>
             <div class="center">
                 <button id="startBtn" class="btn">Create Teams</button>
@@ -105,6 +110,7 @@
             const id = item.getAttribute('objectid') || item.getAttribute('id') || '';
             const name = item.querySelector('name')?.textContent || '';
             const thumb = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
+            const subtype = item.getAttribute('subtype') || '';
             // try to get bayes average from stats
             let bayes = 0;
             const stats = item.querySelector('stats') || item.querySelector('statistics');
@@ -112,7 +118,7 @@
                 const bay = stats.querySelector('bayesaverage') || stats.querySelector('rating > bayesaverage');
                 if(bay) bayes = parseFloat(bay.getAttribute('value') || bay.getAttribute('value') || bay.textContent) || 0;
             }
-            return { id, name, thumb, bayes };
+            return { id, name, thumb, bayes, subtype };
         }).filter(g=>g.thumb);
     }
 
@@ -186,6 +192,28 @@
         return winner;
     }
 
+    // pickWinner: unified handler to accept explicit selection (click on team) or compute weighted when no arg
+    function pickWinner(explicitIndex){
+        const winnerIndex = explicitIndex || pickWeightedWinner();
+        const winnerTeam = winnerIndex===1?team1:team2;
+        const winnerName = winnerIndex===1?document.getElementById('t1user').innerText:document.getElementById('t2user').innerText;
+        const winnerTag = winnerIndex===1? 'Team1' : 'Team2';
+        const t1avg = teamAverage(team1);
+        const t2avg = teamAverage(team2);
+        const favorite = t1avg === t2avg ? (Math.random()<0.5?1:2) : (t1avg>t2avg?1:2);
+        const favWon = favorite === winnerIndex;
+
+        // display
+        document.getElementById('resultArea').innerHTML = `<strong>${winnerName} wins!</strong> ` + (favWon?'<span class="winner-badge">Favorite Won</span>':'<span class="underdog-badge">Underdog Won</span>');
+
+        // record history
+        const h = { time: Date.now(), winner: winnerIndex, winnerName, winnerTag, t1avg, t2avg, favorite };
+        addHistory(h);
+
+        // store last winnerIndex for winner-stays logic
+        window._lastWinner = winnerIndex;
+    }
+
     startBtn.addEventListener('click', async ()=>{
         startBtn.disabled = true; startBtn.innerText='Loading...';
         const u1 = document.getElementById('user1').value || 'sportomax';
@@ -194,6 +222,12 @@
 
         // fetch both collections in parallel (own=1)
         [coll1, coll2] = await Promise.all([fetchCollection(u1), fetchCollection(u2)]);
+
+        // Optionally exclude expansions if user asked
+        if(document.getElementById('excludeExpansions')?.checked){
+            coll1 = coll1.filter(g => (g.subtype || '').toLowerCase() !== 'boardgameexpansion');
+            coll2 = coll2.filter(g => (g.subtype || '').toLowerCase() !== 'boardgameexpansion');
+        }
 
         // sample teams
         team1 = sampleTeam(coll1, size);
@@ -207,51 +241,43 @@
         document.getElementById('resultArea').innerText = 'Teams created — pick a winner';
     });
 
-    pickBtn.addEventListener('click', ()=>{
-        const winnerIndex = pickWeightedWinner();
-        const winnerTeam = winnerIndex===1?team1:team2;
-        const loserTeam = winnerIndex===1?team2:team1;
-        const winnerName = winnerIndex===1?document.getElementById('t1user').innerText:document.getElementById('t2user').innerText;
-        const winnerTag = winnerIndex===1? 'Team1' : 'Team2';
-        const t1avg = teamAverage(team1);
-        const t2avg = teamAverage(team2);
-        const favorite = t1avg === t2avg ? (Math.random()<0.5?1:2) : (t1avg>t2avg?1:2);
-        const favStr = favorite===1? 'Team1':'Team2';
-        const favWon = favorite === winnerIndex;
-
-        // display
-        document.getElementById('resultArea').innerHTML = `<strong>${winnerName} wins!</strong> ` + (favWon?'<span class="winner-badge">Favorite Won</span>':'<span class="underdog-badge">Underdog Won</span>');
-
-        // record history
-        const h = { time: Date.now(), winner: winnerIndex, winnerName, winnerTag, t1avg, t2avg, favorite };
-        addHistory(h);
-
-        // store last winnerIndex for winner-stays logic
-        window._lastWinner = winnerIndex;
-    });
+    pickBtn.addEventListener('click', ()=>{ pickWinner(); });
 
     againBtn.addEventListener('click', ()=>{
         // winner stays: keep last winner team, respawn opponent
         const last = window._lastWinner || 0;
         if(!last){ alert('Pick a winner first'); return; }
         const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
-        if(last===1){ // team1 stays, regen team2 from coll2
-            team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
-        } else {
-            team1 = sampleTeam(coll1, size, new Set(team2.map(g=>g.id)));
-        }
-        updateUI();
-        document.getElementById('resultArea').innerText = 'Spawned next match (winner stayed)';
+        document.getElementById('resultArea').innerText = 'Loading next matchup...';
+        // small async pause so users see loading state if image network is involved
+        setTimeout(()=>{
+            if(last===1){ // team1 stays, regen team2 from coll2
+                team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
+            } else {
+                team1 = sampleTeam(coll1, size, new Set(team2.map(g=>g.id)));
+            }
+            updateUI();
+            document.getElementById('resultArea').innerText = 'Spawned next match (winner stayed)';
+        }, 250);
     });
 
     newBtn.addEventListener('click', ()=>{
         // fresh match: both teams reshuffled
         const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
-        team1 = sampleTeam(coll1, size);
-        team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
-        updateUI();
-        document.getElementById('resultArea').innerText = 'New match created';
+        document.getElementById('resultArea').innerText = 'Loading next matchup...';
+        setTimeout(()=>{
+            team1 = sampleTeam(coll1, size);
+            team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
+            updateUI();
+            document.getElementById('resultArea').innerText = 'New match created';
+        }, 250);
     });
+
+    // allow clicking on team container to choose winner directly
+    document.getElementById('team1').classList.add('clickable');
+    document.getElementById('team2').classList.add('clickable');
+    document.getElementById('team1').addEventListener('click', ()=>{ if(team1.length) pickWinner(1); });
+    document.getElementById('team2').addEventListener('click', ()=>{ if(team2.length) pickWinner(2); });
 
     </script>
 </body>
