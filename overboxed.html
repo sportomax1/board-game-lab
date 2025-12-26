@@ -391,6 +391,13 @@
         .bin-highlight { box-shadow: 0 8px 20px rgba(46,204,113,0.14); border-color: rgba(46,204,113,0.45) !important; transform: translateY(-2px); transition: all 160ms ease; }
         .bin-accept { animation: binAccept 520ms cubic-bezier(.2,.9,.2,1); }
         @keyframes binAccept { 0% { transform: scale(0.96); opacity: 0.9; } 60% { transform: scale(1.06); opacity: 1; } 100% { transform: scale(1); opacity: 1; } }
+        /* Toasts */
+        .toasts { position: fixed; right: 16px; top: 80px; z-index: 2200; display:flex;flex-direction:column;gap:8px; }
+        .toast { background: rgba(0,0,0,0.8); color: #fff; padding: 8px 12px; border-radius: 8px; font-size: 13px; box-shadow: 0 6px 20px rgba(0,0,0,0.45); opacity: 0; transform: translateY(-6px); transition: all 260ms ease; }
+        .toast.show { opacity: 1; transform: translateY(0); }
+        .toast.success { background: linear-gradient(90deg,#27ae60,#2ecc71); }
+        .toast.error { background: linear-gradient(90deg,#e74c3c,#c0392b); }
+        .staged-ready { box-shadow: 0 6px 18px rgba(46,204,113,0.18); border-color: rgba(46,204,113,0.45) !important; }
     </style>
 </head>
 <body>
@@ -445,6 +452,8 @@
                     <div class="score" id="ordersComplete">0</div>
                 </div>
             </div>
+
+            <div id="toasts" class="toasts" aria-live="polite"></div>
 
             <div class="orders-container" id="ordersContainer">
                 <!-- Orders will be inserted here -->
@@ -675,7 +684,17 @@
             Object.keys(stagedBins).forEach(bin=>{
                 const el = document.getElementById(bin + 'Contents');
                 if (!el) return;
-                el.innerHTML = stagedBins[bin].map(s=>`<div draggable="true" ondragstart="onDragStart(event,'staged:${s.uid}')" data-uid="${s.uid}" data-game-id="${s.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;border:2px solid rgba(255,255,255,0.04);cursor:grab"><img src='${IMAGE_PROXY}${s.thumbnail}' style='width:100%;height:100%;object-fit:cover' alt='${s.name}'></div>`).join('');
+                el.innerHTML = stagedBins[bin].map(s=>{
+                    const pct = s._pct || 0;
+                    const readyClass = s.ready ? 'staged-ready' : '';
+                    const check = s.ready ? '<div style="position:absolute;right:4px;top:4px;background:rgba(46,204,113,0.95);color:#fff;padding:2px 6px;border-radius:6px;font-size:11px">✓</div>' : '';
+                    return `
+                        <div draggable="true" ondragstart="onDragStart(event,'staged:${s.uid}')" data-uid="${s.uid}" data-game-id="${s.id}" class="${readyClass}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;border:2px solid rgba(255,255,255,0.04);cursor:grab;position:relative">
+                            <img src='${IMAGE_PROXY}${s.thumbnail}' style='width:100%;height:100%;object-fit:cover' alt='${s.name}'>
+                            <div class="stage-progress" id="stagedprog-${s.uid}" style="opacity:${pct>0 && !s.ready? '1':'0'}"><div class="stage-bar" style="width:${pct}%"></div></div>
+                            ${check}
+                        </div>`;
+                }).join('');
             });
         }
 
@@ -758,6 +777,7 @@
             };
 
             currentOrders.push(order);
+            showToast(`New customer ${order.customer} arrived (${order.items.length} item${order.items.length>1?'s':''})`,`info`);
             startOrderTimer(order.id);
             renderOrders();
         }
@@ -807,7 +827,7 @@
                         <div class="order-items">
                             ${order.items.map(item => {
                                 const nextStage = (item.stages && item.stages[item.progress]) || null;
-                                const ready = nextStage && stagedBins[nextStage] && stagedBins[nextStage].some(s=>s.id === item.id);
+                                const ready = nextStage && stagedBins[nextStage] && stagedBins[nextStage].some(s=>s.id === item.id && s.ready);
                                 const badges = item.stages.map((s,si)=>{
                                     const done = si < (item.progress||0);
                                     const label = s === 'sticker' ? '🏷️' : (s === 'autograph' ? '✍️' : s);
@@ -862,6 +882,35 @@
             const dropped = evt.dataTransfer.getData('text/plain') || evt.dataTransfer.getData('text') || '';
             if (!dropped) return;
             // if dropped id doesn't match the order item id, show a quick flash
+            // allow staged:<uid> to be dropped onto order item to perform action if ready
+            if (dropped.startsWith('staged:')) {
+                const uid = dropped.split(':')[1];
+                let found = null; let binName = null;
+                for (const b of Object.keys(stagedBins)) {
+                    const idx = stagedBins[b].findIndex(s=>s.uid === uid);
+                    if (idx >= 0) { found = stagedBins[b][idx]; binName = b; break; }
+                }
+                if (found) {
+                    // check it matches this order item and is ready
+                    if (found.id === itemId && found.ready) {
+                        const order = currentOrders.find(o => o.id === orderId);
+                        if (!order) return;
+                        const item = order.items.find(i => i.id === itemId);
+                        if (!item || item.collected) return;
+                        const nextAction = (item.stages && item.stages[item.progress]) || 'deliver';
+                        if (nextAction === binName) {
+                            // start performing action (performActionOn will consume staged item when complete)
+                            performActionOn(orderId, itemId, nextAction);
+                            return;
+                        }
+                    } else {
+                        // not a matching ready staged item — flash
+                        const el = evt.currentTarget;
+                        if (el) { el.style.transform = 'translateX(-6px)'; setTimeout(()=> el.style.transform = '', 120); }
+                        return;
+                    }
+                }
+            }
             if (dropped !== itemId) {
                 const el = evt.currentTarget;
                 if (el) {
@@ -963,7 +1012,7 @@
                 if (!it) return;
                 // create staged copy
                 const uid = makeUid();
-                stagedBins[binAction].push({ uid, id: it.id, thumbnail: it.thumbnail, name: it.name });
+                stagedBins[binAction].push({ uid, id: it.id, thumbnail: it.thumbnail, name: it.name, createdAt: Date.now(), startedAt: Date.now(), requiredDuration: ACTION_DURATIONS[binAction] || 1500, ready: false, _pct: 0, _notified: false });
                 renderBins();
                 return;
             }
@@ -974,9 +1023,10 @@
                 const game = collection.find(g => g.id === shelfId);
                 if (!game) return;
                 const uid = makeUid();
-                stagedBins[binAction].push({ uid, id: game.id, thumbnail: game.thumbnail, name: game.name });
+                stagedBins[binAction].push({ uid, id: game.id, thumbnail: game.thumbnail, name: game.name, createdAt: Date.now(), startedAt: Date.now(), requiredDuration: ACTION_DURATIONS[binAction] || 1500, ready: false, _pct: 0, _notified: false });
                 renderBins();
                 animateBinAccept(binAction + 'Contents');
+                showToast(`${game.name} staged to ${binAction}`, 'info');
                 return;
             }
 
@@ -988,9 +1038,16 @@
                     const idx = stagedBins[b].findIndex(s => s.uid === uid);
                         if (idx >= 0) {
                             const item = stagedBins[b].splice(idx,1)[0];
+                            // reset timing when moving bins
+                            item.startedAt = Date.now();
+                            item.requiredDuration = ACTION_DURATIONS[binAction] || 1500;
+                            item.ready = false;
+                            item._pct = 0;
+                            item._notified = false;
                             stagedBins[binAction].push(item);
                             renderBins();
                             animateBinAccept(binAction + 'Contents');
+                            showToast(`${item.name} moved to ${binAction}`, 'info');
                             return;
                         }
                 }
@@ -1073,6 +1130,7 @@
 
             // show confetti for completed order
             showConfettiForOrder(orderId);
+            showToast('Customer happy! Order complete 🎉', 'success');
 
             updateUI();
         }
@@ -1180,6 +1238,7 @@
             // Remove failed order
             currentOrders = currentOrders.filter(o => o.id !== orderId);
             renderOrders();
+            showToast('Customer unhappy — order failed', 'error');
 
             // Game over if no orders left
             if (currentOrders.length === 0) {
@@ -1283,6 +1342,47 @@
 
             setTimeout(()=> confRoot.remove(), 1700);
         }
+
+        // Toast helper
+        function showToast(message, type = 'info', duration = 3200) {
+            try {
+                const root = document.getElementById('toasts');
+                if (!root) return;
+                const t = document.createElement('div');
+                t.className = 'toast ' + (type || '');
+                t.textContent = message;
+                root.appendChild(t);
+                // force reflow then show
+                requestAnimationFrame(()=> t.classList.add('show'));
+                setTimeout(()=> { t.classList.remove('show'); setTimeout(()=> t.remove(), 260); }, duration);
+            } catch(e) { console.warn('toast error', e); }
+        }
+
+        // Staged items progress updater
+        if (window._stagedProgressInterval) clearInterval(window._stagedProgressInterval);
+        window._stagedProgressInterval = setInterval(()=>{
+            let changed = false;
+            const now = Date.now();
+            Object.keys(stagedBins).forEach(bin => {
+                stagedBins[bin].forEach(s => {
+                    if (s.ready) return;
+                    const dur = s.requiredDuration || ACTION_DURATIONS[bin] || 1500;
+                    const started = s.startedAt || s.createdAt || now;
+                    const elapsed = now - started;
+                    const pct = Math.min(100, Math.floor((elapsed / dur) * 100));
+                    if (s._pct !== pct) { s._pct = pct; changed = true; }
+                    if (pct >= 100 && !s.ready) {
+                        s.ready = true;
+                        changed = true;
+                        if (!s._notified) {
+                            showToast(`${s.name} ready in ${bin}`, 'info');
+                            s._notified = true;
+                        }
+                    }
+                });
+            });
+            if (changed) renderBins();
+        }, 300);
 
         // expose a quick cleanup when unloading
         window.addEventListener('beforeunload', ()=>{
