@@ -463,9 +463,18 @@
             </div>
 
             <div style="display:flex;gap:8px;margin-bottom:12px;">
-                <div id="gatherBin" ondragover="event.preventDefault()" ondrop="onBinDrop(event,'gather')" style="flex:1;padding:10px;border-radius:8px;border:2px dashed rgba(0,0,0,0.12);background:rgba(255,255,255,0.06);text-align:center;">📦 Gather</div>
-                <div id="packBin" ondragover="event.preventDefault()" ondrop="onBinDrop(event,'pack')" style="flex:1;padding:10px;border-radius:8px;border:2px dashed rgba(0,0,0,0.12);background:rgba(255,255,255,0.06);text-align:center;">📦 Pack</div>
-                <div id="deliverBin" ondragover="event.preventDefault()" ondrop="onBinDrop(event,'deliver')" style="flex:1;padding:10px;border-radius:8px;border:2px dashed rgba(0,0,0,0.12);background:rgba(255,255,255,0.06);text-align:center;">🚚 Deliver</div>
+                <div id="gatherBin" ondragover="event.preventDefault()" ondrop="onBinDrop(event,'gather')" style="flex:1;padding:10px;border-radius:8px;border:2px dashed rgba(0,0,0,0.12);background:rgba(255,255,255,0.03);text-align:center;min-height:66px;">
+                    <div style="font-weight:700;margin-bottom:6px">📦 Gather</div>
+                    <div class="bin-contents" id="gatherContents" style="display:flex;gap:6px;overflow:auto;padding:4px"></div>
+                </div>
+                <div id="packBin" ondragover="event.preventDefault()" ondrop="onBinDrop(event,'pack')" style="flex:1;padding:10px;border-radius:8px;border:2px dashed rgba(0,0,0,0.12);background:rgba(255,255,255,0.03);text-align:center;min-height:66px;">
+                    <div style="font-weight:700;margin-bottom:6px">📦 Pack</div>
+                    <div class="bin-contents" id="packContents" style="display:flex;gap:6px;overflow:auto;padding:4px"></div>
+                </div>
+                <div id="deliverBin" ondragover="event.preventDefault()" ondrop="onBinDrop(event,'deliver')" style="flex:1;padding:10px;border-radius:8px;border:2px dashed rgba(0,0,0,0.12);background:rgba(255,255,255,0.03);text-align:center;min-height:66px;">
+                    <div style="font-weight:700;margin-bottom:6px">🚚 Deliver</div>
+                    <div class="bin-contents" id="deliverContents" style="display:flex;gap:6px;overflow:auto;padding:4px"></div>
+                </div>
             </div>
 
             <div class="shelf-container">
@@ -505,6 +514,9 @@
         // Action durations (ms) and in-progress tracking
         const ACTION_DURATIONS = { gather: 1400, pack: 2000, deliver: 1200 };
         const inProgress = {};
+        // staged items in bins: { gather: [], pack: [], deliver: [] }
+        const stagedBins = { gather: [], pack: [], deliver: [] };
+        function makeUid() { return 's' + Math.random().toString(36).slice(2,9); }
         
         const DIFFICULTY_SETTINGS = {
             easy: { orderTime: 90, itemsPerOrder: 3, maxOrders: 3 },
@@ -627,8 +639,18 @@
             collection = collection.sort(() => Math.random() - 0.5);
 
             renderShelf();
+            renderBins();
             generateOrder();
             updateUI();
+            // periodic order generator: ensure new customers every 30s when under cap
+            if (window._overboxedOrderInterval) clearInterval(window._overboxedOrderInterval);
+            window._overboxedOrderInterval = setInterval(()=>{
+                const settings = DIFFICULTY_SETTINGS[difficulty];
+                if (!gameActive) return;
+                if (currentOrders.length === 0 || currentOrders.length < settings.maxOrders) {
+                    generateOrder();
+                }
+            }, 30000);
             
             // Switch to game screen
             document.getElementById('setupScreen').classList.remove('active');
@@ -643,12 +665,20 @@
             const shelfList = collection.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''))
                 .filter(g => !q || (g.name || '').toLowerCase().includes(q));
             shelfGrid.innerHTML = shelfList.map((game) => `
-                <div id="shelf-${game.id}" class="shelf-item" draggable="true" ondragstart="onDragStart(event,'${game.id}')" onclick="selectShelfItem('${game.id}')" data-game-id="${game.id}">
+                <div id="shelf-${game.id}" class="shelf-item" draggable="true" ondragstart="onDragStart(event,'shelf:${game.id}')" onclick="selectShelfItem('${game.id}')" data-game-id="${game.id}">
                     <img src="${IMAGE_PROXY}${game.thumbnail}" alt="${game.name}"
                          onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%23ecf0f1%22/><text x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2240%22>🎲</text></svg>'">
                 </div>
             `).join('');
             buildAlphaBar();
+        }
+
+        function renderBins() {
+            ['gather','pack','deliver'].forEach(bin=>{
+                const el = document.getElementById(bin + 'Contents');
+                if (!el) return;
+                el.innerHTML = stagedBins[bin].map(s=>`<div draggable="true" ondragstart="onDragStart(event,'staged:${s.uid}')" data-uid="${s.uid}" data-game-id="${s.id}" style="width:48px;height:48px;border-radius:6px;overflow:hidden;border:2px solid rgba(255,255,255,0.04);cursor:grab"><img src='${IMAGE_PROXY}${s.thumbnail}' style='width:100%;height:100%;object-fit:cover' alt='${s.name}'></div>`).join('');
+            });
         }
 
         function buildAlphaBar() {
@@ -873,6 +903,12 @@
                     progEl2.style.opacity = '0';
                 }
                 delete inProgress[key];
+                // when performed via staged item, try to consume a staged thumbnail matching this game from any bin
+                ['gather','pack','deliver'].forEach(b=>{
+                    const si = stagedBins[b].findIndex(s=>s.id === it.id);
+                    if (si >= 0) stagedBins[b].splice(si,1);
+                });
+                renderBins();
                 renderOrders();
                 // if order complete
                 const maybeOrder = currentOrders.find(o => o.id === order.id);
@@ -891,24 +927,45 @@
                 const parts = data.split(':');
                 const orderId = parseInt(parts[1], 10);
                 const itemId = parts[2];
-                performActionOn(orderId, itemId, binAction);
+                // moving an order item into a bin should not auto-complete — treat as staging the item into the bin
+                const order = currentOrders.find(o => o.id === orderId);
+                if (!order) return;
+                const it = order.items.find(i => i.id === itemId);
+                if (!it) return;
+                // create staged copy
+                const uid = makeUid();
+                stagedBins[binAction].push({ uid, id: it.id, thumbnail: it.thumbnail, name: it.name });
+                renderBins();
                 return;
             }
 
-            // otherwise it's a shelf item id; try to find a matching order item that needs this action
-            const shelfId = data;
-            // find first order with an item that matches id and requires binAction next
-            for (const order of currentOrders) {
-                if (order.completed) continue;
-                for (const it of order.items) {
-                    if (!it.collected && it.id === shelfId && it.stages && it.stages[it.progress] === binAction) {
-                        performActionOn(order.id, it.id, binAction);
+            // shelf:payload indicates a shelf item being dropped into a bin (create staged item)
+            if (data.startsWith('shelf:')) {
+                const shelfId = data.split(':')[1];
+                const game = collection.find(g => g.id === shelfId);
+                if (!game) return;
+                const uid = makeUid();
+                stagedBins[binAction].push({ uid, id: game.id, thumbnail: game.thumbnail, name: game.name });
+                renderBins();
+                return;
+            }
+
+            // staged:<uid> moves a staged item between bins
+            if (data.startsWith('staged:')) {
+                const uid = data.split(':')[1];
+                // find where it currently is
+                for (const b of ['gather','pack','deliver']) {
+                    const idx = stagedBins[b].findIndex(s => s.uid === uid);
+                    if (idx >= 0) {
+                        const item = stagedBins[b].splice(idx,1)[0];
+                        stagedBins[binAction].push(item);
+                        renderBins();
                         return;
                     }
                 }
             }
 
-            // Not found: flash bin to indicate invalid
+            // fallback: flash bin to indicate invalid drop
             const el = evt.currentTarget;
             if (el) {
                 const orig = el.style.boxShadow;
@@ -1091,6 +1148,7 @@
             
             // Clear all timers
             Object.values(orderTimers).forEach(timer => clearInterval(timer));
+            if (window._overboxedOrderInterval) { clearInterval(window._overboxedOrderInterval); window._overboxedOrderInterval = null; }
 
             const gameOverEl = document.getElementById('gameOverScreen');
             gameOverEl.innerHTML = `
@@ -1168,6 +1226,11 @@
 
             setTimeout(()=> confRoot.remove(), 1700);
         }
+
+        // expose a quick cleanup when unloading
+        window.addEventListener('beforeunload', ()=>{
+            if (window._overboxedOrderInterval) clearInterval(window._overboxedOrderInterval);
+        });
     </script>
     <!-- Vercel Web Analytics removed for standalone page stability -->
 </body>
