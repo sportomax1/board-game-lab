@@ -460,12 +460,6 @@
                 <button class="btn btn-primary" onclick="performAction('deliver')" id="deliverBtn" disabled>
                     Deliver
                 </button>
-                <button class="btn btn-primary" onclick="performAction('sticker')" id="stickerBtn" disabled>
-                    Sticker
-                </button>
-                <button class="btn btn-primary" onclick="performAction('autograph')" id="autographBtn" disabled>
-                    Autograph
-                </button>
                 <button class="btn btn-secondary" onclick="clearSelection()">
                     Clear Selection
                 </button>
@@ -754,11 +748,14 @@
                 const stationChoices = [[], ['sticker'], ['autograph'], ['sticker','autograph']];
                 const chosen = stationChoices[Math.floor(Math.random() * stationChoices.length)];
                 if (chosen.length > 0) {
-                    // insert each chosen station at a random position in the existing stage sequence
-                    chosen.forEach(station => {
-                        const insertPos = Math.floor(Math.random() * (stages.length + 1));
-                        stages.splice(insertPos, 0, station);
-                    });
+                    // Ensure sticker/autograph steps (if present) occur right before deliver
+                    const orderStations = ['sticker','autograph'].filter(s=>chosen.includes(s));
+                    const deliverIdx = stages.indexOf('deliver');
+                    if (deliverIdx >= 0) {
+                        stages.splice(deliverIdx, 0, ...orderStations);
+                    } else {
+                        stages.push(...orderStations);
+                    }
                 }
                 orderItems.push({ ...base, collected: false, stages: stages, progress: 0 });
                 availableGames.splice(randomIndex, 1);
@@ -806,28 +803,39 @@
                 const allCollected = order.items.every(item => item.collected);
                 const isWarning = order.timeLeft <= 10;
                 
+                // compute starting stations for this order (unique first-stage values)
+                const starting = Array.from(new Set(order.items.map(it => (it.stages && it.stages.length>0) ? it.stages[0] : 'deliver')));
+                const stationIcons = {
+                    gather: '📦', pack: '📦', deliver: '🚚', sticker: '🏷️', autograph: '✍️'
+                };
                 return `
                     <div class="order-card ${allCollected ? 'active' : ''} ${order.completed ? 'completed' : ''}">
                                 <div class="order-header">
-                                    <div class="customer-name">${order.customerEmoji} ${order.customer}</div>
+                                    <div style="display:flex;align-items:center;gap:8px">
+                                        <div class="customer-name">${order.customerEmoji} ${order.customer}</div>
+                                        <div style="display:flex;gap:6px;align-items:center">${starting.map(s => `<div title="${s}" style="font-size:14px">${stationIcons[s] || s}</div>`).join('')}</div>
+                                    </div>
                                     <div class="order-timer ${isWarning ? 'warning' : ''}">${order.timeLeft}s</div>
                                 </div>
                         <div class="order-items">
-                            ${order.items.map(item => `
-                                                <div draggable="true" ondragstart="onDragStart(event,'order:${order.id}:${item.id}')" class="order-item ${item.collected ? 'collected' : ''} ${inProgress[order.id + '-' + item.id] ? 'in-progress' : ''}" data-order-id="${order.id}" data-item-id="${item.id}" ondragover="event.preventDefault()" ondrop="handleDrop(event, ${order.id}, '${item.id}')">
-                                                    <img src="${IMAGE_PROXY}${item.thumbnail}" alt="${item.name}">
-                                                    <div class="stage-progress" id="prog-${order.id}-${item.id}">
-                                                        <div class="stage-bar"></div>
-                                                    </div>
-                                                    <div style="position:absolute;left:6px;bottom:10px;display:flex;gap:4px;">
-                                                        ${item.stages.map((s,si)=>{
-                                                            const done = si < (item.progress||0);
-                                                            const label = s === 'sticker' ? '🏷️' : (s === 'autograph' ? '✍️' : s);
-                                                            return `<div style="padding:2px 6px;border-radius:6px;background:${done? 'rgba(46,204,113,0.9)':'rgba(0,0,0,0.4)'};color:white;font-size:10px;font-weight:700">${label}</div>`;
-                                                        }).join('')}
-                                                    </div>
-                                                </div>
-                                            `).join('')}
+                            ${order.items.map(item => {
+                                const nextStage = (item.stages && item.stages[item.progress]) || null;
+                                const ready = nextStage && stagedBins[nextStage] && stagedBins[nextStage].some(s=>s.id === item.id);
+                                const badges = item.stages.map((s,si)=>{
+                                    const done = si < (item.progress||0);
+                                    const label = s === 'sticker' ? '🏷️' : (s === 'autograph' ? '✍️' : s);
+                                    return `<div style="padding:2px 6px;border-radius:6px;background:${done? 'rgba(46,204,113,0.9)':'rgba(0,0,0,0.4)'};color:white;font-size:10px;font-weight:700">${label}</div>`;
+                                }).join('');
+                                return `
+                                    <div draggable="true" ondragstart="onDragStart(event,'order:${order.id}:${item.id}')" class="order-item ${item.collected ? 'collected' : ''} ${inProgress[order.id + '-' + item.id] ? 'in-progress' : ''}" data-order-id="${order.id}" data-item-id="${item.id}" ondragover="event.preventDefault()" ondrop="handleDrop(event, ${order.id}, '${item.id}')">
+                                        <img src="${IMAGE_PROXY}${item.thumbnail}" alt="${item.name}">
+                                        <div class="stage-progress" id="prog-${order.id}-${item.id}"><div class="stage-bar"></div></div>
+                                        <div style="position:absolute;left:6px;bottom:10px;display:flex;gap:4px;">${badges}</div>
+                                        <div style="position:absolute;right:6px;top:6px;">
+                                            <div style="width:20px;height:20px;border-radius:4px;display:flex;align-items:center;justify-content:center;background:${ready? 'rgba(46,204,113,0.95)':'rgba(255,255,255,0.06)'};color:white;font-size:12px">${ready? '✓' : (nextStage? (stationIcons[nextStage]||'?') : '')}</div>
+                                        </div>
+                                    </div>`;
+                            }).join('')}
                         </div>
                     </div>
                 `;
@@ -1035,9 +1043,7 @@
             document.getElementById('gatherBtn').disabled = !hasSelection;
             document.getElementById('packBtn').disabled = !hasSelection;
             document.getElementById('deliverBtn').disabled = !hasSelection;
-            // new station buttons
-            const stickerBtn = document.getElementById('stickerBtn'); if (stickerBtn) stickerBtn.disabled = !hasSelection;
-            const autographBtn = document.getElementById('autographBtn'); if (autographBtn) autographBtn.disabled = !hasSelection;
+            // station buttons removed — drag/drop bins only
         }
 
         function clearSelection() {
