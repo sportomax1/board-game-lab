@@ -3,7 +3,7 @@
 <head>
     <meta charset="utf-8" />
     <meta name="viewport" content="width=device-width,initial-scale=1" />
-    <title>BGG Battle</title>
+    <title>BGG Compete</title>
     <style>
         body{font-family:Inter,system-ui,Arial;margin:0;background:#0f1724;color:#e6eef8;display:flex;align-items:flex-start;justify-content:center;padding:2rem}
         .card{background:#0b1220;border:1px solid #1f2a44;padding:1rem;border-radius:12px;width:100%;max-width:980px}
@@ -31,7 +31,7 @@
 </head>
 <body>
     <div class="card">
-        <h1>BGG Battle — build two teams and pick a winner</h1>
+        <h1>BGG Compete — build two teams of 5 and pick a winner</h1>
         <div class="controls">
             <div>
                 <div class="label">Team 1 Username</div>
@@ -54,11 +54,16 @@
             <div class="center">
                 <button id="pickBtn" class="btn secondary" disabled>Pick Winner</button>
             </div>
-            <div class="center">
-                <button id="againBtn" class="btn" disabled>Winner Stays (Next Match)</button>
+            <div>
+                <div class="label">Next Match Mode</div>
+                <select id="nextMode" style="padding:0.4rem;border-radius:8px;background:#081022;color:#dfe9ff;border:1px solid #263248">
+                    <option value="shuffle">Shuffle Both (default)</option>
+                    <option value="winner">Winner Stays</option>
+                    <option value="loser">Loser Stays</option>
+                </select>
             </div>
             <div class="center">
-                <button id="newBtn" class="btn" disabled>New Match (Shuffle Both)</button>
+                <button id="nextBtn" class="btn" disabled>Next Match</button>
             </div>
         </div>
 
@@ -87,16 +92,16 @@
     </div>
 
     <script>
-    // Battle page (copied from compete)
+    // Compete page
     // - Fetch collections using /api/bgg-helper?endpoint=collection&username=...&own=1&stats=1
     // - Build two random teams of specified size from each user's owned games
     // - Compute averages (use bayesaverage where available) and display thumbnails
-    // - Pick winner (weighted by team avg), support winner-stays, and record session history
+    // - Pick winner (weighted by team avg) and record history; indicate favorite/underdog outcome
 
     const startBtn = document.getElementById('startBtn');
     const pickBtn = document.getElementById('pickBtn');
-    const againBtn = document.getElementById('againBtn');
-    const newBtn = document.getElementById('newBtn');
+    const nextBtn = document.getElementById('nextBtn');
+    const nextMode = document.getElementById('nextMode');
     const historyEl = document.getElementById('history');
 
     let coll1 = [], coll2 = [];
@@ -111,6 +116,7 @@
             const name = item.querySelector('name')?.textContent || '';
             const thumb = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || '';
             const subtype = item.getAttribute('subtype') || '';
+            // try to get bayes average from stats
             let bayes = 0;
             const stats = item.querySelector('stats') || item.querySelector('statistics');
             if(stats){
@@ -153,22 +159,45 @@
         return sum / team.length;
     }
 
-    function renderTeam(elThumbs, team){
+    // substitute a single game on a team (clicked thumbnail)
+    function substituteGame(teamIndex, slotIndex){
+        const coll = teamIndex === 1 ? coll1 : coll2;
+        const team = teamIndex === 1 ? team1 : team2;
+        if(!coll || coll.length===0) { alert('No collection loaded for that user'); return; }
+        // build exclude set: all ids currently used except the slot we're replacing
+        const exclude = new Set();
+        team.forEach((g,i)=>{ if(i!==slotIndex) exclude.add(g.id); });
+        const other = teamIndex===1?team2:team1;
+        other.forEach(g=>exclude.add(g.id));
+        const pool = coll.filter(g => !exclude.has(g.id));
+        if(pool.length===0){ alert('No available replacement (all games already used)'); return; }
+        // pick random replacement
+        const pick = pool[Math.floor(Math.random()*pool.length)];
+        team[slotIndex] = pick;
+        updateUI();
+    }
+
+    // render team thumbnails; clicking a thumbnail substitutes that game
+    function renderTeam(elThumbs, team, teamIndex){
         elThumbs.innerHTML = '';
-        team.forEach(g=>{
+        team.forEach((g, idx)=>{
             const img = document.createElement('img');
-            img.src = g.thumb; img.alt = g.name;
+            img.src = g.thumb; img.alt = g.name; img.title = g.name;
+            img.style.cursor = 'pointer';
+            img.addEventListener('click', (e)=>{ e.stopPropagation(); substituteGame(teamIndex, idx); });
             elThumbs.appendChild(img);
         })
     }
 
+    // update UI; averages are hidden until a winner is picked
     function updateUI(){
         document.getElementById('t1user').innerText = document.getElementById('user1').value || '';
         document.getElementById('t2user').innerText = document.getElementById('user2').value || '';
-        renderTeam(document.getElementById('t1thumbs'), team1);
-        renderTeam(document.getElementById('t2thumbs'), team2);
-        document.getElementById('t1avg').innerText = teamAverage(team1).toFixed(2);
-        document.getElementById('t2avg').innerText = teamAverage(team2).toFixed(2);
+        renderTeam(document.getElementById('t1thumbs'), team1, 1);
+        renderTeam(document.getElementById('t2thumbs'), team2, 2);
+        const showA = !!window._picked;
+        document.getElementById('t1avg').innerText = showA ? teamAverage(team1).toFixed(2) : '-';
+        document.getElementById('t2avg').innerText = showA ? teamAverage(team2).toFixed(2) : '-';
     }
 
     function addHistory(item){
@@ -191,6 +220,7 @@
         return winner;
     }
 
+    // pickWinner: unified handler to accept explicit selection (click on team) or compute weighted when no arg
     function pickWinner(explicitIndex){
         const winnerIndex = explicitIndex || pickWeightedWinner();
         const winnerTeam = winnerIndex===1?team1:team2;
@@ -210,6 +240,9 @@
 
         // store last winnerIndex for winner-stays logic
         window._lastWinner = winnerIndex;
+        // mark that a pick occurred and reveal averages
+        window._picked = true;
+        updateUI();
     }
 
     startBtn.addEventListener('click', async ()=>{
@@ -218,1187 +251,66 @@
         const u2 = document.getElementById('user2').value || 'sportomax';
         const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
 
+        // fetch both collections in parallel (own=1)
         [coll1, coll2] = await Promise.all([fetchCollection(u1), fetchCollection(u2)]);
 
+        // Optionally exclude expansions if user asked
         if(document.getElementById('excludeExpansions')?.checked){
             coll1 = coll1.filter(g => (g.subtype || '').toLowerCase() !== 'boardgameexpansion');
             coll2 = coll2.filter(g => (g.subtype || '').toLowerCase() !== 'boardgameexpansion');
         }
 
+        // sample teams
         team1 = sampleTeam(coll1, size);
         team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
 
+        // hide averages until a pick happens
+        window._picked = false;
         updateUI();
         history = [];
         historyEl.querySelectorAll('.item').forEach(n=>n.remove());
-        pickBtn.disabled = false; againBtn.disabled = false; newBtn.disabled = false;
+        pickBtn.disabled = false; nextBtn.disabled = false;
         startBtn.disabled = false; startBtn.innerText='Create Teams';
         document.getElementById('resultArea').innerText = 'Teams created — pick a winner';
     });
 
     pickBtn.addEventListener('click', ()=>{ pickWinner(); });
 
-    againBtn.addEventListener('click', ()=>{
+    // Next Match button follows the selected mode: shuffle / winner stays / loser stays
+    nextBtn.addEventListener('click', ()=>{
+        const mode = nextMode.value || 'shuffle';
+        const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
         const last = window._lastWinner || 0;
-        if(!last){ alert('Pick a winner first'); return; }
-        const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
+        if((mode === 'winner' || mode === 'loser') && !last){ alert('Pick a winner first'); return; }
         document.getElementById('resultArea').innerText = 'Loading next matchup...';
         setTimeout(()=>{
-            if(last===1){ team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id))); }
-            else { team1 = sampleTeam(coll1, size, new Set(team2.map(g=>g.id))); }
+            if(mode === 'shuffle'){
+                team1 = sampleTeam(coll1, size);
+                team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
+                document.getElementById('resultArea').innerText = 'New match created';
+            } else if(mode === 'winner'){
+                if(last===1){ team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id))); }
+                else { team1 = sampleTeam(coll1, size, new Set(team2.map(g=>g.id))); }
+                document.getElementById('resultArea').innerText = 'Spawned next match (winner stayed)';
+            } else if(mode === 'loser'){
+                // keep the loser team, regenerate the other
+                const loser = last===1?2:1;
+                if(loser===1){ team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id))); }
+                else { team1 = sampleTeam(coll1, size, new Set(team2.map(g=>g.id))); }
+                document.getElementById('resultArea').innerText = 'Spawned next match (loser stayed)';
+            }
+            // after spawning next, clear last pick (require new pick to reveal averages)
+            window._picked = false; window._lastWinner = 0;
             updateUI();
-            document.getElementById('resultArea').innerText = 'Spawned next match (winner stayed)';
         }, 250);
     });
 
-    newBtn.addEventListener('click', ()=>{
-        const size = Math.max(1, Math.min(10, parseInt(document.getElementById('teamSize').value)||5));
-        document.getElementById('resultArea').innerText = 'Loading next matchup...';
-        setTimeout(()=>{
-            team1 = sampleTeam(coll1, size);
-            team2 = sampleTeam(coll2, size, new Set(team1.map(g=>g.id)));
-            updateUI();
-            document.getElementById('resultArea').innerText = 'New match created';
-        }, 250);
-    });
-
+    // allow clicking on team container to choose winner directly
     document.getElementById('team1').classList.add('clickable');
     document.getElementById('team2').classList.add('clickable');
     document.getElementById('team1').addEventListener('click', ()=>{ if(team1.length) pickWinner(1); });
     document.getElementById('team2').addEventListener('click', ()=>{ if(team2.length) pickWinner(2); });
 
     </script>
-</body>
-</html>
-<!DOCTYPE html>
-<html lang="en">
-<head>
-    <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover, user-scalable=no">
-    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>⚔️</text></svg>">
-    <meta name="apple-mobile-web-app-capable" content="yes">
-    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-    <meta name="apple-mobile-web-app-title" content="Game Battle">
-    <title>BGG Game Battle - Multi-Starter</title>
-    <script src="https://cdn.tailwindcss.com"></script>
-    <style>
-        * {
-            -webkit-user-select: none;
-            user-select: none;
-            -webkit-touch-callout: none;
-        }
-        body {
-            padding-top: max(0px, env(safe-area-inset-top));
-            padding-bottom: max(0px, env(safe-area-inset-bottom));
-            padding-left: max(0px, env(safe-area-inset-left));
-            padding-right: max(0px, env(safe-area-inset-right));
-        }
-        .score-display {
-            font-size: clamp(2rem, 8vw, 4rem);
-            font-weight: 900;
-            text-align: center;
-            line-height: 1;
-        }
-        .tap-feedback {
-            transition: transform 0.1s, opacity 0.1s;
-        }
-        .tap-feedback:active {
-            transform: scale(0.98);
-            opacity: 0.8;
-        }
-        .game-image {
-            width: 100%;
-            height: 100%;
-            object-fit: contain;
-            background: #f5f5f5;
-            user-zoom: none;
-            -webkit-user-zoom: none;
-        }
-        @keyframes slideIn {
-            from { opacity: 0; transform: scale(0.9); }
-            to { opacity: 1; transform: scale(1); }
-        }
-        .battle-card {
-            animation: slideIn 0.3s ease-out;
-        }
-    </style>
-</head>
-<body class="bg-gray-50 md:bg-gray-900 min-h-screen flex flex-col">
-
-    <!-- Setup Screen 1: Team Count -->
-    <div id="setupTeams" class="fixed inset-0 bg-gradient-to-br from-blue-900 to-indigo-900 z-50 flex items-center justify-center p-4 md:p-8 overflow-y-auto">
-        <div class="bg-white md:bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 max-w-md w-full my-auto md:text-white">
-            <h1 class="text-3xl md:text-4xl font-black text-center mb-2">⚔️ Game Battle</h1>
-            <p class="text-gray-500 md:text-gray-300 text-center mb-8">How many teams?</p>
-            <div class="grid grid-cols-2 gap-3 md:gap-4">
-                <button onclick="selectTeamCount(2)" class="bg-purple-600 hover:bg-purple-700 text-white py-3 md:py-4 rounded-xl font-black text-lg transition shadow-lg tap-feedback">2 Teams</button>
-                <button onclick="selectTeamCount(3)" class="bg-purple-600 hover:bg-purple-700 text-white py-3 md:py-4 rounded-xl font-black text-lg transition shadow-lg tap-feedback">3 Teams</button>
-                <button onclick="selectTeamCount(4)" class="bg-purple-600 hover:bg-purple-700 text-white py-3 md:py-4 rounded-xl font-black text-lg transition shadow-lg tap-feedback">4 Teams</button>
-                <button onclick="selectTeamCount(5)" class="bg-purple-600 hover:bg-purple-700 text-white py-3 md:py-4 rounded-xl font-black text-lg transition shadow-lg tap-feedback">5+ Teams</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Setup Screen 2: Usernames & Starters -->
-    <div id="setupUsersStarters" class="hidden fixed inset-0 bg-gradient-to-br from-blue-900 to-indigo-900 z-50 flex items-center justify-center p-4 md:p-8 overflow-y-auto">
-        <div class="bg-white md:bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 max-w-2xl w-full my-auto md:text-white">
-            <h1 class="text-2xl md:text-3xl font-black text-center mb-2">Team Settings</h1>
-            <p class="text-gray-500 md:text-gray-300 text-center mb-6">Enter usernames and starters per team</p>
-            
-            <div class="space-y-4 max-h-96 overflow-y-auto">
-                <div id="teamInputsContainer"></div>
-
-                <div class="mt-4 bg-gray-50 md:bg-gray-900 rounded-lg p-3">
-                    <label class="flex items-center gap-2">
-                        <input type="checkbox" id="blacktopMode" class="w-4 h-4" />
-                        <span class="text-sm md:text-gray-300">Blacktop 21 mode (3v3 or 5v5 from single collection)</span>
-                    </label>
-
-                    <div id="blacktopOptions" class="mt-3 hidden">
-                        <label class="block text-xs font-bold text-gray-600 md:text-gray-300 mb-1">Team Size</label>
-                        <select id="blacktopTeamSize" class="w-full rounded-lg px-2 py-2 mb-2 bg-white md:bg-gray-700 md:text-white">
-                            <option value="3">3v3</option>
-                            <option value="5">5v5</option>
-                        </select>
-
-                        <label class="block text-xs font-bold text-gray-600 md:text-gray-300 mb-1">Collection Username</label>
-                        <input type="text" id="blacktopUsername" class="w-full rounded-lg px-2 py-2 bg-white md:bg-gray-700 md:text-white mb-2" placeholder="sportomax" value="sportomax">
-
-                        <label class="block text-xs font-bold text-gray-600 md:text-gray-300 mb-1">Favorite Game (optional)</label>
-                        <input type="text" id="blacktopFavorite" class="w-full rounded-lg px-2 py-2 bg-white md:bg-gray-700 md:text-white" placeholder="Exact game name to include on Team A">
-                    </div>
-                </div>
-            </div>
-
-            <div class="grid grid-cols-2 gap-3 md:gap-4 mt-6">
-                <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3">
-                    <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-1">Play To</label>
-                    <input type="number" id="playToScore" class="w-full bg-white md:bg-gray-600 border-2 border-gray-300 md:border-gray-500 rounded px-2 py-2 text-center text-lg font-bold md:text-white" value="5" min="1" max="20">
-                </div>
-                <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3">
-                    <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-1">Subs</label>
-                    <input type="number" id="substitutes" class="w-full bg-white md:bg-gray-600 border-2 border-gray-300 md:border-gray-500 rounded px-2 py-2 text-center text-lg font-bold md:text-white" value="3" min="0" max="10">
-                </div>
-            </div>
-
-            <div class="flex gap-3 mt-6">
-                <button onclick="goBackTeamCount()" class="flex-1 bg-gray-400 md:bg-gray-600 text-gray-900 md:text-white py-3 rounded-xl font-bold transition tap-feedback">← Back</button>
-                <button onclick="startBattle()" class="flex-1 bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-3 rounded-xl font-bold transition shadow-lg tap-feedback">⚡ Start</button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Battle Screen -->
-    <div id="battleApp" class="hidden fixed inset-0 bg-gray-50 md:bg-gray-900 z-40 flex flex-col">
-        <!-- Score Board -->
-        <div class="bg-white md:bg-gray-800 border-b-2 border-gray-200 md:border-gray-700 p-3 md:p-4 md:rounded-b-xl md:shadow-lg">
-            <div id="scoreBoard" class="grid gap-2 md:gap-4 items-center max-w-6xl mx-auto"></div>
-        </div>
-
-        <!-- Battle Arena -->
-        <div class="flex-1 flex flex-col p-3 md:p-6 overflow-hidden max-w-6xl mx-auto w-full">
-            <h2 class="text-lg md:text-xl font-bold text-center mb-3 md:mb-4 text-gray-800 md:text-gray-200">🎮 Current Matchup</h2>
-            
-            <!-- Game Cards Grid -->
-            <div id="gameCardsGrid" class="grid gap-2 md:gap-4 flex-1 overflow-auto mb-4 md:mb-6"></div>
-
-            <!-- Action Buttons -->
-            <div class="space-y-2 md:space-y-3">
-                <!-- Main Battle Button -->
-                <button onclick="determineBattleWinner()" class="w-full bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 py-3 md:py-4 rounded-lg md:rounded-xl font-black text-base md:text-lg hover:from-yellow-500 hover:to-orange-600 transition shadow-lg tap-feedback">
-                    ⚡ BATTLE
-                </button>
-
-                <!-- Secondary Actions -->
-                <div id="substitutesGrid" class="grid gap-2"></div>
-                
-                <button onclick="nextRound()" class="w-full bg-gray-600 md:bg-gray-700 hover:bg-gray-700 md:hover:bg-gray-600 text-white py-2 md:py-3 rounded-lg font-bold transition tap-feedback text-xs md:text-sm">
-                    NEXT ROUND ➡️
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Battle Over Modal with Sharing -->
-    <div id="battleOverModal" class="hidden fixed inset-0 bg-black bg-opacity-70 z-50 flex items-center justify-center p-4 overflow-y-auto">
-        <div class="bg-white md:bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 max-w-md w-full my-4 md:text-white">
-            <h2 class="text-2xl md:text-3xl font-black text-gray-900 md:text-white mb-3" id="winnerText">🎉 WINNER!</h2>
-            <p class="text-xl md:text-2xl font-bold text-gray-600 md:text-gray-300 mb-4" id="finalScoreText">5 - 3</p>
-            
-            <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3 md:p-4 mb-4">
-                <p id="battleStatsText" class="text-sm md:text-base text-gray-700 md:text-gray-300">Battle Statistics</p>
-            </div>
-
-            <!-- Share Section -->
-            <div id="shareSection" class="mb-4">
-                <textarea id="shareText" placeholder="Add text to share with results..." class="w-full border-2 border-gray-300 md:border-gray-500 rounded-lg px-3 py-2 mb-3 bg-white md:bg-gray-700 md:text-white text-sm" rows="3"></textarea>
-                <div class="flex gap-2">
-                    <button onclick="shareAsText()" class="flex-1 bg-blue-500 hover:bg-blue-600 text-white py-2 rounded-lg font-bold text-sm transition tap-feedback">📝 Share Text</button>
-                    <button onclick="shareAsImage()" class="flex-1 bg-green-500 hover:bg-green-600 text-white py-2 rounded-lg font-bold text-sm transition tap-feedback">🖼️ Share Image</button>
-                </div>
-            </div>
-
-            <div class="flex gap-3">
-                <button onclick="location.reload()" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-3 md:py-4 rounded-lg font-bold transition tap-feedback">
-                    🔄 AGAIN
-                </button>
-                <button onclick="returnToSetup()" class="flex-1 bg-gray-400 md:bg-gray-600 hover:bg-gray-500 md:hover:bg-gray-700 text-gray-900 md:text-white py-3 md:py-4 rounded-lg font-bold transition tap-feedback">
-                    🏠 HOME
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        const TEAM_COLORS = [
-            { emoji: '🔵', name: 'Blue', bg: 'bg-blue', border: 'border-blue', scoreBg: 'text-blue-600 md:text-blue-400' },
-            { emoji: '🔴', name: 'Red', bg: 'bg-red', border: 'border-red', scoreBg: 'text-red-600 md:text-red-400' },
-            { emoji: '🟢', name: 'Green', bg: 'bg-green', border: 'border-green', scoreBg: 'text-green-600 md:text-green-400' },
-            { emoji: '🟡', name: 'Yellow', bg: 'bg-yellow', border: 'border-yellow', scoreBg: 'text-yellow-600 md:text-yellow-400' },
-            { emoji: '🟣', name: 'Purple', bg: 'bg-purple', border: 'border-purple', scoreBg: 'text-purple-600 md:text-purple-400' }
-        ];
-
-        let teamCount = 0;
-        let startersPerTeam = 0;
-        let playToScore = 5;
-        let substitutesPerTeam = 3;
-        let teamCollections = [];
-        let teamStarters = [];
-        let teamScores = [];
-        let currentMatchup = [];
-        let currentRound = 0;
-        let teamSubsUsed = [];
-        let teamUsernames = [];
-        let currentCanvas = null;
-
-        console.log('[BATTLE] Multi-starter battle system initialized');
-
-        function selectTeamCount(count) {
-            teamCount = count;
-            if (count === 5) teamCount = parseInt(prompt('How many teams? (5+)', '5')) || 5;
-            document.getElementById('setupTeams').classList.add('hidden');
-            document.getElementById('setupUsersStarters').classList.remove('hidden');
-            renderTeamInputs();
-        }
-
-        function goBackTeamCount() {
-            document.getElementById('setupUsersStarters').classList.add('hidden');
-            document.getElementById('setupTeams').classList.remove('hidden');
-            teamCount = 0;
-        }
-
-        function renderTeamInputs() {
-            const container = document.getElementById('teamInputsContainer');
-            container.innerHTML = '';
-            
-            for (let i = 0; i < teamCount; i++) {
-                const color = TEAM_COLORS[i % TEAM_COLORS.length];
-                const div = document.createElement('div');
-                div.className = 'border-3 border-gray-300 md:border-gray-600 rounded-lg p-3 md:p-4 bg-gray-50 md:bg-gray-900';
-                div.innerHTML = `
-                    <h3 class="text-base font-bold text-gray-800 md:text-gray-200 mb-2">${color.emoji} Team ${i + 1}</h3>
-                    <input type="text" id="team${i}Username" class="w-full border-2 border-gray-300 md:border-gray-500 rounded-lg px-3 py-2 md:py-3 focus:border-purple-500 outline-none transition bg-white md:bg-gray-800 md:text-white text-base mb-2" placeholder="BGG Username">
-                    <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-1">Starters for Team ${i + 1}</label>
-                    <select id="team${i}Starters" class="w-full border-2 border-gray-300 md:border-gray-500 rounded-lg px-3 py-2 md:py-3 focus:border-purple-500 outline-none transition bg-white md:bg-gray-800 md:text-white text-base">
-                        <option value="3">3 Starters</option>
-                        <option value="4">4 Starters</option>
-                        <option value="5">5 Starters</option>
-                        <option value="6">6 Starters</option>
-                    </select>
-                `;
-                container.appendChild(div);
-            }
-        }
-
-        // Toggle blacktop options visibility
-        document.addEventListener('DOMContentLoaded', () => {
-            const blacktopCheckbox = document.getElementById('blacktopMode');
-            if (blacktopCheckbox) {
-                blacktopCheckbox.addEventListener('change', (e) => {
-                    const opts = document.getElementById('blacktopOptions');
-                    if (opts) opts.classList.toggle('hidden', !e.target.checked);
-                });
-            }
-        });
-
-        async function startBattle() {
-            const usernames = [];
-            const starters = [];
-            
-            for (let i = 0; i < teamCount; i++) {
-                const username = document.getElementById(`team${i}Username`).value.trim();
-                const starterCount = parseInt(document.getElementById(`team${i}Starters`).value);
-                if (!username) {
-                    alert(`Please enter Team ${i + 1} username!`);
-                    return;
-                }
-                usernames.push(username);
-                starters.push(starterCount);
-            }
-
-            startersPerTeam = starters[0];
-            playToScore = parseInt(document.getElementById('playToScore').value) || 5;
-            substitutesPerTeam = parseInt(document.getElementById('substitutes').value) || 3;
-            teamUsernames = usernames;
-
-            console.log('[BATTLE] Starting new battle');
-            console.log('   ├─ Teams:', teamCount);
-            usernames.forEach((u, i) => console.log(`   ├─ T${i + 1}:`, u, `(${starters[i]} starters)`));
-            console.log('   ├─ Play To:', playToScore);
-            console.log('   └─ Subs:', substitutesPerTeam);
-
-            document.getElementById('setupUsersStarters').classList.add('hidden');
-            document.getElementById('battleApp').classList.remove('hidden');
-
-            // If Blacktop mode is enabled, use single-collection 3v3/5v5 simulation
-            const blacktopEnabled = document.getElementById('blacktopMode')?.checked;
-            if (blacktopEnabled) {
-                await startBlacktopBattle();
-                return;
-            }
-
-            await loadAllTeamCollections(usernames);
-            
-            teamStarters = [];
-            for (let i = 0; i < teamCount; i++) {
-                const shuffled = [...teamCollections[i]].sort(() => Math.random() - 0.5);
-                teamStarters.push(shuffled.slice(0, starters[i]));
-            }
-
-            teamScores = Array(teamCount).fill(0);
-            teamSubsUsed = Array(teamCount).fill(0);
-
-            console.log('[BATTLE] Teams created');
-            teamStarters.forEach((starters, i) => console.log(`   └─ T${i + 1}:`, starters.length, 'starters'));
-
-            renderScoreBoard();
-            nextRound();
-        }
-
-        async function startBlacktopBattle() {
-            // Single collection used for both teams
-            const username = document.getElementById('blacktopUsername')?.value.trim() || 'sportomax';
-            const teamSize = parseInt(document.getElementById('blacktopTeamSize')?.value || '3', 10);
-            const favoriteName = document.getElementById('blacktopFavorite')?.value.trim();
-
-            document.getElementById('setupUsersStarters').classList.add('hidden');
-            document.getElementById('battleApp').classList.remove('hidden');
-
-            // Load single collection
-            try {
-                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
-                const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                const items = Array.from(xml.querySelectorAll('item'));
-                const all = items.map(item => ({
-                    id: item.getAttribute('objectid'),
-                    name: item.querySelector('name')?.textContent || 'Unknown',
-                    thumbnail: item.querySelector('thumbnail')?.textContent || '',
-                    yearpublished: item.querySelector('yearpublished')?.textContent || ''
-                })).filter(g => g.id);
-
-                if (all.length < teamSize * 2) {
-                    alert('Not enough games in collection for Blacktop teams');
-                    return;
-                }
-
-                // Pick unique games for both teams
-                const pool = [...all].sort(() => Math.random() - 0.5);
-                const selected = [];
-
-                // If favorite provided, try to find and include it on Team A
-                if (favoriteName) {
-                    const fav = pool.find(g => g.name.toLowerCase() === favoriteName.toLowerCase());
-                    if (fav) {
-                        selected.push(fav);
-                        pool.splice(pool.indexOf(fav), 1);
-                    }
-                }
-
-                while (selected.length < teamSize * 2) {
-                    selected.push(pool.shift());
-                }
-
-                // Split into two teams
-                const teamA = selected.slice(0, teamSize);
-                const teamB = selected.slice(teamSize, teamSize * 2);
-
-                // Enrich selected games with ratings
-                await enrichWithBayesRatings(selected, 'Blacktop');
-
-                // Save teams
-                teamStarters = [teamA, teamB];
-                teamScores = [0, 0];
-                teamCount = 2;
-                teamUsernames = [username, username + "'s Pool"]; // display labels
-
-                renderScoreBoard();
-                renderBlacktopLineups();
-                simulateBlacktop21(teamA, teamB);
-
-            } catch (e) {
-                console.error('Blacktop load error', e);
-                alert('Failed to load collection for Blacktop: ' + e.message);
-            }
-        }
-
-        function renderBlacktopLineups() {
-            // show currentMatchup as first players for display
-            currentMatchup = [];
-            const combined = [...teamStarters[0], ...teamStarters[1]];
-            currentMatchup = combined;
-            renderGameCards();
-        }
-
-        function simulateBlacktop21(teamA, teamB) {
-            // Simple possession simulation: each possession pick random player from each team
-            let scoreA = 0, scoreB = 0;
-            const max = 21;
-            // compute strengths from bayesAverage (fallback to 5)
-            const strength = (g) => (parseFloat(g.bayesAverage || g.average || 5) || 5);
-
-            while (scoreA < max && scoreB < max) {
-                const a = teamA[Math.floor(Math.random() * teamA.length)];
-                const b = teamB[Math.floor(Math.random() * teamB.length)];
-                const sa = strength(a);
-                const sb = strength(b);
-                const p = sa / (sa + sb);
-                if (Math.random() < p) scoreA++; else scoreB++;
-            }
-
-            teamScores = [scoreA, scoreB];
-            document.getElementById('score0').textContent = scoreA;
-            document.getElementById('score1').textContent = scoreB;
-
-            // Prepare winner modal
-            const winnerIdx = scoreA > scoreB ? 0 : 1;
-            const winnerEmojis = TEAM_COLORS[winnerIdx].emoji;
-            document.getElementById('winnerText').textContent = `${winnerEmojis} TEAM WIN!`;
-            document.getElementById('finalScoreText').textContent = `${scoreA} - ${scoreB}`;
-            document.getElementById('battleStatsText').textContent = `Blacktop 21 — ${teamA.length}v${teamB.length} | ${teamA[0].name} vs ${teamB[0].name}`;
-            document.getElementById('battleOverModal').classList.remove('hidden');
-        }
-
-        async function loadAllTeamCollections(usernames) {
-            teamCollections = [];
-            for (let i = 0; i < usernames.length; i++) {
-                console.log(`[COLLECTION-API] T${i + 1}:`, usernames[i]);
-                try {
-                    const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(usernames[i])}&own=1&stats=1`);
-                    const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                    const items = Array.from(xml.querySelectorAll('item'));
-                    
-                    const collection = items.map(item => {
-                        // attempt to extract rating/average from collection XML (if stats=1 provided)
-                        let bayesAverage = null;
-                        try {
-                            const stats = item.querySelector('stats') || item.querySelector('statistics');
-                            if (stats) {
-                                // try different structures
-                                const ratingElem = stats.querySelector('rating');
-                                if (ratingElem && ratingElem.getAttribute) {
-                                    bayesAverage = parseFloat(ratingElem.getAttribute('value') || 0) || null;
-                                } else {
-                                    const avgElem = stats.querySelector('average') || stats.querySelector('ratings > average');
-                                    if (avgElem && avgElem.getAttribute) bayesAverage = parseFloat(avgElem.getAttribute('value') || 0) || null;
-                                }
-                            }
-                        } catch (e) { /* ignore */ }
-
-                        return {
-                            id: item.getAttribute('objectid'),
-                            name: item.querySelector('name')?.textContent || 'Unknown',
-                            thumbnail: item.querySelector('thumbnail')?.textContent || '',
-                            yearpublished: item.querySelector('yearpublished')?.textContent || item.getAttribute('publishyear') || '',
-                            bayesAverage: bayesAverage
-                        };
-                    });
-
-                    teamCollections.push(collection);
-                    console.log(`✓ T${i + 1}:`, collection.length, 'games');
-                } catch (error) {
-                    console.error(`✗ [COLLECTION-API] T${i + 1}:`, error);
-                    alert(`Error loading collection for Team ${i + 1}`);
-                }
-            }
-        }
-
-        async function enrichWithBayesRatings(collection, teamLabel) {
-            console.log(`[THING-API] Enriching ${teamLabel}:`, collection.length, 'games');
-            const chunkSize = 20;
-            const chunks = [];
-            for (let i = 0; i < collection.length; i += chunkSize) {
-                chunks.push(collection.slice(i, i + chunkSize));
-            }
-
-            for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
-                const chunk = chunks[chunkIdx];
-                const gameIds = chunk.map(g => g.id).join(',');
-                try {
-                    const res = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameIds}&stats=1`);
-                    const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                    const items = Array.from(xml.querySelectorAll('item'));
-
-                    items.forEach(item => {
-                        const gameId = item.getAttribute('id');
-                        const collectionGame = chunk.find(g => g.id === gameId);
-                        if (collectionGame) {
-                            const stats = item.querySelector('statistics ratings');
-                            collectionGame.bayesAverage = parseFloat(stats?.querySelector('average')?.getAttribute('value') || 0);
-                            collectionGame.voters = parseInt(stats?.querySelector('usersrated')?.getAttribute('value') || 0);
-                        }
-                    });
-
-                    console.log(`✓ [THING-API] ${teamLabel} Batch ${chunkIdx + 1}/${chunks.length}:`, items.length, 'games');
-                } catch (error) {
-                    console.error(`✗ [THING-API] ${teamLabel} Batch ${chunkIdx + 1}:`, error);
-                }
-            }
-        }
-
-        function renderScoreBoard() {
-            const sb = document.getElementById('scoreBoard');
-            const cols = teamCount <= 2 ? 'grid-cols-2' : teamCount <= 3 ? 'grid-cols-3' : 'grid-cols-4';
-            sb.className = `grid ${cols} gap-2 md:gap-4 items-center`;
-            sb.innerHTML = '';
-
-            teamScores.forEach((score, i) => {
-                const color = TEAM_COLORS[i % TEAM_COLORS.length];
-                const div = document.createElement('div');
-                div.className = 'text-center';
-                div.innerHTML = `
-                    <p class="text-xs md:text-sm font-bold text-gray-600 md:text-gray-300 mb-1">${color.emoji} T${i + 1}</p>
-                    <p class="score-display ${color.scoreBg}" id="score${i}">0</p>
-                `;
-                sb.appendChild(div);
-            });
-        }
-
-        function renderGameCards() {
-            const grid = document.getElementById('gameCardsGrid');
-            const cols = teamCount <= 2 ? 'grid-cols-2' : teamCount <= 3 ? 'grid-cols-3' : 'grid-cols-4';
-            grid.className = `grid ${cols} gap-2 md:gap-4 flex-1 overflow-auto`;
-            grid.innerHTML = '';
-
-            currentMatchup.forEach((game, i) => {
-                const color = TEAM_COLORS[i % TEAM_COLORS.length];
-                const div = document.createElement('div');
-                div.className = `battle-card bg-white md:bg-gray-800 border-4 border-${color.border}-400 md:border-${color.border}-600 rounded-lg md:rounded-xl overflow-hidden flex flex-col`;
-                div.innerHTML = `
-                    <img src="${game.thumbnail || ''}" alt="Game" class="game-image w-full h-32 md:h-40">
-                    <div class="flex-1 flex flex-col justify-between p-2 md:p-3">
-                        <p class="font-bold text-xs md:text-sm line-clamp-2 text-center text-gray-800 md:text-white">${game.name}</p>
-                        <div>
-                            <p class="text-xl md:text-2xl font-black text-center ${color.scoreBg}">${(game.bayesAverage?.toFixed(1) || 'N/A')}</p>
-                            <p class="text-xs text-center text-gray-500 md:text-gray-400">${game.yearpublished || ''}</p>
-                        </div>
-                    </div>
-                `;
-                grid.appendChild(div);
-            });
-        }
-
-        function renderSubstituteButtons() {
-            const grid = document.getElementById('substitutesGrid');
-            const cols = teamCount <= 2 ? 'grid-cols-2' : teamCount <= 3 ? 'grid-cols-3' : 'grid-cols-4';
-            grid.className = `grid ${cols} gap-2`;
-            grid.innerHTML = '';
-
-            for (let i = 0; i < teamCount; i++) {
-                const color = TEAM_COLORS[i % TEAM_COLORS.length];
-                const subs = substitutesPerTeam - teamSubsUsed[i];
-                const btn = document.createElement('button');
-                btn.className = `bg-${color.bg}-500 md:bg-${color.bg}-700 hover:bg-${color.bg}-600 md:hover:bg-${color.bg}-800 text-white py-2 md:py-3 rounded-lg font-bold transition tap-feedback text-xs md:text-sm`;
-                btn.onclick = () => useSubstitute(i);
-                btn.textContent = `T${i + 1} 🔄 ${subs}`;
-                grid.appendChild(btn);
-            }
-        }
-
-        function nextRound() {
-            if (Math.max(...teamScores) >= playToScore) {
-                endBattle();
-                return;
-            }
-
-            currentMatchup = teamStarters.map(starters => starters[Math.floor(Math.random() * starters.length)]);
-
-            console.log(`[ROUND] ${currentRound + 1}:`);
-            currentMatchup.forEach((g, i) => console.log(`   ├─ T${i + 1}: "${g.name}" (${g.bayesAverage?.toFixed(1)})`));
-
-            renderGameCards();
-            renderSubstituteButtons();
-            currentRound++;
-        }
-
-        function determineBattleWinner() {
-            let maxRating = -1;
-            let winners = [];
-
-            currentMatchup.forEach((game, i) => {
-                const rating = game.bayesAverage || 0;
-                if (rating > maxRating) {
-                    maxRating = rating;
-                    winners = [i];
-                } else if (rating === maxRating) {
-                    winners.push(i);
-                }
-            });
-
-            if (winners.length === 1) {
-                teamScores[winners[0]]++;
-                const winnerColor = TEAM_COLORS[winners[0] % TEAM_COLORS.length];
-                console.log(`✓ T${winners[0] + 1} wins! Score: ${teamScores.join('-')}`);
-                alert(`${winnerColor.emoji} +1 (${maxRating.toFixed(1)})`);
-            } else {
-                console.log(`⚖️ Tie between ${winners.map(i => `T${i + 1}`).join(', ')}!`);
-                alert(`⚖️ ${winners.length}-way Tie! (${maxRating.toFixed(1)})`);
-            }
-
-            teamScores.forEach((score, i) => {
-                document.getElementById(`score${i}`).textContent = score;
-            });
-        }
-
-        function useSubstitute(teamIdx) {
-            if (teamSubsUsed[teamIdx] >= substitutesPerTeam) {
-                alert('No substitutes left!');
-                return;
-            }
-            teamSubsUsed[teamIdx]++;
-            currentMatchup[teamIdx] = teamStarters[teamIdx][Math.floor(Math.random() * teamStarters[teamIdx].length)];
-            console.log(`✓ T${teamIdx + 1} sub used:`, substitutesPerTeam - teamSubsUsed[teamIdx], 'left');
-            renderGameCards();
-            renderSubstituteButtons();
-        }
-
-        function endBattle() {
-            const maxScore = Math.max(...teamScores);
-            const winners = teamScores.map((s, i) => s === maxScore ? i : -1).filter(i => i !== -1);
-            const winnerEmojis = winners.map(i => TEAM_COLORS[i % TEAM_COLORS.length].emoji).join(' ');
-            const scoresText = teamScores.join(' - ');
-
-            console.log('[END-BATTLE] Final:', scoresText, '| Rounds:', currentRound);
-            document.getElementById('winnerText').textContent = `${winnerEmojis} TEAM${winners.length > 1 ? 'S' : ''} WIN!`;
-            document.getElementById('finalScoreText').textContent = scoresText;
-            
-            const statsLines = [
-                'Rounds: ' + currentRound,
-                ...teamScores.map((_, i) => `T${i + 1}: ${teamSubsUsed[i]}/${substitutesPerTeam} subs`)
-            ];
-            document.getElementById('battleStatsText').textContent = statsLines.join(' | ');
-            document.getElementById('battleOverModal').classList.remove('hidden');
-        }
-
-        async function shareAsText() {
-            const customText = document.getElementById('shareText').value.trim();
-            const scoresText = teamScores.join(' - ');
-            const defaultText = `🏆 Battle Results:\n${teamUsernames.map((u, i) => `T${i + 1} (${u}): ${teamScores[i]}`).join('\n')}\n\nFirst to ${playToScore} wins!\n${currentRound} rounds played`;
-            const textToShare = customText || defaultText;
-
-            if (navigator.share) {
-                try {
-                    await navigator.share({
-                        title: '⚔️ Game Battle Results',
-                        text: textToShare
-                    });
-                    console.log('✓ Shared via Web Share API');
-                } catch (err) {
-                    console.error('Share error:', err);
-                }
-            } else if (navigator.clipboard) {
-                try {
-                    await navigator.clipboard.writeText(textToShare);
-                    alert('Results copied to clipboard!');
-                } catch (err) {
-                    alert('Could not copy to clipboard');
-                }
-            }
-        }
-
-        async function shareAsImage() {
-            try {
-                const canvas = document.createElement('canvas');
-                canvas.width = 1080;
-                canvas.height = 1920;
-                const ctx = canvas.getContext('2d');
-
-                // Background
-                const gradient = ctx.createLinearGradient(0, 0, 0, canvas.height);
-                gradient.addColorStop(0, '#1e3a8a');
-                gradient.addColorStop(1, '#4c1d95');
-                ctx.fillStyle = gradient;
-                ctx.fillRect(0, 0, canvas.width, canvas.height);
-
-                // Title
-                ctx.fillStyle = '#ffffff';
-                ctx.font = 'bold 80px Arial';
-                ctx.textAlign = 'center';
-                ctx.fillText('⚔️ BATTLE RESULTS', canvas.width / 2, 150);
-
-                // Scores
-                ctx.font = 'bold 120px Arial';
-                let y = 300;
-                teamScores.forEach((score, i) => {
-                    const color = TEAM_COLORS[i % TEAM_COLORS.length];
-                    ctx.fillText(`${color.emoji} ${teamUsernames[i]}: ${score}`, canvas.width / 2, y);
-                    y += 150;
-                });
-
-                // Stats
-                ctx.font = '40px Arial';
-                y += 100;
-                ctx.fillText(`First to ${playToScore}`, canvas.width / 2, y);
-                y += 80;
-                ctx.fillText(`Rounds: ${currentRound}`, canvas.width / 2, y);
-
-                // Custom text
-                const customText = document.getElementById('shareText').value.trim();
-                if (customText) {
-                    y += 100;
-                    ctx.font = '36px Arial';
-                    ctx.fillStyle = '#fbbf24';
-                    const lines = customText.split('\n');
-                    lines.forEach(line => {
-                        ctx.fillText(line, canvas.width / 2, y);
-                        y += 60;
-                    });
-                }
-
-                currentCanvas = canvas;
-
-                // Share or download
-                canvas.toBlob(async (blob) => {
-                    const file = new File([blob], 'battle-results.png', { type: 'image/png' });
-                    
-                    if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
-                        await navigator.share({
-                            files: [file],
-                            title: '⚔️ Battle Results',
-                            text: 'Check out my battle results!'
-                        });
-                    } else if (navigator.clipboard && window.ClipboardItem) {
-                        await navigator.clipboard.write([new ClipboardItem({ 'image/png': blob })]);
-                        alert('Image copied to clipboard!');
-                    } else {
-                        const link = document.createElement('a');
-                        link.href = URL.createObjectURL(blob);
-                        link.download = 'battle-results.png';
-                        link.click();
-                    }
-                });
-            } catch (error) {
-                console.error('Image share error:', error);
-                alert('Error generating image');
-            }
-        }
-
-        function returnToSetup() {
-            location.reload();
-        }
-
-        document.addEventListener('touchmove', function(e) {
-            if (e.touches.length > 1) e.preventDefault();
-        }, false);
-
-        document.addEventListener('contextmenu', e => e.preventDefault());
-    </script>
-    <!-- Vercel Web Analytics -->
-    <script type="module" src="analytics-init.js"></script>
-
-</body>
-</html>
-
-    <!-- Setup Screen -->
-    <div id="setupScreen" class="fixed inset-0 bg-gradient-to-br from-blue-900 to-indigo-900 z-50 flex items-center justify-center p-4 md:p-8 overflow-y-auto">
-        <div class="bg-white md:bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 max-w-2xl w-full my-auto md:text-white">
-            <h1 class="text-3xl md:text-4xl font-black text-center mb-2">⚔️ Game Battle</h1>
-            <p class="text-gray-500 md:text-gray-300 text-center mb-6">Multiple teams compete with their collections!</p>
-            
-            <div class="space-y-4">
-                <!-- Number of Teams -->
-                <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3">
-                    <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-2">🏆 Number of Teams</label>
-                    <div class="flex gap-2">
-                        <button onclick="setTeamCount(2)" id="btn-teams-2" class="flex-1 py-2 rounded-lg font-bold transition bg-purple-500 md:bg-purple-700 text-white">2</button>
-                        <button onclick="setTeamCount(3)" id="btn-teams-3" class="flex-1 py-2 rounded-lg font-bold transition bg-gray-300 md:bg-gray-600 text-gray-800 md:text-white">3</button>
-                        <button onclick="setTeamCount(4)" id="btn-teams-4" class="flex-1 py-2 rounded-lg font-bold transition bg-gray-300 md:bg-gray-600 text-gray-800 md:text-white">4</button>
-                        <button onclick="setTeamCount(5)" id="btn-teams-5" class="flex-1 py-2 rounded-lg font-bold transition bg-gray-300 md:bg-gray-600 text-gray-800 md:text-white">5+</button>
-                    </div>
-                </div>
-
-                <!-- Team Input Container -->
-                <div id="teamInputsContainer" class="space-y-3 max-h-60 overflow-y-auto"></div>
-
-                <!-- Quick Settings Row -->
-                <div class="grid grid-cols-3 gap-2 md:gap-4">
-                    <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3">
-                        <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-1">Games</label>
-                        <input type="number" id="gamesPerTeam" class="w-full bg-white md:bg-gray-600 border-2 border-gray-300 md:border-gray-500 rounded px-2 py-2 text-center text-lg font-bold md:text-white" value="10" min="1" max="50">
-                    </div>
-                    <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3">
-                        <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-1">Play To</label>
-                        <input type="number" id="playToScore" class="w-full bg-white md:bg-gray-600 border-2 border-gray-300 md:border-gray-500 rounded px-2 py-2 text-center text-lg font-bold md:text-white" value="5" min="1" max="20">
-                    </div>
-                    <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3">
-                        <label class="text-xs font-bold text-gray-600 md:text-gray-300 block mb-1">Subs</label>
-                        <input type="number" id="substitutes" class="w-full bg-white md:bg-gray-600 border-2 border-gray-300 md:border-gray-500 rounded px-2 py-2 text-center text-lg font-bold md:text-white" value="5" min="0" max="10">
-                    </div>
-                </div>
-
-                <!-- Start Button -->
-                <button onclick="startBattle()" class="w-full bg-gradient-to-r from-purple-600 to-indigo-600 text-white py-4 rounded-xl font-black text-lg hover:from-purple-700 hover:to-indigo-700 transition shadow-lg transform hover:scale-[1.02] tap-feedback mt-6">
-                    ⚡ START BATTLE
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Battle Screen -->
-    <div id="battleApp" class="hidden fixed inset-0 bg-gray-50 md:bg-gray-900 z-40 flex flex-col">
-        <!-- Score Board - Dynamic Grid -->
-        <div class="bg-white md:bg-gray-800 border-b-2 border-gray-200 md:border-gray-700 p-3 md:p-6 md:rounded-b-2xl md:shadow-lg">
-            <div id="scoreBoard" class="grid gap-4 items-center max-w-5xl mx-auto"></div>
-        </div>
-
-        <!-- Battle Arena -->
-        <div class="flex-1 flex flex-col p-3 md:p-6 overflow-hidden max-w-5xl mx-auto w-full">
-            <h2 class="text-lg md:text-xl font-bold text-center mb-3 md:mb-4 text-gray-800 md:text-gray-200">🎮 Current Matchup</h2>
-            
-            <!-- Game Cards Grid - Dynamic -->
-            <div id="gameCardsGrid" class="grid gap-2 md:gap-6 flex-1 overflow-hidden mb-4 md:mb-6"></div>
-
-            <!-- Action Buttons -->
-            <div class="space-y-2 md:space-y-3">
-                <!-- Main Winner Button -->
-                <button onclick="determineWinner()" class="w-full bg-gradient-to-r from-yellow-400 to-orange-500 text-gray-900 py-3 md:py-4 rounded-lg md:rounded-xl font-black text-base md:text-lg hover:from-yellow-500 hover:to-orange-600 transition shadow-lg tap-feedback">
-                    🔥 WINNER
-                </button>
-
-                <!-- Secondary Actions -->
-                <div id="substitutesGrid" class="grid gap-2"></div>
-                
-                <button onclick="nextRound()" class="w-full bg-gray-600 md:bg-gray-700 hover:bg-gray-700 md:hover:bg-gray-600 text-white py-2 md:py-3 rounded-lg font-bold transition tap-feedback text-xs md:text-sm">
-                    NEXT ROUND ➡️
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <!-- Game Over Modal -->
-    <div id="gameOverModal" class="hidden fixed inset-0 bg-black bg-opacity-70 md:bg-opacity-75 z-50 flex items-center justify-center p-4">
-        <div class="bg-white md:bg-gray-800 rounded-2xl shadow-2xl p-6 md:p-8 max-w-md w-full text-center md:text-white">
-            <h2 class="text-2xl md:text-3xl font-black text-gray-900 md:text-white mb-3" id="winnerText">🎉 WINNER!</h2>
-            <p class="text-xl md:text-2xl font-bold text-gray-600 md:text-gray-300 mb-4" id="finalScoreText">5 - 3</p>
-            
-            <div class="bg-gray-100 md:bg-gray-700 rounded-lg p-3 md:p-4 mb-6">
-                <p id="battleStatsText" class="text-sm md:text-base text-gray-700 md:text-gray-300">Battle Statistics</p>
-            </div>
-
-            <div class="flex gap-3">
-                <button onclick="location.reload()" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white py-3 md:py-4 rounded-lg font-bold transition tap-feedback">
-                    🔄 AGAIN
-                </button>
-                <button onclick="returnToSetup()" class="flex-1 bg-gray-400 md:bg-gray-600 hover:bg-gray-500 md:hover:bg-gray-700 text-gray-900 md:text-white py-3 md:py-4 rounded-lg font-bold transition tap-feedback">
-                    🏠 HOME
-                </button>
-            </div>
-        </div>
-    </div>
-
-    <script>
-        console.log('[BATTLE] Multi-team responsive app initialized');
-
-        function setTeamCount(count) {
-            teamCount = count;
-            document.querySelectorAll('[id^="btn-teams-"]').forEach(btn => btn.classList.remove('bg-purple-500', 'md:bg-purple-700'));
-            document.querySelectorAll('[id^="btn-teams-"]').forEach(btn => btn.classList.add('bg-gray-300', 'md:bg-gray-600', 'text-gray-800', 'md:text-white'));
-            document.getElementById(`btn-teams-${count}`).classList.remove('bg-gray-300', 'md:bg-gray-600', 'text-gray-800', 'md:text-white');
-            document.getElementById(`btn-teams-${count}`).classList.add('bg-purple-500', 'md:bg-purple-700', 'text-white');
-            
-            renderTeamInputs();
-        }
-
-        function renderTeamInputs() {
-            const container = document.getElementById('teamInputsContainer');
-            container.innerHTML = '';
-            
-            for (let i = 0; i < teamCount; i++) {
-                const color = TEAM_COLORS[i];
-                const div = document.createElement('div');
-                div.className = 'border-4 border-gray-300 md:border-gray-600 rounded-xl p-3 bg-gray-50 md:bg-gray-900';
-                div.innerHTML = `
-                    <h2 class="text-lg font-bold text-gray-800 md:text-gray-300 mb-2">${color.emoji} Team ${i + 1}</h2>
-                    <input type="text" id="team${i}Username" class="w-full border-2 border-gray-300 md:border-gray-500 rounded-lg px-4 py-2 md:py-3 focus:border-gray-500 outline-none transition bg-white md:bg-gray-800 md:text-white text-lg" placeholder="BGG Username">
-                `;
-                container.appendChild(div);
-            }
-        }
-
-        async function startBattle() {
-            const usernames = [];
-            for (let i = 0; i < teamCount; i++) {
-                const username = document.getElementById(`team${i}Username`).value.trim();
-                if (!username) {
-                    alert(`Please enter Team ${i + 1} username!`);
-                    return;
-                }
-                usernames.push(username);
-            }
-
-            gamesPerTeam = parseInt(document.getElementById('gamesPerTeam').value) || 10;
-            playToScore = parseInt(document.getElementById('playToScore').value) || 5;
-            substitutesPerTeam = parseInt(document.getElementById('substitutes').value) || 5;
-
-            console.log('[BATTLE] Starting new battle');
-            console.log('   ├─ Teams:', teamCount);
-            usernames.forEach((u, i) => console.log(`   ├─ T${i + 1}:`, u));
-            console.log('   ├─ Games:', gamesPerTeam);
-            console.log('   ├─ Play To:', playToScore);
-            console.log('   └─ Subs:', substitutesPerTeam);
-
-            document.getElementById('setupScreen').classList.add('hidden');
-            document.getElementById('battleApp').classList.remove('hidden');
-
-            await loadAllTeamCollections(usernames);
-            
-            teamGames = [];
-            for (let i = 0; i < teamCount; i++) {
-                teamGames.push(selectRandomGames(teamCollections[i], gamesPerTeam));
-            }
-            teamScores = Array(teamCount).fill(0);
-            teamSubsUsed = Array(teamCount).fill(0);
-
-            console.log('[BATTLE] Teams created');
-            teamGames.forEach((games, i) => console.log(`   └─ T${i + 1}:`, games.length, 'games'));
-
-            renderScoreBoard();
-            nextRound();
-        }
-
-        async function loadAllTeamCollections(usernames) {
-            teamCollections = [];
-            for (let i = 0; i < usernames.length; i++) {
-                console.log(`[COLLECTION-API] T${i + 1}:`, usernames[i]);
-                try {
-                    const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(usernames[i])}&own=1&stats=1`);
-                    const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                    const items = Array.from(xml.querySelectorAll('item'));
-                    
-                    const collection = items.map(item => ({
-                        id: item.getAttribute('objectid'),
-                        name: item.querySelector('name')?.textContent || 'Unknown',
-                        thumbnail: item.querySelector('thumbnail')?.textContent || '',
-                        yearpublished: item.getAttribute('publishyear') || '?'
-                    }));
-                    
-                    teamCollections.push(collection);
-                    console.log(`✓ T${i + 1}:`, collection.length, 'games');
-                    await enrichWithBayesRatings(collection, `T${i + 1}`);
-                } catch (error) {
-                    console.error(`✗ [COLLECTION-API] T${i + 1}:`, error);
-                    alert(`Error loading collection for Team ${i + 1}`);
-                }
-            }
-        }
-
-        async function enrichWithBayesRatings(collection, teamLabel) {
-            console.log(`[THING-API] Enriching ${teamLabel}:`, collection.length, 'games');
-            const chunkSize = 20;
-            const chunks = [];
-            for (let i = 0; i < collection.length; i += chunkSize) {
-                chunks.push(collection.slice(i, i + chunkSize));
-            }
-
-            for (let chunkIdx = 0; chunkIdx < chunks.length; chunkIdx++) {
-                const chunk = chunks[chunkIdx];
-                const gameIds = chunk.map(g => g.id).join(',');
-                try {
-                    const res = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameIds}&stats=1`);
-                    const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
-                    const items = Array.from(xml.querySelectorAll('item'));
-
-                    items.forEach(item => {
-                        const gameId = item.getAttribute('id');
-                        const collectionGame = chunk.find(g => g.id === gameId);
-                        if (collectionGame) {
-                            const stats = item.querySelector('statistics ratings');
-                            collectionGame.bayesAverage = parseFloat(stats?.querySelector('average')?.getAttribute('value') || 0);
-                            collectionGame.voters = parseInt(stats?.querySelector('usersrated')?.getAttribute('value') || 0);
-                        }
-                    });
-
-                    console.log(`✓ [THING-API] ${teamLabel} Batch ${chunkIdx + 1}/${chunks.length}:`, items.length, 'games');
-                } catch (error) {
-                    console.error(`✗ [THING-API] ${teamLabel} Batch ${chunkIdx + 1}:`, error);
-                }
-            }
-        }
-
-        function selectRandomGames(collection, count) {
-            const shuffled = [...collection].sort(() => Math.random() - 0.5);
-            return shuffled.slice(0, Math.min(count, collection.length));
-        }
-
-        function renderScoreBoard() {
-            const sb = document.getElementById('scoreBoard');
-            const cols = teamCount <= 2 ? 'grid-cols-2' : teamCount <= 3 ? 'grid-cols-3' : 'grid-cols-4';
-            sb.className = `grid ${cols} gap-4 items-center`;
-            sb.innerHTML = '';
-
-            teamScores.forEach((score, i) => {
-                const color = TEAM_COLORS[i];
-                const div = document.createElement('div');
-                div.className = 'text-center';
-                div.innerHTML = `
-                    <p class="text-sm font-bold text-gray-600 md:text-gray-300 mb-2">${color.emoji} T${i + 1}</p>
-                    <p class="score-display ${color.scoreBg}" id="score${i}">0</p>
-                `;
-                sb.appendChild(div);
-            });
-
-            const playToDiv = document.createElement('div');
-            playToDiv.className = 'text-center';
-            playToDiv.innerHTML = `
-                <p class="text-lg md:text-2xl font-bold text-gray-400">🏆</p>
-                <p class="text-xs text-gray-500 md:text-gray-400 mt-1" id="playToDisplay">To ${playToScore}</p>
-            `;
-            sb.appendChild(playToDiv);
-        }
-
-        function renderGameCards() {
-            const grid = document.getElementById('gameCardsGrid');
-            const cols = teamCount <= 2 ? 'grid-cols-2' : teamCount <= 3 ? 'grid-cols-3' : 'grid-cols-4';
-            grid.className = `grid ${cols} gap-2 md:gap-6 flex-1 overflow-hidden`;
-            grid.innerHTML = '';
-
-            currentGames.forEach((game, i) => {
-                const color = TEAM_COLORS[i];
-                const div = document.createElement('div');
-                div.className = `bg-white md:bg-gray-800 border-4 border-${color.border}-400 md:border-${color.border}-600 rounded-lg md:rounded-xl overflow-hidden flex flex-col`;
-                div.innerHTML = `
-                    <img src="${game.thumbnail || ''}" alt="Game" class="game-image">
-                    <div class="flex-1 flex flex-col justify-between p-2 md:p-4">
-                        <p class="font-bold text-xs md:text-sm line-clamp-2 text-center text-gray-800 md:text-white">${game.name}</p>
-                        <div>
-                            <p class="text-2xl md:text-3xl font-black text-center ${color.scoreBg}">${(game.bayesAverage?.toFixed(1) || 'N/A')}</p>
-                            <p class="text-xs text-center text-gray-500 md:text-gray-400">${game.yearpublished || ''}</p>
-                        </div>
-                    </div>
-                `;
-                grid.appendChild(div);
-            });
-        }
-
-        function renderSubstituteButtons() {
-            const grid = document.getElementById('substitutesGrid');
-            const cols = teamCount <= 2 ? 'grid-cols-2' : teamCount <= 3 ? 'grid-cols-3' : 'grid-cols-4';
-            grid.className = `grid ${cols} gap-2`;
-            grid.innerHTML = '';
-
-            for (let i = 0; i < teamCount; i++) {
-                const color = TEAM_COLORS[i];
-                const subs = substitutesPerTeam - teamSubsUsed[i];
-                const btn = document.createElement('button');
-                btn.className = `bg-${color.bg}-500 md:bg-${color.bg}-700 hover:bg-${color.bg}-600 md:hover:bg-${color.bg}-800 text-white py-2 md:py-3 rounded-lg font-bold transition tap-feedback text-xs md:text-sm`;
-                btn.onclick = () => useSubstitute(i);
-                btn.textContent = `T${i + 1} 🔄 ${subs}`;
-                grid.appendChild(btn);
-            }
-        }
-
-        function nextRound() {
-            if (Math.max(...teamScores) >= playToScore) {
-                endBattle();
-                return;
-            }
-
-            currentGames = [];
-            for (let i = 0; i < teamCount; i++) {
-                currentGames.push(teamGames[i][Math.floor(Math.random() * teamGames[i].length)]);
-            }
-
-            console.log(`[ROUND] ${currentRound + 1}:`);
-            currentGames.forEach((g, i) => console.log(`   ├─ T${i + 1}: "${g.name}" (${g.bayesAverage?.toFixed(1)})`));
-
-            renderGameCards();
-            renderSubstituteButtons();
-            currentRound++;
-        }
-
-        function determineWinner() {
-            let maxRating = -1;
-            let winners = [];
-
-            currentGames.forEach((game, i) => {
-                const rating = game.bayesAverage || 0;
-                if (rating > maxRating) {
-                    maxRating = rating;
-                    winners = [i];
-                } else if (rating === maxRating) {
-                    winners.push(i);
-                }
-            });
-
-            if (winners.length === 1) {
-                teamScores[winners[0]]++;
-                const winnerColor = TEAM_COLORS[winners[0]];
-                console.log(`✓ T${winners[0] + 1} wins! Score: ${teamScores.join('-')}`);
-                alert(`${winnerColor.emoji} +1 (${maxRating.toFixed(1)})`);
-            } else {
-                console.log(`⚖️ Tie between ${winners.map(i => `T${i + 1}`).join(', ')}!`);
-                alert(`⚖️ ${winners.length}-way Tie! (${maxRating.toFixed(1)})`);
-            }
-
-            teamScores.forEach((score, i) => {
-                document.getElementById(`score${i}`).textContent = score;
-            });
-        }
-
-        function useSubstitute(teamIdx) {
-            if (teamSubsUsed[teamIdx] >= substitutesPerTeam) {
-                alert('No substitutes left!');
-                return;
-            }
-            teamSubsUsed[teamIdx]++;
-            currentGames[teamIdx] = teamGames[teamIdx][Math.floor(Math.random() * teamGames[teamIdx].length)];
-            console.log(`✓ T${teamIdx + 1} sub used:`, substitutesPerTeam - teamSubsUsed[teamIdx], 'left');
-            renderGameCards();
-            renderSubstituteButtons();
-        }
-
-        function endBattle() {
-            const maxScore = Math.max(...teamScores);
-            const winners = teamScores.map((s, i) => s === maxScore ? i : -1).filter(i => i !== -1);
-            const winnerText = winners.map(i => TEAM_COLORS[i].emoji).join(' ');
-            const scoresText = teamScores.join(' - ');
-
-            console.log('[END-BATTLE] Final:', scoresText, '| Rounds:', currentRound);
-            document.getElementById('winnerText').textContent = `${winnerText} TEAM${winners.length > 1 ? 'S' : ''} WIN!`;
-            document.getElementById('finalScoreText').textContent = scoresText;
-            
-            const statsLines = [
-                'Rounds: ' + currentRound,
-                ...teamScores.map((_, i) => `T${i + 1}: ${teamSubsUsed[i]}/${substitutesPerTeam} subs`)
-            ];
-            document.getElementById('battleStatsText').textContent = statsLines.join(' | ');
-            document.getElementById('gameOverModal').classList.remove('hidden');
-        }
-
-        function returnToSetup() {
-            location.reload();
-        }
-
-        // Initialize with 2 teams
-        renderTeamInputs();
-
-        document.addEventListener('touchmove', function(e) {
-            if (e.touches.length > 1) e.preventDefault();
-        }, false);
-
-        document.addEventListener('contextmenu', e => e.preventDefault());
-    </script>
-    <!-- Vercel Web Analytics -->
-    <script type="module" src="analytics-init.js"></script>
-
 </body>
 </html>
