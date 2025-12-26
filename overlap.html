@@ -66,9 +66,11 @@
         <div class="w-full max-w-sm space-y-4 bg-gray-900/50 p-8 rounded-3xl border border-white/10 backdrop-blur-md">
             <input type="text" id="username" value="sportomax" class="w-full bg-black/40 p-4 rounded-xl border border-gray-700 outline-none focus:border-pink-500 transition-all text-center font-bold">
             
+            <!-- Mode selector: 'overlap' produces alternating vertical strips from each image
+                 'pixel' produces a checker/block alternation. Renamed from 'panel' to 'overlap'. -->
             <select id="mode" class="w-full bg-black/40 p-4 rounded-xl border border-gray-700 font-bold">
-                <option value="panel">Panel Mode (BG + 50% Thumb)</option>
-                <option value="pixel">Pixel Alteration</option>
+                <option value="overlap">Overlap Mode (vertical alternating strips)</option>
+                <option value="pixel">Pixel Mode (alternating pixel blocks)</option>
             </select>
 
             <button id="startBtn" class="w-full bg-gradient-to-r from-pink-600 to-purple-600 py-4 rounded-xl font-black text-lg shadow-lg shadow-pink-500/20 active:scale-95 transition-all">
@@ -83,9 +85,15 @@
             <div id="progressLabel" class="text-gray-500 font-bold uppercase text-xs tracking-widest">Game 1 / 10</div>
         </div>
 
+        <!-- Stage: we use a single canvas so both images are drawn to the exact same box size.
+             Canvas rendering implements both 'overlap' (vertical strips) and 'pixel' (block alternation).
+             When revealed we draw the back image at full opacity and the front image at 50% on top.
+        -->
         <div class="stage-container" id="stage">
-            <img id="mainImg" class="bg-full" src="">
-            <img id="subImg" class="overlay-thumb" src="">
+            <canvas id="stageCanvas" style="width:100%; height:100%; display:block;"></canvas>
+            <!-- Fallback thumbnails kept but hidden; canvas is authoritative -->
+            <img id="mainImg" class="bg-full" src="" style="display:none">
+            <img id="subImg" class="overlay-thumb" src="" style="display:none">
         </div>
 
         <div class="grid grid-cols-2 gap-3">
@@ -131,27 +139,113 @@
             const mode = document.getElementById('mode').value;
             const g1 = gameStack[cursor];
             const g2 = gameStack[(cursor + 1) % gameStack.length];
+            const canvas = document.getElementById('stageCanvas');
+            const ctx = canvas.getContext('2d');
 
-            const main = document.getElementById('mainImg');
-            const sub = document.getElementById('subImg');
-            
+            // Reset UI state
             document.getElementById('stage').classList.remove('reveal-active');
             document.getElementById('validationBtns').classList.add('hidden');
             document.getElementById('nameDisplay').classList.add('hidden');
             document.getElementById('revealBtn').classList.remove('hidden');
             document.getElementById('progressLabel').innerText = `Game ${cursor + 1} / 10`;
 
-            main.src = g1.img;
-            sub.src = g2.img;
+            // Ensure canvas backing store matches display size for crisp rendering
+            const rect = canvas.getBoundingClientRect();
+            const dpr = window.devicePixelRatio || 1;
+            canvas.width = Math.max(1, Math.floor(rect.width * dpr));
+            canvas.height = Math.max(1, Math.floor(rect.height * dpr));
+            ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
 
-            if (mode === 'panel') {
-                sub.classList.remove('hidden');
-                main.style.setProperty('--bg-filter', 'blur(4px)');
-            } else {
-                sub.classList.add('hidden');
-                main.classList.add('pixelated');
-                main.style.setProperty('--pixel-blur', '12px');
+            // Draw pattern depending on mode. load two images first.
+            const imgA = new Image(); imgA.crossOrigin = 'anonymous'; imgA.src = g1.img;
+            const imgB = new Image(); imgB.crossOrigin = 'anonymous'; imgB.src = g2.img;
+
+            Promise.all([imgLoaded(imgA), imgLoaded(imgB)]).then(() => {
+                if (mode === 'overlap') {
+                    renderOverlapStrips(ctx, imgA, imgB, rect.width, rect.height);
+                } else {
+                    renderPixelBlocks(ctx, imgA, imgB, rect.width, rect.height);
+                }
+            }).catch(err => {
+                console.error('Image load error', err);
+            });
+        }
+
+        // helper: wait for image load
+        function imgLoaded(img){
+            return new Promise((resolve, reject) => {
+                if (img.complete && img.naturalWidth) return resolve(img);
+                img.onload = () => resolve(img);
+                img.onerror = reject;
+            });
+        }
+
+        // Render vertical alternating strips: even strips from imgA (back, full opacity), odd strips from imgB (front, 0.5)
+        function renderOverlapStrips(ctx, imgA, imgB, w, h){
+            // Fill background with imgA first (back image)
+            drawImageCover(ctx, imgA, 0, 0, w, h, 1.0);
+
+            const strips = Math.max(8, Math.round(w / 30)); // adaptive number of strips
+            const stripW = w / strips;
+
+            for (let i = 0; i < strips; i++){
+                const x = Math.floor(i * stripW);
+                // alternate: even -> show imgA (already visible), odd -> draw imgB over this strip at 50% opacity
+                if (i % 2 === 1){
+                    ctx.save();
+                    ctx.beginPath();
+                    ctx.rect(x, 0, Math.ceil(stripW), h);
+                    ctx.clip();
+                    ctx.globalAlpha = 0.5; // front image semi-transparent
+                    drawImageCover(ctx, imgB, 0, 0, w, h, 1.0);
+                    ctx.restore();
+                    ctx.globalAlpha = 1.0;
+                }
             }
+        }
+
+        // Render pixel/block alternation: create square blocks that alternate between images
+        function renderPixelBlocks(ctx, imgA, imgB, w, h){
+            // draw back image fully first
+            drawImageCover(ctx, imgA, 0, 0, w, h, 1.0);
+
+            const block = Math.max(12, Math.round(Math.min(w,h) / 18));
+            for (let y = 0; y < h; y += block){
+                for (let x = 0; x < w; x += block){
+                    const xi = Math.floor(x / block);
+                    const yi = Math.floor(y / block);
+                    if ((xi + yi) % 2 === 1){
+                        ctx.save();
+                        ctx.beginPath();
+                        ctx.rect(x, y, block, block);
+                        ctx.clip();
+                        ctx.globalAlpha = 0.5;
+                        drawImageCover(ctx, imgB, 0, 0, w, h, 1.0);
+                        ctx.restore();
+                        ctx.globalAlpha = 1.0;
+                    }
+                }
+            }
+        }
+
+        // Draw image to cover the rectangle while preserving aspect ratio (like CSS background-size: cover)
+        function drawImageCover(ctx, img, x, y, w, h, alpha){
+            const iw = img.naturalWidth;
+            const ih = img.naturalHeight;
+            const ir = iw / ih;
+            const rr = w / h;
+            let dw, dh, dx, dy;
+            if (ir > rr){
+                // image wider than box -> height fits
+                dh = h; dw = h * ir;
+                dx = x - (dw - w) / 2; dy = y;
+            } else {
+                dw = w; dh = w / ir;
+                dx = x; dy = y - (dh - h) / 2;
+            }
+            ctx.globalAlpha = alpha !== undefined ? alpha : 1.0;
+            ctx.drawImage(img, dx, dy, dw, dh);
+            ctx.globalAlpha = 1.0;
         }
 
         document.getElementById('revealBtn').onclick = () => {
