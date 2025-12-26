@@ -425,8 +425,14 @@
             </div>
 
             <div class="action-buttons">
-                <button class="btn btn-primary" onclick="submitOrder()" id="submitBtn" disabled>
-                    Submit Order (0 items)
+                <button class="btn btn-primary" onclick="performAction('chop')" id="chopBtn" disabled>
+                    Chop
+                </button>
+                <button class="btn btn-primary" onclick="performAction('cook')" id="cookBtn" disabled>
+                    Cook
+                </button>
+                <button class="btn btn-primary" onclick="performAction('plate')" id="plateBtn" disabled>
+                    Plate
                 </button>
                 <button class="btn btn-secondary" onclick="clearSelection()">
                     Clear Selection
@@ -503,7 +509,9 @@
         }
 
         async function startGame() {
-            const username = document.getElementById('usernameInput').value.trim();
+            let username = document.getElementById('usernameInput').value.trim();
+            // default to sportomax when empty per request
+            if (!username) username = 'sportomax';
             const errorEl = document.getElementById('errorMessage');
             const loadingEl = document.getElementById('loadingMessage');
 
@@ -520,7 +528,8 @@
             loadingEl.textContent = 'Loading your collection...';
 
             try {
-                const collectionXMLText = await fetchBGG('collection', { username: username, own: '1' });
+                // Use collection v2 with stats to get thumbnails and ratings
+                const collectionXMLText = await fetchBGG('collection', { username: username, own: '1', stats: '1' });
                 const xml = parseXML(collectionXMLText);
 
                 if (xml.querySelector('errors error')) {
@@ -537,11 +546,18 @@
                     const name = item.querySelector('name');
                     const thumbnail = item.querySelector('thumbnail');
                     const objectid = item.getAttribute('objectid');
-                    
+                    // try to find bayesaverage under stats if present
+                    let bayes = 0;
+                    const stats = item.querySelector('stats') || item.querySelector('statistics');
+                    if (stats) {
+                        const bay = stats.querySelector('bayesaverage') || stats.querySelector('rating > bayesaverage');
+                        if (bay) bayes = parseFloat(bay.getAttribute('value') || bay.textContent) || 0;
+                    }
                     return {
                         id: objectid,
                         name: name ? name.textContent : 'Unknown',
                         thumbnail: thumbnail ? thumbnail.textContent : null,
+                        bayes: bayes
                     };
                 }).filter(game => game.thumbnail);
 
@@ -599,12 +615,23 @@
             const settings = DIFFICULTY_SETTINGS[difficulty];
             if (currentOrders.length >= settings.maxOrders) return;
 
+            // Each order item now has multi-stage requirements (e.g., chop -> cook -> plate)
+            const STAGE_SETS = [
+                ['plate'],
+                ['chop','plate'],
+                ['chop','cook','plate'],
+                ['cook','plate']
+            ];
+
             const orderItems = [];
             const availableGames = [...collection];
             
             for (let i = 0; i < settings.itemsPerOrder; i++) {
                 const randomIndex = Math.floor(Math.random() * availableGames.length);
-                orderItems.push({ ...availableGames[randomIndex], collected: false });
+                const base = availableGames[randomIndex];
+                // choose a random stage set to require for this item (more complex items less likely)
+                const stages = STAGE_SETS[Math.floor(Math.random() * STAGE_SETS.length)];
+                orderItems.push({ ...base, collected: false, stages: stages, progress: 0 });
                 availableGames.splice(randomIndex, 1);
             }
 
@@ -659,6 +686,12 @@
                             ${order.items.map(item => `
                                 <div class="order-item ${item.collected ? 'collected' : ''}">
                                     <img src="${IMAGE_PROXY}${item.thumbnail}" alt="${item.name}">
+                                    <div style="position:absolute;left:6px;bottom:6px;display:flex;gap:4px;">
+                                        ${item.stages.map((s,si)=>{
+                                            const done = si < (item.progress||0);
+                                            return `<div style="padding:2px 6px;border-radius:6px;background:${done? 'rgba(46,204,113,0.9)':'rgba(0,0,0,0.4)'};color:white;font-size:10px;font-weight:700">${s}</div>`;
+                                        }).join('')}
+                                    </div>
                                 </div>
                             `).join('')}
                         </div>
@@ -680,7 +713,8 @@
                 selectedItems.splice(existingIndex, 1);
                 item.classList.remove('selected');
             } else {
-                selectedItems.push(game);
+                // store id and ref to base game
+                selectedItems.push({ id: game.id, game });
                 item.classList.add('selected');
             }
 
@@ -688,9 +722,11 @@
         }
 
         function updateSubmitButton() {
-            const btn = document.getElementById('submitBtn');
-            btn.textContent = `Submit Order (${selectedItems.length} items)`;
-            btn.disabled = selectedItems.length === 0;
+            // update action buttons availability
+            const hasSelection = selectedItems.length > 0;
+            document.getElementById('chopBtn').disabled = !hasSelection;
+            document.getElementById('cookBtn').disabled = !hasSelection;
+            document.getElementById('plateBtn').disabled = !hasSelection;
         }
 
         function clearSelection() {
@@ -703,31 +739,9 @@
 
         function submitOrder() {
             if (selectedItems.length === 0) return;
-
-            // Find order that matches selected items
-            for (const order of currentOrders) {
-                if (order.completed) continue;
-
-                let matched = true;
-                const orderCopy = [...order.items];
-
-                for (const selected of selectedItems) {
-                    const itemIndex = orderCopy.findIndex(item => item.id === selected.id && !item.collected);
-                    if (itemIndex >= 0) {
-                        order.items[itemIndex].collected = true;
-                        orderCopy.splice(itemIndex, 1);
-                    }
-                }
-
-                // Check if order is complete
-                if (order.items.every(item => item.collected)) {
-                    completeOrder(order.id);
-                    break;
-                }
-            }
-
-            clearSelection();
-            renderOrders();
+            // Legacy submitOrder is replaced by stage-based performAction
+            // For compatibility, treat submit as 'plate' action
+            performAction('plate');
         }
 
         function completeOrder(orderId) {
@@ -754,6 +768,48 @@
             }, 1000);
 
             updateUI();
+        }
+
+        // performAction: apply an action (chop/cook/plate) to selected shelf items
+        function performAction(action) {
+            if (!gameActive || gamePaused) return;
+            if (selectedItems.length === 0) return;
+
+            // For each current order, try to apply action to matching items
+            for (const order of currentOrders) {
+                if (order.completed) continue;
+
+                for (const sel of [...selectedItems]) {
+                    // find an item in order that matches id, not completed, and requires this action next
+                    const targetIndex = order.items.findIndex(it => !it.collected && it.id === sel.id && (it.stages && it.stages[it.progress] === action));
+                    if (targetIndex >= 0) {
+                        const it = order.items[targetIndex];
+                        it.progress = (it.progress || 0) + 1;
+                        // if progress reaches stages length, mark collected
+                        if (it.progress >= (it.stages ? it.stages.length : 1)) {
+                            it.collected = true;
+                        }
+                        // remove selection (consumed)
+                        const selIdx = selectedItems.findIndex(s => s.id === sel.id);
+                        if (selIdx >= 0) {
+                            selectedItems.splice(selIdx, 1);
+                            // unselect shelf UI
+                            document.querySelectorAll('.shelf-item').forEach(si => {
+                                if (si.getAttribute('data-game-id') === sel.id) si.classList.remove('selected');
+                            });
+                        }
+                    }
+                }
+
+                // if order complete, handle
+                if (order.items.every(i => i.collected)) {
+                    completeOrder(order.id);
+                    break;
+                }
+            }
+
+            updateSubmitButton();
+            renderOrders();
         }
 
         function failOrder(orderId) {
