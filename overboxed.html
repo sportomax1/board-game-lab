@@ -239,6 +239,9 @@
             display: grid;
             grid-template-columns: repeat(auto-fill, minmax(70px, 1fr));
             gap: 0.5rem;
+            max-height: 320px;
+            overflow-y: auto;
+            padding: 4px;
         }
 
         @media (max-width: 600px) {
@@ -425,14 +428,14 @@
             </div>
 
             <div class="action-buttons">
-                <button class="btn btn-primary" onclick="performAction('chop')" id="chopBtn" disabled>
-                    Chop
+                <button class="btn btn-primary" onclick="performAction('gather')" id="gatherBtn" disabled>
+                    Gather
                 </button>
-                <button class="btn btn-primary" onclick="performAction('cook')" id="cookBtn" disabled>
-                    Cook
+                <button class="btn btn-primary" onclick="performAction('pack')" id="packBtn" disabled>
+                    Pack
                 </button>
-                <button class="btn btn-primary" onclick="performAction('plate')" id="plateBtn" disabled>
-                    Plate
+                <button class="btn btn-primary" onclick="performAction('deliver')" id="deliverBtn" disabled>
+                    Deliver
                 </button>
                 <button class="btn btn-secondary" onclick="clearSelection()">
                     Clear Selection
@@ -465,6 +468,9 @@
         let selectedItems = [];
         let gameTimer = null;
         let orderTimers = {};
+        // Action durations (ms) and in-progress tracking
+        const ACTION_DURATIONS = { gather: 1400, pack: 2000, deliver: 1200 };
+        const inProgress = {};
         
         const DIFFICULTY_SETTINGS = {
             easy: { orderTime: 90, itemsPerOrder: 3, maxOrders: 3 },
@@ -477,6 +483,24 @@
             'Ivy', 'Jack', 'Kate', 'Leo', 'Mia', 'Nick', 'Olivia', 'Paul'
         ];
 
+        .stage-progress {
+            position: absolute;
+            left: 0;
+            right: 0;
+            bottom: 0;
+            height: 6px;
+            background: rgba(0,0,0,0.12);
+            border-radius: 6px;
+            overflow: hidden;
+            opacity: 0;
+            transition: opacity 0.18s ease;
+        }
+
+        .stage-bar {
+            height: 100%;
+            width: 0%;
+            background: linear-gradient(90deg,#27ae60,#2ecc71);
+        }
         // BGG API helper with retry logic
         async function fetchBGG(endpoint, params = {}, retries = 5) {
             const queryParams = new URLSearchParams(params).toString();
@@ -599,10 +623,10 @@
 
         function renderShelf() {
             const shelfGrid = document.getElementById('shelfGrid');
-            const displayCount = Math.min(collection.length, 20);
-            
-            shelfGrid.innerHTML = collection.slice(0, displayCount).map((game, idx) => `
-                <div class="shelf-item" onclick="selectShelfItem(${idx})" data-game-id="${game.id}">
+            // show full shelf but sorted alphabetically; scrollbar will appear if needed
+            const shelfList = collection.slice().sort((a, b) => (a.name || '').localeCompare(b.name || ''));
+            shelfGrid.innerHTML = shelfList.map((game) => `
+                <div class="shelf-item" onclick="selectShelfItem('${game.id}')" data-game-id="${game.id}">
                     <img src="${IMAGE_PROXY}${game.thumbnail}" alt="${game.name}"
                          onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><rect width=%22100%22 height=%22100%22 fill=%22%23ecf0f1%22/><text x=%2250%22 y=%2250%22 text-anchor=%22middle%22 dy=%22.3em%22 font-size=%2240%22>🎲</text></svg>'">
                 </div>
@@ -615,12 +639,12 @@
             const settings = DIFFICULTY_SETTINGS[difficulty];
             if (currentOrders.length >= settings.maxOrders) return;
 
-            // Each order item now has multi-stage requirements (e.g., chop -> cook -> plate)
+            // Each order item now has multi-stage requirements using thematic steps (gather -> pack -> deliver)
             const STAGE_SETS = [
-                ['plate'],
-                ['chop','plate'],
-                ['chop','cook','plate'],
-                ['cook','plate']
+                ['deliver'],
+                ['gather','deliver'],
+                ['gather','pack','deliver'],
+                ['pack','deliver']
             ];
 
             const orderItems = [];
@@ -684,9 +708,12 @@
                         </div>
                         <div class="order-items">
                             ${order.items.map(item => `
-                                <div class="order-item ${item.collected ? 'collected' : ''}">
+                                <div class="order-item ${item.collected ? 'collected' : ''} ${inProgress[order.id + '-' + item.id] ? 'in-progress' : ''}">
                                     <img src="${IMAGE_PROXY}${item.thumbnail}" alt="${item.name}">
-                                    <div style="position:absolute;left:6px;bottom:6px;display:flex;gap:4px;">
+                                    <div class="stage-progress" id="prog-${order.id}-${item.id}">
+                                        <div class="stage-bar"></div>
+                                    </div>
+                                    <div style="position:absolute;left:6px;bottom:10px;display:flex;gap:4px;">
                                         ${item.stages.map((s,si)=>{
                                             const done = si < (item.progress||0);
                                             return `<div style="padding:2px 6px;border-radius:6px;background:${done? 'rgba(46,204,113,0.9)':'rgba(0,0,0,0.4)'};color:white;font-size:10px;font-weight:700">${s}</div>`;
@@ -700,22 +727,23 @@
             }).join('');
         }
 
-        function selectShelfItem(index) {
+        function selectShelfItem(id) {
             if (!gameActive || gamePaused) return;
 
-            const game = collection[index];
-            const shelfItems = document.querySelectorAll('.shelf-item');
-            const item = shelfItems[index];
+            const game = collection.find(g => g.id === id);
+            if (!game) return;
+
+            const item = document.querySelector(`.shelf-item[data-game-id="${id}"]`);
 
             // Check if already selected
-            const existingIndex = selectedItems.findIndex(s => s.id === game.id);
+            const existingIndex = selectedItems.findIndex(s => s.id === id);
             if (existingIndex >= 0) {
                 selectedItems.splice(existingIndex, 1);
-                item.classList.remove('selected');
+                if (item) item.classList.remove('selected');
             } else {
                 // store id and ref to base game
-                selectedItems.push({ id: game.id, game });
-                item.classList.add('selected');
+                selectedItems.push({ id: id, game });
+                if (item) item.classList.add('selected');
             }
 
             updateSubmitButton();
@@ -724,9 +752,9 @@
         function updateSubmitButton() {
             // update action buttons availability
             const hasSelection = selectedItems.length > 0;
-            document.getElementById('chopBtn').disabled = !hasSelection;
-            document.getElementById('cookBtn').disabled = !hasSelection;
-            document.getElementById('plateBtn').disabled = !hasSelection;
+            document.getElementById('gatherBtn').disabled = !hasSelection;
+            document.getElementById('packBtn').disabled = !hasSelection;
+            document.getElementById('deliverBtn').disabled = !hasSelection;
         }
 
         function clearSelection() {
@@ -740,8 +768,8 @@
         function submitOrder() {
             if (selectedItems.length === 0) return;
             // Legacy submitOrder is replaced by stage-based performAction
-            // For compatibility, treat submit as 'plate' action
-            performAction('plate');
+            // For compatibility, treat submit as 'deliver' action
+            performAction('deliver');
         }
 
         function completeOrder(orderId) {
@@ -775,41 +803,89 @@
             if (!gameActive || gamePaused) return;
             if (selectedItems.length === 0) return;
 
-            // For each current order, try to apply action to matching items
+            // For each current order, try to start an async action (with visual progress) for matching items
             for (const order of currentOrders) {
                 if (order.completed) continue;
 
                 for (const sel of [...selectedItems]) {
-                    // find an item in order that matches id, not completed, and requires this action next
                     const targetIndex = order.items.findIndex(it => !it.collected && it.id === sel.id && (it.stages && it.stages[it.progress] === action));
                     if (targetIndex >= 0) {
                         const it = order.items[targetIndex];
-                        it.progress = (it.progress || 0) + 1;
-                        // if progress reaches stages length, mark collected
-                        if (it.progress >= (it.stages ? it.stages.length : 1)) {
-                            it.collected = true;
-                        }
-                        // remove selection (consumed)
-                        const selIdx = selectedItems.findIndex(s => s.id === sel.id);
-                        if (selIdx >= 0) {
-                            selectedItems.splice(selIdx, 1);
-                            // unselect shelf UI
-                            document.querySelectorAll('.shelf-item').forEach(si => {
-                                if (si.getAttribute('data-game-id') === sel.id) si.classList.remove('selected');
-                            });
-                        }
+                        const key = `${order.id}-${it.id}`;
+                        if (inProgress[key]) continue; // already working on this item
+
+                        const duration = ACTION_DURATIONS[action] || 1500;
+                        inProgress[key] = true;
+                        renderOrders(); // show in-progress styling and progress element
+
+                        // kick off visual progress
+                        requestAnimationFrame(() => {
+                            const progEl = document.getElementById(`prog-${order.id}-${it.id}`);
+                            if (progEl) {
+                                const bar = progEl.querySelector('.stage-bar');
+                                progEl.style.opacity = '1';
+                                if (bar) {
+                                    bar.style.transition = `width ${duration}ms linear`;
+                                    // ensure starting at 0
+                                    bar.style.width = '0%';
+                                    // force reflow then animate
+                                    void bar.offsetWidth;
+                                    bar.style.width = '100%';
+                                }
+                            }
+                        });
+
+                        // completion handler
+                        setTimeout(() => {
+                            // find the order/item again (DOM may have changed)
+                            const freshOrder = currentOrders.find(o => o.id === order.id);
+                            if (!freshOrder) {
+                                delete inProgress[key];
+                                return;
+                            }
+                            const freshItem = freshOrder.items.find(i => i.id === it.id);
+                            if (freshItem) {
+                                freshItem.progress = (freshItem.progress || 0) + 1;
+                                if (freshItem.progress >= (freshItem.stages ? freshItem.stages.length : 1)) {
+                                    freshItem.collected = true;
+                                }
+                            }
+
+                            // clear visuals
+                            const progEl2 = document.getElementById(`prog-${order.id}-${it.id}`);
+                            if (progEl2) {
+                                const bar2 = progEl2.querySelector('.stage-bar');
+                                if (bar2) {
+                                    bar2.style.transition = 'width 200ms linear';
+                                    bar2.style.width = '0%';
+                                }
+                                progEl2.style.opacity = '0';
+                            }
+
+                            delete inProgress[key];
+
+                            // remove selection (consumed)
+                            const selIdx = selectedItems.findIndex(s => s.id === sel.id);
+                            if (selIdx >= 0) {
+                                const removed = selectedItems.splice(selIdx, 1)[0];
+                                // unselect shelf UI
+                                document.querySelectorAll('.shelf-item').forEach(si => {
+                                    if (si.getAttribute('data-game-id') === removed.id) si.classList.remove('selected');
+                                });
+                            }
+
+                            renderOrders();
+                            updateSubmitButton();
+
+                            // if order complete, handle
+                            const maybeOrder = currentOrders.find(o => o.id === order.id);
+                            if (maybeOrder && maybeOrder.items.every(i => i.collected)) {
+                                completeOrder(order.id);
+                            }
+                        }, duration);
                     }
                 }
-
-                // if order complete, handle
-                if (order.items.every(i => i.collected)) {
-                    completeOrder(order.id);
-                    break;
-                }
             }
-
-            updateSubmitButton();
-            renderOrders();
         }
 
         function failOrder(orderId) {
