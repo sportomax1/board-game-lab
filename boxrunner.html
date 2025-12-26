@@ -33,16 +33,38 @@
         const gravity = 0.8;
         const enemies = [];
         const boxes = [];
+        const thumbs = []; // preloaded thumbnails
+        async function loadCollection(username='sportomax'){
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                if (!res.ok) throw new Error('collection fetch failed');
+                const text = await res.text();
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                const items = Array.from(xml.querySelectorAll('item')).map(it=>({
+                    id: it.getAttribute('objectid'),
+                    name: (it.querySelector('name')||{textContent:''}).textContent,
+                    thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent
+                })).filter(g=>g.thumbnail).slice(0,60);
+                for (const g of items){
+                    const img = new Image(); img.crossOrigin='anonymous'; img.src = 'https://images.weserv.nl/?url=' + encodeURIComponent(g.thumbnail);
+                    thumbs.push(img);
+                }
+            } catch(e){ console.warn('collection load failed', e); }
+        }
         let scroll = 0;
 
         function rand(min,max){return Math.random()*(max-min)+min}
 
         function spawnEnemy(){
-            enemies.push({ x: width + rand(0,200) + scroll, y: height - 80, w:40, h:40, vx: -3 - Math.random()*2, emoji: '👾' });
+            const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
+            enemies.push({ x: width + rand(0,200) + scroll, y: height - 80, w:40, h:40, vx: -3 - Math.random()*2, thumb });
         }
 
         function spawnBox(){
-            boxes.push({ x: width + rand(50,500) + scroll, y: height - 100, w:56, h:56, vx:-2 - Math.random()*1.5, emoji: '📦', hit:false });
+            const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
+            const above = Math.random() < 0.33;
+            const y = above ? (player.y - 120) : (height - 100);
+            boxes.push({ x: width + rand(50,500) + scroll, y: y, w:56, h:56, vx:-2 - Math.random()*1.5, thumb, hit:false, above });
         }
 
         let keys = {};
@@ -80,6 +102,8 @@
             for (const b of boxes){
                 if (!b.hit && rectIntersect(player, b)){
                     b.hit = true; score += 10; document.getElementById('score').textContent = 'Score: ' + score;
+                    // powerup chance when hitting a thumbnail above head
+                    if (b.above && Math.random() < 0.25) { score += 20; document.getElementById('score').textContent = 'Score: ' + score; }
                 }
             }
             for (const en of enemies){
@@ -103,15 +127,23 @@
 
             // boxes
             for (const b of boxes){
-                ctx.fillStyle = b.hit ? '#444' : '#f39c12';
-                ctx.fillRect(b.x - scroll, b.y, b.w, b.h);
-                ctx.fillStyle = '#fff'; ctx.font = '28px serif'; ctx.fillText(b.emoji, b.x - scroll + 10, b.y + 38);
+                if (b.thumb && b.thumb.complete) {
+                    ctx.drawImage(b.thumb, b.x - scroll, b.y, b.w, b.h);
+                } else {
+                    ctx.fillStyle = b.hit ? '#444' : '#f39c12';
+                    ctx.fillRect(b.x - scroll, b.y, b.w, b.h);
+                    ctx.fillStyle = '#fff'; ctx.font = '28px serif'; ctx.fillText('📦', b.x - scroll + 10, b.y + 38);
+                }
             }
 
             // enemies
             for (const en of enemies){
-                ctx.fillStyle = '#c0392b'; ctx.fillRect(en.x - scroll, en.y, en.w, en.h);
-                ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText(en.emoji, en.x - scroll + 6, en.y + 30);
+                if (en.thumb && en.thumb.complete) {
+                    ctx.drawImage(en.thumb, en.x - scroll, en.y, en.w, en.h);
+                } else {
+                    ctx.fillStyle = '#c0392b'; ctx.fillRect(en.x - scroll, en.y, en.w, en.h);
+                    ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText('👾', en.x - scroll + 6, en.y + 30);
+                }
             }
 
             // player
@@ -120,7 +152,8 @@
         }
 
         function loop(){ update(); draw(); requestAnimationFrame(loop); }
-        loop();
+        // start after loading collection (default sportomax)
+        loadCollection('sportomax').then(()=> loop());
     </script>
 </body>
 </html>
