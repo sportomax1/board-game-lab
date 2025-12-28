@@ -1,0 +1,148 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Rubix Thumbs</title>
+    <style>
+        body{font-family:system-ui,-apple-system,Segoe UI,Roboto;background:#f2f7fb;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+        .card{background:#fff;padding:18px;border-radius:12px;box-shadow:0 12px 36px rgba(16,40,60,0.08);width:420px}
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}
+        .cell{width:120px;height:120px;background:#eee;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+        .controls{display:flex;gap:8px;flex-wrap:wrap}
+        button{padding:8px 10px;border-radius:8px;border:1px solid #dbe7f5;background:#2b8cff;color:white;cursor:pointer}
+        .small{padding:6px 8px;font-size:13px}
+        .muted{color:#667;font-size:13px}
+        .home{float:right}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+                <h2 style="margin:0">Rubix Thumbs</h2>
+                <div class="muted">3x3 thumb-rotation puzzle — rotate rows/columns to match the solved pattern</div>
+            </div>
+            <a class="home" href="home.html">Home</a>
+        </div>
+
+        <div style="margin-top:8px">Username: <input id="username" value="sportomax" style="padding:6px;border-radius:8px;border:1px solid #ddd"/></div>
+        <div class="grid" id="grid"></div>
+
+        <div class="controls">
+            <button id="rotateRow0" class="small">Row 1 →</button>
+            <button id="rotateRow1" class="small">Row 2 →</button>
+            <button id="rotateRow2" class="small">Row 3 →</button>
+            <button id="rotCol0" class="small">Col 1 ↓</button>
+            <button id="rotCol1" class="small">Col 2 ↓</button>
+            <button id="rotCol2" class="small">Col 3 ↓</button>
+            <button id="scramble" class="small">Scramble</button>
+            <button id="cheat" class="small">Cheat (solve)</button>
+        </div>
+        <div style="margin-top:8px" class="muted">Tip: scramble applies random rotations; cheat will reverse the scramble and animate it.</div>
+    </div>
+
+    <script>
+        const gridRoot = document.getElementById('grid');
+        let thumbs = [];
+        let state = []; // 9-element array of image URLs
+        let solvedState = [];
+        let moveHistory = [];
+        let animating = false;
+
+        async function loadCollection(username='sportomax'){
+            try{
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                const text = await res.text();
+                const xml = new DOMParser().parseFromString(text,'text/xml');
+                const found = Array.from(xml.querySelectorAll('item')).map(it=>({ thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent })).filter(x=>x.thumbnail).slice(0,9);
+                if(found.length < 9) throw new Error('need 9 thumbnails');
+                thumbs = found.map(f=>'https://images.weserv.nl/?url='+encodeURIComponent(f.thumbnail));
+                state = thumbs.slice(0,9);
+                solvedState = state.slice();
+                renderGrid();
+            }catch(e){ console.warn('loadCollection failed', e); fillDummy(); }
+        }
+
+        function fillDummy(){
+            state = [];
+            for(let i=0;i<9;i++){ state.push('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22120%22 height=%22120%22%3E%3Crect width=120 height=120 fill=%23ddd/%3E%3Ctext x=50 y=70 font-size=24%3E'+(i+1)+'%3C/text%3E%3C/svg%3E'); }
+            solvedState = state.slice(); renderGrid();
+        }
+
+        function renderGrid(){
+            gridRoot.innerHTML = '';
+            for(let i=0;i<9;i++){
+                const el = document.createElement('div'); el.className='cell';
+                el.innerHTML = `<img src="${state[i]}" style="width:100%;height:100%;object-fit:cover"/>`;
+                gridRoot.appendChild(el);
+            }
+        }
+
+        function rotateRow(r){
+            if(animating) return;
+            const idx = r*3;
+            const a = state[idx], b=state[idx+1], c=state[idx+2];
+            state[idx]=c; state[idx+1]=a; state[idx+2]=b; // rotate right
+            moveHistory.push({type:'row',r:r}); renderGrid();
+        }
+        function rotateCol(c){
+            if(animating) return;
+            const a = state[c], b=state[c+3], d=state[c+6];
+            state[c]=d; state[c+3]=a; state[c+6]=b; // rotate down
+            moveHistory.push({type:'col',c:c}); renderGrid();
+        }
+
+        function scramble(){
+            if(animating) return;
+            moveHistory = [];
+            const moves = 12;
+            for(let i=0;i<moves;i++){
+                if(Math.random()<0.5){ const r = Math.floor(Math.random()*3); rotateRow(r); }
+                else { const c = Math.floor(Math.random()*3); rotateCol(c); }
+            }
+        }
+
+        async function cheatSolve(){
+            if(animating || moveHistory.length===0) return;
+            animating = true;
+            // reverse moves
+            const rev = moveHistory.slice().reverse();
+            for(const m of rev){
+                await new Promise(res=>setTimeout(res, 450));
+                if(m.type==='row'){
+                    // inverse of rotateRow (right) is rotateRow left -> perform 2 rights to simulate left? easier: perform 2 rights twice? simpler: implement rotateRowLeft
+                    rotateRowLeft(m.r);
+                } else {
+                    rotateColUp(m.c);
+                }
+            }
+            moveHistory = [];
+            animating = false;
+        }
+
+        function rotateRowLeft(r){
+            const idx=r*3;
+            const a=state[idx], b=state[idx+1], c=state[idx+2];
+            state[idx]=b; state[idx+1]=c; state[idx+2]=a; renderGrid();
+        }
+        function rotateColUp(c){
+            const a=state[c], b=state[c+3], d=state[c+6];
+            state[c]=b; state[c+3]=d; state[c+6]=a; renderGrid();
+        }
+
+        document.getElementById('rotateRow0').addEventListener('click', ()=>rotateRow(0));
+        document.getElementById('rotateRow1').addEventListener('click', ()=>rotateRow(1));
+        document.getElementById('rotateRow2').addEventListener('click', ()=>rotateRow(2));
+        document.getElementById('rotCol0').addEventListener('click', ()=>rotateCol(0));
+        document.getElementById('rotCol1').addEventListener('click', ()=>rotateCol(1));
+        document.getElementById('rotCol2').addEventListener('click', ()=>rotateCol(2));
+        document.getElementById('scramble').addEventListener('click', scramble);
+        document.getElementById('cheat').addEventListener('click', cheatSolve);
+
+        document.getElementById('username').addEventListener('change', ()=> loadCollection(document.getElementById('username').value.trim()));
+
+        loadCollection('sportomax');
+    </script>
+</body>
+</html>
