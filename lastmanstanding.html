@@ -934,37 +934,30 @@
                 headerHtml += `<th class="round-header">R${i}</th>`;
             }
             
+            // Precompute upset winners per round: for each game and round, determine if advancing to that round is an upset
+            const upsetMap = new Map(); // key `${gameId}|${round}` => true
+            for (const game of allGames) {
+                const rounds = gameRoundHistory[game.id] || [1];
+                for (let round = 2; round <= totalRounds; round++) {
+                    const expectedSurvivors = Math.ceil(allGames.length / Math.pow(2, round - 1));
+                    if (rounds.includes(round) && game.originalIndex >= expectedSurvivors) {
+                        upsetMap.set(`${game.id}|${round}`, true);
+                    }
+                }
+            }
+
             // Create table rows for all games
             let rowsHtml = allGames.map(game => {
                 const rounds = gameRoundHistory[game.id] || [1];
-                
-                // Check if this game is an "upset" (performed better than expected)
-                // A game is an upset if it survived past the round where its original rank would predict elimination
-                // For example, in a 16-game tournament:
-                // - Top 8 games should reach round 2
-                // - Top 4 games should reach round 3
-                // - Top 2 games should reach round 4
-                // If a game ranked #10 reaches round 2, that's an upset
-                const isUpset = () => {
-                    for (let round = 2; round <= totalRounds; round++) {
-                        // Calculate how many games should advance to this round based on perfect bracket
-                        const expectedSurvivors = Math.ceil(allGames.length / Math.pow(2, round - 1));
-                        // If this game advanced to this round but its rank (0-based) is >= expectedSurvivors, it's an upset
-                        if (rounds.includes(round) && game.originalIndex >= expectedSurvivors) {
-                            return true;
-                        }
-                    }
-                    return false;
-                };
-                
+
                 let cellsHtml = '';
                 for (let i = 1; i <= totalRounds; i++) {
                     const advanced = rounds.includes(i);
-                    cellsHtml += `<td class="crosswalk-checkbox ${advanced ? 'advanced' : ''}">
-                        ${advanced ? '✅' : '—'}
-                    </td>`;
+                    const isUpsetCell = upsetMap.has(`${game.id}|${i}`);
+                    const cellIcon = advanced ? (isUpsetCell ? '⭐' : '✅') : '—';
+                    cellsHtml += `<td class="crosswalk-checkbox ${advanced ? 'advanced' : ''}">${cellIcon}</td>`;
                 }
-                
+
                 return `
                     <tr>
                         <td>
@@ -976,7 +969,7 @@
                                 <div>
                                     <div class="crosswalk-game-name">
                                         ${game.name}
-                                        ${isUpset() ? '<span class="upset-star" title="Upset! Performed better than expected based on original ranking">⭐</span>' : ''}
+                                        ${Array.from(upsetMap.keys()).some(k => k.startsWith(game.id + '|')) ? '<span class="upset-star" title="Upset! Performed better than expected based on original ranking">⭐</span>' : ''}
                                     </div>
                                     <div class="crosswalk-game-rating">Rating: ${game.avgRating.toFixed(2)} | Rank: #${game.originalIndex + 1}</div>
                                 </div>
@@ -1083,6 +1076,12 @@
             auditBtn.onclick = () => { crosswalkView.style.display = 'none'; auditLog2.style.display = 'block'; renderAuditSubtabs(); };
             tabsRoot.appendChild(auditBtn);
 
+            const winnersBtn = document.createElement('button');
+            winnersBtn.className = 'btn';
+            winnersBtn.textContent = 'Winners Only';
+            winnersBtn.onclick = () => { crosswalkView.style.display = 'none'; auditLog2.style.display = 'none'; renderWinnersOnly(); };
+            tabsRoot.appendChild(winnersBtn);
+
             // default to show crosswalk
             crosswalkView.style.display = 'block';
             auditLog2.style.display = 'none';
@@ -1117,6 +1116,37 @@
             });
             // default render all
             updateAuditLog(null);
+        }
+
+        function renderWinnersOnly() {
+            let w = document.getElementById('winnersView');
+            if (!w) {
+                w = document.createElement('div');
+                w.id = 'winnersView';
+                w.className = 'crosswalk-view';
+                w.style.display = 'block';
+                w.innerHTML = '<h2>Winners Only</h2><div id="winnersContent"></div>';
+                document.querySelector('.container').insertBefore(w, crosswalkView);
+            }
+            // populate with currentRound
+            const content = document.getElementById('winnersContent');
+            if (!content) return;
+            if (!currentRound || currentRound.length === 0) {
+                content.innerHTML = '<div class="empty-state"><p>No winners yet.</p></div>';
+                return;
+            }
+            const listHtml = `
+                <div style="display:flex;flex-wrap:wrap;gap:12px;justify-content:center">
+                    ${currentRound.map(g => `
+                        <div style="width:160px;background:white;border-radius:8px;padding:8px;text-align:center;box-shadow:0 6px 18px rgba(0,0,0,0.08)">
+                            <div style="height:80px;overflow:hidden;border-radius:6px;margin-bottom:8px"><img src="${g.thumbnail || ''}" style="width:100%;height:100%;object-fit:cover" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'"></div>
+                            <div style="font-weight:700">${g.name}</div>
+                            <div style="font-size:12px;color:#666">Rank: #${g.originalIndex+1}</div>
+                        </div>
+                    `).join('')}
+                </div>
+            `;
+            content.innerHTML = `<div style="margin-bottom:8px;font-weight:700;text-align:center">${currentRound.length} winner${currentRound.length !== 1 ? 's' : ''} in current round</div>` + listHtml;
         }
 
         // Initialize
