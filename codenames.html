@@ -319,6 +319,18 @@
             border-color: #3498db;
         }
 
+        /* Small cheat toggle and turn banner */
+        .small-toggle { display:flex; align-items:center; gap:0.5rem; font-weight:600; }
+        .small-toggle input[type=checkbox] { width:18px; height:18px; transform:scale(1); }
+        .turn-banner { width:100%; border-radius:8px; padding:0.6rem 0.8rem; text-align:center; font-weight:800; color:white; margin-bottom:0.8rem; display:none; }
+        .turn-banner.red { background: linear-gradient(90deg,#e74c3c,#c0392b); }
+        .turn-banner.blue { background: linear-gradient(90deg,#3498db,#1f78d1); }
+
+        /* Feedback toast */
+        #feedbackRoot { position: fixed; left: 50%; transform: translateX(-50%); top: 14%; z-index: 4000; pointer-events:none; }
+        .feedback { display:inline-block; padding:10px 14px; border-radius:8px; color:white; font-weight:700; box-shadow:0 8px 24px rgba(0,0,0,0.18); opacity:0; transform:translateY(-8px); transition:all 260ms ease; }
+        .feedback.show { opacity:1; transform:translateY(0); }
+
         @media (max-width: 600px) {
             h1 {
                 font-size: 1.5rem;
@@ -391,6 +403,8 @@
             
             <div id="gameOverMessage" style="display: none;"></div>
 
+            <div id="currentTurnBanner" class="turn-banner red">🔴 Red Team — Turn</div>
+
             <div class="game-info">
                 <div class="team-info">
                     <div class="team-score team-red" id="redScore">
@@ -401,6 +415,12 @@
                         <div>🔵 Blue Team</div>
                         <div id="blueCount">8</div>
                     </div>
+                </div>
+                <div style="min-width:160px; display:flex;align-items:center;justify-content:flex-end;gap:0.5rem">
+                    <label class="small-toggle" title="Show/hide spymaster key">
+                        <input id="cheatToggle" type="checkbox" onchange="toggleSpymasterView(this.checked)">
+                        <span style="font-size:0.9rem;color:#2c3e50">Show Key</span>
+                    </label>
                 </div>
             </div>
 
@@ -418,11 +438,12 @@
             </div>
 
             <div class="controls">
-                <button class="btn btn-secondary" onclick="toggleSpymasterView()">Toggle Key</button>
                 <button class="btn btn-secondary" onclick="endTurn()">End Turn</button>
                 <button class="btn btn-secondary" onclick="newGame()">New Game</button>
                 <button class="btn btn-secondary" onclick="backToSetup()">Setup</button>
             </div>
+
+            <div id="feedbackRoot"></div>
         </div>
     </div>
 
@@ -436,6 +457,9 @@
         let gameMode = 'spymaster';
         let gameOver = false;
         let selectedGamesForConfirm = [];
+        // Turn management and feedback
+        let teamTurnCounts = { red: 1, blue: 1 };
+        let turnLocked = false; // prevents rapid double actions while feedback animates
 
         // Mode selection
         document.querySelectorAll('.mode-btn').forEach(btn => {
@@ -533,6 +557,22 @@
             }
         }
 
+        function setCurrentTeam(team) {
+            currentTeam = team;
+            teamTurnCounts[team] = teamTurnCounts[team] || 1;
+            updateScores();
+            updateTurnBanner();
+        }
+
+        function updateTurnBanner() {
+            const banner = document.getElementById('currentTurnBanner');
+            if (!banner) return;
+            banner.style.display = 'block';
+            banner.classList.remove('red','blue');
+            banner.classList.add(currentTeam === 'red' ? 'red' : 'blue');
+            banner.textContent = `${currentTeam === 'red' ? '🔴 Red' : '🔵 Blue'} Team — Turn ${teamTurnCounts[currentTeam]}`;
+        }
+
         function showConfirmScreen() {
             // Select 25 random games for confirmation
             const shuffled = [...collection].sort(() => Math.random() - 0.5);
@@ -615,33 +655,44 @@
 
         function revealCard(index) {
             if (gameOver || gameCards[index].revealed) return;
-
+            if (turnLocked) return;
+            turnLocked = true;
             const card = gameCards[index];
             card.revealed = true;
 
-            if (card.role === 'red') {
-                redRemaining--;
-            } else if (card.role === 'blue') {
-                blueRemaining--;
+            // correct guess
+            if (card.role === currentTeam) {
+                if (currentTeam === 'red') redRemaining--; else blueRemaining--;
+                renderGame();
+                updateScores();
+                showFeedback('Correct! Keep guessing', 'green');
+                // allow next click after short delay
+                setTimeout(()=> { turnLocked = false; }, 450);
             } else if (card.role === 'assassin') {
+                // assassin: immediate loss
+                renderGame();
                 gameOver = true;
                 const winner = currentTeam === 'red' ? 'Blue' : 'Red';
-                showGameOver(`${winner} Team Wins! Assassin revealed! 💀`);
+                showFeedback('Assassin! Game Over', 'black');
+                setTimeout(()=> showGameOver(`${winner} Team Wins! Assassin revealed! 💀`), 600);
+            } else {
+                // wrong team or neutral
+                if (card.role === 'red') redRemaining--; else if (card.role === 'blue') blueRemaining--;
+                renderGame();
+                updateScores();
+                showFeedback('Incorrect — turn passes', 'crimson');
+                // after a short delay, switch teams
+                setTimeout(()=>{
+                    teamTurnCounts[currentTeam] = (teamTurnCounts[currentTeam] || 1) + 1;
+                    endTurn();
+                    turnLocked = false;
+                }, 700);
             }
 
-            updateScores();
-            renderGame();
-
             // Check for win
-            if (redRemaining === 0 && !gameOver) {
-                gameOver = true;
-                showGameOver('🔴 Red Team Wins! 🎉');
-            } else if (blueRemaining === 0 && !gameOver) {
-                gameOver = true;
-                showGameOver('🔵 Blue Team Wins! 🎉');
-            } else if (!gameOver && card.role !== currentTeam) {
-                // Wrong guess, switch teams
-                endTurn();
+            if (!gameOver) {
+                if (redRemaining === 0) { gameOver = true; showGameOver('🔴 Red Team Wins! 🎉'); }
+                else if (blueRemaining === 0) { gameOver = true; showGameOver('🔵 Blue Team Wins! 🎉'); }
             }
         }
 
@@ -654,12 +705,15 @@
             
             redScore.classList.toggle('active', currentTeam === 'red');
             blueScore.classList.toggle('active', currentTeam === 'blue');
+            updateTurnBanner();
         }
 
         function endTurn() {
             if (gameOver) return;
             currentTeam = currentTeam === 'red' ? 'blue' : 'red';
+            teamTurnCounts[currentTeam] = (teamTurnCounts[currentTeam] || 1);
             updateScores();
+            showFeedback(`${currentTeam === 'red' ? '🔴 Red' : '🔵 Blue'} Team's turn`, currentTeam === 'red' ? '#c0392b' : '#1f78d1');
         }
 
         function showGameOver(message) {
@@ -674,7 +728,30 @@
 
         function toggleSpymasterView() {
             const view = document.getElementById('spymasterView');
-            view.style.display = view.style.display === 'none' ? 'block' : 'none';
+            // support optional param: if called with boolean, set accordingly
+            const arg = arguments[0];
+            if (typeof arg === 'boolean') {
+                view.style.display = arg ? 'block' : 'none';
+                // sync checkbox
+                const cb = document.getElementById('cheatToggle'); if (cb) cb.checked = arg;
+            } else {
+                view.style.display = view.style.display === 'none' ? 'block' : 'none';
+                const cb = document.getElementById('cheatToggle'); if (cb) cb.checked = view.style.display !== 'none';
+            }
+        }
+
+        function showFeedback(text, color) {
+            try {
+                const root = document.getElementById('feedbackRoot');
+                if (!root) return;
+                const el = document.createElement('div');
+                el.className = 'feedback';
+                el.style.background = color || 'rgba(0,0,0,0.8)';
+                el.textContent = text;
+                root.appendChild(el);
+                requestAnimationFrame(()=> el.classList.add('show'));
+                setTimeout(()=> { el.classList.remove('show'); setTimeout(()=> el.remove(), 260); }, 900);
+            } catch(e){ /* ignore */ }
         }
 
         function newGame() {
