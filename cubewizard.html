@@ -42,6 +42,7 @@
         <div style="margin-top:8px" class="muted">Tip: scramble applies random rotations; cheat will reverse the scramble and animate it.</div>
     </div>
 
+    <script src="https://unpkg.com/cubejs@1.3.0/lib/cube.min.js"></script>
     <script>
         // Full sticker model (54 stickers): U(0..8), R(9..17), F(18..26), D(27..35), L(36..44), B(45..53)
         const gridRoot = document.getElementById('grid');
@@ -121,14 +122,20 @@
         }
 
         function renderMovesConsole(){
-            movesConsole.innerHTML = moveHistory.map(m=> (m.type==='scramble'?'<b>S</b> ':'') + m.notation).join(' ');
+            movesConsole.innerHTML = moveHistory.map(m=> {
+                if(m.type==='scramble') return '<b>S</b> '+m.notation;
+                if(m.type==='solver') return '<b>SOL</b> '+m.notation;
+                if(m.type==='user') return m.notation;
+                return m.notation;
+            }).join(' ');
             movesConsole.scrollTop = movesConsole.scrollHeight;
         }
 
         function updateStats(){
             const moveCountEl = document.getElementById('moveCount');
-            const userMoves = moveHistory.filter(m=>m.type==='user').length;
-            if(moveCountEl) moveCountEl.textContent = String(userMoves);
+            // Count both user and solver moves as true moves
+            const realMoves = moveHistory.filter(m=> m.type === 'user' || m.type === 'solver').length;
+            if(moveCountEl) moveCountEl.textContent = String(realMoves);
             const scrambleStatus = document.getElementById('scrambleStatus');
             if(scrambleStatus) scrambleStatus.textContent = scrambleDone? 'done' : 'in progress';
         }
@@ -306,20 +313,46 @@
 
         async function cheatSolve(){
             if(animating) return;
-            // find scramble moves only
-            const scrambleMoves = moveHistory.filter(m=>m.type==='scramble').map(m=>m.notation);
-            if(scrambleMoves.length===0) return;
             animating = true;
             stopTimer();
-            const rev = scrambleMoves.slice().reverse();
-            for(const m of rev){
-                const inv = inverseOf(m);
-                await new Promise(r=>setTimeout(r,180));
-                // record solver moves in console
-                applyMove(inv, true, 'solver');
+
+            // build facelet string from current `state` array: map 0..5 -> U,R,F,D,L,B
+            const letters = ['U','R','F','D','L','B'];
+            const facelets = state.map(s => letters[s] || 'U').join('');
+
+            let solution = null;
+            try{
+                // try several common global names for the solver library
+                if(typeof Cube !== 'undefined' && typeof Cube.solve === 'function'){
+                    solution = Cube.solve(facelets);
+                } else if(typeof cubejs !== 'undefined' && typeof cubejs.solve === 'function'){
+                    solution = cubejs.solve(facelets);
+                } else if(typeof cube !== 'undefined' && typeof cube.solve === 'function'){
+                    solution = cube.solve(facelets);
+                }
+            }catch(e){ console.warn('solver invocation failed', e); }
+
+            if(solution && typeof solution === 'string' && solution.trim()){
+                // solution may be like "R U R' U' ..."
+                const tokens = solution.match(/([URFDLB][2']?)/g) || [];
+                for(const tok of tokens){
+                    await new Promise(r=>setTimeout(r,180));
+                    applyMove(tok, true, 'solver');
+                }
+            } else {
+                // fallback: reverse the recorded scramble (legacy behavior)
+                const scrambleMoves = moveHistory.filter(m=>m.type==='scramble').map(m=>m.notation);
+                if(scrambleMoves.length>0){
+                    const rev = scrambleMoves.slice().reverse();
+                    for(const m of rev){
+                        const inv = inverseOf(m);
+                        await new Promise(r=>setTimeout(r,180));
+                        applyMove(inv, true, 'solver');
+                    }
+                }
             }
+
             animating = false;
-            // solved: reset scramble flag and update stats
             scrambleDone = false;
             updateStats();
         }
