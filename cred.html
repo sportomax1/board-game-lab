@@ -1,0 +1,744 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>BGG Collection Showcase</title>
+    <style>
+        body, html {
+            margin: 0;
+            padding: 0;
+            width: 100%;
+            height: 100%;
+            overflow: hidden;
+            background-color: #000;
+            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+            color: #fff;
+        }
+
+        #canvas {
+            display: block;
+            width: 100%;
+            height: 100%;
+        }
+
+        /* UI Overlay */
+        #ui-layer {
+            position: absolute;
+            top: 0;
+            left: 0;
+            width: 100%;
+            height: 100%;
+            pointer-events: none; /* Let touches pass through to canvas */
+            display: flex;
+            flex-direction: column;
+            justify-content: space-between;
+            padding: 20px;
+            box-sizing: border-box;
+            background: linear-gradient(to bottom, rgba(0,0,0,0.8) 0%, rgba(0,0,0,0) 20%, rgba(0,0,0,0) 80%, rgba(0,0,0,0.8) 100%);
+            transition: opacity 0.5s ease;
+        }
+
+        .header {
+            text-align: center;
+            pointer-events: auto;
+        }
+
+        h1 {
+            font-size: 1.2rem;
+            margin: 0;
+            text-shadow: 0 2px 4px rgba(0,0,0,0.8);
+            opacity: 0.9;
+        }
+
+        .controls {
+            display: flex;
+            gap: 10px;
+            justify-content: center;
+            margin-top: 10px;
+            flex-wrap: wrap;
+        }
+
+        button {
+            background: rgba(255, 255, 255, 0.2);
+            border: 1px solid rgba(255, 255, 255, 0.4);
+            color: white;
+            padding: 8px 16px;
+            border-radius: 20px;
+            font-size: 0.9rem;
+            cursor: pointer;
+            backdrop-filter: blur(5px);
+            transition: all 0.2s;
+            pointer-events: auto;
+        }
+
+        button.active {
+            background: #42b72a;
+            border-color: #42b72a;
+            font-weight: bold;
+        }
+
+        button:active {
+            transform: scale(0.95);
+        }
+
+        /* Settings Modal */
+        #settings-modal {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: #1c1e21;
+            padding: 25px;
+            border-radius: 12px;
+            width: 90%;
+            max-width: 400px;
+            box-shadow: 0 10px 40px rgba(0,0,0,0.5);
+            display: none;
+            pointer-events: auto;
+            z-index: 100;
+        }
+
+        #settings-modal.visible {
+            display: block;
+        }
+
+        .form-group {
+            margin-bottom: 15px;
+        }
+
+        label {
+            display: block;
+            margin-bottom: 5px;
+            color: #ddd;
+            font-size: 0.9rem;
+        }
+
+        input[type="text"] {
+            width: 100%;
+            padding: 10px;
+            border-radius: 6px;
+            border: 1px solid #444;
+            background: #2a2c30;
+            color: white;
+            box-sizing: border-box;
+        }
+
+        .checkbox-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 10px;
+        }
+
+        .checkbox-item {
+            display: flex;
+            align-items: center;
+            gap: 8px;
+            font-size: 0.9rem;
+        }
+
+        #loading-indicator {
+            position: absolute;
+            top: 50%;
+            left: 50%;
+            transform: translate(-50%, -50%);
+            background: rgba(0,0,0,0.8);
+            padding: 20px 40px;
+            border-radius: 8px;
+            text-align: center;
+            pointer-events: none;
+            display: none;
+        }
+
+        .spinner {
+            border: 4px solid rgba(255,255,255,0.1);
+            width: 36px;
+            height: 36px;
+            border-radius: 50%;
+            border-left-color: #42b72a;
+            animation: spin 1s linear infinite;
+            margin: 0 auto 10px;
+        }
+
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+
+        /* Hide UI hint */
+        #hide-ui-btn {
+            position: absolute;
+            bottom: 20px;
+            right: 20px;
+            opacity: 0.5;
+            background: transparent;
+            border: none;
+            font-size: 0.8rem;
+        }
+
+        #stats-bar {
+            position: absolute;
+            bottom: 20px;
+            left: 20px;
+            font-size: 0.8rem;
+            opacity: 0.7;
+            pointer-events: none;
+        }
+    </style>
+</head>
+<body>
+
+    <canvas id="canvas"></canvas>
+
+    <div id="ui-layer">
+        <div class="header">
+            <h1>BGG Credits</h1>
+            <div class="controls">
+                <button onclick="setMode('horizontal')" id="btn-horizontal" class="active">Slide</button>
+                <button onclick="setMode('vertical')" id="btn-vertical">Waterfall</button>
+                <button onclick="setMode('growing')" id="btn-growing">Focus</button>
+                <button onclick="setMode('fireworks')" id="btn-fireworks">Fireworks</button>
+                <button onclick="toggleSettings()">⚙️</button>
+            </div>
+        </div>
+        <div id="stats-bar">Loading...</div>
+        <button id="hide-ui-btn" onclick="toggleUI()">Hide UI</button>
+    </div>
+
+    <div id="loading-indicator">
+        <div class="spinner"></div>
+        <div id="loading-text">Fetching Collection...</div>
+    </div>
+
+    <div id="settings-modal">
+        <h2 style="margin-top:0">Settings</h2>
+        <div class="form-group">
+            <label>BGG Username</label>
+            <input type="text" id="username-input" value="sportomax">
+        </div>
+        <div class="form-group">
+            <label>Collection Filters</label>
+            <div class="checkbox-grid">
+                <div class="checkbox-item"><input type="checkbox" id="filter-own" checked> Own</div>
+                <div class="checkbox-item"><input type="checkbox" id="filter-prevowned"> Prev Owned</div>
+                <div class="checkbox-item"><input type="checkbox" id="filter-wanttoplay"> Want to Play</div>
+                <div class="checkbox-item"><input type="checkbox" id="filter-wanttobuy"> Want to Buy</div>
+                <div class="checkbox-item"><input type="checkbox" id="filter-wishlist"> Wishlist</div>
+                <div class="checkbox-item"><input type="checkbox" id="filter-preordered"> Preordered</div>
+            </div>
+        </div>
+        <div style="margin-top: 20px; display: flex; gap: 10px;">
+            <button onclick="fetchData()" style="flex: 1; background: #1877f2; border-color: #1877f2;">Load Games</button>
+            <button onclick="toggleSettings()" style="flex: 1; background: #444; border-color: #555;">Close</button>
+        </div>
+    </div>
+
+    <script>
+        // --- Configuration & State ---
+        const CORS_PROXY = 'https://corsproxy.io/?url='; // Public CORS proxy
+        const BGG_API_BASE = 'https://boardgamegeek.com/xmlapi2';
+        
+        let games = []; // Loaded game objects { id, title, image, thumbnail }
+        let images = []; // Preloaded Image objects
+        let isUIVisible = true;
+        
+        // Animation State
+        let mode = 'horizontal';
+        let animationId;
+        let lastTime = 0;
+        let speedMultiplier = 1.0;
+        let baseSpeed = 2.0;
+        
+        // Entities for animations
+        let entities = []; 
+        
+        // Canvas Setup
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        
+        // --- Input Handling (Touch/Mouse) ---
+        let isDragging = false;
+        let startX = 0;
+        let startY = 0;
+        
+        function resizeCanvas() {
+            canvas.width = window.innerWidth;
+            canvas.height = window.innerHeight;
+            // Reset entities on resize if needed, or just let them flow
+        }
+        window.addEventListener('resize', resizeCanvas);
+        resizeCanvas();
+
+        // --- BGG API Logic (Adapted from uploaded file) ---
+        
+        function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+        
+        async function fetchBGG(endpoint, params = {}, retries = 5) {
+            // Construct URL
+            const queryParams = new URLSearchParams(params).toString();
+            // Use proxy to bypass CORS
+            const targetUrl = encodeURIComponent(`${BGG_API_BASE}/${endpoint}?${queryParams}`);
+            const fullUrl = `${CORS_PROXY}${targetUrl}`;
+
+            try {
+                const response = await fetch(fullUrl);
+                
+                if (response.status === 202 && retries > 0) {
+                    document.getElementById('loading-text').textContent = `BGG Processing... (${retries})`;
+                    await wait(3000);
+                    return fetchBGG(endpoint, params, retries - 1);
+                }
+                
+                if (!response.ok) throw new Error(`API Error: ${response.status}`);
+                return await response.text();
+            } catch (e) {
+                console.error(e);
+                throw e;
+            }
+        }
+
+        function parseXML(xmlText) {
+            return new DOMParser().parseFromString(xmlText, 'text/xml');
+        }
+
+        async function fetchData() {
+            const username = document.getElementById('username-input').value.trim();
+            const modal = document.getElementById('settings-modal');
+            const loader = document.getElementById('loading-indicator');
+            
+            modal.classList.remove('visible');
+            loader.style.display = 'block';
+            
+            // Build params
+            const params = { username: username };
+            if (document.getElementById('filter-own').checked) params.own = 1;
+            if (document.getElementById('filter-prevowned').checked) params.prevowned = 1;
+            if (document.getElementById('filter-wanttoplay').checked) params.wanttoplay = 1;
+            if (document.getElementById('filter-wanttobuy').checked) params.wanttobuy = 1;
+            if (document.getElementById('filter-wishlist').checked) params.wishlist = 1;
+            if (document.getElementById('filter-preordered').checked) params.preordered = 1;
+            params.excludesubtype = 'boardgameexpansion'; // Focus on base games for visual clarity
+
+            try {
+                const xml = await fetchBGG('collection', params);
+                const doc = parseXML(xml);
+                const items = Array.from(doc.querySelectorAll('item'));
+                
+                if (items.length === 0) {
+                    alert('No games found for this user/filter combination.');
+                    loader.style.display = 'none';
+                    return;
+                }
+
+                // Process items
+                games = items.map(item => ({
+                    id: item.getAttribute('objectid'),
+                    title: item.querySelector('name')?.textContent || 'Unknown',
+                    thumbnail: item.querySelector('thumbnail')?.textContent || '',
+                    image: item.querySelector('image')?.textContent || ''
+                })).filter(g => g.image); // Only keep games with images
+
+                document.getElementById('stats-bar').textContent = `${games.length} games loaded for ${username}`;
+                
+                // Shuffle
+                for (let i = games.length - 1; i > 0; i--) {
+                    const j = Math.floor(Math.random() * (i + 1));
+                    [games[i], games[j]] = [games[j], games[i]];
+                }
+
+                loader.style.display = 'none';
+                
+                // Reset Animation
+                entities = [];
+                speedMultiplier = 1.0;
+                
+                // Start with current mode
+                setMode(mode);
+
+            } catch (err) {
+                alert('Error fetching data: ' + err.message);
+                loader.style.display = 'none';
+                modal.classList.add('visible');
+            }
+        }
+
+        // --- Animation Logic ---
+
+        function setMode(newMode) {
+            mode = newMode;
+            
+            // UI Update
+            document.querySelectorAll('.controls button').forEach(b => b.classList.remove('active'));
+            document.getElementById(`btn-${newMode}`).classList.add('active');
+            
+            entities = [];
+            speedMultiplier = 1.0;
+            
+            if (mode === 'growing') {
+                spawnGrowing();
+            }
+        }
+
+        function spawnGrowing() {
+            if (games.length === 0) return;
+            const game = games[Math.floor(Math.random() * games.length)];
+            const img = new Image();
+            img.crossOrigin = "Anonymous";
+            img.src = game.image;
+            
+            entities = [{
+                img: img,
+                game: game,
+                scale: 0.1,
+                opacity: 0,
+                phase: 'in' // in, hold, out
+            }];
+        }
+
+        function update(dt) {
+            if (games.length === 0) return;
+
+            // --- MODE: HORIZONTAL (Slide Across) ---
+            if (mode === 'horizontal') {
+                // Spawn logic
+                const spacing = 220; // width + gap
+                if (entities.length === 0 || entities[entities.length-1].x < canvas.width - spacing) {
+                    const game = games[Math.floor(Math.random() * games.length)];
+                    const img = new Image();
+                    img.crossOrigin = "Anonymous";
+                    img.src = game.image; // Use high res
+                    
+                    // Fixed height, calculate width to maintain aspect
+                    const h = canvas.height * 0.4; 
+                    const w = h * 0.75; // Approx aspect ratio guess until loaded
+                    
+                    entities.push({
+                        img: img,
+                        x: canvas.width,
+                        y: (canvas.height - h) / 2, // Center vertically
+                        w: w,
+                        h: h,
+                        loaded: false
+                    });
+                }
+
+                // Move logic
+                const speed = baseSpeed * 100 * dt * speedMultiplier;
+                
+                for (let i = entities.length - 1; i >= 0; i--) {
+                    const e = entities[i];
+                    e.x -= speed;
+                    
+                    // Aspect ratio correction once loaded
+                    if (!e.loaded && e.img.complete && e.img.naturalWidth > 0) {
+                        e.w = e.h * (e.img.naturalWidth / e.img.naturalHeight);
+                        e.loaded = true;
+                    }
+
+                    // Remove if off screen
+                    if ((speed > 0 && e.x + e.w < -100) || (speed < 0 && e.x > canvas.width + 100)) {
+                        entities.splice(i, 1);
+                    }
+                }
+            }
+
+            // --- MODE: VERTICAL (Waterfall) ---
+            else if (mode === 'vertical') {
+                const cols = Math.floor(canvas.width / 180);
+                const colWidth = canvas.width / cols;
+                
+                // Initialize columns if empty
+                if (entities.length === 0) {
+                   for(let c=0; c<cols; c++) {
+                       entities.push({ col: c, items: [] });
+                   }
+                }
+
+                const speed = baseSpeed * 80 * dt * speedMultiplier;
+
+                entities.forEach(column => {
+                    const items = column.items;
+                    
+                    // Spawn at top
+                    if (items.length === 0 || items[items.length-1].y > -10) {
+                         const game = games[Math.floor(Math.random() * games.length)];
+                         const img = new Image();
+                         img.crossOrigin = "Anonymous";
+                         img.src = game.image;
+                         
+                         const w = colWidth - 10;
+                         const h = w * 1.4;
+                         
+                         items.push({
+                             img: img,
+                             x: column.col * colWidth + 5,
+                             y: items.length > 0 ? items[items.length-1].y - h - 10 : -h,
+                             w: w,
+                             h: h
+                         });
+                    }
+                    
+                    // Move
+                    for(let i=items.length-1; i>=0; i--) {
+                        items[i].y += speed;
+                        if (items[i].y > canvas.height + 100) items.splice(i, 1);
+                    }
+                });
+            }
+
+            // --- MODE: GROWING (Focus) ---
+            else if (mode === 'growing') {
+                if (entities.length === 0) spawnGrowing();
+                const e = entities[0];
+                const growSpeed = 0.5 * dt * Math.abs(speedMultiplier); // Speed affects growth rate
+
+                if (e.phase === 'in') {
+                    e.opacity += 2 * dt;
+                    e.scale += growSpeed;
+                    if (e.opacity >= 1) e.opacity = 1;
+                    if (e.scale > 0.8) e.phase = 'out'; // Start fading out after mostly grown
+                } else if (e.phase === 'out') {
+                    e.scale += growSpeed * 2; // Grow faster at end
+                    e.opacity -= 1.0 * dt;
+                    if (e.opacity <= 0) {
+                        spawnGrowing(); // Reset
+                    }
+                }
+            }
+
+            // --- MODE: FIREWORKS ---
+            else if (mode === 'fireworks') {
+                // Spawn random rockets
+                if (Math.random() < 0.05 * Math.abs(speedMultiplier)) { // Spawn rate
+                    const game = games[Math.floor(Math.random() * games.length)];
+                    const img = new Image();
+                    img.crossOrigin = "Anonymous";
+                    img.src = game.thumbnail; // Use thumbnail for performance
+                    
+                    entities.push({
+                        img: img,
+                        x: Math.random() * canvas.width,
+                        y: canvas.height + 50,
+                        vx: (Math.random() - 0.5) * 400 * (Math.random() + 0.5), // Spread
+                        vy: -(Math.random() * 500 + 600), // Launch speed
+                        rot: 0,
+                        vRot: (Math.random() - 0.5) * 5,
+                        gravity: 800,
+                        w: 80,
+                        h: 80
+                    });
+                }
+
+                for (let i = entities.length - 1; i >= 0; i--) {
+                    const e = entities[i];
+                    e.x += e.vx * dt;
+                    e.y += e.vy * dt;
+                    e.vy += e.gravity * dt; // Gravity
+                    e.rot += e.vRot * dt;
+
+                    // Bounce off walls
+                    if (e.x < 0 || e.x > canvas.width) e.vx *= -0.8;
+
+                    if (e.y > canvas.height + 100) entities.splice(i, 1);
+                }
+            }
+            
+            // Friction for speed multiplier returning to 1.0
+            if (!isDragging) {
+                if (speedMultiplier > 1.0) speedMultiplier -= 1.0 * dt;
+                else if (speedMultiplier < 1.0 && speedMultiplier > -1.0) speedMultiplier += 1.0 * dt;
+                else if (speedMultiplier < -1.0) speedMultiplier += 1.0 * dt;
+                
+                // Snap to 1.0 if close
+                if (Math.abs(speedMultiplier - 1.0) < 0.1) speedMultiplier = 1.0;
+            }
+        }
+
+        function draw() {
+            ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+            // Background text or effect?
+            // Optional: Draw faded game box as background? No, keep it clean black.
+            
+            if (mode === 'horizontal') {
+                entities.forEach(e => {
+                    if (e.img.complete) {
+                        ctx.drawImage(e.img, e.x, e.y, e.w, e.h);
+                    }
+                    // Reflection effect
+                    ctx.save();
+                    ctx.globalAlpha = 0.3;
+                    ctx.translate(e.x, e.y + e.h);
+                    ctx.scale(1, -1);
+                    if (e.img.complete) ctx.drawImage(e.img, 0, 0, e.w, e.h * 0.5); // Partial reflection
+                    ctx.restore();
+                });
+            }
+            else if (mode === 'vertical') {
+                entities.forEach(col => {
+                    col.items.forEach(e => {
+                         if (e.img.complete) {
+                            ctx.drawImage(e.img, e.x, e.y, e.w, e.h);
+                        }
+                    });
+                });
+            }
+            else if (mode === 'growing') {
+                if (entities.length > 0) {
+                    const e = entities[0];
+                    if (e.img.complete) {
+                        const aspect = e.img.naturalWidth / e.img.naturalHeight || 1;
+                        let h = canvas.height * e.scale;
+                        let w = h * aspect;
+                        
+                        // Ensure it covers screen eventually
+                        if (w < canvas.width * e.scale) {
+                            w = canvas.width * e.scale;
+                            h = w / aspect;
+                        }
+
+                        const x = (canvas.width - w) / 2;
+                        const y = (canvas.height - h) / 2;
+
+                        ctx.globalAlpha = e.opacity;
+                        ctx.drawImage(e.img, x, y, w, h);
+                        ctx.globalAlpha = 1.0;
+                        
+                        // Title text
+                        if (e.opacity > 0.5) {
+                            ctx.fillStyle = `rgba(255,255,255,${(e.opacity-0.5)*2})`;
+                            ctx.font = 'bold 30px sans-serif';
+                            ctx.textAlign = 'center';
+                            ctx.shadowColor = 'black';
+                            ctx.shadowBlur = 10;
+                            ctx.fillText(e.game.title, canvas.width/2, canvas.height - 50);
+                        }
+                    }
+                }
+            }
+            else if (mode === 'fireworks') {
+                entities.forEach(e => {
+                    if (e.img.complete) {
+                        ctx.save();
+                        ctx.translate(e.x, e.y);
+                        ctx.rotate(e.rot);
+                        ctx.drawImage(e.img, -e.w/2, -e.h/2, e.w, e.h);
+                        ctx.restore();
+                    }
+                });
+            }
+            
+            // Speed indicator if dragging
+            if (isDragging || Math.abs(speedMultiplier) > 1.2) {
+                ctx.fillStyle = 'rgba(255,255,255,0.5)';
+                ctx.font = '20px monospace';
+                ctx.textAlign = 'right';
+                ctx.fillText(`Speed: ${speedMultiplier.toFixed(1)}x`, canvas.width - 20, canvas.height - 20);
+            }
+        }
+
+        function loop(timestamp) {
+            const dt = (timestamp - lastTime) / 1000;
+            lastTime = timestamp;
+
+            // Cap dt to prevent huge jumps
+            if (dt < 0.1) {
+                update(dt);
+                draw();
+            }
+
+            animationId = requestAnimationFrame(loop);
+        }
+
+        // --- Interaction ---
+        
+        function handleStart(x, y) {
+            isDragging = true;
+            startX = x;
+            startY = y;
+        }
+
+        function handleMove(x, y) {
+            if (!isDragging) return;
+            
+            let delta = 0;
+            if (mode === 'horizontal') delta = startX - x; // Drag left to go normal, right to rewind?
+            // Actually, natural scrolling: Drag left moves content left (speed > 0). Drag right moves content right (speed < 0).
+            
+            // Let's refine natural feel:
+            // Horizontal: Drag Left -> content moves Left. (Speed positive).
+            // Vertical: Drag Up -> content moves Up. (Speed positive).
+            
+            if (mode === 'horizontal') {
+                const diff = (startX - x) / 100; // Normalize
+                speedMultiplier = 1.0 + diff * 2; 
+            } else if (mode === 'vertical') {
+                 // Fall down normally (positive speed). Dragging UP (startX > y) should speed up falling?
+                 // Usually vertical scroller: items fall down.
+                 // If I drag down (pulling them), they should go faster?
+                 const diff = (y - startY) / 100;
+                 speedMultiplier = 1.0 + diff * 2;
+            } else if (mode === 'fireworks') {
+                 // Drag up/down affects gravity or time scale?
+                 const diff = (startY - y) / 200;
+                 speedMultiplier = 1.0 + diff;
+            } else if (mode === 'growing') {
+                const diff = (startX - x) / 200;
+                speedMultiplier = 1.0 + Math.abs(diff); // Always positive time for growing
+            }
+        }
+
+        function handleEnd() {
+            isDragging = false;
+        }
+
+        // Touch Events
+        canvas.addEventListener('touchstart', e => handleStart(e.touches[0].clientX, e.touches[0].clientY), {passive: false});
+        canvas.addEventListener('touchmove', e => { e.preventDefault(); handleMove(e.touches[0].clientX, e.touches[0].clientY); }, {passive: false});
+        canvas.addEventListener('touchend', handleEnd);
+        
+        // Mouse Events
+        canvas.addEventListener('mousedown', e => handleStart(e.clientX, e.clientY));
+        window.addEventListener('mousemove', e => handleMove(e.clientX, e.clientY));
+        window.addEventListener('mouseup', handleEnd);
+
+        // --- UI Logic ---
+        function toggleSettings() {
+            const el = document.getElementById('settings-modal');
+            el.classList.toggle('visible');
+        }
+        
+        function toggleUI() {
+            const ui = document.getElementById('ui-layer');
+            if (isUIVisible) {
+                ui.style.opacity = '0';
+                ui.style.pointerEvents = 'none';
+                setTimeout(() => { 
+                    // Add a way to bring it back - tap anywhere?
+                    // We'll leave the header buttons clickable if opacity is 0? No, pointer-events none handles it.
+                    // Let's make a tap on canvas bring it back.
+                }, 500);
+            } else {
+                ui.style.opacity = '1';
+                ui.style.pointerEvents = 'none'; // Only wrapper
+                document.querySelector('.header').style.pointerEvents = 'auto';
+                document.getElementById('settings-modal').style.pointerEvents = 'auto';
+                document.getElementById('hide-ui-btn').style.pointerEvents = 'auto';
+            }
+            isUIVisible = !isUIVisible;
+        }
+        
+        // Tap to show UI if hidden
+        canvas.addEventListener('click', () => {
+            if (!isUIVisible && !isDragging) toggleUI();
+        });
+
+        // Initialize
+        animationId = requestAnimationFrame(loop);
+        
+        // Auto-load default
+        window.addEventListener('load', () => {
+            fetchData();
+        });
+
+    </script>
+</body>
+</html>
+
