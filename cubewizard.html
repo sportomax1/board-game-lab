@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Cube Wizard</title>
+    <style>
+        body{font-family:system-ui,-apple-system,Segoe UI,Roboto;background:#f2f7fb;display:flex;align-items:center;justify-content:center;height:100vh;margin:0}
+        .card{background:#fff;padding:18px;border-radius:12px;box-shadow:0 12px 36px rgba(16,40,60,0.08);width:420px}
+        .grid{display:grid;grid-template-columns:repeat(3,1fr);gap:6px;margin:12px 0}
+        .cell{width:120px;height:120px;background:#eee;border-radius:8px;overflow:hidden;display:flex;align-items:center;justify-content:center}
+        .controls{display:flex;gap:8px;flex-wrap:wrap}
+        button{padding:8px 10px;border-radius:8px;border:1px solid #dbe7f5;background:#2b8cff;color:white;cursor:pointer}
+        .small{padding:6px 8px;font-size:13px}
+        .muted{color:#667;font-size:13px}
+        .home{float:right}
+    </style>
+</head>
+<body>
+    <div class="card">
+        <div style="display:flex;align-items:center;justify-content:space-between">
+            <div>
+                <h2 style="margin:0">Cube Wizard</h2>
+                <div class="muted">Cube-style 6-face thumbnail puzzle — face rotations implemented; full mechanics coming soon</div>
+            </div>
+            <a class="home" href="home.html">Home</a>
+        </div>
+
+        <div style="margin-top:8px">Username: <input id="username" value="sportomax" style="padding:6px;border-radius:8px;border:1px solid #ddd"/></div>
+        <div class="grid" id="grid"></div>
+
+        <div class="controls">
+            <button id="rotateFace0" class="small">Rotate Up</button>
+            <button id="rotateFace1" class="small">Rotate Right</button>
+            <button id="rotateFace2" class="small">Rotate Front</button>
+            <button id="rotateFace3" class="small">Rotate Down</button>
+            <button id="rotateFace4" class="small">Rotate Left</button>
+            <button id="rotateFace5" class="small">Rotate Back</button>
+            <button id="scramble" class="small">Scramble</button>
+            <button id="cheat" class="small">Cheat (reverse)</button>
+        </div>
+        <div style="margin-top:8px" class="muted">Tip: scramble applies random rotations; cheat will reverse the scramble and animate it.</div>
+    </div>
+
+    <script>
+        // Full sticker model (54 stickers): U(0..8), R(9..17), F(18..26), D(27..35), L(36..44), B(45..53)
+        const gridRoot = document.getElementById('grid');
+        let faceImages = [];
+        let state = new Array(54);
+        let moveHistory = [];
+        let animating = false;
+
+        function initSolved(){
+            for(let f=0; f<6; f++){
+                for(let i=0;i<9;i++) state[f*9+i] = f; // sticker holds face index
+            }
+        }
+
+        function loadThumbnails(username='sportomax'){
+            // try to fetch 6 thumbnails; if fail use colored placeholders
+            fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`).then(r=>r.text()).then(text=>{
+                try{
+                    const xml = new DOMParser().parseFromString(text,'text/xml');
+                    const found = Array.from(xml.querySelectorAll('item')).map(it=> (it.querySelector('thumbnail')||{textContent:''}).textContent ).filter(x=>x).slice(0,6);
+                    if(found.length===6){ faceImages = found.map(u=>'https://images.weserv.nl/?url='+encodeURIComponent(u)); render(); return; }
+                }catch(e){}
+                buildPlaceholders();
+            }).catch(()=> buildPlaceholders());
+        }
+
+        function buildPlaceholders(){
+            const colors = ['#f6d6d3','#ffe7a8','#d4f7d6','#d6ecff','#f0d6ff','#e7e7e7'];
+            faceImages = colors.map(c => {
+                return `data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='120' height='120'%3E%3Crect width='120' height='120' fill='${encodeURIComponent(c)}'/%3E%3C/svg%3E`;
+            });
+            render();
+        }
+
+        function render(){
+            gridRoot.innerHTML = '';
+            const names = ['Up','Right','Front','Down','Left','Back'];
+            for(let f=0; f<6; f++){
+                const faceWrap = document.createElement('div'); faceWrap.style.display='inline-block'; faceWrap.style.margin='6px';
+                const title = document.createElement('div'); title.textContent = names[f]; title.style.fontSize='12px'; title.style.marginBottom='6px'; faceWrap.appendChild(title);
+                const g = document.createElement('div'); g.style.display='grid'; g.style.gridTemplateColumns='repeat(3,64px)'; g.style.gap='6px';
+                for(let i=0;i<9;i++){
+                    const idx = state[f*9+i];
+                    const el = document.createElement('div'); el.className='cell'; el.style.width='64px'; el.style.height='64px'; el.style.overflow='hidden'; el.style.borderRadius='6px'; el.style.background='#ddd';
+                    const img = document.createElement('img'); img.src = faceImages[idx] || '';
+                    img.style.width='100%'; img.style.height='100%'; img.style.objectFit='cover'; el.appendChild(img);
+                    g.appendChild(el);
+                }
+                faceWrap.appendChild(g);
+                gridRoot.appendChild(faceWrap);
+            }
+        }
+
+        function rotateFaceCW(arr, f){
+            const s = f*9;
+            const old = arr.slice();
+            arr[s+0]=old[s+6]; arr[s+1]=old[s+3]; arr[s+2]=old[s+0];
+            arr[s+3]=old[s+7]; arr[s+4]=old[s+4]; arr[s+5]=old[s+1];
+            arr[s+6]=old[s+8]; arr[s+7]=old[s+5]; arr[s+8]=old[s+2];
+        }
+
+        // Each move modifies the `state` array. We implement standard face turns (clockwise) with adjacent sticker cycles.
+        function move_U(){
+            const old = state.slice();
+            rotateFaceCW(state,0);
+            // cycle F(0..2), R(0..2), B(0..2), L(0..2)
+            for(let i=0;i<3;i++){
+                state[9+i] = old[18+i]; // R = oldF
+                state[45+i] = old[9+i]; // B = oldR
+                state[36+i] = old[45+i]; // L = oldB
+                state[18+i] = old[36+i]; // F = oldL
+            }
+        }
+
+        function move_R(){
+            const old = state.slice();
+            rotateFaceCW(state,1);
+            const uIdx = [2,5,8];
+            const fIdx = [20,23,26];
+            const dIdx = [29,32,35];
+            const bIdx = [51,48,45];
+            for(let i=0;i<3;i++){
+                state[fIdx[i]] = old[uIdx[i]]; // F col = U col
+                state[dIdx[i]] = old[fIdx[i]]; // D col = F col
+                state[bIdx[i]] = old[dIdx[i]]; // B col = D col
+                state[uIdx[i]] = old[bIdx[i]]; // U col = B col
+            }
+        }
+
+        function move_F(){
+            const old = state.slice();
+            rotateFaceCW(state,2);
+            const uIdx = [6,7,8];
+            const rIdx = [9,12,15];
+            const dIdx = [29,28,27];
+            const lIdx = [44,41,38];
+            for(let i=0;i<3;i++){
+                state[rIdx[i]] = old[uIdx[i]];
+                state[dIdx[i]] = old[rIdx[i]];
+                state[lIdx[i]] = old[dIdx[i]];
+                state[uIdx[i]] = old[lIdx[i]];
+            }
+        }
+
+        function move_D(){
+            const old = state.slice();
+            rotateFaceCW(state,3);
+            // cycle F(6..8), L(6..8), B(6..8), R(6..8)
+            for(let i=0;i<3;i++){
+                state[36+6+i] = old[18+6+i]; // L bottom = oldF bottom
+                state[45+6+i] = old[36+6+i]; // B bottom = oldL bottom
+                state[9+6+i] = old[45+6+i]; // R bottom = oldB bottom
+                state[18+6+i] = old[9+6+i]; // F bottom = oldR bottom
+            }
+        }
+
+        function move_L(){
+            const old = state.slice();
+            rotateFaceCW(state,4);
+            const uIdx = [0,3,6];
+            const fIdx = [18,21,24];
+            const dIdx = [27,30,33];
+            const bIdx = [53,50,47];
+            for(let i=0;i<3;i++){
+                state[fIdx[i]] = old[uIdx[i]];
+                state[dIdx[i]] = old[fIdx[i]];
+                state[bIdx[i]] = old[dIdx[i]];
+                state[uIdx[i]] = old[bIdx[i]];
+            }
+        }
+
+        function move_B(){
+            const old = state.slice();
+            rotateFaceCW(state,5);
+            const uIdx = [0,1,2];
+            const rIdx = [11,14,17];
+            const dIdx = [33,34,35];
+            const lIdx = [36,39,42];
+            for(let i=0;i<3;i++){
+                state[rIdx[i]] = old[uIdx[i]];
+                state[dIdx[i]] = old[rIdx[i]];
+                state[lIdx[i]] = old[dIdx[i]];
+                state[uIdx[i]] = old[lIdx[i]];
+            }
+        }
+
+        // generic apply move by notation like "R", "R'", "R2"
+        function applyMove(notation, record=true){
+            const times = notation.endsWith('2') ? 2 : 1;
+            const prime = notation.endsWith("'");
+            const face = notation[0];
+            for(let t=0;t< (times); t++){
+                if(prime){ // prime is inverse: 3 clockwise turns
+                    applyClockwise(face);
+                    applyClockwise(face);
+                    applyClockwise(face);
+                } else {
+                    applyClockwise(face);
+                }
+            }
+            if(record){ moveHistory.push(notation); }
+            render();
+        }
+
+        function applyClockwise(face){
+            switch(face){
+                case 'U': move_U(); break;
+                case 'R': move_R(); break;
+                case 'F': move_F(); break;
+                case 'D': move_D(); break;
+                case 'L': move_L(); break;
+                case 'B': move_B(); break;
+            }
+        }
+
+        function parseAndApplySequence(seq){
+            const tokens = seq.match(/([URFDLB][2']?)/g) || [];
+            tokens.forEach(tok => applyMove(tok));
+        }
+
+        function genScramble(len=20){
+            const faces = ['U','R','F','D','L','B'];
+            const mods = ['', "2", "'"];
+            let out=[]; let last='';
+            while(out.length < len){
+                const f = faces[Math.floor(Math.random()*faces.length)];
+                if(f===last) continue;
+                const m = mods[Math.floor(Math.random()*mods.length)];
+                out.push(f+m); last=f;
+            }
+            return out.join(' ');
+        }
+
+        async function doScramble(){
+            if(animating) return;
+            moveHistory = [];
+            const seq = genScramble(18).split(' ');
+            for(const s of seq){ applyMove(s,true); await new Promise(r=>setTimeout(r,90)); }
+        }
+
+        async function cheatSolve(){
+            if(animating || moveHistory.length===0) return;
+            animating = true;
+            const rev = moveHistory.slice().reverse();
+            for(const m of rev){
+                const inv = inverseOf(m);
+                await new Promise(r=>setTimeout(r,180));
+                applyMove(inv,false);
+            }
+            moveHistory = [];
+            animating = false;
+        }
+
+        function inverseOf(notation){
+            if(notation.endsWith("'")) return notation.replace("'","");
+            if(notation.endsWith('2')) return notation; // self-inverse
+            return notation+"'";
+        }
+
+        // UI bindings
+        document.getElementById('rotateFace0').addEventListener('click', ()=>applyMove('U'));
+        document.getElementById('rotateFace1').addEventListener('click', ()=>applyMove('R'));
+        document.getElementById('rotateFace2').addEventListener('click', ()=>applyMove('F'));
+        document.getElementById('rotateFace3').addEventListener('click', ()=>applyMove('D'));
+        document.getElementById('rotateFace4').addEventListener('click', ()=>applyMove('L'));
+        document.getElementById('rotateFace5').addEventListener('click', ()=>applyMove('B'));
+        document.getElementById('scramble').addEventListener('click', doScramble);
+        document.getElementById('cheat').addEventListener('click', cheatSolve);
+
+        // sequence input
+        const seqInput = document.createElement('input'); seqInput.placeholder='e.g. R U R\' U\''; seqInput.style.padding='6px'; seqInput.style.width='220px'; seqInput.style.borderRadius='6px'; seqInput.style.border='1px solid #ddd'; seqInput.style.marginLeft='8px';
+        const controls = document.querySelector('.controls'); controls.insertBefore(seqInput, controls.children[controls.children.length-2]);
+        const applyBtn = document.createElement('button'); applyBtn.className='small'; applyBtn.textContent='Apply Seq'; applyBtn.style.background='#6c63ff'; controls.insertBefore(applyBtn, controls.children[controls.children.length-2]);
+        applyBtn.addEventListener('click', ()=>{ parseAndApplySequence(seqInput.value); seqInput.value=''; });
+
+        // init
+        initSolved(); loadThumbnails('sportomax');
+    </script>
+</body>
+</html>
