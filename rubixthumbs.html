@@ -44,9 +44,8 @@
 
     <script>
         const gridRoot = document.getElementById('grid');
-        let thumbs = [];
-        let state = []; // 9-element array of image URLs
-        let solvedState = [];
+        let faceImages = []; // 6 face images
+        let cubeState = []; // 6 faces, each 9 entries (face index refers to image index)
         let moveHistory = [];
         let animating = false;
 
@@ -55,12 +54,13 @@
                 const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
                 const text = await res.text();
                 const xml = new DOMParser().parseFromString(text,'text/xml');
-                const found = Array.from(xml.querySelectorAll('item')).map(it=>({ thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent })).filter(x=>x.thumbnail).slice(0,9);
-                if(found.length < 9) throw new Error('need 9 thumbnails');
-                thumbs = found.map(f=>'https://images.weserv.nl/?url='+encodeURIComponent(f.thumbnail));
-                state = thumbs.slice(0,9);
-                solvedState = state.slice();
-                renderGrid();
+                const found = Array.from(xml.querySelectorAll('item')).map(it=>({ thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent })).filter(x=>x.thumbnail).slice(0,6);
+                if(found.length < 6) throw new Error('need 6 thumbnails for faces');
+                faceImages = found.map(f=>'https://images.weserv.nl/?url='+encodeURIComponent(f.thumbnail));
+                // initialize cube state: each face filled with its image index
+                cubeState = [];
+                for(let i=0;i<6;i++){ const face = new Array(9).fill(i); cubeState.push(face); }
+                renderCube();
             }catch(e){ console.warn('loadCollection failed', e); fillDummy(); }
         }
 
@@ -70,78 +70,67 @@
             solvedState = state.slice(); renderGrid();
         }
 
-        function renderGrid(){
+        function renderCube(){
             gridRoot.innerHTML = '';
-            for(let i=0;i<9;i++){
-                const el = document.createElement('div'); el.className='cell';
-                el.innerHTML = `<img src="${state[i]}" style="width:100%;height:100%;object-fit:cover"/>`;
-                gridRoot.appendChild(el);
+            for(let f=0;f<6;f++){
+                const faceWrap = document.createElement('div'); faceWrap.style.display='inline-block'; faceWrap.style.margin='6px';
+                const title = document.createElement('div'); title.textContent = ['Up','Right','Front','Down','Left','Back'][f]; title.style.fontSize='12px'; title.style.marginBottom='6px'; faceWrap.appendChild(title);
+                const g = document.createElement('div'); g.style.display='grid'; g.style.gridTemplateColumns='repeat(3,64px)'; g.style.gap='6px';
+                for(let i=0;i<9;i++){
+                    const idx = cubeState[f][i];
+                    const el = document.createElement('div'); el.className='cell'; el.style.width='64px'; el.style.height='64px'; el.style.overflow='hidden'; el.style.borderRadius='6px'; el.style.background='#ddd';
+                    const img = document.createElement('img'); img.src = faceImages[idx] || ('data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2264%22 height=%2264%22%3E%3Crect width=64 height=64 fill=%23ccc/%3E%3C/text%3E%3C/svg%3E'); img.style.width='100%'; img.style.height='100%'; img.style.objectFit='cover'; el.appendChild(img);
+                    g.appendChild(el);
+                }
+                faceWrap.appendChild(g);
+                gridRoot.appendChild(faceWrap);
             }
         }
 
-        function rotateRow(r){
+        // rotate a face clockwise (face index 0-5)
+        function rotateFace(f){
             if(animating) return;
-            const idx = r*3;
-            const a = state[idx], b=state[idx+1], c=state[idx+2];
-            state[idx]=c; state[idx+1]=a; state[idx+2]=b; // rotate right
-            moveHistory.push({type:'row',r:r}); renderGrid();
-        }
-        function rotateCol(c){
-            if(animating) return;
-            const a = state[c], b=state[c+3], d=state[c+6];
-            state[c]=d; state[c+3]=a; state[c+6]=b; // rotate down
-            moveHistory.push({type:'col',c:c}); renderGrid();
+            const arr = cubeState[f];
+            const newArr = arr.slice();
+            newArr[0]=arr[6]; newArr[1]=arr[3]; newArr[2]=arr[0];
+            newArr[3]=arr[7]; newArr[4]=arr[4]; newArr[5]=arr[1];
+            newArr[6]=arr[8]; newArr[7]=arr[5]; newArr[8]=arr[2];
+            cubeState[f] = newArr;
+            moveHistory.push({type:'face',f}); renderCube();
         }
 
         function scramble(){
             if(animating) return;
             moveHistory = [];
-            const moves = 12;
+            const moves = 18;
             for(let i=0;i<moves;i++){
-                if(Math.random()<0.5){ const r = Math.floor(Math.random()*3); rotateRow(r); }
-                else { const c = Math.floor(Math.random()*3); rotateCol(c); }
+                const f = Math.floor(Math.random()*6); rotateFace(f);
             }
         }
 
         async function cheatSolve(){
             if(animating || moveHistory.length===0) return;
             animating = true;
-            // reverse moves
             const rev = moveHistory.slice().reverse();
-            for(const m of rev){
-                await new Promise(res=>setTimeout(res, 450));
-                if(m.type==='row'){
-                    // inverse of rotateRow (right) is rotateRow left -> perform 2 rights to simulate left? easier: perform 2 rights twice? simpler: implement rotateRowLeft
-                    rotateRowLeft(m.r);
-                } else {
-                    rotateColUp(m.c);
+            for(const m of rev){ await new Promise(res=>setTimeout(res, 300)); if(m.type==='face'){ // inverse is three clockwise rotations
+                    rotateFace(m.f); rotateFace(m.f); rotateFace(m.f);
                 }
             }
             moveHistory = [];
             animating = false;
         }
 
-        function rotateRowLeft(r){
-            const idx=r*3;
-            const a=state[idx], b=state[idx+1], c=state[idx+2];
-            state[idx]=b; state[idx+1]=c; state[idx+2]=a; renderGrid();
-        }
-        function rotateColUp(c){
-            const a=state[c], b=state[c+3], d=state[c+6];
-            state[c]=b; state[c+3]=d; state[c+6]=a; renderGrid();
-        }
+        // bind face buttons
+        document.getElementById('rotateRow0').addEventListener('click', ()=>rotateFace(0));
+        document.getElementById('rotateRow1').addEventListener('click', ()=>rotateFace(2));
+        document.getElementById('rotateRow2').addEventListener('click', ()=>rotateFace(4));
+        document.getElementById('rotCol0').addEventListener('click', ()=>rotateFace(1));
+        document.getElementById('rotCol1').addEventListener('click', ()=>rotateFace(3));
+        document.getElementById('rotCol2').addEventListener('click', ()=>rotateFace(5));
 
-        document.getElementById('rotateRow0').addEventListener('click', ()=>rotateRow(0));
-        document.getElementById('rotateRow1').addEventListener('click', ()=>rotateRow(1));
-        document.getElementById('rotateRow2').addEventListener('click', ()=>rotateRow(2));
-        document.getElementById('rotCol0').addEventListener('click', ()=>rotateCol(0));
-        document.getElementById('rotCol1').addEventListener('click', ()=>rotateCol(1));
-        document.getElementById('rotCol2').addEventListener('click', ()=>rotateCol(2));
         document.getElementById('scramble').addEventListener('click', scramble);
         document.getElementById('cheat').addEventListener('click', cheatSolve);
-
         document.getElementById('username').addEventListener('change', ()=> loadCollection(document.getElementById('username').value.trim()));
-
         loadCollection('sportomax');
     </script>
 </body>
