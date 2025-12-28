@@ -1,0 +1,111 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>Box Jumper</title>
+    <style>
+        html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto}
+        body{background:linear-gradient(#0b3,#045);display:flex;align-items:center;justify-content:center}
+        .wrap{width:100%;max-width:720px;height:720px;background:#071726;border-radius:12px;position:relative;overflow:hidden}
+        canvas{width:100%;height:100%;display:block}
+        .hud{position:absolute;left:12px;top:12px;color:#fff}
+        .home{position:absolute;right:12px;top:12px;color:#fff}
+    </style>
+</head>
+<body>
+    <div class="wrap">
+        <canvas id="c" width="720" height="720"></canvas>
+        <div class="hud"><strong id="score">0</strong> <span id="lives">❤❤❤</span></div>
+        <a class="home" href="home.html">Home</a>
+    </div>
+
+    <script>
+        const canvas = document.getElementById('c'); const ctx = canvas.getContext('2d');
+        const rows = 5; // rows of traffic
+        const laneYs = [520, 440, 360, 280, 200];
+        const obstacles = [];
+        const thumbs = [];
+        let score = 0; let lives = 3;
+
+        const player = { x: 328, y: 640, w:64, h:64 };
+
+        async function loadCollection(username='sportomax'){
+            try{
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                const text = await res.text();
+                const xml = new DOMParser().parseFromString(text,'text/xml');
+                const found = Array.from(xml.querySelectorAll('item')).map(it=>({
+                    thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent
+                })).filter(x=>x.thumbnail).slice(0,80);
+                for(const f of found){ const img = new Image(); img.crossOrigin='anonymous'; img.src = 'https://images.weserv.nl/?url=' + encodeURIComponent(f.thumbnail); thumbs.push(img); }
+            }catch(e){ console.warn('loadCollection failed', e); }
+        }
+
+        function spawnRow(row){
+            const dir = Math.random()<0.5? 1 : -1;
+            const count = 3 + Math.floor(Math.random()*3);
+            for(let i=0;i<count;i++){
+                const thumb = thumbs.length? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
+                const w = 64 + Math.floor(Math.random()*40);
+                const speed = 1.5 + Math.random()*2.5;
+                const x = dir>0? - (i*220) - Math.random()*200 : canvas.width + (i*220) + Math.random()*200;
+                obstacles.push({ x, y: laneYs[row], w, h:48, speed: speed*dir, thumb, dir });
+            }
+        }
+
+        setInterval(()=>{ const r = Math.floor(Math.random()*rows); spawnRow(r); }, 900);
+
+        window.addEventListener('keydown', e=>{
+            if(e.key==='ArrowLeft') player.x = Math.max(0, player.x-80);
+            if(e.key==='ArrowRight') player.x = Math.min(canvas.width-64, player.x+80);
+            if(e.key==='ArrowUp') player.y = Math.max(0, player.y-80);
+            if(e.key==='ArrowDown') player.y = Math.min(canvas.height-64, player.y+80);
+        });
+
+        function update(){
+            for(const o of obstacles) o.x += o.speed;
+            // collision
+            for(const o of obstacles){
+                if(Math.abs((o.x + o.w/2) - (player.x + player.w/2)) < (o.w/2 + player.w/2 - 6) && Math.abs(o.y - player.y) < 36){
+                    // hit
+                    if(!o._hit){ o._hit = true; lives--; document.getElementById('lives').textContent = '❤'.repeat(lives); score = Math.max(0, score-20); document.getElementById('score').textContent = score; }
+                }
+            }
+            // remove offscreen
+            for(let i=obstacles.length-1;i>=0;i--){ const o=obstacles[i]; if(o.x < -300 || o.x > canvas.width + 300) obstacles.splice(i,1); }
+            if(lives<=0){ resetGame(); }
+        }
+
+        function draw(){
+            ctx.clearRect(0,0,canvas.width,canvas.height);
+            // background lanes
+            for(let i=0;i<rows;i++){
+                const y = laneYs[i] - 30;
+                ctx.fillStyle = '#2b2b2b'; ctx.fillRect(0,y,canvas.width,60);
+                // center dashed lines
+                ctx.strokeStyle = '#fff'; ctx.lineWidth = 3; ctx.setLineDash([20,14]);
+                ctx.beginPath(); ctx.moveTo(0,y+30); ctx.lineTo(canvas.width,y+30); ctx.stroke(); ctx.setLineDash([]);
+            }
+            // obstacles (thumbnails with wheels)
+            for(const o of obstacles){
+                if(o.thumb && o.thumb.complete){ ctx.drawImage(o.thumb, o.x, o.y-24, o.w, o.h); }
+                else { ctx.fillStyle = '#caa'; ctx.fillRect(o.x, o.y-24, o.w, o.h); }
+                // wheels under the thumbnail
+                ctx.fillStyle = '#111'; ctx.beginPath(); ctx.arc(o.x+12, o.y+28, 6,0,Math.PI*2); ctx.fill(); ctx.beginPath(); ctx.arc(o.x+o.w-12, o.y+28, 6,0,Math.PI*2); ctx.fill();
+            }
+            // player
+            ctx.fillStyle = '#fff'; ctx.fillRect(player.x, player.y, player.w, player.h);
+            ctx.fillStyle='#000'; ctx.font='28px serif'; ctx.fillText('🧑', player.x+12, player.y+40);
+        }
+
+        function resetGame(){
+            obstacles.length = 0; lives = 3; score = 0; document.getElementById('lives').textContent = '❤❤❤'; document.getElementById('score').textContent = score; player.x=328; player.y=640;
+        }
+
+        function loop(){ update(); draw(); requestAnimationFrame(loop); }
+
+        loadCollection('sportomax').then(()=>{ loop(); });
+    </script>
+</body>
+</html>

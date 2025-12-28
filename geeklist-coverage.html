@@ -29,6 +29,8 @@
             <div class="controls">
                 <label style="font-size:0.9rem;color:#445">Username</label>
                 <input id="username" type="text" value="sportomax" />
+                <label style="font-size:0.9rem;color:#445">Include Small-Box Jackets</label>
+                <input id="include318181" type="checkbox" title="Also include geeklist 318181" />
                 <label style="font-size:0.9rem;color:#445">Geeklist ID</label>
                 <input id="geeklistId" type="text" value="186909" />
                 <button id="runBtn">Run Check</button>
@@ -36,6 +38,8 @@
             </div>
 
             <div id="status" class="muted">Idle</div>
+
+            <div id="log" style="margin-top:0.5rem;max-height:140px;overflow:auto;background:#fbfdff;border-radius:8px;padding:8px;font-family:monospace;font-size:12px;color:#234;box-shadow:inset 0 1px 0 rgba(0,0,0,0.02)"></div>
 
             <div class="summary">
                 <div class="muted">Collection: <span id="colCount">—</span></div>
@@ -82,23 +86,94 @@
         }
 
         async function fetchGeeklist(id){
-            status.textContent = 'Fetching geeklist...';
-            const url = `/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(id)}`;
-            const text = await fetch(url).then(r=>r.text());
-            const parser = new DOMParser();
-            const xml = parser.parseFromString(text,'text/xml');
-            // try to find objectid nodes or item objectid attributes
-            const ids = new Set();
-            // v1 structure: <item>...<objectid>123</objectid>...</item>
-            Array.from(xml.querySelectorAll('objectid')).forEach(n=>{ const v=n.textContent.trim(); if(v) ids.add(v); });
-            // also check item elements with objectid attribute
-            Array.from(xml.querySelectorAll('item')).forEach(it=>{
-                const obj = it.getAttribute('objectid') || it.getAttribute('objectid');
-                if(obj) ids.add(obj);
-            });
-            // check for 'thing' child with id attr
-            Array.from(xml.querySelectorAll('thing')).forEach(t=>{ const o=t.getAttribute('objectid')||t.getAttribute('id'); if(o) ids.add(o); });
-            return Array.from(ids);
+            status.textContent = 'Fetching geeklist (API)...';
+            const apiUrl = `/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(id)}`;
+
+            async function parseXmlTextToIds(text){
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text,'text/xml');
+                const ids = new Set();
+                Array.from(xml.querySelectorAll('objectid')).forEach(n=>{ const v=(n.textContent||'').trim(); if(v) ids.add(v); });
+                Array.from(xml.querySelectorAll('item')).forEach(it=>{
+                    const obj = it.getAttribute('objectid') || it.getAttribute('id');
+                    if(obj) ids.add(obj);
+                });
+                Array.from(xml.querySelectorAll('thing')).forEach(t=>{ const o=t.getAttribute('objectid')||t.getAttribute('id'); if(o) ids.add(o); });
+                // Also try to extract numeric IDs from common BGG shortcode patterns in raw text
+                try{
+                    const shortcodeRe = /\[thing=(\d+)\]|\[geekitem=(\d+)\]|thing=(\d+)/gi;
+                    let m;
+                    while((m = shortcodeRe.exec(text)) !== null){
+                        for(let i=1;i<m.length;i++) if(m[i]) ids.add(m[i]);
+                    }
+                    // Also pick up simple objectid tags if parser missed them
+                    const objTagRe = /<objectid>(\d+)<\/objectid>/gi;
+                    while((m = objTagRe.exec(text)) !== null) ids.add(m[1]);
+                }catch(e){ console.warn('Shortcode extraction failed', e.message); }
+                return Array.from(ids);
+            }
+
+            // helper to parse item info map (id -> {title,body,image,raw})
+            async function parseItemsMap(text){
+                const map = new Map();
+                try{
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text,'text/xml');
+                    const items = Array.from(xml.querySelectorAll('item'));
+                    items.forEach(it=>{
+                        const raw = it.innerHTML || it.textContent || '';
+                        // attempt to find id for this item
+                        let id = (it.getAttribute('objectid')||it.getAttribute('id')||'').trim();
+                        const title = (it.querySelector('title')||it.querySelector('name')||{}).textContent || '';
+                        const body = (it.querySelector('description')||it.querySelector('body')||{textContent: raw}).textContent || raw;
+                        // try to find thing child
+                        const thing = it.querySelector('thing');
+                        if(thing && !id){ id = thing.getAttribute('objectid')||thing.getAttribute('id')||''; }
+                        // fallback: extract shortcode from raw
+                        if(!id){ const m = raw.match(/\[thing=(\d+)\]/); if(m) id = m[1]; }
+                        // image heuristics
+                        let image = '';
+                        const thumb = it.querySelector('thumbnail') || it.querySelector('thumb') || it.querySelector('image');
+                        if(thumb) image = thumb.textContent || thumb.getAttribute('src') || '';
+                        if(id) map.set(String(id), { id: String(id), title: title||('Item '+id), body: (body||'').trim(), image });
+                    });
+                }catch(e){ console.warn('parseItemsMap failed', e.message); }
+                return map;
+            }
+
+            try{
+                const text = await fetch(apiUrl).then(r=>r.text());
+                log(`API fetch for geeklist ${id}: ${text.slice(0,120).replace(/\n/g,' ')}...`);
+                // quick heuristic: if BGG returned a queued message, treat as empty
+                if(/accepted and will be processed|queued/i.test(text)){
+                    console.warn('BGG API returned queued response for geeklist; will fallback to local files');
+                } else {
+                    const ids = await parseXmlTextToIds(text);
+                    const itemsMap = await parseItemsMap(text);
+                    if(ids.length) return { ids, itemsMap };
+                }
+            }catch(e){
+                console.warn('Geeklist API fetch failed:', e.message);
+                log('Geeklist API fetch failed: '+e.message);
+            }
+
+            // Fallbacks: try any local VFM files that may contain a geeklist dump
+            const fallbackFiles = ['/vfmdenverco.xml','/vfm25bgg.xml','/library_bgg.xml','/library.html'];
+            for(const f of fallbackFiles){
+                try{
+                    status.textContent = `Fetching geeklist (fallback ${f})...`;
+                    const txt = await fetch(f).then(r=>r.text()).catch(()=>null);
+                    if(!txt) continue;
+                    const ids = await parseXmlTextToIds(txt);
+                    const itemsMap = await parseItemsMap(txt);
+                    if(ids.length) return { ids, itemsMap };
+                }catch(err){
+                    console.warn('Fallback fetch failed for', f, err.message);
+                }
+            }
+
+            // If nothing found, return empty array
+            return { ids: [], itemsMap: new Map() };
         }
 
         function renderList(root, games){
@@ -106,32 +181,81 @@
             games.forEach(g=>{
                 const el = document.createElement('div'); el.className='item';
                 el.innerHTML = `<div class="thumb"><img src="${g.thumbnail||''}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect width=100 height=100 fill=%23f0f0f0/%3E%3C/svg%3E'"/></div><div><div style='font-weight:700'>${g.name}</div><div class='muted' style='font-size:12px'>ID: ${g.id}</div></div>`;
+                el.addEventListener('click', ()=> showItemDetail(g.id));
                 root.appendChild(el);
             });
+        }
+
+        function log(msg){
+            console.log(msg);
+            const l = document.getElementById('log');
+            if(!l) return;
+            const el = document.createElement('div'); el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+            l.appendChild(el);
+            l.scrollTop = l.scrollHeight;
+        }
+
+        function showItemDetail(id){
+            // try to show data from items map
+            const im = window.__gl_items || new Map();
+            const data = im.get(String(id));
+            let html = `<div style="padding:12px;max-width:760px">`;
+            if(data){
+                if(data.image) html += `<div style="width:160px;float:left;margin-right:12px"><img src="${data.image}" style="width:100%;border-radius:8px" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect width=100 height=100 fill=%23f0f0f0/%3E%3C/svg%3E'"/></div>`;
+                html += `<div style="font-weight:700;font-size:16px">${data.title||('Item '+id)}</div><div style='font-size:13px;color:#445;margin-top:8px'>${(data.body||'').replace(/\n/g,'<br/>')}</div>`;
+            } else {
+                html += `<div style="font-weight:700">No detail available for ID ${id}</div>`;
+            }
+            html += `</div>`;
+            // show modal
+            let modal = document.getElementById('glModal');
+            if(!modal){
+                modal = document.createElement('div'); modal.id='glModal';
+                modal.style = 'position:fixed;left:0;top:0;right:0;bottom:0;background:rgba(0,0,0,0.6);display:flex;align-items:center;justify-content:center;z-index:9999';
+                modal.addEventListener('click', ()=> modal.remove());
+                const inner = document.createElement('div'); inner.id='glModalInner'; inner.style='background:white;border-radius:12px;padding:12px;max-height:80vh;overflow:auto';
+                modal.appendChild(inner); document.body.appendChild(modal);
+            }
+            document.getElementById('glModalInner').innerHTML = html;
         }
 
         async function runCheck(){
             const username = document.getElementById('username').value.trim() || 'sportomax';
             const geeklistId = document.getElementById('geeklistId').value.trim() || '186909';
+            const include318 = document.getElementById('include318181').checked;
             try{
-                status.textContent = 'Fetching collection...';
+                status.textContent = 'Fetching collection...'; log('Starting collection fetch for '+username);
                 const collection = await fetchCollection(username);
                 colCount.textContent = collection.length;
 
-                status.textContent = 'Fetching geeklist...';
-                const glIds = await fetchGeeklist(geeklistId);
-                glCount.textContent = glIds.length;
+                status.textContent = 'Fetching geeklist(s)...'; log('Requesting geeklist '+geeklistId+(include318? ' +318181':''));
+                // fetch primary
+                const primary = await fetchGeeklist(geeklistId);
+                const glIds = new Set(primary.ids || []);
+                const itemsMap = new Map(primary.itemsMap || []);
+                // optionally include small-box jackets list
+                if(include318){
+                    log('Including geeklist 318181 fallback');
+                    const g2 = await fetchGeeklist('318181');
+                    (g2.ids||[]).forEach(id=>glIds.add(String(id)));
+                    const im2 = g2.itemsMap || new Map();
+                    im2.forEach((v,k)=> itemsMap.set(k,v));
+                }
+                glCount.textContent = glIds.size;
+
+                // stash items map globally for modal lookup
+                window.__gl_items = itemsMap;
 
                 const colMap = new Map(collection.map(g=>[String(g.id), g]));
                 const matches = [];
                 const colOnly = [];
 
-                collection.forEach(g=>{ if(glIds.includes(String(g.id))) matches.push(g); else colOnly.push(g); });
+                collection.forEach(g=>{ if(glIds.has(String(g.id))) matches.push(g); else colOnly.push(g); });
 
                 matchCount.textContent = matches.length;
                 renderList(matchesRoot, matches.slice(0,200));
                 renderList(colOnlyRoot, colOnly.slice(0,200));
-                status.textContent = 'Done';
+                status.textContent = 'Done'; log('Done. Matches: '+matches.length+' / Collection: '+collection.length+' / Geeklist items: '+glIds.size);
             }catch(e){
                 status.textContent = 'Error: '+e.message;
                 console.error(e);
