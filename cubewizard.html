@@ -47,7 +47,10 @@
         const gridRoot = document.getElementById('grid');
         let faceImages = [];
         let state = new Array(54);
-        let moveHistory = [];
+        let moveHistory = []; // {type:'scramble'|'user', notation}
+        let scrambleDone = false;
+        let timerInterval = null;
+        let elapsedMs = 0;
         let animating = false;
 
         function initSolved(){
@@ -57,15 +60,23 @@
         }
 
         function loadThumbnails(username='sportomax'){
-            // try to fetch 6 thumbnails; if fail use colored placeholders
-            fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`).then(r=>r.text()).then(text=>{
+            // try to fetch many thumbnails and pick 6 random ones; fall back to placeholders
+            return fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`).then(r=>r.text()).then(text=>{
                 try{
                     const xml = new DOMParser().parseFromString(text,'text/xml');
-                    const found = Array.from(xml.querySelectorAll('item')).map(it=> (it.querySelector('thumbnail')||{textContent:''}).textContent ).filter(x=>x).slice(0,6);
-                    if(found.length===6){ faceImages = found.map(u=>'https://images.weserv.nl/?url='+encodeURIComponent(u)); render(); return; }
+                    const found = Array.from(xml.querySelectorAll('item')).map(it=> (it.querySelector('thumbnail')||{textContent:''}).textContent ).filter(x=>x);
+                    if(found.length>=6){
+                        // pick 6 random distinct thumbnails
+                        const chosen = [];
+                        while(chosen.length<6 && found.length){
+                            const idx = Math.floor(Math.random()*found.length);
+                            chosen.push(found.splice(idx,1)[0]);
+                        }
+                        faceImages = chosen.map(u=>'https://images.weserv.nl/?url='+encodeURIComponent(u)); render(); return;
+                    }
                 }catch(e){}
                 buildPlaceholders();
-            }).catch(()=> buildPlaceholders());
+            }).catch(()=> { buildPlaceholders(); });
         }
 
         function buildPlaceholders(){
@@ -94,6 +105,49 @@
                 gridRoot.appendChild(faceWrap);
             }
         }
+
+        // UI: moves console, counters, timer
+        const infoBar = document.createElement('div'); infoBar.style.marginTop='10px'; infoBar.style.display='flex'; infoBar.style.gap='12px'; infoBar.style.alignItems='center';
+        const movesConsole = document.createElement('div'); movesConsole.style.flex='1'; movesConsole.style.maxHeight='120px'; movesConsole.style.overflow='auto'; movesConsole.style.background='#f7f9ff'; movesConsole.style.padding='8px'; movesConsole.style.borderRadius='8px'; movesConsole.style.fontFamily='monospace'; movesConsole.style.fontSize='12px';
+        const statsWrap = document.createElement('div'); statsWrap.style.minWidth='180px'; statsWrap.style.fontSize='13px';
+        statsWrap.innerHTML = `<div>Moves: <span id="moveCount">0</span></div><div>Timer: <span id="timer">00:00.0</span></div><div>Scramble: <span id="scrambleStatus">pending</span></div>`;
+        infoBar.appendChild(movesConsole); infoBar.appendChild(statsWrap);
+        document.querySelector('.card').appendChild(infoBar);
+
+        function pushMove(type, notation){
+            moveHistory.push({type, notation});
+            renderMovesConsole();
+            updateStats();
+        }
+
+        function renderMovesConsole(){
+            movesConsole.innerHTML = moveHistory.map(m=> (m.type==='scramble'?'<b>S</b> ':'') + m.notation).join(' ');
+            movesConsole.scrollTop = movesConsole.scrollHeight;
+        }
+
+        function updateStats(){
+            const moveCountEl = document.getElementById('moveCount');
+            const userMoves = moveHistory.filter(m=>m.type==='user').length;
+            if(moveCountEl) moveCountEl.textContent = String(userMoves);
+            const scrambleStatus = document.getElementById('scrambleStatus');
+            if(scrambleStatus) scrambleStatus.textContent = scrambleDone? 'done' : 'in progress';
+        }
+
+        function startTimer(){
+            if(timerInterval) return;
+            const timerEl = document.getElementById('timer');
+            const start = Date.now() - elapsedMs;
+            timerInterval = setInterval(()=>{
+                elapsedMs = Date.now() - start;
+                if(timerEl) timerEl.textContent = formatTime(elapsedMs);
+            }, 100);
+        }
+
+        function stopTimer(){ if(timerInterval){ clearInterval(timerInterval); timerInterval = null; } }
+
+        function resetTimer(){ stopTimer(); elapsedMs = 0; const el=document.getElementById('timer'); if(el) el.textContent='00:00.0'; }
+
+        function formatTime(ms){ const s = Math.floor(ms/1000); const m = Math.floor(s/60); const ss = String(s%60).padStart(2,'0'); const tenths = Math.floor((ms%1000)/100); return `${m}:${ss}.${tenths}`; }
 
         function rotateFaceCW(arr, f){
             const s = f*9;
@@ -189,7 +243,8 @@
         }
 
         // generic apply move by notation like "R", "R'", "R2"
-        function applyMove(notation, record=true){
+        // actor: 'user' | 'scramble' | 'solver'
+        function applyMove(notation, record=true, actor='user'){
             const times = notation.endsWith('2') ? 2 : 1;
             const prime = notation.endsWith("'");
             const face = notation[0];
@@ -202,7 +257,7 @@
                     applyClockwise(face);
                 }
             }
-            if(record){ moveHistory.push(notation); }
+            if(record){ pushMove(actor, notation); }
             render();
         }
 
@@ -238,21 +293,34 @@
         async function doScramble(){
             if(animating) return;
             moveHistory = [];
+            scrambleDone = false;
+            resetTimer();
+            renderMovesConsole();
             const seq = genScramble(18).split(' ');
-            for(const s of seq){ applyMove(s,true); await new Promise(r=>setTimeout(r,90)); }
+            for(const s of seq){ applyMove(s, true, 'scramble'); await new Promise(r=>setTimeout(r,90)); }
+            scrambleDone = true;
+            // start solve timer after scramble completes
+            startTimer();
+            updateStats();
         }
 
         async function cheatSolve(){
-            if(animating || moveHistory.length===0) return;
+            if(animating) return;
+            // find scramble moves only
+            const scrambleMoves = moveHistory.filter(m=>m.type==='scramble').map(m=>m.notation);
+            if(scrambleMoves.length===0) return;
             animating = true;
-            const rev = moveHistory.slice().reverse();
+            stopTimer();
+            const rev = scrambleMoves.slice().reverse();
             for(const m of rev){
                 const inv = inverseOf(m);
                 await new Promise(r=>setTimeout(r,180));
-                applyMove(inv,false);
+                applyMove(inv, false, 'solver');
             }
-            moveHistory = [];
             animating = false;
+            // record that we're solved
+            scrambleDone = false;
+            updateStats();
         }
 
         function inverseOf(notation){
@@ -261,13 +329,13 @@
             return notation+"'";
         }
 
-        // UI bindings
-        document.getElementById('rotateFace0').addEventListener('click', ()=>applyMove('U'));
-        document.getElementById('rotateFace1').addEventListener('click', ()=>applyMove('R'));
-        document.getElementById('rotateFace2').addEventListener('click', ()=>applyMove('F'));
-        document.getElementById('rotateFace3').addEventListener('click', ()=>applyMove('D'));
-        document.getElementById('rotateFace4').addEventListener('click', ()=>applyMove('L'));
-        document.getElementById('rotateFace5').addEventListener('click', ()=>applyMove('B'));
+        // UI bindings (user moves recorded as 'user')
+        document.getElementById('rotateFace0').addEventListener('click', ()=>applyMove('U', true, 'user'));
+        document.getElementById('rotateFace1').addEventListener('click', ()=>applyMove('R', true, 'user'));
+        document.getElementById('rotateFace2').addEventListener('click', ()=>applyMove('F', true, 'user'));
+        document.getElementById('rotateFace3').addEventListener('click', ()=>applyMove('D', true, 'user'));
+        document.getElementById('rotateFace4').addEventListener('click', ()=>applyMove('L', true, 'user'));
+        document.getElementById('rotateFace5').addEventListener('click', ()=>applyMove('B', true, 'user'));
         document.getElementById('scramble').addEventListener('click', doScramble);
         document.getElementById('cheat').addEventListener('click', cheatSolve);
 
@@ -277,8 +345,13 @@
         const applyBtn = document.createElement('button'); applyBtn.className='small'; applyBtn.textContent='Apply Seq'; applyBtn.style.background='#6c63ff'; controls.insertBefore(applyBtn, controls.children[controls.children.length-2]);
         applyBtn.addEventListener('click', ()=>{ parseAndApplySequence(seqInput.value); seqInput.value=''; });
 
-        // init
-        initSolved(); loadThumbnails('sportomax');
+        // init: load thumbnails, then auto-scramble
+        (async ()=>{
+            initSolved();
+            await loadThumbnails('sportomax');
+            // small delay to ensure UI has rendered
+            setTimeout(()=>{ doScramble(); }, 120);
+        })();
     </script>
 </body>
 </html>
