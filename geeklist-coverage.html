@@ -1,0 +1,145 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>🔎 Geeklist Coverage</title>
+    <style>
+        body{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,Arial,sans-serif;background:#f5f8fb;color:#122;}
+        .container{max-width:980px;margin:2rem auto;padding:1rem}
+        .card{background:white;padding:1rem;border-radius:12px;box-shadow:0 8px 24px rgba(14,30,37,0.06)}
+        .controls{display:flex;gap:0.5rem;align-items:center;flex-wrap:wrap;margin-bottom:1rem}
+        input[type=text]{padding:0.5rem;border-radius:8px;border:1px solid #e6eefc}
+        button{padding:0.5rem 0.8rem;border-radius:8px;border:none;background:#2b8cff;color:white;cursor:pointer}
+        button.secondary{background:#2ecc71}
+        .summary{display:flex;gap:1rem;margin-top:1rem}
+        .list{display:grid;grid-template-columns:repeat(auto-fill,minmax(160px,1fr));gap:0.75rem;margin-top:1rem}
+        .item{background:#fff;border-radius:8px;padding:8px;display:flex;gap:8px;align-items:center}
+        .thumb{width:56px;height:56px;border-radius:6px;overflow:hidden;background:#f0f0f0}
+        .thumb img{width:100%;height:100%;object-fit:cover}
+        .muted{color:#667}
+    </style>
+</head>
+<body>
+    <div class="container">
+        <div class="card">
+            <h1>🔎 Geeklist Coverage</h1>
+            <p class="muted">Compare a BGG collection (v2) to a Geeklist and see which collection items appear on the list. Default username: <strong>sportomax</strong>. Geeklist: <a href="https://boardgamegeek.com/geeklist/186909" target="_blank">186909</a></p>
+
+            <div class="controls">
+                <label style="font-size:0.9rem;color:#445">Username</label>
+                <input id="username" type="text" value="sportomax" />
+                <label style="font-size:0.9rem;color:#445">Geeklist ID</label>
+                <input id="geeklistId" type="text" value="186909" />
+                <button id="runBtn">Run Check</button>
+                <button id="refreshBtn" class="secondary">Refresh</button>
+            </div>
+
+            <div id="status" class="muted">Idle</div>
+
+            <div class="summary">
+                <div class="muted">Collection: <span id="colCount">—</span></div>
+                <div class="muted">Geeklist Items: <span id="glCount">—</span></div>
+                <div class="muted">Intersection: <span id="matchCount">—</span></div>
+            </div>
+
+            <div style="margin-top:1rem">
+                <h3>Matches (in collection & on geeklist)</h3>
+                <div id="matches" class="list"></div>
+            </div>
+
+            <div style="margin-top:1rem">
+                <h3>Not In Geeklist (in collection only)</h3>
+                <div id="collectionOnly" class="list"></div>
+            </div>
+
+        </div>
+    </div>
+
+    <script>
+        const runBtn = document.getElementById('runBtn');
+        const refreshBtn = document.getElementById('refreshBtn');
+        const status = document.getElementById('status');
+        const colCount = document.getElementById('colCount');
+        const glCount = document.getElementById('glCount');
+        const matchCount = document.getElementById('matchCount');
+        const matchesRoot = document.getElementById('matches');
+        const colOnlyRoot = document.getElementById('collectionOnly');
+
+        async function fetchCollection(username){
+            status.textContent = 'Fetching collection...';
+            const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+            const text = await fetch(url).then(r=>r.text());
+            const parser = new DOMParser();
+            const xml = parser.parseFromString(text,'text/xml');
+            const items = Array.from(xml.querySelectorAll('item'));
+            const games = items.map(it=>({
+                id: it.getAttribute('objectid') || it.getAttribute('id') || '',
+                name: it.querySelector('name')?.textContent || '',
+                thumbnail: it.querySelector('thumbnail')?.textContent || ''
+            }));
+            return games;
+        }
+
+        async function fetchGeeklist(id){
+            status.textContent = 'Fetching geeklist...';
+            const url = `/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(id)}`;
+            const text = await fetch(url).then(r=>r.text());
+            const parser = new DOMParser();
+            const xml = parser.parseFromString(text,'text/xml');
+            // try to find objectid nodes or item objectid attributes
+            const ids = new Set();
+            // v1 structure: <item>...<objectid>123</objectid>...</item>
+            Array.from(xml.querySelectorAll('objectid')).forEach(n=>{ const v=n.textContent.trim(); if(v) ids.add(v); });
+            // also check item elements with objectid attribute
+            Array.from(xml.querySelectorAll('item')).forEach(it=>{
+                const obj = it.getAttribute('objectid') || it.getAttribute('objectid');
+                if(obj) ids.add(obj);
+            });
+            // check for 'thing' child with id attr
+            Array.from(xml.querySelectorAll('thing')).forEach(t=>{ const o=t.getAttribute('objectid')||t.getAttribute('id'); if(o) ids.add(o); });
+            return Array.from(ids);
+        }
+
+        function renderList(root, games){
+            root.innerHTML = '';
+            games.forEach(g=>{
+                const el = document.createElement('div'); el.className='item';
+                el.innerHTML = `<div class="thumb"><img src="${g.thumbnail||''}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect width=100 height=100 fill=%23f0f0f0/%3E%3C/svg%3E'"/></div><div><div style='font-weight:700'>${g.name}</div><div class='muted' style='font-size:12px'>ID: ${g.id}</div></div>`;
+                root.appendChild(el);
+            });
+        }
+
+        async function runCheck(){
+            const username = document.getElementById('username').value.trim() || 'sportomax';
+            const geeklistId = document.getElementById('geeklistId').value.trim() || '186909';
+            try{
+                status.textContent = 'Fetching collection...';
+                const collection = await fetchCollection(username);
+                colCount.textContent = collection.length;
+
+                status.textContent = 'Fetching geeklist...';
+                const glIds = await fetchGeeklist(geeklistId);
+                glCount.textContent = glIds.length;
+
+                const colMap = new Map(collection.map(g=>[String(g.id), g]));
+                const matches = [];
+                const colOnly = [];
+
+                collection.forEach(g=>{ if(glIds.includes(String(g.id))) matches.push(g); else colOnly.push(g); });
+
+                matchCount.textContent = matches.length;
+                renderList(matchesRoot, matches.slice(0,200));
+                renderList(colOnlyRoot, colOnly.slice(0,200));
+                status.textContent = 'Done';
+            }catch(e){
+                status.textContent = 'Error: '+e.message;
+                console.error(e);
+            }
+        }
+
+        runBtn.addEventListener('click', runCheck);
+        refreshBtn.addEventListener('click', runCheck);
+    </script>
+</body>
+</html>
