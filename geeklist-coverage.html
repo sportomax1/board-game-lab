@@ -29,10 +29,11 @@
             <div class="controls">
                 <label style="font-size:0.9rem;color:#445">Username</label>
                 <input id="username" type="text" value="sportomax" />
-                <label style="font-size:0.9rem;color:#445">Include Small-Box Jackets</label>
-                <input id="include318181" type="checkbox" title="Also include geeklist 318181" />
-                <label style="font-size:0.9rem;color:#445">Geeklist ID</label>
-                <input id="geeklistId" type="text" value="186909" />
+                <label style="font-size:0.9rem;color:#445">Compare Geeklist</label>
+                <select id="geeklistSelect">
+                    <option value="186909">186909 — 3D Printing</option>
+                    <option value="318181">318181 — Small-Box Jackets</option>
+                </select>
                 <button id="runBtn">Run Check</button>
                 <button id="refreshBtn" class="secondary">Refresh</button>
             </div>
@@ -201,8 +202,23 @@
             const data = im.get(String(id));
             let html = `<div style="padding:12px;max-width:760px">`;
             if(data){
-                if(data.image) html += `<div style="width:160px;float:left;margin-right:12px"><img src="${data.image}" style="width:100%;border-radius:8px" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect width=100 height=100 fill=%23f0f0f0/%3E%3C/svg%3E'"/></div>`;
+                // attempt to resolve an actual image URL if the stored image points to a BGG image page
+                let resolved = null;
+                if(data.image){
+                    if(/boardgamegeek\.com\/image\//i.test(data.image) || /boardgamegeek\.com\/file\//i.test(data.image)){
+                        // try to fetch the image page via the proxy and extract the actual <img src>
+                        try{
+                            resolved = await fetchImageFromBGGPage(data.image);
+                            if(!resolved) resolved = data.image;
+                        }catch(e){ console.warn('resolve image failed', e.message); resolved = data.image; }
+                    } else {
+                        resolved = data.image;
+                    }
+                }
+
+                if(resolved) html += `<div style="width:220px;float:left;margin-right:12px"><img id="glImg" src="${resolved}" style="width:100%;border-radius:8px" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect width=100 height=100 fill=%23f0f0f0/%3E%3C/svg%3E'"/></div>`;
                 html += `<div style="font-weight:700;font-size:16px">${data.title||('Item '+id)}</div><div style='font-size:13px;color:#445;margin-top:8px'>${(data.body||'').replace(/\n/g,'<br/>')}</div>`;
+                if(resolved) html += `<div style="clear:both;margin-top:8px;font-size:12px;color:#335">Image URL: <a href="${resolved}" target="_blank">${resolved}</a></div>`;
             } else {
                 html += `<div style="font-weight:700">No detail available for ID ${id}</div>`;
             }
@@ -219,28 +235,39 @@
             document.getElementById('glModalInner').innerHTML = html;
         }
 
+        async function fetchImageFromBGGPage(pageUrl){
+            try{
+                log('Resolving image page: '+pageUrl);
+                const res = await fetch(`/api/bgg-helper?endpoint=page&url=${encodeURIComponent(pageUrl)}`);
+                if(!res.ok) throw new Error('proxy fetch failed '+res.status);
+                const text = await res.text();
+                // parse first img src from returned HTML
+                const m = text.match(/<img[^>]+src=["']?([^"'\s>]+)["']?/i);
+                if(m && m[1]){
+                    let src = m[1];
+                    // if src is relative, make absolute
+                    if(src.startsWith('//')) src = 'https:'+src;
+                    if(src.startsWith('/')) src = 'https://boardgamegeek.com'+src;
+                    // use images.weserv.nl as proxy for CORS-safe image delivery
+                    try{ return 'https://images.weserv.nl/?url='+encodeURIComponent(src); }catch(e){ return src; }
+                }
+            }catch(e){ console.warn('fetchImageFromBGGPage failed', e.message); log('Image resolve failed: '+e.message); }
+            return null;
+        }
+
         async function runCheck(){
             const username = document.getElementById('username').value.trim() || 'sportomax';
-            const geeklistId = document.getElementById('geeklistId').value.trim() || '186909';
-            const include318 = document.getElementById('include318181').checked;
+                const geeklistId = document.getElementById('geeklistSelect').value || '186909';
             try{
                 status.textContent = 'Fetching collection...'; log('Starting collection fetch for '+username);
                 const collection = await fetchCollection(username);
                 colCount.textContent = collection.length;
 
-                status.textContent = 'Fetching geeklist(s)...'; log('Requesting geeklist '+geeklistId+(include318? ' +318181':''));
-                // fetch primary
+                status.textContent = 'Fetching geeklist...'; log('Requesting geeklist '+geeklistId);
+                // fetch selected geeklist
                 const primary = await fetchGeeklist(geeklistId);
                 const glIds = new Set(primary.ids || []);
                 const itemsMap = new Map(primary.itemsMap || []);
-                // optionally include small-box jackets list
-                if(include318){
-                    log('Including geeklist 318181 fallback');
-                    const g2 = await fetchGeeklist('318181');
-                    (g2.ids||[]).forEach(id=>glIds.add(String(id)));
-                    const im2 = g2.itemsMap || new Map();
-                    im2.forEach((v,k)=> itemsMap.set(k,v));
-                }
                 glCount.textContent = glIds.size;
 
                 // stash items map globally for modal lookup
