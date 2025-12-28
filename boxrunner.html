@@ -57,15 +57,21 @@
 
         function spawnEnemy(){
             const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
-            enemies.push({ x: width + rand(0,200) + scroll, y: height - 80, w:40, h:40, vx: -3 - Math.random()*2, thumb });
+            enemies.push({ x: scroll + width + rand(0,200), y: height - 80, w:40, h:40, vx: -3 - Math.random()*2, thumb });
         }
 
         function spawnBox(){
             const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
             const above = Math.random() < 0.33;
             const y = above ? (player.y - 120) : (height - 100);
-            boxes.push({ x: width + rand(50,500) + scroll, y: y, w:56, h:56, vx:-2 - Math.random()*1.5, thumb, hit:false, above });
+            boxes.push({ x: scroll + width + rand(50,500), y: y, w:56, h:56, vx:-2 - Math.random()*1.5, thumb, hit:false, above });
         }
+
+        // ground coins and blocks
+        const coins = [];
+        const blocks = [];
+        function spawnCoin(){ coins.push({ x: scroll + width + rand(30,500), y: height - 90, w:20, h:20, vx: -2, collected:false }); }
+        function spawnBlock(){ blocks.push({ x: scroll + width + rand(80,600), y: height - 100, w:48, h:48, vx: -2.2, hit:false }); }
 
         let keys = {};
         window.addEventListener('keydown', e=>keys[e.key]=true);
@@ -77,45 +83,70 @@
 
         function update(){
             // spawn
-            if (Math.random() < 0.02) spawnBox();
-            if (Math.random() < 0.01) spawnEnemy();
+                if (Math.random() < 0.02) spawnBox();
+                if (Math.random() < 0.01) spawnEnemy();
+                if (Math.random() < 0.015) spawnCoin();
+                if (Math.random() < 0.008) spawnBlock();
 
             // input
             if (keys[' '] || keys['ArrowUp']){
                 if (player.onGround){ player.vy = -12; player.onGround = false; }
             }
-            if (keys['ArrowLeft']) player.x -= 4;
-            if (keys['ArrowRight']) player.x += 4;
+            // horizontal movement now scrolls the world (Mario-like)
+            const moveSpeed = 3.6;
+            if (keys['ArrowLeft']) scroll = Math.max(0, scroll - moveSpeed);
+            if (keys['ArrowRight']) scroll += moveSpeed;
 
             // physics
             player.vy += gravity; player.y += player.vy;
             if (player.y + player.h >= height - 20){ player.y = height - 20 - player.h; player.vy = 0; player.onGround = true; }
 
-            // move world (simple scroll)
-            scroll += 1.6;
+            // ambient forward scroll (world movement)
+            scroll += 1.2;
 
             // update boxes/enemies
             for (const b of boxes){ b.x += b.vx; }
             for (const en of enemies){ en.x += en.vx; }
+            for (const c of coins){ c.x += c.vx; }
+            for (const bl of blocks){ bl.x += bl.vx; }
 
             // collisions
+            // collisions: use screen coordinates (object.x - scroll)
             for (const b of boxes){
-                if (!b.hit && rectIntersect(player, b)){
+                const bx = b.x - scroll;
+                if (!b.hit && rectIntersect(player, { x: bx, y: b.y, w: b.w, h: b.h })){
                     b.hit = true; score += 10; document.getElementById('score').textContent = 'Score: ' + score;
+                    spawnCoinBurst(b.x - scroll + b.w/2, b.y);
                     // powerup chance when hitting a thumbnail above head
                     if (b.above && Math.random() < 0.25) { score += 20; document.getElementById('score').textContent = 'Score: ' + score; }
                 }
             }
             for (const en of enemies){
-                if (rectIntersect(player, en)){
+                const ex = en.x - scroll;
+                if (rectIntersect(player, { x: ex, y: en.y, w: en.w, h: en.h })){
                     score = Math.max(0, score - 20); document.getElementById('score').textContent = 'Score: ' + score;
                     en.x -= 200; // knockback enemy
                 }
             }
+            for (const c of coins){
+                const cx = c.x - scroll;
+                if (!c.collected && rectIntersect(player, { x: cx, y: c.y, w: c.w, h: c.h })){
+                    c.collected = true; score += 15; document.getElementById('score').textContent = 'Score: ' + score; spawnCoinBurst(cx + 8, c.y);
+                }
+            }
+            for (const bl of blocks){
+                const bx = bl.x - scroll;
+                if (!bl.hit && rectIntersect(player, { x: bx, y: bl.y, w: bl.w, h: bl.h })){
+                    // collision with block: only if player is low (not jumping over)
+                    if (player.y + player.h > bl.y + 8){ score = Math.max(0, score - 15); bl.hit = true; document.getElementById('score').textContent = 'Score: ' + score; }
+                }
+            }
 
             // cull
-            while (boxes.length && boxes[0].x < -200) boxes.shift();
-            while (enemies.length && enemies[0].x < -200) enemies.shift();
+            while (boxes.length && boxes[0].x - scroll < -300) boxes.shift();
+            while (enemies.length && enemies[0].x - scroll < -300) enemies.shift();
+            while (coins.length && coins[0].x - scroll < -200) coins.shift();
+            while (blocks.length && blocks[0].x - scroll < -300) blocks.shift();
         }
 
         function rectIntersect(a,b){ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
@@ -127,28 +158,60 @@
 
             // boxes
             for (const b of boxes){
+                const sx = b.x - scroll;
+                if (sx < -100 || sx > width + 200) continue;
                 if (b.thumb && b.thumb.complete) {
-                    ctx.drawImage(b.thumb, b.x - scroll, b.y, b.w, b.h);
+                    ctx.drawImage(b.thumb, sx, b.y, b.w, b.h);
                 } else {
                     ctx.fillStyle = b.hit ? '#444' : '#f39c12';
-                    ctx.fillRect(b.x - scroll, b.y, b.w, b.h);
-                    ctx.fillStyle = '#fff'; ctx.font = '28px serif'; ctx.fillText('📦', b.x - scroll + 10, b.y + 38);
+                    ctx.fillRect(sx, b.y, b.w, b.h);
+                    ctx.fillStyle = '#fff'; ctx.font = '28px serif'; ctx.fillText('📦', sx + 10, b.y + 38);
                 }
             }
 
             // enemies
             for (const en of enemies){
+                const sx = en.x - scroll;
+                if (sx < -100 || sx > width + 200) continue;
                 if (en.thumb && en.thumb.complete) {
-                    ctx.drawImage(en.thumb, en.x - scroll, en.y, en.w, en.h);
+                    ctx.drawImage(en.thumb, sx, en.y, en.w, en.h);
                 } else {
-                    ctx.fillStyle = '#c0392b'; ctx.fillRect(en.x - scroll, en.y, en.w, en.h);
-                    ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText('👾', en.x - scroll + 6, en.y + 30);
+                    ctx.fillStyle = '#c0392b'; ctx.fillRect(sx, en.y, en.w, en.h);
+                    ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText('👾', sx + 6, en.y + 30);
                 }
+            }
+
+            // ground coins
+            for (const c of coins){
+                const sx = c.x - scroll;
+                if (sx < -50 || sx > width + 200) continue;
+                if (!c.collected){ ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(sx + 10, c.y + 10, 8,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#333'; ctx.font='12px sans-serif'; ctx.fillText('¢', sx+5, c.y+14); }
+            }
+
+            // blocks
+            for (const bl of blocks){
+                const sx = bl.x - scroll;
+                if (sx < -100 || sx > width + 200) continue;
+                ctx.fillStyle = bl.hit? '#666' : '#7f8c8d'; ctx.fillRect(sx, bl.y, bl.w, bl.h);
             }
 
             // player
             ctx.fillStyle = '#27ae60'; ctx.fillRect(player.x, player.y, player.w, player.h);
             ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText('🕹️', player.x+8, player.y+36);
+
+            // coin particles
+            updateAndDrawParticles();
+        }
+
+        // simple coin particle system
+        const particles = [];
+        function spawnCoinBurst(x,y){
+            for(let i=0;i<10;i++){
+                particles.push({ x: x + rand(-12,12), y: y + rand(-8,8), vx: rand(-2,2), vy: rand(-4,-1), life: 40, alpha:1 });
+            }
+        }
+        function updateAndDrawParticles(){
+            for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life--; p.alpha = p.life/40; if(p.life<=0) particles.splice(i,1); else { ctx.globalAlpha = p.alpha; ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(p.x, p.y, 5,0,Math.PI*2); ctx.fill(); ctx.globalAlpha =1; } }
         }
 
         function loop(){ update(); draw(); requestAnimationFrame(loop); }
