@@ -39,6 +39,9 @@
         <div id="apiProgressText">Loading API data...</div>
         <div class="progress-bar"><div class="progress-fill" id="apiProgressFill" style="width:0%"></div></div>
     </div>
+    <div style="max-width:980px;margin:8px auto;padding:0 12px">
+        <div class="code-block" id="callLog" style="max-height:120px;overflow:auto;font-size:12px">Call log will appear here...</div>
+    </div>
 
     <!-- Setup Modal -->
     <div id="setupModal" class="modal">
@@ -476,14 +479,17 @@ async function loadLibraries(sportomaxUsername) {
 
 async function fetchXML(file) {
     try {
+        logCall(`fetchXML: checking cache for ${file}`);
         // Try to get from IndexedDB cache first
         const cached = await getCachedXML(file);
         if (cached) {
+            logCall(`fetchXML: found cached ${file}`);
             const parsed = cached.trim() ? new DOMParser().parseFromString(cached, 'text/xml') : null;
             if (parsed) return parsed;
         }
         
         // Fetch from server
+        logCall(`fetchXML: fetching ${file} from server`);
         const r = await fetch(file);
         if (!r.ok) return null;
         const t = await r.text();
@@ -494,6 +500,7 @@ async function fetchXML(file) {
         return t.trim() ? new DOMParser().parseFromString(t, 'text/xml') : null;
     } catch(e) { 
         console.error('fetchXML error:', e);
+        logCall(`fetchXML error: ${e.message}`);
         return null; 
     }
 }
@@ -502,6 +509,7 @@ async function fetchCollectionFromAPI(username) {
     try {
         // Fetch from BGG API via our helper
         const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+        logCall(`fetchCollectionFromAPI: calling ${url}`);
         const response = await fetch(url);
         
         if (!response.ok) {
@@ -520,6 +528,7 @@ async function fetchCollectionFromAPI(username) {
         return doc;
     } catch(e) {
         console.error('fetchCollectionFromAPI error:', e);
+        logCall(`fetchCollectionFromAPI error: ${e.message}`);
         throw e;
     }
 }
@@ -584,6 +593,7 @@ function parseGame(item, source, usesBggId = false) {
     }
 
     let desire = 0, plays = 0;
+    var desireBreakdown = { owned:0, wantToPlay:0, wishlistScore:0, wishlistPriority:0, total:0, wantToPlayFlag:false, wishlistFlag:false };
     if (source === 'sportomax' || source === 'dtw') {
         const st = item.querySelector('status');
         const wantToPlayFlag = st?.getAttribute('wanttoplay') === '1';
@@ -595,7 +605,7 @@ function parseGame(item, source, usesBggId = false) {
         desire = ownedScore + wtp + wishlistScore;
         plays = parseInt(item.querySelector('numplays')?.textContent) || 0;
         // store breakdown for debugging/inspection
-        var desireBreakdown = { owned: ownedScore, wantToPlay: wtp, wishlistScore, wishlistPriority, total: desire, wantToPlayFlag, wishlistFlag };
+        desireBreakdown = { owned: ownedScore, wantToPlay: wtp, wishlistScore, wishlistPriority, total: desire, wantToPlayFlag, wishlistFlag };
     }
 
     // Extract location based on source
@@ -608,7 +618,9 @@ function parseGame(item, source, usesBggId = false) {
         loc = item.querySelector('comment')?.textContent || ''; // sportomax/dtw use comment
     }
 
-    return { id, name, year, rating: parseFloat(rating).toFixed(2), rank, minP, maxP, bestP: 0, recP: '', time: 0, weight: 0, plays, mechanics: [], categories: [], desireScore: desire, desireBreakdown: desireBreakdown || { total: desire }, location: loc, locations: [], inSportomax: source === 'sportomax' };
+    // ensure desireBreakdown always present
+    desireBreakdown.total = desire;
+    return { id, name, year, rating: parseFloat(rating).toFixed(2), rank, minP, maxP, bestP: 0, recP: '', time: 0, weight: 0, plays, mechanics: [], categories: [], desireScore: desire, desireBreakdown: desireBreakdown, location: loc, locations: [], inSportomax: source === 'sportomax' };
 }
 
 function getLocationFromDteItem(item) {
@@ -768,6 +780,7 @@ const loadVisibleAPI = debounce(() => {
 window.addEventListener('scroll', loadVisibleAPI);
 
 async function fetchAPIBatch(ids) {
+    logCall(`fetchAPIBatch: requesting details for IDs: ${ids.join(',')}`);
     ids.forEach(id => pendingAPI.add(id));
     if (apiTotal === 0) { apiTotal = ids.length; apiFetched = 0; }
     else apiTotal += ids.length;
@@ -778,7 +791,9 @@ async function fetchAPIBatch(ids) {
     prog.classList.add('active');
 
     try {
-        const r = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids.join(',')}&type=boardgame&stats=1`);
+        const apiUrl = `/api/bgg-helper?endpoint=thing&id=${ids.join(',')}&type=boardgame&stats=1`;
+        logCall(`fetchAPIBatch: calling ${apiUrl}`);
+        const r = await fetch(apiUrl);
         const xml = new DOMParser().parseFromString(await r.text(), 'text/xml');
 
         xml.querySelectorAll('item').forEach(item => {
@@ -845,6 +860,19 @@ function applyAPIData(id, data) {
         const weight = card.querySelector('[data-f="weight"]');
         if (weight) weight.textContent = `⚖️ ${data.weight ? data.weight.toFixed(1) : '?'}`;
     }
+}
+
+function logCall(msg){
+    try{
+        const el = document.getElementById('callLog');
+        const t = new Date().toLocaleTimeString();
+        if(el){
+            const entry = document.createElement('div'); entry.textContent = `[${t}] ${msg}`;
+            el.appendChild(entry);
+            el.scrollTop = el.scrollHeight;
+        }
+        console.log(msg);
+    }catch(e){ console.log('logCall failed', e); }
 }
 
 function showAPIModal(id, name) {
