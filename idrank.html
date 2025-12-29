@@ -49,6 +49,7 @@
         <label><input id="useAvg" type="checkbox"> Use Thing API <strong>average</strong> as tiebreaker / seeding</label>
         <label style="margin-left:8px">Rounds: <input id="rounds" type="number" min="1" value="1" style="width:70px;margin-left:6px"></label>
         <label style="margin-left:8px">Repeats: <input id="repeats" type="number" min="1" value="1" style="width:70px;margin-left:6px"></label>
+        <label style="margin-left:8px">Intensity: <select id="intensity" style="margin-left:6px"><option value="1">Low</option><option value="2">Medium</option><option value="4">High</option></select></label>
       </div>
       <div id="expectCount" class="small muted" style="margin-top:6px">Expected matchups: —</div>
       <div id="methodSummary" class="small muted" style="margin-top:8px;padding:8px;border-radius:6px;background:#f1f5f9;max-height:160px;overflow:auto"></div>
@@ -74,6 +75,11 @@
     <div class="summary">
       <h3>Results</h3>
       <div id="resultsArea" class="ranking">No results yet.</div>
+      <div style="margin-top:8px;display:flex;gap:8px;align-items:center">
+        <button id="copyCsvBtn" class="btn" style="background:#10b981">Copy CSV</button>
+        <button id="downloadCsvBtn" class="btn" style="background:#06b6d4">Download CSV</button>
+        <div class="muted small" style="margin-left:8px">CSV includes thumbnail URLs</div>
+      </div>
     </div>
   </div>
 
@@ -157,19 +163,20 @@ loadBtn.addEventListener('click', async ()=>{
   onEntrantsChanged();
 });
 
-function expectedMatchups(method, n, rounds=1, repeats=1){
+function expectedMatchups(method, n, rounds=1, repeats=1, intensity=1){
   if (n<2) return 0;
+  const half = Math.floor(n/2);
   switch(method){
-    case 'roundrobin_all': return (n*(n-1))/2 * repeats;
-    case 'roundrobin_repeats': return (n*(n-1))/2 * repeats;
-    case 'adjacent_seeded': return Math.floor(n/2) * rounds;
-    case 'random_pairs': return Math.floor(n/2);
-    case 'multi_random': return Math.floor(n/2)*rounds;
-    case 'single_elim': return n - 1;
-    case 'swiss_like': return Math.floor(n/2)*rounds;
-    case 'elo_sim': return Math.floor(n/2)*rounds;
-    case 'min_pairs': return Math.ceil(n/2);
-    case 'paired_average': return Math.floor(n/2)*rounds;
+    case 'roundrobin_all': return (n*(n-1))/2 * Math.max(1, repeats);
+    case 'roundrobin_repeats': return (n*(n-1))/2 * Math.max(1, repeats) * intensity;
+    case 'adjacent_seeded': return half * Math.max(1, rounds) * intensity;
+    case 'random_pairs': return half * intensity;
+    case 'multi_random': return half * Math.max(1, rounds) * intensity;
+    case 'single_elim': return (n - 1) * intensity;
+    case 'swiss_like': return half * Math.max(1, rounds) * intensity;
+    case 'elo_sim': return half * Math.max(1, rounds) * intensity;
+    case 'min_pairs': return Math.ceil(n/2) * intensity;
+    case 'paired_average': return half * Math.max(1, rounds) * intensity;
   }
   return 0;
 }
@@ -179,7 +186,8 @@ function updateExpectCount(){
   const n = entrants.length;
   const rounds = parseInt(q('#rounds').value||'1',10);
   const repeats = parseInt(q('#repeats').value||'1',10);
-  const c = expectedMatchups(m,n,rounds,repeats);
+  const intensity = parseInt(q('#intensity').value||'1',10);
+  const c = expectedMatchups(m,n,rounds,repeats,intensity);
   q('#expectCount').textContent = `Expected matchups: ${c} (n=${n})`;
   // also refresh the per-method summary
   renderMethodSummary();
@@ -190,9 +198,10 @@ function renderMethodSummary(){
   const n = entrants.length;
   const rounds = parseInt(q('#rounds').value||'1',10);
   const repeats = parseInt(q('#repeats').value||'1',10);
+  const intensity = parseInt(q('#intensity').value||'1',10);
   const parts = METHOD_DEFS.map(md => {
     const key = md[0], label = md[1];
-    const cnt = expectedMatchups(key, n, rounds, repeats);
+    const cnt = expectedMatchups(key, n, rounds, repeats, intensity);
     return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(0,0,0,0.04)"><div>${label}</div><div style="font-weight:700">${cnt}</div></div>`;
   });
   q('#methodSummary').innerHTML = parts.join('');
@@ -244,6 +253,7 @@ function makePairs(method, opts={}){
   const ids = entrants.map(e=>e.id);
   const rounds = opts.rounds||1;
   const repeats = opts.repeats||1;
+  const intensity = opts.intensity||1;
   let out = [];
 
   function allPairs(list){
@@ -259,6 +269,11 @@ function makePairs(method, opts={}){
         const original = out.slice();
         for(let r=1;r<repeats;r++) out = out.concat(original);
       }
+      // intensity scaling: repeat the full round-robin intensity-1 more times
+      if (intensity>1){
+        const original = out.slice();
+        for(let it=1; it<intensity; it++) out = out.concat(shuffle(original.slice()));
+      }
       break;
     case 'roundrobin_repeats':
       allPairs(ids);
@@ -270,39 +285,44 @@ function makePairs(method, opts={}){
       if (q('#useAvg').checked) seeded.sort((a,b)=>(b.avg||0)-(a.avg||0));
       else seeded.sort((a,b)=>a.name.localeCompare(b.name));
       const ordered = seeded.map(x=>x.id);
-      for(let r=0;r<rounds;r++){
+      for(let r=0;r<rounds * intensity;r++){
         for(let i=0;i<ordered.length;i+=2){
           if (i+1<ordered.length) out.push([ordered[i], ordered[i+1]]);
         }
       }
       break;
     case 'random_pairs':
-      const s = shuffle(ids.slice());
-      for(let i=0;i<s.length;i+=2) if (i+1<s.length) out.push([s[i],s[i+1]]);
+      for(let it=0; it<intensity; it++){
+        const s = shuffle(ids.slice());
+        for(let i=0;i<s.length;i+=2) if (i+1<s.length) out.push([s[i],s[i+1]]);
+      }
       break;
     case 'multi_random':
-      for(let r=0;r<rounds;r++){
+      for(let r=0;r<rounds * intensity;r++){
         const s2 = shuffle(ids.slice());
         for(let i=0;i<s2.length;i+=2) if (i+1<s2.length) out.push([s2[i],s2[i+1]]);
       }
       break;
     case 'single_elim':
       // build random bracket
-      let bracket = shuffle(ids.slice());
-      while(bracket.length>1){
-        const next = [];
-        for(let i=0;i<bracket.length;i+=2){
-          if (i+1<bracket.length){ out.push([bracket[i], bracket[i+1]]); next.push(bracket[i]); }
-          else next.push(bracket[i]);
+      // run multiple elimination brackets if intensity>1
+      for(let it=0; it<intensity; it++){
+        let bracket = shuffle(ids.slice());
+        while(bracket.length>1){
+          const next = [];
+          for(let i=0;i<bracket.length;i+=2){
+            if (i+1<bracket.length){ out.push([bracket[i], bracket[i+1]]); next.push(bracket[i]); }
+            else next.push(bracket[i]);
+          }
+          bracket = next;
         }
-        bracket = next;
       }
       break;
     case 'swiss_like':
       // simple swiss: randomize initial, then in each round pair by current wins
       const roundsCount = rounds;
       let order = shuffle(ids.slice());
-      for(let r=0;r<roundsCount;r++){
+      for(let r=0;r<roundsCount * intensity;r++){
         order.sort((a,b)=>(wins[b]||0)-(wins[a]||0));
         for(let i=0;i<order.length;i+=2) if (i+1<order.length) out.push([order[i], order[i+1]]);
       }
@@ -312,21 +332,25 @@ function makePairs(method, opts={}){
       let byAvg = entrants.slice();
       byAvg.sort((a,b)=>(b.avg||0)-(a.avg||0));
       const byOrder = byAvg.map(x=>x.id);
-      for(let r=0;r<rounds;r++){
+      for(let r=0;r<rounds * intensity;r++){
         for(let i=0;i<byOrder.length;i+=2) if (i+1<byOrder.length) out.push([byOrder[i],byOrder[i+1]]);
       }
       break;
     case 'min_pairs':
-      // ensure each entrant appears at least once: pair sequentially
-      const s3 = shuffle(ids.slice());
-      for(let i=0;i<s3.length;i+=2) if (i+1<s3.length) out.push([s3[i],s3[i+1]]);
+      // ensure each entrant appears at least once: pair sequentially, repeat by intensity
+      for(let it=0; it<intensity; it++){
+        const s3 = shuffle(ids.slice());
+        for(let i=0;i<s3.length;i+=2) if (i+1<s3.length) out.push([s3[i],s3[i+1]]);
+      }
       break;
     case 'paired_average':
       // pair highest avg vs lowest avg, etc.
       let sortedAvg = entrants.slice();
       sortedAvg.sort((a,b)=>(b.avg||0)-(a.avg||0));
       const orderedAvg = sortedAvg.map(x=>x.id);
-      for(let i=0;i<Math.floor(orderedAvg.length/2);i++) out.push([orderedAvg[i], orderedAvg[orderedAvg.length-1-i]]);
+      for(let r=0;r<intensity;r++){
+        for(let i=0;i<Math.floor(orderedAvg.length/2);i++) out.push([orderedAvg[i], orderedAvg[orderedAvg.length-1-i]]);
+      }
       break;
   }
 
@@ -340,7 +364,8 @@ beginBtn.addEventListener('click', ()=>{
   const method = (document.querySelector('input[name="method"]:checked')||{}).value;
   const rounds = parseInt(q('#rounds').value||'1',10);
   const repeats = parseInt(q('#repeats').value||'1',10);
-  pairs = makePairs(method,{rounds,repeats});
+  const intensity = parseInt(q('#intensity').value||'1',10);
+  pairs = makePairs(method,{rounds,repeats,intensity});
   if (!pairs.length) return alert('No pairs generated for chosen method');
   // normalize pairs: shuffle order
   pairs = shuffle(pairs.slice());
@@ -388,6 +413,9 @@ function finishRanking(){
     return a.name.localeCompare(b.name);
   });
 
+  // store last ranking for export
+  window.lastRanking = ranked;
+
   // Display
   const out = ['<ol>'];
   ranked.forEach(r=>{ out.push(`<li><strong>${escapeHtml(r.name)}</strong> — wins: ${r.wins}${r.avg?(' — avg:'+r.avg.toFixed(2)) : ''}</li>`); });
@@ -404,6 +432,34 @@ resetBtn.addEventListener('click', ()=>{
 
 // small UX: enable begin only when thumbnails fetched
 // computed when load completes - handled by loadBtn
+
+// CSV export helpers
+function buildResultsCSV(){
+  const ranked = window.lastRanking || [];
+  const rows = [];
+  rows.push(['Rank','BGG ID','Name','Wins','Average','Thumbnail'].join(','));
+  ranked.forEach((r,i)=>{
+    const nameSafe = (r.name||'').replace(/"/g,'""');
+    const thumb = (r.thumb||'').replace(/"/g,'""');
+    rows.push([i+1, r.id, `"${nameSafe}"`, r.wins, r.avg? r.avg.toFixed(2): '', `"${thumb}"`].join(','));
+  });
+  return rows.join('\n');
+}
+
+q('#copyCsvBtn').addEventListener('click', ()=>{
+  const csv = buildResultsCSV();
+  navigator.clipboard.writeText(csv).then(()=> alert('CSV copied to clipboard'))
+    .catch(()=> alert('Failed to copy CSV'));
+});
+
+q('#downloadCsvBtn').addEventListener('click', ()=>{
+  const csv = buildResultsCSV();
+  const blob = new Blob([csv], { type: 'text/csv;charset=utf-8;' });
+  const link = document.createElement('a');
+  link.href = URL.createObjectURL(blob);
+  link.download = `idrank-results-${new Date().toISOString().slice(0,10)}.csv`;
+  link.click();
+});
 
 // initial render of method options and summary
 renderMethodOptions();
