@@ -18,6 +18,20 @@
         .modal { display: none; position: fixed; top: 0; left: 0; width: 100%; height: 100%; background: rgba(0,0,0,0.5); z-index: 1000; }
         .modal.active { display: flex; align-items: center; justify-content: center; }
         .modal-content { background: white; border-radius: 0.5rem; max-width: 800px; max-height: 80vh; overflow-y: auto; padding: 1.5rem; margin: 1rem; }
+        /* Fullscreen modal variant for shelf view (mobile friendly, iPhone safe areas) */
+        #shelfModal .modal-content { width: calc(100% - 1rem); height: calc(100% - 1rem); max-width: none; max-height: none; border-radius: 12px; padding: 0; margin: 0.5rem; display:flex; flex-direction:column; }
+        #shelfModal .shelf-header { padding: 12px 16px; background: white; border-bottom: 1px solid #eee; display:flex; align-items:center; justify-content:space-between }
+        #shelfModal .shelf-body { padding: 12px; overflow:auto; flex:1; background:#f8fafc }
+        #shelfModal .shelf-tabs { display:flex; gap:6px; padding:8px; overflow-x:auto; background:white; border-bottom:1px solid #eee }
+        #shelfModal .shelf-tabs button { padding:8px 10px; border-radius:8px; background:#fff; border:1px solid #e5e7eb; font-weight:700; cursor:pointer }
+        #shelfModal .shelf-tabs button.active { background:#6366f1; color:#fff; border-color:#6366f1 }
+        #shelfModal .alpha-tabs { display:flex; gap:6px; padding:6px 0; overflow-x:auto }
+        #shelfModal .alpha-tabs button { padding:6px 8px; border-radius:6px; background:#fff; border:1px solid #eee; cursor:pointer }
+        #shelfModal .alpha-tabs button.active { background:#e6eefc; border-color:#bfdbfe }
+        .shelf-grid { display:grid; grid-template-columns: repeat(auto-fill, minmax(120px, 1fr)); gap:8px }
+        .shelf-item { background:white; border:1px solid #e6e9ef; border-radius:8px; padding:8px; display:flex; gap:8px; align-items:center }
+        .shelf-thumb { width:48px; height:48px; border-radius:6px; object-fit:cover; background:#f1f5f9 }
+        .shelf-meta { font-size:13px }
         .code-block { background: #f3f4f6; border: 1px solid #d1d5db; border-radius: 0.375rem; padding: 1rem; font-family: monospace; font-size: 0.75rem; overflow-x: auto; white-space: pre-wrap; max-height: 400px; }
         .quick-filter-btn { padding: 0.25rem 0.5rem; border-radius: 9999px; font-size: 0.7rem; cursor: pointer; border: 2px solid #e5e7eb; background: white; }
         .quick-filter-btn:hover { border-color: #3b82f6; background: #eff6ff; }
@@ -902,38 +916,118 @@ function showShelfModal() {
 
 function buildShelfMap() {
     const shelfMap = document.getElementById('shelfMap');
-    
-    // Group games by shelf
-    const shelves = new Map();
+    // Group games by DTE shelf numeric and alpha parts. Example lib values: "28-E", "3-A", "28 E", "3A".
+    const shelves = new Map(); // numeric -> Map(alpha -> [games])
     allGames.forEach(g => {
         const dteLocation = g.locations.find(l => l.loc === 'dte');
-        if (dteLocation && dteLocation.lib) {
-            if (!shelves.has(dteLocation.lib)) shelves.set(dteLocation.lib, []);
-            shelves.get(dteLocation.lib).push(g);
+        if (!dteLocation || !dteLocation.lib) return;
+        const lib = dteLocation.lib.trim();
+        // parse numeric and alpha
+        const m = lib.match(/^(\d+)\s*[- ]?\s*([A-Za-z]+)?$/);
+        let num = null, alpha = '';
+        if (m) { num = parseInt(m[1], 10); alpha = (m[2] || '').toUpperCase(); }
+        else {
+            // fallback: non-numeric shelf — group under 0
+            num = 0; alpha = lib.toUpperCase();
         }
+        if (!shelves.has(num)) shelves.set(num, new Map());
+        const alphaMap = shelves.get(num);
+        const key = alpha || 'ALL';
+        if (!alphaMap.has(key)) alphaMap.set(key, []);
+        alphaMap.get(key).push(g);
     });
-    
+
     if (shelves.size === 0) {
         shelfMap.innerHTML = '<div class="text-gray-500 text-xs">No games with shelf locations found in DTE library.</div>';
         return;
     }
-    
-    // Sort shelves alphabetically
-    const sortedShelves = Array.from(shelves.entries()).sort((a, b) => a[0].localeCompare(b[0]));
-    
-    shelfMap.innerHTML = sortedShelves.map(([shelf, games]) => `
-        <div class="mb-4 last:mb-0">
-            <div class="font-semibold text-sm bg-blue-100 p-2 rounded mb-2">📦 ${shelf} (${games.length} games)</div>
-            <div class="grid grid-cols-2 sm:grid-cols-3 gap-1 ml-2">
-                ${games.map(g => `
-                    <div class="bg-white border border-gray-300 rounded p-1 text-xs hover:bg-gray-50 cursor-pointer" title="${g.name}">
-                        <div class="font-semibold truncate text-gray-800">${g.name.substring(0, 20)}</div>
-                        <div class="text-gray-500 text-xs">⭐ ${g.rating}</div>
+
+    // Sort numeric keys ascending (0 last)
+    const numericKeys = Array.from(shelves.keys()).filter(k => k !== 0).sort((a,b) => a - b);
+    if (shelves.has(0)) numericKeys.push(0);
+
+    // Build tabs UI
+    let tabsHtml = '<div class="shelf-tabs">';
+    numericKeys.forEach((num, idx) => {
+        const label = num === 0 ? 'OTHER' : String(num) + 'P';
+        tabsHtml += `<button data-shelf="${num}" class="${idx===0? 'active':''}">${label}</button>`;
+    });
+    tabsHtml += '</div>';
+
+    // Build container for panels
+    let panelsHtml = '';
+    numericKeys.forEach((num, idx) => {
+        const alphaMap = shelves.get(num) || new Map();
+        // collect alpha keys sorted (A,B,C...) with 'ALL' first
+        const alphas = Array.from(alphaMap.keys()).filter(k=>k!=='ALL').sort();
+        if (alphaMap.has('ALL') && !alphas.includes('ALL')) alphas.unshift('ALL');
+        // ensure an ALL tab that aggregates all alphas
+        if (!alphas.includes('ALL')) alphas.unshift('ALL');
+
+        // build alpha tabs html
+        let alphaTabs = '<div class="alpha-tabs">';
+        alphas.forEach((a, ai) => {
+            alphaTabs += `<button data-shelf="${num}" data-alpha="${a}" class="${ai===0? 'active':''}">${a}</button>`;
+        });
+        alphaTabs += '</div>';
+
+        // build items for each alpha panel
+        let alphaPanels = '';
+        alphas.forEach(a => {
+            let list = [];
+            if (a === 'ALL') {
+                // aggregate all alphas
+                Array.from(alphaMap.values()).forEach(arr => list = list.concat(arr));
+            } else {
+                list = alphaMap.get(a) || [];
+            }
+            // sort list by numeric then alpha then name — for shelf items within same numeric/alpha just sort by name
+            list.sort((x,y) => x.name.localeCompare(y.name));
+
+            const itemsHtml = list.map(g => {
+                const thumb = g.thumb || g.image || '';
+                const placeholder = 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22%3E%3Crect width=%2248%22 height=%2248%22 fill=%22%23e5e7eb%22/%3E%3C/svg%3E';
+                return `
+                    <div class="shelf-item" title="${escapeHtml(g.name)}">
+                        <img src="${thumb||placeholder}" class="shelf-thumb" onerror="this.src='${placeholder}'" />
+                        <div class="shelf-meta">
+                            <div style="font-weight:700">${escapeHtml(g.name)}</div>
+                            <div style="color:#6b7280;font-size:12px">⭐ ${g.rating} • ${g.minP}-${g.maxP}</div>
+                        </div>
                     </div>
-                `).join('')}
-            </div>
-        </div>
-    `).join('');
+                `;
+            }).join('');
+
+            alphaPanels += `<div class="alpha-panel" data-shelf="${num}" data-alpha-panel="${a}" style="display:${a===alphas[0]?'block':'none'}"><div class="shelf-grid">${itemsHtml}</div></div>`;
+        });
+
+        panelsHtml += `<div class="shelf-panel" data-shelf-panel="${num}" style="display:${idx===0?'block':'none'}">${alphaTabs}<div style="margin-top:8px">${alphaPanels}</div></div>`;
+    });
+
+    shelfMap.innerHTML = `<div class="shelf-container">${tabsHtml}<div class="shelf-body">${panelsHtml}</div></div>`;
+
+    // Attach tab click handlers
+    shelfMap.querySelectorAll('.shelf-tabs button').forEach(btn => btn.addEventListener('click', (e) => {
+        const num = btn.getAttribute('data-shelf');
+        shelfMap.querySelectorAll('.shelf-tabs button').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        shelfMap.querySelectorAll('.shelf-panel').forEach(p=>p.style.display='none');
+        shelfMap.querySelector(`[data-shelf-panel="${num}"]`).style.display='block';
+    }));
+
+    // Attach alpha tab handlers
+    shelfMap.querySelectorAll('.alpha-tabs button').forEach(btn => btn.addEventListener('click', e => {
+        const num = btn.getAttribute('data-shelf');
+        const alpha = btn.getAttribute('data-alpha');
+        // find sibling alpha-tabs under same shelf and toggle
+        const panel = shelfMap.querySelector(`[data-shelf-panel="${num}"]`);
+        if (!panel) return;
+        panel.querySelectorAll('.alpha-tabs button').forEach(b=>b.classList.remove('active'));
+        btn.classList.add('active');
+        panel.querySelectorAll('.alpha-panel').forEach(ap => ap.style.display = 'none');
+        const target = panel.querySelector(`[data-alpha-panel="${alpha}"]`);
+        if (target) target.style.display = 'block';
+    }));
 }
 
 function showCSVExportModal() {
