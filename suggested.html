@@ -462,6 +462,8 @@
         let gameSuggested = {};
         let currentUsername = 'sportomax';
         let playerCounts = [];
+        let tabMin = 1;
+        let tabMax = 4;
 
         const usernameInput = document.getElementById('usernameInput');
         const loadBtn = document.getElementById('loadBtn');
@@ -553,6 +555,9 @@
 
                     // Process games in batches
                     await processGameBatches();
+                    // compute tabs from collection (min/max players) and render initial tabs
+                    computeTabsFromCollection();
+                    renderAllTabs();
                 }
 
             } catch (error) {
@@ -622,6 +627,7 @@
 
                     console.log(`✅ Batch complete: Found ${batchSuggested} games with player suggestions`);
                     processed += batch.length;
+                    // update UI as we collect data
                     renderAllTabs();
 
                 } catch (error) {
@@ -649,48 +655,26 @@
                 return;
             }
 
-            // Normalize and collect numeric bases and plus-bases
-            const nums = new Set();
-            const plusBases = new Set();
-            playerCounts.forEach(pc => {
-                const m = pc.match(/^(\d+)(\+)?$/);
-                if (m) {
-                    nums.add(parseInt(m[1], 10));
-                    if (m[2]) plusBases.add(parseInt(m[1], 10));
-                }
-            });
-
-            if (nums.size === 0) {
-                tabsContainer.innerHTML = '';
-                tabsContent.innerHTML = '';
-                return;
-            }
-
-            const maxNumeric = Math.max(...Array.from(nums));
-            const minPlusBase = plusBases.size ? Math.min(...Array.from(plusBases)) : null;
-
-            // Determine tab range: if a + entry exists, create tabs 1..minPlusBase (inclusive)
-            // and label the final tab 'EXTRA' (it will show the results for `${minPlusBase}+`).
-            // Otherwise create tabs 1..maxNumeric.
-            const tabMax = minPlusBase || maxNumeric;
-
+            // Build tabs based on tabMin/tabMax computed from the collection
+            const start = Math.max(1, tabMin || 1);
+            const end = Math.max(start, tabMax || start + 3);
             tabsContainer.innerHTML = '';
             tabsContent.innerHTML = '';
-
-            for (let i = 1; i <= tabMax; i++) {
-                const isLast = (i === tabMax) && !!minPlusBase;
-                const displayLabel = isLast && minPlusBase ? 'EXTRA' : `${i}P`;
-                const dataKey = isLast && minPlusBase ? `${minPlusBase}+` : `${i}`;
+            for (let i = start; i <= end; i++) {
+                const isLast = (i === end);
+                const displayLabel = isLast ? (end + '+' === `${end}+` ? 'EXTRA' : `${i}P`) : `${i}P`;
+                // dataKey: numeric or the final 'end+' for EXTRA
+                const dataKey = isLast ? `${end}+` : `${i}`;
 
                 const tab = document.createElement('button');
-                tab.className = `tab ${i === 1 ? 'active' : ''}`;
+                tab.className = `tab ${i === start ? 'active' : ''}`;
                 tab.textContent = displayLabel;
                 tab.dataset.tab = `player-${dataKey}`;
                 tab.addEventListener('click', () => switchTab(tab, dataKey));
                 tabsContainer.appendChild(tab);
 
                 const content = document.createElement('div');
-                content.className = `tab-content ${i === 1 ? 'active' : ''}`;
+                content.className = `tab-content ${i === start ? 'active' : ''}`;
                 content.id = `player-${dataKey}-tab`;
                 content.innerHTML = renderPlayerTab(dataKey);
                 tabsContent.appendChild(content);
@@ -742,10 +726,32 @@
             const games = Object.values(gameSuggested);
             let totalVotes = 0;
 
-            games.forEach(game => {
-                if (game.playerCounts[playerCount] && game.playerCounts[playerCount][voteType]) {
-                    totalVotes += game.playerCounts[playerCount][voteType];
+            // helper maps a poll key (e.g., '8+' or '3') to a tab key based on tabMin/tabMax
+            function mapKeyToTab(key) {
+                const m = (key||'').toString().match(/^(\d+)(\+)?$/);
+                if (!m) return null;
+                const n = parseInt(m[1], 10);
+                const plus = !!m[2];
+                if (plus) {
+                    // any plus that starts at or above tabMax maps to the EXTRA tab (tabMax+)
+                    if (n >= tabMax) return `${tabMax}+`;
+                    return `${n}+`;
                 }
+                // numeric value maps directly if within range, otherwise if above tabMax map to EXTRA
+                if (n >= tabMin && n < tabMax) return `${n}`;
+                if (n >= tabMax) return `${tabMax}+`;
+                return null;
+            }
+
+            games.forEach(game => {
+                const keys = Object.keys(game.playerCounts || {});
+                keys.forEach(k => {
+                    const mapped = mapKeyToTab(k);
+                    if (mapped === playerCount) {
+                        const votes = (game.playerCounts[k] && game.playerCounts[k][voteType]) || 0;
+                        totalVotes += votes;
+                    }
+                });
             });
 
             return { voteType, totalVotes, playerCount, gameCount: games.length };
@@ -791,6 +797,19 @@
             updateCacheInfo();
             console.log('👥 Suggested Player Counts app loaded');
         });
+
+        // Compute tabMin/tabMax from loaded collection (allGames)
+        function computeTabsFromCollection(){
+            if(!allGames || allGames.length===0) { tabMin=1; tabMax=4; return; }
+            let minP = Infinity, maxP = 0;
+            allGames.forEach(g=>{ if(g.minP && g.minP>0) minP = Math.min(minP, g.minP); if(g.maxP) maxP = Math.max(maxP, g.maxP); });
+            if(!isFinite(minP)) minP = 1;
+            if(maxP===0) maxP = Math.max(4, minP+3);
+            tabMin = Math.max(1, minP);
+            tabMax = Math.max(tabMin, maxP);
+            // cap tabMax to reasonable value (e.g., 12) to avoid huge tab lists
+            tabMax = Math.min(tabMax, 12);
+        }
     </script>
     <!-- Vercel Web Analytics -->
     <script type="module" src="analytics-init.js"></script>
