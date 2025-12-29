@@ -152,6 +152,13 @@
         <label>Max results</label>
         <input type="number" id="maxResults" value="50" min="1" max="200" />
       </div>
+      <div style="width:260px">
+        <label>Search Method</label>
+        <select id="searchMethod">
+          <option value="helper_xml">API helper / XML (fast)</option>
+          <option value="scrape">Web-scrape (geeksearch + page scrape)</option>
+        </select>
+      </div>
     </div>
 
     <div style="margin-top:10px">
@@ -221,12 +228,14 @@
       params.set('action','search');
       params.set('advsearch','1');
       params.set('objecttype','boardgame');
+      params.set('q','');
       params.set('geekitemname','');
       if(yearMin) params.set('range[yearpublished][min]', String(yearMin));
       if(yearMax) params.set('range[yearpublished][max]', String(yearMax));
       if(collectionUser) params.set('searchuser', collectionUser);
       params.set('B1','Submit');
       const fullUrl = 'https://boardgamegeek.com/geeksearch.php?'+params.toString();
+      logCall(`fetchAdvancedSearchIds -> ${fullUrl}`);
       const html = await fetchBGGEndpoint('advanced',{fullUrl});
       const doc = parseHTML(html);
       const anchors = Array.from(doc.querySelectorAll('a[href*="/boardgame/"]'));
@@ -278,24 +287,75 @@
 
       try{
         let ids = [];
-        if(title){
+          const method = document.getElementById('searchMethod')?.value || 'helper_xml';
+
+          if(title){
           const searchTxt = await fetchBGGEndpoint('search',{query: title, type: 'boardgame', fullUrl: `https://boardgamegeek.com/xmlapi2/search?query=${encodeURIComponent(title)}&type=boardgame`});
           const xml = parseXML(searchTxt);
           const items = Array.from(xml.querySelectorAll('item'));
           if(items.length===0){status.textContent='No matches found.';return}
           ids = items.map(it=>it.getAttribute('id')).slice(0, maxResults);
         }else{
-          ids = await fetchAdvancedSearchIds({yearMin, yearMax, collectionUser, maxResults});
+            // choose advanced search source based on method
+            if(method === 'helper_xml'){
+              ids = await fetchAdvancedSearchIds({yearMin, yearMax, collectionUser, maxResults});
+            }else{
+              ids = await fetchAdvancedSearchIds({yearMin, yearMax, collectionUser, maxResults, useFullGeekSearch:true});
+            }
           if(!ids || ids.length===0){ status.textContent = 'No matches found for the selected filters.'; return }
         }
 
-        const batchSize = 50;
-        const detailItems = [];
-        for(let i=0;i<ids.length;i+=batchSize){
-          const batch = ids.slice(i,i+batchSize).join(',');
-          const t2 = await fetchBGGEndpoint('thing',{id: batch, stats: '1', fullUrl: `https://boardgamegeek.com/xmlapi2/thing?id=${batch}&stats=1`});
-          const x2 = parseXML(t2);
-          Array.from(x2.querySelectorAll('item')).forEach(it=>detailItems.push(it));
+        let detailItems = [];
+        if(method === 'helper_xml'){
+          const batchSize = 50;
+          detailItems = [];
+          for(let i=0;i<ids.length;i+=batchSize){
+            const batch = ids.slice(i,i+batchSize).join(',');
+            const t2 = await fetchBGGEndpoint('thing',{id: batch, stats: '1', fullUrl: `https://boardgamegeek.com/xmlapi2/thing?id=${batch}&stats=1`});
+            const x2 = parseXML(t2);
+            Array.from(x2.querySelectorAll('item')).forEach(it=>detailItems.push(it));
+          }
+        }else{
+          // scrape individual pages for details (limited fields)
+          const pages = [];
+          const concurrency = 4;
+          for(let i=0;i<ids.length;i+=concurrency){
+            const batch = ids.slice(i,i+concurrency);
+            const promises = batch.map(async id => {
+              try{
+                const full = `https://boardgamegeek.com/boardgame/${id}`;
+                const raw = `https://api.allorigins.win/raw?url=${encodeURIComponent(full)}`;
+                logCall(`Scrape page -> ${raw}`);
+                const r = await fetch(raw);
+                if(!r.ok){ logCall(`Page fetch failed ${r.status}`); return null }
+                const txt = await r.text();
+                const doc = parseHTML(txt);
+                // Build a fake XML-like element to reuse filtering code (very small subset)
+                const fake = document.createElement('div');
+                fake.innerHTML = txt;
+                // extract basic fields
+                const name = doc.querySelector('meta[property="og:title"]')?.getAttribute('content') || doc.querySelector('h1')?.textContent || '';
+                const thumb = doc.querySelector('meta[property="og:image"]')?.getAttribute('content') || '';
+                const yearMatch = name.match(/\((\d{4})\)$/);
+                const year = yearMatch ? yearMatch[1] : (doc.querySelector('.gameplay .yearpublished')?.textContent || '');
+                // try to find playing time in page text
+                let playtime = null;
+                const text = doc.body.textContent || '';
+                const m = text.match(/Playing Time[:\s]*([0-9]{1,4})/i) || text.match(/Play Time[:\s]*([0-9]{1,4})/i);
+                if(m) playtime = parseInt(m[1]);
+                const itemEl = document.createElement('item');
+                itemEl.setAttribute('id', id);
+                if(name) { const n = document.createElement('name'); n.setAttribute('value', name); n.setAttribute('type','primary'); itemEl.appendChild(n); }
+                if(year) { const y = document.createElement('yearpublished'); y.textContent = year; itemEl.appendChild(y); }
+                if(thumb) { const th = document.createElement('thumbnail'); th.textContent = thumb; itemEl.appendChild(th); }
+                if(playtime) { const pt = document.createElement('minplaytime'); pt.textContent = String(playtime); itemEl.appendChild(pt); }
+                return itemEl;
+              }catch(e){ logCall(`Scrape error for ${id}: ${e.message}`); return null }
+            });
+            const res = await Promise.all(promises);
+            pages.push(...res.filter(Boolean));
+          }
+          detailItems = pages;
         }
 
         let userCollectionIds = null;
