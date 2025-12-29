@@ -26,6 +26,8 @@
         const items = [];
         let score = 0;
         const thumbs = [];
+        let thumbPool = [];
+        let thumbIndex = 0;
         async function loadCollection(username='sportomax'){
             try {
                 const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
@@ -36,17 +38,32 @@
                     thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent
                 })).filter(x=>x.thumbnail).slice(0,60);
                 for (const f of found){ const img = new Image(); img.crossOrigin='anonymous'; img.src = 'https://images.weserv.nl/?url=' + encodeURIComponent(f.thumbnail); thumbs.push(img); }
+                // initialize thumb pool (shuffle)
+                thumbPool = thumbs.slice();
+                shuffleArray(thumbPool);
+                thumbIndex = 0;
             } catch(e){ console.warn('loadCollection failed', e); }
         }
 
         function spawn(){
             const lane = Math.floor(Math.random()*3);
             const kind = Math.random()<0.7? 'thumb' : 'bad';
-            const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
+            let thumb = null;
+            if (kind === 'thumb' && thumbPool.length) {
+                thumb = thumbPool[thumbIndex++];
+                if (thumbIndex >= thumbPool.length) { thumbIndex = 0; shuffleArray(thumbPool); }
+            }
             items.push({ lane, y:-80, speed: 2 + Math.random()*2, kind, hit:false, thumb });
         }
 
         setInterval(()=>{ if (Math.random()<0.9) spawn(); }, 700);
+
+        function shuffleArray(arr) {
+            for (let i = arr.length - 1; i > 0; i--) {
+                const j = Math.floor(Math.random() * (i + 1));
+                [arr[i], arr[j]] = [arr[j], arr[i]];
+            }
+        }
 
         window.addEventListener('keydown', e=>{
             if (e.key==='ArrowLeft'){ player.lane = Math.max(0, player.lane-1);} else if (e.key==='ArrowRight'){ player.lane = Math.min(2, player.lane+1); }
@@ -65,10 +82,15 @@
                 if (it.hit) continue;
                 if (it.y > 520 && it.lane === player.lane){
                     it.hit = true;
-                    // lose points for hitting any object
-                    const loss = it.kind === 'thumb' ? 10 : 20;
-                    score = Math.max(0, score - loss);
-                    flashTimer = 12; // frames of red flash
+                    // thumbs are collectibles — do NOT punish for switching into them; award points instead
+                    if (it.kind === 'thumb') {
+                        score += 15; // collect reward
+                    } else {
+                        // bad items punish
+                        const loss = 20;
+                        score = Math.max(0, score - loss);
+                        flashTimer = 12; // frames of red flash
+                    }
                     document.getElementById('score').textContent = score;
                 }
             }
@@ -78,9 +100,8 @@
                 if (it._processed) continue;
                 if (it.y > 580){
                     it._processed = true;
-                    // if it wasn't a hit and it didn't collide with player (lane differs at pass time), award small points
+                    // if it wasn't collected/hit and player wasn't in lane, award dodge points
                     if (!it.hit){
-                        // award points for successful dodge
                         score += (it.kind === 'thumb' ? 5 : 3);
                         document.getElementById('score').textContent = score;
                     }
