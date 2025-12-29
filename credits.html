@@ -377,13 +377,13 @@
                     return;
                 }
 
-                // Parse and Filter
+                // Parse and keep ALL records (prefer thumbnail but accept image)
                 games = items.map(item => ({
                     id: item.getAttribute('objectid'),
                     title: item.querySelector('name')?.textContent || 'Unknown',
                     image: item.querySelector('image')?.textContent || '',
                     thumbnail: item.querySelector('thumbnail')?.textContent || ''
-                })).filter(g => g.image); // Must have image
+                })).filter(g => g.thumbnail || g.image); // keep items that have either image or thumbnail
 
                 // Prepare ordered list for slide/credits playback
                 randomizeOrder = !!document.getElementById('randomize-order')?.checked;
@@ -418,21 +418,21 @@
             resetMode();
         }
 
-        function resetMode() {
+        // resetMode optionally accepts a starting index into orderedGames
+        function resetMode(startIndex = 0) {
             entities = [];
             speedMultiplier = 1.0; // Reset speed
-            // Pre-fill slide/rain to avoid empty screen start
-            if (games.length > 0) {
-                if (mode === 'slide') {
-                    // Fill screen horizontally using orderedGames sequence.
-                    // Start all items well off-screen on the left so they flow left->right.
-                    const spacing = Math.max(320, Math.floor(canvas.width * 0.45));
-                    let idx = 0;
-                    while (orderedGames.length > 0 && idx < orderedGames.length) {
-                        const g = orderedGames[idx++];
-                        const startX = -1200 - (idx * spacing); // start WAY off-screen left
-                        spawnSlide(startX, g);
-                    }
+            orderIndex = startIndex || 0;
+            // Pre-fill slide to avoid empty screen start
+            if (games.length > 0 && mode === 'slide') {
+                // Start all items well off-screen on the left so they flow left->right.
+                // Compute spacing conservatively; we'll adjust once images load to avoid overlap.
+                const baseSpacing = Math.max(320, Math.floor(canvas.width * 0.45));
+                for (let i = 0; i < orderedGames.length; i++) {
+                    const idx = (orderIndex + i) % orderedGames.length;
+                    const g = orderedGames[idx];
+                    const startX = -1400 - (i * baseSpacing);
+                    spawnSlide(startX, g);
                 }
             }
         }
@@ -696,18 +696,9 @@
 
                 ctx.save();
                 
-                if (mode === 'slide' || mode === 'rain') {
+                    if (mode === 'slide' || mode === 'rain') {
+                    // Basic thumbnail draw only — no reflections
                     ctx.drawImage(e.img, e.x, e.y, e.w, e.h);
-                    
-                    // Shadow/Reflection for Slide
-                    if (mode === 'slide') {
-                        ctx.save();
-                        ctx.transform(1, 0, 0, -1, 0, e.y + e.h * 2 + 10); // Flip vertical
-                        ctx.globalAlpha = 0.2;
-                        // Draw gradient mask logic roughly simulated by just drawing opacity
-                        ctx.drawImage(e.img, e.x, e.y + e.h + 10, e.w, e.h * 0.5);
-                        ctx.restore();
-                    }
                 }
                 else if (mode === 'credits' && e.type === 'credits') {
                     ctx.drawImage(e.img, e.x, e.y, e.w, e.h);
@@ -808,7 +799,18 @@
         });
 
         canvas.addEventListener('pointerup', () => {
+            // Detect horizontal swipe for manual advance/back in slide mode
             isTouching = false;
+            if (mode === 'slide') {
+                const dx = (event?.clientX || 0) - (startX || 0);
+                if (dx < -60) {
+                    // swipe left -> next
+                    manualAdvance(1);
+                } else if (dx > 60) {
+                    // swipe right -> previous
+                    manualAdvance(-1);
+                }
+            }
         });
 
         // --- UI Toggles ---
@@ -832,6 +834,16 @@
                 document.getElementById('toggle-ui-btn').style.pointerEvents = 'auto';
                 document.getElementById('settings-modal').style.pointerEvents = 'auto';
             }
+        }
+
+        // Manual advance/back control for slide mode
+        function manualAdvance(step) {
+            if (orderedGames.length === 0) return;
+            // Advance orderIndex by step and re-prefill slides starting from that index
+            let newIndex = orderIndex + step;
+            if (newIndex < 0) newIndex = loopOrder ? ((newIndex % orderedGames.length) + orderedGames.length) % orderedGames.length : 0;
+            if (newIndex >= orderedGames.length) newIndex = loopOrder ? newIndex % orderedGames.length : orderedGames.length - 1;
+            resetMode(newIndex);
         }
         
         // Tap canvas to restore UI
