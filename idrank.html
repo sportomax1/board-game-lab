@@ -42,18 +42,9 @@
 
     <div>
       <label class="small">Matchup Method</label>
-      <select id="methodSelect" style="width:100%;padding:8px;border-radius:6px;margin-top:6px">
-        <option value="roundrobin_all">Round-robin (all pairs)</option>
-        <option value="roundrobin_repeats">Round-robin with repeats</option>
-        <option value="adjacent_seeded">Seeded adjacent (by avg)</option>
-        <option value="random_pairs">Random pairs (one round)</option>
-        <option value="multi_random">Multiple random rounds</option>
-        <option value="single_elim">Single elimination bracket</option>
-        <option value="swiss_like">Swiss-like (configurable rounds)</option>
-        <option value="elo_sim">ELO-simulated pairings</option>
-        <option value="min_pairs">Min pairs (one matchup per entrant)</option>
-        <option value="paired_average">Average-weighted seeding</option>
-      </select>
+        <div id="methodOptions" style="margin-top:6px;display:flex;flex-direction:column;gap:6px">
+          <!-- Radios rendered by JS -->
+        </div>
       <div class="option small" style="display:flex;gap:8px;margin-top:8px">
         <label><input id="useAvg" type="checkbox"> Use Thing API <strong>average</strong> as tiebreaker / seeding</label>
         <label style="margin-left:8px">Rounds: <input id="rounds" type="number" min="1" value="1" style="width:70px;margin-left:6px"></label>
@@ -107,20 +98,30 @@ function parseIds(text){
   return text.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean).map(x=>x.replace(/[^0-9]/g,''));
 }
 
-async function fetchThingInfo(id){
-  // Uses serverless proxy `api/bgg-helper?id=...&stats=1` which returns xml from BGG
+// Fetch multiple Thing entries in batch (up to `batchSize` ids per request)
+async function fetchThingsBatch(idList){
+  if (!idList || !idList.length) return [];
+  const qs = `endpoint=thing&id=${idList.join(',')}&stats=1`;
   try{
-    const res = await fetch(`/api/bgg-helper?id=${id}&stats=1`);
+    const res = await fetch(`/api/bgg-helper?${qs}`);
+    if (!res.ok) throw new Error(`Fetch failed: ${res.status}`);
     const txt = await res.text();
     const doc = new DOMParser().parseFromString(txt,'application/xml');
-    const nameEl = doc.querySelector('item > name') || doc.querySelector('item > names > name');
-    const name = nameEl ? nameEl.getAttribute('value') || nameEl.textContent : 'ID '+id;
-    const thumb = (doc.querySelector('item > thumbnail') || {}).textContent || '';
-    const avgEl = doc.querySelector('statistics ratings average');
-    const avg = avgEl ? parseFloat(avgEl.textContent) : null;
-    return { id, name, thumb, avg };
+    // BGG may return multiple <item> elements
+    const items = Array.from(doc.querySelectorAll('item'));
+    return items.map(it => {
+      const id = it.getAttribute('id') || '';
+      const nameEl = it.querySelector('name') || it.querySelector('names > name');
+      const name = nameEl ? (nameEl.getAttribute('value') || nameEl.textContent) : `ID ${id}`;
+      const thumb = (it.querySelector('thumbnail') || {}).textContent || '';
+      const avgEl = it.querySelector('statistics ratings average');
+      const avg = avgEl ? parseFloat(avgEl.textContent) : null;
+      return { id, name, thumb, avg };
+    });
   }catch(e){
-    return { id, name: 'ID '+id, thumb:'', avg:null };
+    console.error('Batch fetch error', e);
+    // map failures to minimal objects so UI can continue
+    return idList.map(id => ({ id, name: `ID ${id}`, thumb: '', avg: null }));
   }
 }
 
@@ -128,13 +129,20 @@ loadBtn.addEventListener('click', async ()=>{
   const ids = parseIds(q('#idInput').value);
   if (!ids.length) return alert('Please paste some numeric IDs');
   entrants = [];
-  fetchTextUpdate('Fetching thumbnails...');
+  fetchTextUpdate('Fetching thumbnails (batched)...');
   fetchFill.style.width = '0%';
   let done = 0;
-  for (const id of ids){
-    const info = await fetchThingInfo(id);
-    entrants.push(info);
-    done++;
+  const batchSize = 20;
+  for (let i=0;i<ids.length;i+=batchSize){
+    const batch = ids.slice(i, i+batchSize);
+    const infos = await fetchThingsBatch(batch);
+    // `infos` may not be in same order as requested; map by id
+    const byId = Object.fromEntries(infos.map(it=>[String(it.id), it]));
+    for (const id of batch){
+      const info = byId[String(id)] || { id, name: `ID ${id}`, thumb:'', avg:null };
+      entrants.push(info);
+      done++;
+    }
     fetchFill.style.width = Math.round(done/ids.length*100)+'%';
     fetchTextUpdate(`${done}/${ids.length} fetched`);
   }
@@ -145,7 +153,7 @@ loadBtn.addEventListener('click', async ()=>{
   q('#loadingNotice').style.display = 'none';
   q('#playArea').style.display = 'none';
   beginBtn.disabled = false;
-  updateExpectCount();
+  onEntrantsChanged();
 });
 
 function expectedMatchups(method, n, rounds=1, repeats=1){
@@ -174,9 +182,44 @@ function updateExpectCount(){
   q('#expectCount').textContent = `Expected matchups: ${c} (n=${n})`;
 }
 
-q('#methodSelect').addEventListener('change', updateExpectCount);
+// delegate change for radio buttons
+q('#methodOptions').addEventListener('change', e => updateExpectCount());
 q('#rounds').addEventListener('input', updateExpectCount);
 q('#repeats').addEventListener('input', updateExpectCount);
+
+// Render radio options with count placeholders
+const METHOD_DEFS = [
+  ['roundrobin_all','Round-robin (all pairs)'],
+  ['roundrobin_repeats','Round-robin with repeats'],
+  ['adjacent_seeded','Seeded adjacent (by avg)'],
+  ['random_pairs','Random pairs (one round)'],
+  ['multi_random','Multiple random rounds'],
+  ['single_elim','Single elimination bracket'],
+  ['swiss_like','Swiss-like (configurable rounds)'],
+  ['elo_sim','ELO-simulated pairings'],
+  ['min_pairs','Min pairs (one matchup per entrant)'],
+  ['paired_average','Average-weighted seeding']
+];
+
+function renderMethodOptions(){
+  const container = q('#methodOptions');
+  container.innerHTML = '';
+  const n = entrants.length || 0;
+  METHOD_DEFS.forEach((md, i) => {
+    const key = md[0], label = md[1];
+    const count = expectedMatchups(key, n, parseInt(q('#rounds').value||'1',10), parseInt(q('#repeats').value||'1',10));
+    const id = `method_${key}`;
+    const div = document.createElement('div');
+    div.innerHTML = `<label style="display:flex;align-items:center;gap:8px"><input type="radio" name="method" value="${key}" ${i===0? 'checked':''} /> <span style="flex:1">${label}</span> <span class="small muted">(${count} matchups)</span></label>`;
+    container.appendChild(div);
+  });
+}
+
+// Recompute labels when entrants or round/repeat inputs change
+function refreshMethodCounts(){ renderMethodOptions(); }
+
+// update counts when entrants change
+function onEntrantsChanged(){ renderMethodOptions(); updateExpectCount(); }
 
 function makePairs(method, opts={}){
   const n = entrants.length;
@@ -276,7 +319,7 @@ function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.rand
 
 beginBtn.addEventListener('click', ()=>{
   if (entrants.length<2) return alert('Need at least 2 entrants');
-  const method = q('#methodSelect').value;
+  const method = (document.querySelector('input[name="method"]:checked')||{}).value;
   const rounds = parseInt(q('#rounds').value||'1',10);
   const repeats = parseInt(q('#repeats').value||'1',10);
   pairs = makePairs(method,{rounds,repeats});
