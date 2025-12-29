@@ -309,6 +309,9 @@
         let orderIndex = 0;
         let randomizeOrder = false;
         let loopOrder = true;
+        let slideSpacingLocked = false;
+        const SLIDE_MAX_HEIGHT = 140; // smaller thumbnails
+        const SLIDE_GAP = 18;
         
         // --- Canvas ---
         const canvas = document.getElementById('canvas');
@@ -386,6 +389,9 @@
                 })).filter(g => g.thumbnail || g.image); // keep items that have either image or thumbnail
 
                 // Prepare ordered list for slide/credits playback
+                // default to randomized start
+                const randCheckbox = document.getElementById('randomize-order');
+                if (randCheckbox) randCheckbox.checked = true;
                 randomizeOrder = !!document.getElementById('randomize-order')?.checked;
                 loopOrder = !!document.getElementById('loop-order')?.checked;
                 orderedGames = games.map(g => g);
@@ -426,13 +432,17 @@
             // Pre-fill slide to avoid empty screen start
             if (games.length > 0 && mode === 'slide') {
                 // Start all items well off-screen on the left so they flow left->right.
-                // Compute spacing conservatively; we'll adjust once images load to avoid overlap.
-                const baseSpacing = Math.max(320, Math.floor(canvas.width * 0.45));
+                // Use conservative estimated widths initially; when images load we'll recompute exact positions to avoid overlap.
+                slideSpacingLocked = false;
+                const estH = Math.min(SLIDE_MAX_HEIGHT, Math.floor(canvas.height * 0.28));
+                const estW = Math.floor(estH * 1.2);
+                let cumulative = -1600;
                 for (let i = 0; i < orderedGames.length; i++) {
                     const idx = (orderIndex + i) % orderedGames.length;
                     const g = orderedGames[idx];
-                    const startX = -1400 - (i * baseSpacing);
+                    const startX = cumulative;
                     spawnSlide(startX, g);
+                    cumulative -= (estW + SLIDE_GAP);
                 }
             }
         }
@@ -455,16 +465,35 @@
             // Prefer collection thumbnail for slides to improve performance and consistency
             img.src = getProxiedImage(game.thumbnail || game.image);
 
-            entities.push({
+            // Conservative estimate until image loads
+            const estH = Math.min(SLIDE_MAX_HEIGHT, Math.floor(canvas.height * 0.28));
+            const estW = Math.floor(estH * 1.2);
+
+            const ent = {
                 type: 'slide',
                 game: game,
                 img: img,
                 x: startX,
-                y: canvas.height / 2 - 150, // Center-ish
-                w: 200, h: 200, // Default until loaded
+                y: (canvas.height - estH) / 2,
+                w: estW, h: estH,
                 vx: 150, // Base pixel/sec
                 loaded: false
-            });
+            };
+
+            img.onload = () => {
+                try {
+                    const targetH = Math.min(SLIDE_MAX_HEIGHT, Math.floor(canvas.height * 0.28));
+                    const aspect = img.naturalWidth / img.naturalHeight || 1.2;
+                    ent.h = targetH;
+                    ent.w = Math.max(60, Math.min(320, Math.round(targetH * aspect)));
+                    ent.y = (canvas.height - ent.h) / 2;
+                    ent.loaded = true;
+                    // recompute positions to avoid overlap whenever a new thumb loads
+                    recomputeSlidePositions();
+                } catch (e) { console.warn('onload recompute failed', e); }
+            };
+
+            entities.push(ent);
         }
 
         function spawnRain() {
@@ -504,10 +533,10 @@
                 type: 'credits',
                 game: game,
                 img: img,
-                x: (canvas.width - 300) / 2,
+                x: (canvas.width - 220) / 2,
                 y: -300,
-                w: 300,
-                h: 300,
+                w: 220,
+                h: 220,
                 vy: 180 + Math.random() * 80,
                 loaded: false
             });
@@ -585,12 +614,15 @@
 
                 entities.forEach((e, i) => {
                     // Update Aspect Ratio once loaded
-                    if (!e.loaded && e.img.complete && e.img.naturalWidth) {
-                        const h = canvas.height * 0.6; // 60% height
-                        e.h = h;
-                        e.w = h * (e.img.naturalWidth / e.img.naturalHeight);
+                    if (e.img && e.img.complete && !e.loaded) {
+                        // If image has loaded but onload handler missed, update size
+                        const targetH = Math.min(SLIDE_MAX_HEIGHT, Math.floor(canvas.height * 0.28));
+                        const aspect = e.img.naturalWidth / e.img.naturalHeight || 1.2;
+                        e.h = targetH;
+                        e.w = Math.max(60, Math.min(320, Math.round(targetH * aspect)));
                         e.y = (canvas.height - e.h) / 2;
                         e.loaded = true;
+                        recomputeSlidePositions();
                     }
                     
                     e.x += e.vx * dt * speedMultiplier;
@@ -686,6 +718,28 @@
 
             // Cleanup
             entities = entities.filter(e => !e.dead);
+        }
+
+        // Recompute slide positions left-to-right to ensure no overlap.
+        function recomputeSlidePositions() {
+            const slides = entities.filter(e => e.type === 'slide');
+            if (!slides.length) return;
+            // base start far left
+            let base = -1600;
+            for (let i = 0; i < slides.length; i++) {
+                const e = slides[i];
+                // ensure width/height known
+                if (!e.w || !e.h) {
+                    const estH = Math.min(SLIDE_MAX_HEIGHT, Math.floor(canvas.height * 0.28));
+                    e.h = e.h || estH;
+                    e.w = e.w || Math.floor(estH * 1.2);
+                }
+                // place sequentially
+                e.x = base;
+                e.y = (canvas.height - e.h) / 2;
+                base += e.w + SLIDE_GAP;
+            }
+            slideSpacingLocked = true;
         }
 
         function draw() {
