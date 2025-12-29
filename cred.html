@@ -245,6 +245,7 @@
                 <button onclick="setMode('rain')" id="btn-rain">Rain</button>
                 <button onclick="setMode('grow')" id="btn-grow">Focus</button>
                 <button onclick="setMode('fireworks')" id="btn-fireworks">Fireworks</button>
+                <button onclick="setMode('credits')" id="btn-credits">Credits</button>
                 <button onclick="toggleSettings()" style="padding: 8px 12px;">⚙️</button>
             </div>
         </div>
@@ -273,6 +274,13 @@
                 <div class="checkbox-item"><input type="checkbox" id="filter-preordered"> Preorder</div>
             </div>
         </div>
+        <div class="form-group">
+            <label>Playback</label>
+            <div class="checkbox-grid">
+                <div class="checkbox-item"><input type="checkbox" id="randomize-order"> Randomize Order</div>
+                <div class="checkbox-item"><input type="checkbox" id="loop-order" checked> Loop Order</div>
+            </div>
+        </div>
         <div class="modal-buttons">
             <button onclick="fetchData()" class="btn-primary">Load Games</button>
             <button onclick="toggleSettings()" class="btn-secondary">Close</button>
@@ -295,6 +303,11 @@
         let entities = [];
         let speedMultiplier = 1.0; // Controlled by touch
         let baseSpeed = 100; // Pixels per second reference
+        // Ordered playback
+        let orderedGames = [];
+        let orderIndex = 0;
+        let randomizeOrder = false;
+        let loopOrder = true;
         
         // --- Canvas ---
         const canvas = document.getElementById('canvas');
@@ -371,11 +384,17 @@
                     thumbnail: item.querySelector('thumbnail')?.textContent || ''
                 })).filter(g => g.image); // Must have image
 
-                // Shuffle
-                for (let i = games.length - 1; i > 0; i--) {
-                    const j = Math.floor(Math.random() * (i + 1));
-                    [games[i], games[j]] = [games[j], games[i]];
+                // Prepare ordered list for slide/credits playback
+                randomizeOrder = !!document.getElementById('randomize-order')?.checked;
+                loopOrder = !!document.getElementById('loop-order')?.checked;
+                orderedGames = games.map(g => g);
+                if (randomizeOrder) {
+                    for (let i = orderedGames.length - 1; i > 0; i--) {
+                        const j = Math.floor(Math.random() * (i + 1));
+                        [orderedGames[i], orderedGames[j]] = [orderedGames[j], orderedGames[i]];
+                    }
                 }
+                orderIndex = 0;
 
                 document.getElementById('stats-bar').textContent = `${games.length} Games Loaded`;
                 loader.style.display = 'none';
@@ -404,13 +423,15 @@
             // Pre-fill slide/rain to avoid empty screen start
             if (games.length > 0) {
                 if (mode === 'slide') {
-                    // Fill screen horizontally immediately
-                    let x = 0;
-                    while(x < canvas.width) {
-                        spawnSlide(x);
-                        x += 320; // Approx spacing
-                    }
-                }
+                            // Fill screen horizontally immediately using orderedGames sequence
+                            let x = 0;
+                            let idx = 0;
+                            while (x < canvas.width && orderedGames.length > 0 && idx < orderedGames.length) {
+                                const g = orderedGames[idx++];
+                                spawnSlide(x, g);
+                                x += 320; // conservative spacing to avoid overlap; images will adjust when loaded
+                            }
+                        }
             }
         }
         
@@ -420,12 +441,17 @@
         }
 
         // Spawn Helpers
-        function spawnSlide(startX = -300) {
-            const game = games[Math.floor(Math.random() * games.length)];
+        function spawnSlide(startX = -300, specificGame = null) {
+            // Use ordered sequence when available, otherwise pick random
+            let game = specificGame || orderedGames[orderIndex] || games[Math.floor(Math.random() * games.length)];
+            if (!specificGame) {
+                orderIndex++;
+                if (orderIndex >= orderedGames.length) orderIndex = loopOrder ? 0 : orderedGames.length - 1;
+            }
             const img = new Image();
             img.crossOrigin = "Anonymous";
             img.src = getProxiedImage(game.image);
-            
+
             entities.push({
                 type: 'slide',
                 game: game,
@@ -456,6 +482,30 @@
                 y: -300,
                 w: 200, h: 200,
                 vy: 100 + Math.random() * 100,
+                loaded: false
+            });
+        }
+
+        // Spawn Credits: one game at a time top-to-bottom centered
+        function spawnCredits() {
+            if (orderedGames.length === 0) return;
+            const game = orderedGames[orderIndex];
+            orderIndex++;
+            if (orderIndex >= orderedGames.length) orderIndex = loopOrder ? 0 : orderedGames.length - 1;
+
+            const img = new Image();
+            img.crossOrigin = "Anonymous";
+            img.src = getProxiedImage(game.image);
+
+            entities.push({
+                type: 'credits',
+                game: game,
+                img: img,
+                x: (canvas.width - 300) / 2,
+                y: -300,
+                w: 300,
+                h: 300,
+                vy: 180 + Math.random() * 80,
                 loaded: false
             });
         }
@@ -548,6 +598,30 @@
                 });
             }
 
+            // --- Credits Mode (one-at-a-time top->bottom) ---
+            else if (mode === 'credits') {
+                // ensure only one active at a time; spawn next when none present
+                const activeCredits = entities.filter(e => e.type === 'credits');
+                if (activeCredits.length === 0) {
+                    spawnCredits();
+                }
+
+                entities.forEach((e, i) => {
+                    if (e.type !== 'credits') return;
+                    if (!e.loaded && e.img.complete && e.img.naturalWidth) {
+                        // scale to fit width
+                        const maxW = Math.min(canvas.width * 0.6, 500);
+                        const aspect = e.img.naturalWidth / e.img.naturalHeight;
+                        e.w = Math.min(maxW, 400);
+                        e.h = e.w / aspect;
+                        e.x = (canvas.width - e.w) / 2;
+                        e.loaded = true;
+                    }
+                    e.y += e.vy * dt * speedMultiplier;
+                    if (e.y > canvas.height + 50) e.dead = true;
+                });
+            }
+
             // --- Rain Mode (Top Down) ---
             else if (mode === 'rain') {
                 if (Math.random() < 0.05 * Math.abs(speedMultiplier)) spawnRain();
@@ -631,6 +705,14 @@
                         ctx.drawImage(e.img, e.x, e.y + e.h + 10, e.w, e.h * 0.5);
                         ctx.restore();
                     }
+                }
+                else if (mode === 'credits' && e.type === 'credits') {
+                    ctx.drawImage(e.img, e.x, e.y, e.w, e.h);
+                    // draw title below
+                    ctx.fillStyle = 'rgba(255,255,255,0.9)';
+                    ctx.font = 'bold 22px sans-serif';
+                    ctx.textAlign = 'center';
+                    ctx.fillText(e.game.title, canvas.width/2, Math.min(canvas.height - 40, e.y + e.h + 30));
                 }
                 else if (mode === 'grow') {
                     const aspect = e.img.naturalWidth / e.img.naturalHeight;
@@ -758,7 +840,8 @@
 
         // Start
         requestAnimationFrame(loop);
-        window.onload = fetchData;
+        // Do not auto-fetch on load; user configures filters and clicks Load Games
+        // window.onload = fetchData;
 
     </script>
 </body>
