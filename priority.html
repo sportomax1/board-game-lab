@@ -191,12 +191,12 @@
       <thead>
         <tr>
           <th style="width:60px">Thumb</th>
-          <th>Game</th>
-          <th>W-Priority</th>
-          <th>W-Status</th>
-          <th>Suggested</th>
-          <th>Internal Rate</th>
-          <th>Diff</th>
+          <th onclick="setSort('name')" style="cursor:pointer">Game</th>
+          <th onclick="setSort('priority')" style="cursor:pointer">W-Priority</th>
+          <th onclick="setSort('wishlist')" style="cursor:pointer">W-Status</th>
+          <th onclick="setSort('suggestedRating')" style="cursor:pointer">Suggested</th>
+          <th onclick="setSort('internalRating')" style="cursor:pointer">Internal Rate</th>
+          <th onclick="setSort('diff')" style="cursor:pointer">Diff</th>
         </tr>
       </thead>
       <tbody id="summary-body"></tbody>
@@ -208,6 +208,7 @@
   let games = [];
   let currentIndex = 0;
   let reviewed = [];
+  let sortState = { key: 'name', asc: true };
 
   // Start triggered by UI button; reads username input and loads collection
   async function start(){
@@ -218,9 +219,9 @@
     document.getElementById('eval-screen').classList.add('hidden');
     try{
       const doc = await fetchCollection(u);
-      const allGames = parseCollection(doc);
-      // Map to the same shape expected by the app (wantToPlay boolean etc.)
-      games = allGames.filter(g => !!g.wanttoplay);
+      // Only return games with wanttoplay=1 from parsing
+      const allGames = parseCollection(doc, true);
+      games = allGames; // already filtered to want-to-play items
       // Randomize order for review
       shuffleArray(games);
       if (games.length === 0) {
@@ -239,6 +240,7 @@
 
   // Fetch collection using local api helper (returns XML)
   async function fetchCollection(username){
+    if(!username) throw new Error('No username provided');
     const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
     const r = await fetch(url);
     if(!r.ok) throw new Error('BGG helper error: '+r.status);
@@ -247,18 +249,56 @@
   }
 
   // Parse BGG collection XML into a lightweight JS object array
-  function parseCollection(doc){
+  function parseCollection(doc, wantOnly = false){
     const items = Array.from(doc.querySelectorAll('item'));
-    return items.map(it=>{
-      const name = it.querySelector('name')?.textContent || 'Unknown';
-      const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
+    const out = [];
+    for(const it of items){
       const st = it.querySelector('status');
       const wanttoplay = st ? (st.getAttribute('wanttoplay') === '1') : false;
+      if(wantOnly && !wanttoplay) continue;
+      const name = it.querySelector('name')?.textContent || 'Unknown';
+      const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
       const wishlist = st ? (st.getAttribute('wishlist') === '1') : false;
       const wishlistpriority = (st && st.getAttribute('wishlist')==='1') ? (parseInt(st.getAttribute('wishlistpriority'))||0) : 0;
       const numplays = parseInt(it.querySelector('numplays')?.textContent || '0') || 0;
-      return { name, thumbnail: thumb, wanttoplay, wishlist, wishlistPriority: wishlistpriority, numplays };
+      out.push({ name, thumbnail: thumb, wanttoplay, wishlist, wishlistPriority: wishlistpriority, numplays });
+    }
+    return out;
+  }
+
+  // Summary rendering with sorting
+  function setSort(key){
+    if(sortState.key === key) sortState.asc = !sortState.asc; else { sortState.key = key; sortState.asc = true; }
+    renderSummaryTable();
+  }
+
+  function renderSummaryTable(){
+    const body = document.getElementById('summary-body');
+    const list = [...reviewed];
+    const k = sortState.key;
+    list.sort((a,b)=>{
+      let va = a[k], vb = b[k];
+      if(typeof va === 'string') va = va.toLowerCase();
+      if(typeof vb === 'string') vb = vb.toLowerCase();
+      if(va < vb) return sortState.asc ? -1 : 1;
+      if(va > vb) return sortState.asc ? 1 : -1;
+      return 0;
     });
+    body.innerHTML = list.map(r => {
+      const isMismatch = (r.internalRating >= 8 && r.priority === 0);
+      const diffSign = (r.diff > 0) ? '+' : '';
+      return `
+        <tr style="${isMismatch ? 'background: #fffbe6;' : ''}">
+          <td><img src="${r.thumbnail||'https://via.placeholder.com/48'}" style="width:48px;height:48px;object-fit:cover;border-radius:6px"/></td>
+          <td><strong>${r.name}</strong> ${isMismatch ? '⚠️' : ''}</td>
+          <td><span class="status-pill ${r.priority === 1 ? 'priority-1' : 'no-wish'}">${r.priority || 'None'}</span></td>
+          <td>${r.wishlist}</td>
+          <td style="text-align:center">${r.suggestedRating}</td>
+          <td style="font-weight:bold; color:var(--primary); text-align:center">${r.internalRating}</td>
+          <td style="text-align:center">${diffSign}${r.diff}</td>
+        </tr>
+      `;
+    }).join('');
   }
 
   // Fisher-Yates shuffle
@@ -327,23 +367,7 @@
     document.getElementById('eval-screen').classList.add('hidden');
     document.getElementById('summary-screen').classList.remove('hidden');
     document.getElementById('resume-btn').classList.toggle('hidden', currentIndex >= games.length);
-    
-    const body = document.getElementById('summary-body');
-    body.innerHTML = reviewed.map(r => {
-      const isMismatch = (r.internalRating >= 8 && r.priority === 0);
-      const diffSign = (r.diff > 0) ? '+' : '';
-      return `
-        <tr style="${isMismatch ? 'background: #fffbe6;' : ''}">
-          <td><img src="${r.thumbnail||'https://via.placeholder.com/48'}" style="width:48px;height:48px;object-fit:cover;border-radius:6px"/></td>
-          <td><strong>${r.name}</strong> ${isMismatch ? '⚠️' : ''}</td>
-          <td><span class="status-pill ${r.priority === 1 ? 'priority-1' : 'no-wish'}">${r.priority || 'None'}</span></td>
-          <td>${r.wishlist}</td>
-          <td style="text-align:center">${r.suggestedRating}</td>
-          <td style="font-weight:bold; color:var(--primary); text-align:center">${r.internalRating}</td>
-          <td style="text-align:center">${diffSign}${r.diff}</td>
-        </tr>
-      `;
-    }).join('');
+    renderSummaryTable();
   }
 
   function resumeReview() {
