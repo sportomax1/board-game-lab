@@ -21,7 +21,7 @@
 </head>
 <body>
   <h2>BoardGameGeek Advanced-ish Search</h2>
-  <p>Search BGG using the XML API (proxied). Fill Title or leave blank to search widely; many filters are applied client-side.</p>
+  <p>Search BGG using the XML API (proxied). You may leave Title blank and search by other filters (year, user collection, etc.).</p>
 
   <form id="searchForm">
     <div class="row">
@@ -164,7 +164,7 @@
   <div id="results"></div>
 
   <script>
-    // Helper: try local /api/bgg-helper first, fallback to raw proxied URL when provided
+    // Helper: try local /api/bgg-helper first, fallback to AllOrigins raw when fullUrl provided
     async function fetchBGGEndpoint(endpoint, params={}){
       const qp = Object.entries(params).filter(([k,v])=>v!==undefined).map(([k,v])=>`${encodeURIComponent(k)}=${encodeURIComponent(v)}`).join('&');
       const url = `/api/bgg-helper?endpoint=${encodeURIComponent(endpoint)}${qp? '&'+qp : ''}`;
@@ -185,7 +185,31 @@
 
     function text(el){return el ? el.textContent.trim() : ''}
     function parseXML(str){return new window.DOMParser().parseFromString(str, 'application/xml');}
+    function parseHTML(str){return new window.DOMParser().parseFromString(str, 'text/html');}
     function getInput(id){return (document.getElementById(id)?.value||'').trim()}
+
+    async function fetchAdvancedSearchIds({yearMin, yearMax, collectionUser, maxResults}){
+      const params = new URLSearchParams();
+      params.set('action','search');
+      params.set('advsearch','1');
+      params.set('objecttype','boardgame');
+      params.set('geekitemname','');
+      if(yearMin) params.set('range[yearpublished][min]', String(yearMin));
+      if(yearMax) params.set('range[yearpublished][max]', String(yearMax));
+      if(collectionUser) params.set('searchuser', collectionUser);
+      params.set('B1','Submit');
+      const fullUrl = 'https://boardgamegeek.com/geeksearch.php?'+params.toString();
+      const html = await fetchBGGEndpoint('advanced',{fullUrl});
+      const doc = parseHTML(html);
+      const anchors = Array.from(doc.querySelectorAll('a[href*="/boardgame/"]'));
+      const ids = [];
+      for(const a of anchors){
+        const m = a.getAttribute('href').match(/boardgame\/(\d+)/);
+        if(m) ids.push(m[1]);
+        if(ids.length>=maxResults) break;
+      }
+      return Array.from(new Set(ids));
+    }
 
     document.getElementById('clearBtn').addEventListener('click',()=>{document.getElementById('searchForm').reset();document.getElementById('results').innerHTML='';document.getElementById('status').textContent='';});
 
@@ -197,8 +221,6 @@
       status.textContent='Searching... (this may take a few seconds)';
 
       const title = getInput('title');
-      if(!title){status.textContent='Please enter at least a Title keyword for reliable results.';return}
-
       const maxResults = parseInt(getInput('maxResults'))||50;
       const yearMin = parseInt(getInput('yearMin'))||null;
       const yearMax = parseInt(getInput('yearMax'))||null;
@@ -223,15 +245,22 @@
       const mechs = getInput('mechanics').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
       const subdomainsFilter = getInput('subdomains').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
 
-      try{
-        // 1) Search
-        const searchTxt = await fetchBGGEndpoint('search',{query: title, type: 'boardgame', fullUrl: `https://boardgamegeek.com/xmlapi2/search?query=${encodeURIComponent(title)}&type=boardgame`});
-        const xml = parseXML(searchTxt);
-        const items = Array.from(xml.querySelectorAll('item'));
-        if(items.length===0){status.textContent='No matches found.';return}
-        const ids = items.map(it=>it.getAttribute('id')).slice(0, maxResults);
+      const hasOtherFilters = !!(yearMin || yearMax || minAge || ratingMin || ratingMax || minRatings || weightMin || weightMax || minWeightRatings || designerFilter || publisherFilter || collectionUser || playersMin || playersMax || playtimeMin || playtimeMax || cats.length || mechs.length || subdomainsFilter.length || excludeExpansions);
+      if(!title && !hasOtherFilters){ status.textContent = 'Enter a Title or at least one other filter (year, user, etc)'; return }
 
-        // 2) Fetch details in batches
+      try{
+        let ids = [];
+        if(title){
+          const searchTxt = await fetchBGGEndpoint('search',{query: title, type: 'boardgame', fullUrl: `https://boardgamegeek.com/xmlapi2/search?query=${encodeURIComponent(title)}&type=boardgame`});
+          const xml = parseXML(searchTxt);
+          const items = Array.from(xml.querySelectorAll('item'));
+          if(items.length===0){status.textContent='No matches found.';return}
+          ids = items.map(it=>it.getAttribute('id')).slice(0, maxResults);
+        }else{
+          ids = await fetchAdvancedSearchIds({yearMin, yearMax, collectionUser, maxResults});
+          if(!ids || ids.length===0){ status.textContent = 'No matches found for the selected filters.'; return }
+        }
+
         const batchSize = 50;
         const detailItems = [];
         for(let i=0;i<ids.length;i+=batchSize){
@@ -241,7 +270,6 @@
           Array.from(x2.querySelectorAll('item')).forEach(it=>detailItems.push(it));
         }
 
-        // 3) Optionally fetch user collection
         let userCollectionIds = null;
         if(collectionMode!=='none' && collectionUser){
           try{
@@ -251,7 +279,6 @@
           }catch(e){console.warn('collection fetch failed',e)}
         }
 
-        // 4) Parse and apply client-side filters
         const results = [];
         for(const it of detailItems){
           const type = it.getAttribute('type');
@@ -294,7 +321,6 @@
           if(mechs.length && !mechs.every(m=>mechanics.some(mm=>mm.includes(m)))) continue;
           if(subdomainsFilter.length && !subdomainsFilter.every(s=>subdomains.some(ss=>ss.includes(s)))) continue;
 
-          // players matching
           if(playersMin && playersMax){
             if(playersMatch==='exact'){
               if(!(minplayers === playersMin && maxplayers === playersMax)) continue;
@@ -309,11 +335,9 @@
             if(minplayers !== null && minplayers > playersMax) continue;
           }
 
-          // playtime
           if(playtimeMin && maxplaytime !== null && maxplaytime < playtimeMin) continue;
           if(playtimeMax && minplaytime !== null && minplaytime > playtimeMax) continue;
 
-          // collection filter
           if(userCollectionIds && !userCollectionIds.includes(id)) continue;
 
           results.push({id,name,year,thumbnail,image,average,usersrated,averageweight,minplayers,maxplayers,minplaytime,maxplaytime,designers,publishers,categories,mechanics,subdomains});
@@ -344,350 +368,6 @@
         document.getElementById('status').textContent = 'Error during search; check console. Proxy may be rate-limited.';
       }
     });
-  </script>
-</body>
-</html>
-<!doctype html>
-<html lang="en">
-<head>
-  <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
-  <title>BGG Advanced Search (client)</title>
-  <style>
-    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial;max-width:1100px;margin:20px auto;padding:0 16px}
-    form .row{display:flex;gap:8px;flex-wrap:wrap;margin-bottom:8px}
-    label{display:block;font-size:13px}
-    input[type=text],input[type=number],select{padding:6px;border:1px solid #ccc;border-radius:4px}
-    button{padding:8px 12px;border-radius:6px;border:1px solid #007acc;background:#007acc;color:#fff}
-    #results{display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px;margin-top:18px}
-    .card{border:1px solid #ddd;border-radius:8px;overflow:hidden;background:#fff;display:flex;flex-direction:column}
-    .thumb{width:100%;height:160px;object-fit:cover;background:#f6f6f6}
-    .meta{padding:10px;display:flex;flex-direction:column;gap:6px}
-    .title{font-weight:700}
-    .small{font-size:13px;color:#555}
-    .tag{display:inline-block;background:#eef;padding:3px 6px;border-radius:12px;font-size:12px}
-  </style>
-</head>
-<body>
-  <h2>BoardGameGeek Advanced-ish Search</h2>
-  <p>Search BGG using the XML API (proxied). Fill Title or leave blank to search widely; many filters are applied client-side.</p>
-
-  <form id="searchForm">
-    <div class="row">
-      <div style="flex:1">
-        <label>Title</label>
-        <input type="text" id="title" placeholder="Keyword(s)" />
-      </div>
-      <div style="width:200px">
-        <label>Designer</label>
-        <input type="text" id="designer" placeholder="Designer name" />
-      </div>
-      <div style="width:200px">
-        <label>Publisher</label>
-        <input type="text" id="publisher" placeholder="Publisher name" />
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Year Released Min</label>
-        <input type="number" id="yearMin" min="0" />
-      </div>
-      <div>
-        <label>Year Released Max</label>
-        <input type="number" id="yearMax" min="0" />
-      </div>
-      <div>
-        <label>Minimum Age</label>
-        <input type="number" id="minAge" min="0" />
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Average Rating Min (1-10)</label>
-        <input type="number" step="0.1" id="ratingMin" min="0" max="10" />
-      </div>
-      <div>
-        <label>Average Rating Max (1-10)</label>
-        <input type="number" step="0.1" id="ratingMax" min="0" max="10" />
-      </div>
-      <div>
-        <label>Min # of Ratings</label>
-        <input type="number" id="minRatings" min="0" />
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Average Weight Min (1-5)</label>
-        <input type="number" step="0.1" id="weightMin" min="0" max="5" />
-      </div>
-      <div>
-        <label>Average Weight Max (1-5)</label>
-        <input type="number" step="0.1" id="weightMax" min="0" max="5" />
-      </div>
-      <div>
-        <label>Min # of Weight Ratings</label>
-        <input type="number" id="minWeightRatings" min="0" />
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Specify Collection User</label>
-        <input type="text" id="collectionUser" placeholder="username (optional)" />
-      </div>
-      <div style="width:160px">
-        <label>Collection Filter</label>
-        <select id="collectionMode">
-          <option value="none">Not Filtered</option>
-          <option value="owned">Owned</option>
-          <option value="rated">Rated</option>
-        </select>
-      </div>
-      <div style="width:160px">
-        <label>Exclude Expansions</label>
-        <select id="excludeExpansions">
-          <option value="0">No</option>
-          <option value="1">Yes</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Players Min</label>
-        <input type="number" id="playersMin" min="0" />
-      </div>
-      <div>
-        <label>Players Max</label>
-        <input type="number" id="playersMax" min="0" />
-      </div>
-      <div style="width:160px">
-        <label>Players Match</label>
-        <select id="playersMatch">
-          <option value="normal">Normal (include any that overlap)</option>
-          <option value="exact">Exact (only games that exactly match this range)</option>
-        </select>
-      </div>
-    </div>
-
-    <div class="row">
-      <div>
-        <label>Min Playing Time (minutes)</label>
-        <input type="number" id="playtimeMin" min="0" />
-      </div>
-      <div>
-        <label>Max Playing Time (minutes)</label>
-        <input type="number" id="playtimeMax" min="0" />
-      </div>
-      <div style="flex:1">
-        <label>Categories (comma separated)</label>
-        <input type="text" id="categories" placeholder="e.g. Strategy, Family" />
-      </div>
-    </div>
-
-    <div class="row">
-      <div style="flex:1">
-        <label>Mechanics (comma separated)</label>
-        <input type="text" id="mechanics" placeholder="e.g. Deck Building" />
-      </div>
-      <div>
-        <label>Max results</label>
-        <input type="number" id="maxResults" value="50" min="1" max="200" />
-      </div>
-    </div>
-
-    <div style="margin-top:10px">
-      <button type="submit">Search</button>
-      <button type="button" id="clearBtn">Clear</button>
-      <span id="status" style="margin-left:12px;color:#666"></span>
-    </div>
-  </form>
-
-  <div id="results"></div>
-
-  <script>
-    const proxy = url => 'https://api.allorigins.win/raw?url=' + encodeURIComponent(url);
-
-    function text(el){return el ? el.textContent.trim() : ''}
-
-    function parseXML(str){
-      return new window.DOMParser().parseFromString(str, 'application/xml');
-    }
-
-    function getInput(id){return document.getElementById(id).value.trim()}
-
-    document.getElementById('clearBtn').addEventListener('click',()=>{document.getElementById('searchForm').reset();document.getElementById('results').innerHTML='';document.getElementById('status').textContent='';});
-
-    document.getElementById('searchForm').addEventListener('submit', async e=>{
-      e.preventDefault();
-      const status = document.getElementById('status');
-      const resultsEl = document.getElementById('results');
-      resultsEl.innerHTML='';
-      status.textContent='Searching... (this may take a few seconds)';
-
-      const title = getInput('title');
-      if(!title){status.textContent='Please enter at least a Title keyword for reliable results.';return}
-
-      const maxResults = parseInt(getInput('maxResults'))||50;
-      const yearMin = parseInt(getInput('yearMin'))||null;
-      const yearMax = parseInt(getInput('yearMax'))||null;
-      const minAge = parseInt(getInput('minAge'))||null;
-      const ratingMin = parseFloat(getInput('ratingMin'))||null;
-      const ratingMax = parseFloat(getInput('ratingMax'))||null;
-      const minRatings = parseInt(getInput('minRatings'))||0;
-      const weightMin = parseFloat(getInput('weightMin'))||null;
-      const weightMax = parseFloat(getInput('weightMax'))||null;
-      const minWeightRatings = parseInt(getInput('minWeightRatings'))||0;
-      const designerFilter = getInput('designer').toLowerCase();
-      const publisherFilter = getInput('publisher').toLowerCase();
-      const collectionMode = document.getElementById('collectionMode').value;
-      const collectionUser = getInput('collectionUser');
-      const excludeExpansions = document.getElementById('excludeExpansions').value === '1';
-      const playersMin = parseInt(getInput('playersMin'))||null;
-      const playersMax = parseInt(getInput('playersMax'))||null;
-      const playersMatch = document.getElementById('playersMatch').value;
-      const playtimeMin = parseInt(getInput('playtimeMin'))||null;
-      const playtimeMax = parseInt(getInput('playtimeMax'))||null;
-      const cats = getInput('categories').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
-      const mechs = getInput('mechanics').toLowerCase().split(',').map(s=>s.trim()).filter(Boolean);
-
-      // 1) search by title
-      const searchUrl = `https://boardgamegeek.com/xmlapi2/search?query=${encodeURIComponent(title)}&type=boardgame`;
-      try{
-        const resp = await fetch(proxy(searchUrl));
-        const txt = await resp.text();
-        const xml = parseXML(txt);
-        const items = Array.from(xml.querySelectorAll('item'));
-        if(items.length===0){status.textContent='No matches found.';return}
-        const ids = items.map(it=>it.getAttribute('id')).slice(0, maxResults);
-
-        // 2) fetch details in batches
-        const batchSize = 50;
-        const detailItems = [];
-        for(let i=0;i<ids.length;i+=batchSize){
-          const batch = ids.slice(i,i+batchSize).join(',');
-          const thingUrl = `https://boardgamegeek.com/xmlapi2/thing?id=${batch}&stats=1`;
-          const r2 = await fetch(proxy(thingUrl));
-          const t2 = await r2.text();
-          const x2 = parseXML(t2);
-          const entries = Array.from(x2.querySelectorAll('item'));
-          entries.forEach(it=>detailItems.push(it));
-        }
-
-        // optionally get collection for user
-        let userCollectionIds = null;
-        if(collectionMode!=='none' && collectionUser){
-          const collParams = collectionMode==='owned' ? '&own=1' : '&rated=1';
-          const collUrl = `https://boardgamegeek.com/xmlapi2/collection?username=${encodeURIComponent(collectionUser)}${collParams}`;
-          try{
-            const rc = await fetch(proxy(collUrl));
-            const tc = await rc.text();
-            const xc = parseXML(tc);
-            userCollectionIds = Array.from(xc.querySelectorAll('item')).map(i=>i.getAttribute('objectid'));
-          }catch(e){console.warn('collection fetch failed',e)}
-        }
-
-        // 3) parse and filter
-        const results = [];
-        for(const it of detailItems){
-          const type = it.getAttribute('type');
-          if(excludeExpansions && type && type.toLowerCase().includes('expansion')) continue;
-          const id = it.getAttribute('id');
-          const nameEl = it.querySelector('name[type="primary"]') || it.querySelector('name');
-          const name = nameEl ? nameEl.getAttribute('value') : '';
-          const year = parseInt(text(it.querySelector('yearpublished')))||null;
-          const minplayers = parseInt(it.querySelector('minplayers')?.getAttribute('value')||it.querySelector('minplayers')?.textContent) || null;
-          const maxplayers = parseInt(it.querySelector('maxplayers')?.getAttribute('value')||it.querySelector('maxplayers')?.textContent) || null;
-          const minplaytime = parseInt(it.querySelector('minplaytime')?.getAttribute('value')||it.querySelector('minplaytime')?.textContent) || null;
-          const maxplaytime = parseInt(it.querySelector('maxplaytime')?.getAttribute('value')||it.querySelector('maxplaytime')?.textContent) || null;
-          const minageVal = parseInt(it.querySelector('minage')?.getAttribute('value')||it.querySelector('minage')?.textContent) || null;
-
-          const thumbnail = text(it.querySelector('thumbnail'));
-          const image = text(it.querySelector('image'));
-
-          // links
-          const links = Array.from(it.querySelectorAll('link')).map(l=>({type:l.getAttribute('type'), value:l.getAttribute('value')}));
-          const designers = links.filter(l=>l.type==='designer').map(l=>l.value.toLowerCase());
-          const publishers = links.filter(l=>l.type==='publisher').map(l=>l.value.toLowerCase());
-          const categories = links.filter(l=>l.type==='boardgamecategory').map(l=>l.value.toLowerCase());
-          const mechanics = links.filter(l=>l.type==='boardgamemechanic').map(l=>l.value.toLowerCase());
-
-          // stats
-          const stats = it.querySelector('statistics ratings');
-          const average = stats ? parseFloat(stats.querySelector('average')?.getAttribute('value')||stats.querySelector('average')?.textContent) : null;
-          const usersrated = stats ? parseInt(stats.querySelector('usersrated')?.getAttribute('value')||stats.querySelector('usersrated')?.textContent) : 0;
-          const averageweight = stats ? parseFloat(stats.querySelector('averageweight')?.getAttribute('value')||stats.querySelector('averageweight')?.textContent) : null;
-          const weightusers = stats ? parseInt(stats.querySelector('wusers')?.getAttribute('value')||stats.querySelector('wusers')?.textContent) || 0 : 0;
-
-          // apply filters
-          if(yearMin && year !== null && year < yearMin) continue;
-          if(yearMax && year !== null && year > yearMax) continue;
-          if(minAge && minageVal !== null && minageVal < minAge) continue;
-          if(ratingMin && average !== null && average < ratingMin) continue;
-          if(ratingMax && average !== null && average > ratingMax) continue;
-          if(minRatings && usersrated < minRatings) continue;
-          if(weightMin && averageweight !== null && averageweight < weightMin) continue;
-          if(weightMax && averageweight !== null && averageweight > weightMax) continue;
-          if(minWeightRatings && weightusers < minWeightRatings) continue;
-          if(designerFilter && !designers.some(d=>d.includes(designerFilter))) continue;
-          if(publisherFilter && !publishers.some(p=>p.includes(publisherFilter))) continue;
-          if(cats.length && !cats.every(c=>categories.some(cc=>cc.includes(c)))) continue;
-          if(mechs.length && !mechs.every(m=>mechanics.some(mm=>mm.includes(m)))) continue;
-
-          // players matching
-          if(playersMin && playersMax){
-            if(playersMatch==='exact'){
-              if(!(minplayers === playersMin && maxplayers === playersMax)) continue;
-            }else{
-              // normal: require overlap
-              if(maxplayers !== null && minplayers !== null){
-                if(playersMax < minplayers || playersMin > maxplayers) continue;
-              }
-            }
-          } else if(playersMin){
-            if(maxplayers !== null && maxplayers < playersMin) continue;
-          } else if(playersMax){
-            if(minplayers !== null && minplayers > playersMax) continue;
-          }
-
-          // playtime
-          if(playtimeMin && maxplaytime !== null && maxplaytime < playtimeMin) continue;
-          if(playtimeMax && minplaytime !== null && minplaytime > playtimeMax) continue;
-
-          // collection filter
-          if(userCollectionIds && !userCollectionIds.includes(id)) continue;
-
-          results.push({id,name,year,thumbnail,image,average,usersrated,averageweight,minplayers,maxplayers,minplaytime,maxplaytime,designers,publishers,categories,mechanics});
-        }
-
-        // render
-        if(results.length===0){status.textContent='No games matched filters.';return}
-        status.textContent=`Found ${results.length} results (showing up to ${maxResults}).`;
-        for(const r of results){
-          const card = document.createElement('div');card.className='card';
-          const img = document.createElement('img');img.className='thumb';img.src = r.thumbnail || r.image || '';
-          img.alt = r.name;
-          const meta = document.createElement('div');meta.className='meta';
-          const title = document.createElement('div');title.className='title';title.innerHTML = `<a href="https://boardgamegeek.com/boardgame/${r.id}" target="_blank" rel="noopener">${r.name}</a> ${r.year?`<span class="small">(${r.year})</span>`:''}`;
-          const details = document.createElement('div');details.className='small';
-          details.innerHTML = `${r.minplayers||''}-${r.maxplayers||''} players · ${r.minplaytime||''}-${r.maxplaytime||''} min · Avg ${r.average? r.average.toFixed(2):'N/A'} (${r.usersrated||0} votes) · Weight ${r.averageweight? r.averageweight.toFixed(2):'N/A'}`;
-          const meta2 = document.createElement('div');meta2.className='small';
-          meta2.textContent = `Designer: ${ (r.designers||[]).slice(0,3).map(s=>s).join(', ') }`;
-          const pub = document.createElement('div'); pub.className='small'; pub.textContent = `Publisher: ${ (r.publishers||[]).slice(0,3).map(s=>s).join(', ') }`;
-          const catsEl = document.createElement('div'); catsEl.className='small'; catsEl.textContent = `Categories: ${ (r.categories||[]).slice(0,4).map(s=>s).join(', ') }`;
-          meta.appendChild(title);meta.appendChild(details);meta.appendChild(meta2);meta.appendChild(pub);meta.appendChild(catsEl);
-          card.appendChild(img);card.appendChild(meta);
-          resultsEl.appendChild(card);
-        }
-
-      }catch(err){
-        console.error(err);
-        document.getElementById('status').textContent = 'Error during search; check console. Proxy may be rate-limited.';
-      }
-    });
-  </script>
-</body>
+      </script>
+  </body>
 </html>
