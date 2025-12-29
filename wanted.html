@@ -43,6 +43,7 @@
 
 <script>
 let currentFlags = [];
+let currentWpFilter = null;
 async function fetchCollection(username){
   // Do not restrict to owned items here — tabs are meant to surface all status flags
   const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
@@ -71,12 +72,20 @@ function parseCollection(doc){
     };
     // parse preordered flag if present
     status.preordered = st?st.getAttribute('preordered')==='1':false;
-    // average rating if present
+    // extract rating value and average correctly when present
+    let ratingVal = 0;
     let avg = 0;
-    const avNode = it.querySelector('rating') || it.querySelector('rating average') || it.querySelector('stats ratings average');
-    if(avNode){ avg = parseFloat(avNode.getAttribute('value')||avNode.textContent||0) || 0; }
+    const ratingEl = it.querySelector('rating');
+    if(ratingEl){
+      ratingVal = parseInt(ratingEl.getAttribute('value')) || 0;
+      const avgEl = ratingEl.querySelector('average') || it.querySelector('average');
+      if(avgEl) avg = parseFloat(avgEl.getAttribute('value')||avgEl.textContent||0) || 0;
+    } else {
+      const avgEl = it.querySelector('average');
+      if(avgEl) avg = parseFloat(avgEl.getAttribute('value')||avgEl.textContent||0) || 0;
+    }
     // expose wishlistpriority and preordered at top-level for sorting/display
-    return { id,name,thumb,status,avg, rating: avg, wishlistpriority: status.wishlistpriority || 0, preordered: status.preordered || false };
+    return { id,name,thumb,status,avg, rating: ratingVal, wishlistpriority: status.wishlistpriority || 0, preordered: status.preordered || false };
   });
 }
 
@@ -108,11 +117,22 @@ function renderGrid(items){
     const counts = {};
     (items||[]).forEach(g=>{ const k = (g.wishlistpriority||0); counts[k] = (counts[k]||0) + 1; });
     const keys = Object.keys(counts).map(Number).sort((a,b)=>a-b);
-    if(keys.length===0) {
-      wpCountsEl.innerHTML = '';
-    } else {
-      const parts = keys.map(k=>`<span style="display:inline-block;margin-right:8px;padding:6px 8px;border-radius:8px;border:1px solid #e5e7eb;background:#fff;font-weight:700">WP ${k}: ${counts[k]}</span>`);
-      wpCountsEl.innerHTML = `<div style="display:flex;flex-wrap:wrap;gap:8px">${parts.join('')}</div>`;
+    wpCountsEl.innerHTML = '';
+    if(keys.length>0){
+      const wrap = document.createElement('div'); wrap.style.display='flex'; wrap.style.flexWrap='wrap'; wrap.style.gap='8px';
+      keys.forEach(k=>{
+        const btn = document.createElement('button');
+        btn.className = 'wp-badge';
+        btn.textContent = `WP ${k}: ${counts[k]}`;
+        btn.dataset.wp = String(k);
+        if(String(currentWpFilter) === String(k)) btn.classList.add('active');
+        btn.addEventListener('click', ()=>{ currentWpFilter = (String(currentWpFilter)===String(k)) ? null : String(k); renderGrid(items); });
+        wrap.appendChild(btn);
+      });
+      const clear = document.createElement('button'); clear.className='wp-badge clear'; clear.textContent='Clear WP filter';
+      clear.addEventListener('click', ()=>{ currentWpFilter = null; renderGrid(items); });
+      wrap.appendChild(clear);
+      wpCountsEl.appendChild(wrap);
     }
   }
   // sort according to UI selection
@@ -133,12 +153,13 @@ function renderGrid(items){
     // default: average desc
     return (b.avg||0) - (a.avg||0);
   });
-  sorted.forEach(g=>{
+  const display = (currentWpFilter===null) ? sorted : sorted.filter(g=> String((g.wishlistpriority||0)) === String(currentWpFilter));
+  display.forEach(g=>{
     const el = document.createElement('div'); el.className='card-item';
     const wp = g.wishlistpriority || 0;
-    const avg = (typeof g.avg === 'number') ? g.avg.toFixed(2) : (g.avg || '0.00');
-    const rating = (typeof g.rating === 'number') ? g.rating.toFixed(2) : (g.rating || avg);
-    el.innerHTML = `<div class="thumb"><img src="${g.thumb||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2260%22 height=%2260%22%3E%3Crect width=60 height=60 fill=%23e5e7eb/%3E%3C/svg%3E'}"/></div><div style="flex:1"><div style="font-weight:700">${g.name}</div><div class="muted">Avg: ${avg} &nbsp; | &nbsp; Rating: ${rating} &nbsp; | &nbsp; WP: ${wp}</div></div>`;
+    const avgStr = (typeof g.avg === 'number') ? g.avg.toFixed(5) : (g.avg || '0.00000');
+    const ratingStr = (typeof g.rating === 'number') ? String(g.rating) : (g.rating || '0');
+    el.innerHTML = `<div class="thumb"><img src="${g.thumb||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2260%22 height=%2260%22%3E%3Crect width=60 height=60 fill=%23e5e7eb/%3E%3C/svg%3E'}"/></div><div style="flex:1"><div style="font-weight:700">${g.name}</div><div class="muted">Average: ${avgStr} &nbsp; | &nbsp; Rating: ${ratingStr} &nbsp; | &nbsp; WP: ${wp}</div></div>`;
     el.addEventListener('click', ()=> window.open(`https://boardgamegeek.com/boardgame/${g.id}`,'_blank'));
     grid.appendChild(el);
   });
