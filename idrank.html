@@ -42,9 +42,17 @@
 
     <div>
       <label class="small">Matchup Method</label>
+        <div style="margin-top:6px;display:flex;gap:12px;align-items:center">
+          <div>
+            <label class="small" style="margin-right:8px">Mode:</label>
+            <label style="margin-right:6px"><input type="radio" name="mode" value="pairwise" checked> Pairwise</label>
+            <label><input type="radio" name="mode" value="bucket"> Bucketed</label>
+          </div>
+        </div>
         <div id="methodOptions" style="margin-top:6px;display:flex;flex-direction:column;gap:6px">
           <!-- Radios rendered by JS -->
         </div>
+        <div id="bucketPanel" style="margin-top:8px;display:none;padding:8px;border-radius:6px;background:#fff;border:1px solid #eef2ff"></div>
       <div class="option small" style="display:flex;gap:8px;margin-top:8px">
         <label><input id="useAvg" type="checkbox"> Use Thing API <strong>average</strong> as tiebreaker / seeding</label>
         <label style="margin-left:8px">Rounds: <input id="rounds" type="number" min="1" value="1" style="width:70px;margin-left:6px"></label>
@@ -201,10 +209,21 @@ function renderMethodSummary(){
   const intensity = parseInt(q('#intensity').value||'1',10);
   const parts = METHOD_DEFS.map(md => {
     const key = md[0], label = md[1];
-    const cnt = expectedMatchups(key, n, rounds, repeats, intensity);
+    const cnt = computeExpectedForMethod(key, rounds, repeats, intensity);
     return `<div style="display:flex;justify-content:space-between;padding:4px 0;border-bottom:1px solid rgba(0,0,0,0.04)"><div>${label}</div><div style="font-weight:700">${cnt}</div></div>`;
   });
   q('#methodSummary').innerHTML = parts.join('');
+}
+
+function computeExpectedForMethod(method, rounds, repeats, intensity){
+  const mode = (document.querySelector('input[name="mode"]:checked')||{}).value || 'pairwise';
+  if (mode === 'bucket'){
+    // sum across buckets
+    const bucketMap = {}; // bucket->count
+    entrants.forEach(e => { const b = e.bucket || 1; bucketMap[b] = (bucketMap[b]||0)+1; });
+    return Object.values(bucketMap).reduce((acc,n)=> acc + expectedMatchups(method, n, rounds, repeats, intensity), 0);
+  }
+  return expectedMatchups(method, entrants.length, rounds, repeats, intensity);
 }
 
 // delegate change for radio buttons
@@ -232,7 +251,7 @@ function renderMethodOptions(){
   const n = entrants.length || 0;
   METHOD_DEFS.forEach((md, i) => {
     const key = md[0], label = md[1];
-    const count = expectedMatchups(key, n, parseInt(q('#rounds').value||'1',10), parseInt(q('#repeats').value||'1',10));
+    const count = computeExpectedForMethod(key, parseInt(q('#rounds').value||'1',10), parseInt(q('#repeats').value||'1',10), parseInt(q('#intensity').value||'1',10));
     const id = `method_${key}`;
     const div = document.createElement('div');
     div.innerHTML = `<label style="display:flex;align-items:center;gap:8px"><input type="radio" name="method" value="${key}" ${i===0? 'checked':''} /> <span style="flex:1">${label}</span> <span class="small muted">(${count} matchups)</span></label>`;
@@ -247,6 +266,63 @@ function refreshMethodCounts(){ renderMethodOptions(); }
 
 // update counts when entrants change
 function onEntrantsChanged(){ renderMethodOptions(); updateExpectCount(); }
+
+// Bucket panel rendering and utilities
+function renderBucketPanel(){
+  const panel = q('#bucketPanel');
+  const mode = (document.querySelector('input[name="mode"]:checked')||{}).value;
+  if (mode !== 'bucket') { panel.style.display = 'none'; return; }
+  panel.style.display = 'block';
+  // header presets
+  panel.innerHTML = `<div style="display:flex;gap:8px;align-items:center;margin-bottom:8px"><button id="presetAvg" class="btn">Auto by Avg</button><button id="presetEven" class="btn" style="background:#10b981">Even Distribute</button><button id="presetRandom" class="btn" style="background:#06b6d4">Random</button></div><div id="bucketList" style="max-height:280px;overflow:auto"></div>`;
+  const list = q('#bucketList');
+  // ensure buckets assigned
+  if (!entrants || !entrants.length) { list.innerHTML = '<div class="muted small">No entrants loaded</div>'; return; }
+  // default assignment if missing
+  if (!entrants.some(e=>e.bucket)){
+    // even distribute by default
+    let i=0; for(const e of entrants){ e.bucket = (i % 10) + 1; i++; }
+  }
+  list.innerHTML = '';
+  entrants.forEach(e => {
+    const row = document.createElement('div');
+    row.style.display = 'flex'; row.style.alignItems='center'; row.style.gap='8px'; row.style.padding='6px 0';
+    row.innerHTML = `<img src="${e.thumb||'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%2248%22 height=%2248%22%3E%3Crect width=%2248%22 height=%2248%22 fill=%22%23eef2ff%22/%3E%3C/svg%3E'}" style="width:40px;height:40px;border-radius:6px;object-fit:cover" /> <div style="flex:1">${escapeHtml(e.name)}</div> <select data-id="${e.id}" class="bucketSelect">${[...Array(10)].map((_,i)=>`<option value="${i+1}" ${e.bucket==i+1? 'selected':''}>${i+1}</option>`).join('')}</select>`;
+    list.appendChild(row);
+  });
+  // attach handlers
+  panel.querySelectorAll('.bucketSelect').forEach(s => s.addEventListener('change', e=>{
+    const id = e.target.getAttribute('data-id');
+    const b = parseInt(e.target.value,10);
+    const ent = entrants.find(x=>String(x.id)===String(id)); if (ent) ent.bucket = b;
+    updateExpectCount();
+  }));
+  q('#presetAvg').addEventListener('click', ()=>{ autoAssignByAvg(); renderBucketPanel(); updateExpectCount(); });
+  q('#presetEven').addEventListener('click', ()=>{ evenDistribute(); renderBucketPanel(); updateExpectCount(); });
+  q('#presetRandom').addEventListener('click', ()=>{ randomAssign(); renderBucketPanel(); updateExpectCount(); });
+}
+
+function autoAssignByAvg(){
+  const vals = entrants.map(e=>e.avg||0);
+  const min = Math.min(...vals), max = Math.max(...vals);
+  const range = Math.max(1, max-min);
+  entrants.forEach(e => {
+    const v = (e.avg||0);
+    const bucket = Math.max(1, Math.min(10, Math.round(((v - min)/range)*9) + 1));
+    e.bucket = bucket;
+  });
+}
+
+function evenDistribute(){
+  let idx=0; for(const e of entrants){ e.bucket = (idx % 10) + 1; idx++; }
+}
+
+function randomAssign(){
+  const s = shuffle(entrants.slice()); let i=0; for(const e of s){ e.bucket = (i % 10) + 1; i++; }
+}
+
+// listen for mode changes
+document.querySelectorAll('input[name="mode"]').forEach(r => r.addEventListener('change', ()=>{ renderBucketPanel(); renderMethodOptions(); updateExpectCount(); }));
 
 function makePairs(method, opts={}){
   const n = entrants.length;
@@ -357,6 +433,19 @@ function makePairs(method, opts={}){
   return out;
 }
 
+// make pairs for a specific list of ids (used for bucket mode)
+function makePairsForIds(method, idList, opts={}){
+  // temporarily limit entrants to those ids for seeding logic
+  const savedEntrants = entrants;
+  const localEntrants = savedEntrants.filter(e=> idList.includes(e.id));
+  // override global entrants during generation
+  entrants = localEntrants;
+  const out = makePairs(method, opts);
+  // restore
+  entrants = savedEntrants;
+  return out;
+}
+
 function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a }
 
 beginBtn.addEventListener('click', ()=>{
@@ -365,7 +454,22 @@ beginBtn.addEventListener('click', ()=>{
   const rounds = parseInt(q('#rounds').value||'1',10);
   const repeats = parseInt(q('#repeats').value||'1',10);
   const intensity = parseInt(q('#intensity').value||'1',10);
-  pairs = makePairs(method,{rounds,repeats,intensity});
+  const mode = (document.querySelector('input[name="mode"]:checked')||{}).value || 'pairwise';
+  if (mode === 'bucket'){
+    // build buckets
+    const buckets = {};
+    entrants.forEach(e=>{ const b = e.bucket || 1; buckets[b] = buckets[b] || []; buckets[b].push(e.id); });
+    let out = [];
+    Object.keys(buckets).sort((a,b)=>a-b).forEach(bk => {
+      const ids = buckets[bk];
+      if (ids.length<2) return;
+      const sub = makePairsForIds(method, ids, {rounds,repeats,intensity});
+      out = out.concat(sub);
+    });
+    pairs = out;
+  } else {
+    pairs = makePairs(method,{rounds,repeats,intensity});
+  }
   if (!pairs.length) return alert('No pairs generated for chosen method');
   // normalize pairs: shuffle order
   pairs = shuffle(pairs.slice());
@@ -406,11 +510,19 @@ function finishRanking(){
   const scoreWeight = 1.0; // wins primary
   const avgWeight = useAvg ? 0.01 : 0; // small weight so avg influences tiebreaks (tunable)
   const ranked = entrants.slice().map(e=>({
-    id:e.id, name:e.name, wins:wins[e.id]||0, avg:e.avg||0
+    id:e.id, name:e.name, wins:wins[e.id]||0, avg:e.avg||0, thumb:e.thumb||'', bucket:e.bucket||''
   })).sort((a,b)=>{
-    if (b.wins!==a.wins) return b.wins-a.wins;
-    if (useAvg) return (b.avg||0)-(a.avg||0);
-    return a.name.localeCompare(b.name);
+    const mode = (document.querySelector('input[name="mode"]:checked')||{}).value || 'pairwise';
+    if (mode === 'bucket'){
+      if ((b.bucket||0) !== (a.bucket||0)) return (b.bucket||0) - (a.bucket||0);
+      if (b.wins!==a.wins) return b.wins-a.wins;
+      if (useAvg) return (b.avg||0)-(a.avg||0);
+      return a.name.localeCompare(b.name);
+    } else {
+      if (b.wins!==a.wins) return b.wins-a.wins;
+      if (useAvg) return (b.avg||0)-(a.avg||0);
+      return a.name.localeCompare(b.name);
+    }
   });
 
   // store last ranking for export
@@ -437,11 +549,11 @@ resetBtn.addEventListener('click', ()=>{
 function buildResultsCSV(){
   const ranked = window.lastRanking || [];
   const rows = [];
-  rows.push(['Rank','BGG ID','Name','Wins','Average','Thumbnail'].join(','));
+  rows.push(['Rank','BGG ID','Name','Wins','Average','Bucket','Thumbnail'].join(','));
   ranked.forEach((r,i)=>{
     const nameSafe = (r.name||'').replace(/"/g,'""');
     const thumb = (r.thumb||'').replace(/"/g,'""');
-    rows.push([i+1, r.id, `"${nameSafe}"`, r.wins, r.avg? r.avg.toFixed(2): '', `"${thumb}"`].join(','));
+    rows.push([i+1, r.id, `"${nameSafe}"`, r.wins, r.avg? r.avg.toFixed(2): '', r.bucket||'', `"${thumb}"`].join(','));
   });
   return rows.join('\n');
 }
