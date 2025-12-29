@@ -1,0 +1,351 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>ID Rank — Pairwise Ranking Wizard</title>
+  <style>
+    body{font-family:system-ui,-apple-system,Segoe UI,Roboto,Helvetica,Arial; padding:20px;background:#f7fafc}
+    .container{max-width:980px;margin:0 auto;background:#fff;padding:16px;border-radius:8px}
+    textarea{width:100%;height:80px;font-family:monospace}
+    .controls{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+    .thumb{width:96px;height:96px;object-fit:cover;border-radius:6px;background:#eef2ff}
+    .pair{display:flex;justify-content:space-between;gap:12px;align-items:center;margin-top:16px}
+    .side{flex:1;text-align:center}
+    .btn{padding:10px 14px;border-radius:8px;border:0;background:#6366f1;color:#fff;cursor:pointer}
+    .muted{color:#6b7280;font-size:13px}
+    .progress{height:10px;background:#e6e7ee;border-radius:6px;overflow:hidden}
+    .fill{height:100%;background:#10b981;width:0%}
+    .summary{margin-top:16px}
+    .ranking{margin-top:12px}
+    .small{font-size:13px;color:#374151}
+    .option{margin:6px 0}
+  </style>
+</head>
+<body>
+  <div class="container">
+    <h1>ID Rank — Pairwise Ranking Wizard</h1>
+    <p class="muted">Paste BGG object IDs (comma/newline separated). Pick a matchup method, fetch thumbnails, then run left/right picks to produce a final ranking.</p>
+
+    <div style="margin-top:12px">
+      <label class="small">Object IDs</label>
+      <textarea id="idInput" placeholder="e.g. 30549,13,174430"></textarea>
+      <div class="controls" style="margin-top:8px">
+        <button id="loadBtn" class="btn">Load & Fetch Thumbnails</button>
+        <div class="muted">Progress:</div>
+        <div style="flex:1"><div class="progress"><div id="fetchFill" class="fill"></div></div></div>
+        <div id="fetchText" class="small muted">Idle</div>
+      </div>
+    </div>
+
+    <hr style="margin:12px 0">
+
+    <div>
+      <label class="small">Matchup Method</label>
+      <select id="methodSelect" style="width:100%;padding:8px;border-radius:6px;margin-top:6px">
+        <option value="roundrobin_all">Round-robin (all pairs)</option>
+        <option value="roundrobin_repeats">Round-robin with repeats</option>
+        <option value="adjacent_seeded">Seeded adjacent (by avg)</option>
+        <option value="random_pairs">Random pairs (one round)</option>
+        <option value="multi_random">Multiple random rounds</option>
+        <option value="single_elim">Single elimination bracket</option>
+        <option value="swiss_like">Swiss-like (configurable rounds)</option>
+        <option value="elo_sim">ELO-simulated pairings</option>
+        <option value="min_pairs">Min pairs (one matchup per entrant)</option>
+        <option value="paired_average">Average-weighted seeding</option>
+      </select>
+      <div class="option small" style="display:flex;gap:8px;margin-top:8px">
+        <label><input id="useAvg" type="checkbox"> Use Thing API <strong>average</strong> as tiebreaker / seeding</label>
+        <label style="margin-left:8px">Rounds: <input id="rounds" type="number" min="1" value="1" style="width:70px;margin-left:6px"></label>
+        <label style="margin-left:8px">Repeats: <input id="repeats" type="number" min="1" value="1" style="width:70px;margin-left:6px"></label>
+      </div>
+      <div id="expectCount" class="small muted" style="margin-top:6px">Expected matchups: —</div>
+      <div style="margin-top:8px" class="controls">
+        <button id="beginBtn" class="btn" disabled>Begin</button>
+        <button id="resetBtn" class="btn" style="background:#ef4444">Reset</button>
+      </div>
+    </div>
+
+    <div id="board" style="margin-top:14px">
+      <div id="loadingNotice" class="muted small">No data loaded.</div>
+      <div id="playArea" style="display:none">
+        <div id="pairCounter" class="small muted">Pair 0 / 0</div>
+        <div class="pair">
+          <div class="side" id="leftSide"><img id="leftThumb" class="thumb"><div id="leftName" class="small"></div><button id="leftBtn" class="btn" style="margin-top:8px">Pick Left</button></div>
+          <div style="width:6px"></div>
+          <div class="side" id="rightSide"><img id="rightThumb" class="thumb"><div id="rightName" class="small"></div><button id="rightBtn" class="btn" style="margin-top:8px">Pick Right</button></div>
+        </div>
+        <div id="playProgress" class="small muted" style="margin-top:10px">0 picks</div>
+      </div>
+    </div>
+
+    <div class="summary">
+      <h3>Results</h3>
+      <div id="resultsArea" class="ranking">No results yet.</div>
+    </div>
+  </div>
+
+<script>
+// Simple utility
+function q(sel) { return document.querySelector(sel); }
+function escapeHtml(s){ if(s==null) return ''; return String(s).replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]); }
+
+let entrants = []; // { id, name, thumb, avg }
+let pairs = []; // array of [idA, idB]
+let idx = 0;
+let wins = {}; // id -> wins
+let matchesPlayed = 0;
+
+const loadBtn = q('#loadBtn');
+const fetchFill = q('#fetchFill');
+const fetchText = q('#fetchText');
+const beginBtn = q('#beginBtn');
+const resetBtn = q('#resetBtn');
+const fetchTextUpdate = (t) => fetchText.textContent = t;
+
+function parseIds(text){
+  return text.split(/[\s,]+/).map(s=>s.trim()).filter(Boolean).map(x=>x.replace(/[^0-9]/g,''));
+}
+
+async function fetchThingInfo(id){
+  // Uses serverless proxy `api/bgg-helper?id=...&stats=1` which returns xml from BGG
+  try{
+    const res = await fetch(`/api/bgg-helper?id=${id}&stats=1`);
+    const txt = await res.text();
+    const doc = new DOMParser().parseFromString(txt,'application/xml');
+    const nameEl = doc.querySelector('item > name') || doc.querySelector('item > names > name');
+    const name = nameEl ? nameEl.getAttribute('value') || nameEl.textContent : 'ID '+id;
+    const thumb = (doc.querySelector('item > thumbnail') || {}).textContent || '';
+    const avgEl = doc.querySelector('statistics ratings average');
+    const avg = avgEl ? parseFloat(avgEl.textContent) : null;
+    return { id, name, thumb, avg };
+  }catch(e){
+    return { id, name: 'ID '+id, thumb:'', avg:null };
+  }
+}
+
+loadBtn.addEventListener('click', async ()=>{
+  const ids = parseIds(q('#idInput').value);
+  if (!ids.length) return alert('Please paste some numeric IDs');
+  entrants = [];
+  fetchTextUpdate('Fetching thumbnails...');
+  fetchFill.style.width = '0%';
+  let done = 0;
+  for (const id of ids){
+    const info = await fetchThingInfo(id);
+    entrants.push(info);
+    done++;
+    fetchFill.style.width = Math.round(done/ids.length*100)+'%';
+    fetchTextUpdate(`${done}/${ids.length} fetched`);
+  }
+  // init wins
+  wins = {};
+  entrants.forEach(e=>wins[e.id]=0);
+  fetchTextUpdate('All loaded');
+  q('#loadingNotice').style.display = 'none';
+  q('#playArea').style.display = 'none';
+  beginBtn.disabled = false;
+  updateExpectCount();
+});
+
+function expectedMatchups(method, n, rounds=1, repeats=1){
+  if (n<2) return 0;
+  switch(method){
+    case 'roundrobin_all': return (n*(n-1))/2 * repeats;
+    case 'roundrobin_repeats': return (n*(n-1))/2 * repeats;
+    case 'adjacent_seeded': return Math.floor(n/2) * rounds;
+    case 'random_pairs': return Math.floor(n/2);
+    case 'multi_random': return Math.floor(n/2)*rounds;
+    case 'single_elim': return n - 1;
+    case 'swiss_like': return Math.floor(n/2)*rounds;
+    case 'elo_sim': return Math.floor(n/2)*rounds;
+    case 'min_pairs': return Math.ceil(n/2);
+    case 'paired_average': return Math.floor(n/2)*rounds;
+  }
+  return 0;
+}
+
+function updateExpectCount(){
+  const m = q('#methodSelect').value;
+  const n = entrants.length;
+  const rounds = parseInt(q('#rounds').value||'1',10);
+  const repeats = parseInt(q('#repeats').value||'1',10);
+  const c = expectedMatchups(m,n,rounds,repeats);
+  q('#expectCount').textContent = `Expected matchups: ${c} (n=${n})`;
+}
+
+q('#methodSelect').addEventListener('change', updateExpectCount);
+q('#rounds').addEventListener('input', updateExpectCount);
+q('#repeats').addEventListener('input', updateExpectCount);
+
+function makePairs(method, opts={}){
+  const n = entrants.length;
+  const ids = entrants.map(e=>e.id);
+  const rounds = opts.rounds||1;
+  const repeats = opts.repeats||1;
+  let out = [];
+
+  function allPairs(list){
+    for(let i=0;i<list.length;i++){
+      for(let j=i+1;j<list.length;j++) out.push([list[i], list[j]]);
+    }
+  }
+
+  switch(method){
+    case 'roundrobin_all':
+      allPairs(ids);
+      if (repeats>1){
+        const original = out.slice();
+        for(let r=1;r<repeats;r++) out = out.concat(original);
+      }
+      break;
+    case 'roundrobin_repeats':
+      allPairs(ids);
+      for(let r=1;r<repeats;r++) out = out.concat(shuffle(out.slice()));
+      break;
+    case 'adjacent_seeded':
+      // seed by average desc if available
+      let seeded = entrants.slice();
+      if (q('#useAvg').checked) seeded.sort((a,b)=>(b.avg||0)-(a.avg||0));
+      else seeded.sort((a,b)=>a.name.localeCompare(b.name));
+      const ordered = seeded.map(x=>x.id);
+      for(let r=0;r<rounds;r++){
+        for(let i=0;i<ordered.length;i+=2){
+          if (i+1<ordered.length) out.push([ordered[i], ordered[i+1]]);
+        }
+      }
+      break;
+    case 'random_pairs':
+      const s = shuffle(ids.slice());
+      for(let i=0;i<s.length;i+=2) if (i+1<s.length) out.push([s[i],s[i+1]]);
+      break;
+    case 'multi_random':
+      for(let r=0;r<rounds;r++){
+        const s2 = shuffle(ids.slice());
+        for(let i=0;i<s2.length;i+=2) if (i+1<s2.length) out.push([s2[i],s2[i+1]]);
+      }
+      break;
+    case 'single_elim':
+      // build random bracket
+      let bracket = shuffle(ids.slice());
+      while(bracket.length>1){
+        const next = [];
+        for(let i=0;i<bracket.length;i+=2){
+          if (i+1<bracket.length){ out.push([bracket[i], bracket[i+1]]); next.push(bracket[i]); }
+          else next.push(bracket[i]);
+        }
+        bracket = next;
+      }
+      break;
+    case 'swiss_like':
+      // simple swiss: randomize initial, then in each round pair by current wins
+      const roundsCount = rounds;
+      let order = shuffle(ids.slice());
+      for(let r=0;r<roundsCount;r++){
+        order.sort((a,b)=>(wins[b]||0)-(wins[a]||0));
+        for(let i=0;i<order.length;i+=2) if (i+1<order.length) out.push([order[i], order[i+1]]);
+      }
+      break;
+    case 'elo_sim':
+      // seed by avg then pair adjacent, optionally multiple rounds
+      let byAvg = entrants.slice();
+      byAvg.sort((a,b)=>(b.avg||0)-(a.avg||0));
+      const byOrder = byAvg.map(x=>x.id);
+      for(let r=0;r<rounds;r++){
+        for(let i=0;i<byOrder.length;i+=2) if (i+1<byOrder.length) out.push([byOrder[i],byOrder[i+1]]);
+      }
+      break;
+    case 'min_pairs':
+      // ensure each entrant appears at least once: pair sequentially
+      const s3 = shuffle(ids.slice());
+      for(let i=0;i<s3.length;i+=2) if (i+1<s3.length) out.push([s3[i],s3[i+1]]);
+      break;
+    case 'paired_average':
+      // pair highest avg vs lowest avg, etc.
+      let sortedAvg = entrants.slice();
+      sortedAvg.sort((a,b)=>(b.avg||0)-(a.avg||0));
+      const orderedAvg = sortedAvg.map(x=>x.id);
+      for(let i=0;i<Math.floor(orderedAvg.length/2);i++) out.push([orderedAvg[i], orderedAvg[orderedAvg.length-1-i]]);
+      break;
+  }
+
+  return out;
+}
+
+function shuffle(a){ for(let i=a.length-1;i>0;i--){ const j=Math.floor(Math.random()*(i+1)); [a[i],a[j]]=[a[j],a[i]] } return a }
+
+beginBtn.addEventListener('click', ()=>{
+  if (entrants.length<2) return alert('Need at least 2 entrants');
+  const method = q('#methodSelect').value;
+  const rounds = parseInt(q('#rounds').value||'1',10);
+  const repeats = parseInt(q('#repeats').value||'1',10);
+  pairs = makePairs(method,{rounds,repeats});
+  if (!pairs.length) return alert('No pairs generated for chosen method');
+  // normalize pairs: shuffle order
+  pairs = shuffle(pairs.slice());
+  idx = 0; matchesPlayed = 0;
+  // reset wins
+  Object.keys(wins).forEach(k=>wins[k]=0);
+  q('#playArea').style.display = 'block';
+  q('#resultsArea').innerHTML = 'In progress...';
+  showPair();
+});
+
+function showPair(){
+  if (idx>=pairs.length){ finishRanking(); return; }
+  const [a,b] = pairs[idx];
+  const A = entrants.find(x=>x.id==a);
+  const B = entrants.find(x=>x.id==b);
+  q('#leftThumb').src = A.thumb || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="96" height="96"%3E%3Crect width="96" height="96" fill="%23eef2ff"/%3E%3C/svg%3E';
+  q('#rightThumb').src = B.thumb || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="96" height="96"%3E%3Crect width="96" height="96" fill="%23eef2ff"/%3E%3C/svg%3E';
+  q('#leftName').textContent = A.name + (A.avg?(' — avg:'+A.avg.toFixed(2)): '');
+  q('#rightName').textContent = B.name + (B.avg?(' — avg:'+B.avg.toFixed(2)): '');
+  q('#pairCounter').textContent = `Pair ${idx+1} / ${pairs.length}`;
+  q('#playProgress').textContent = `${matchesPlayed} picks`;
+}
+
+q('#leftBtn').addEventListener('click', ()=>{ recordPick(pairs[idx][0]); });
+q('#rightBtn').addEventListener('click', ()=>{ recordPick(pairs[idx][1]); });
+
+function recordPick(winnerId){
+  wins[winnerId] = (wins[winnerId]||0)+1;
+  matchesPlayed++;
+  idx++;
+  showPair();
+}
+
+function finishRanking(){
+  // produce final rank: sort by wins desc, tiebreaker avg desc if useAvg
+  const useAvg = q('#useAvg').checked;
+  const scoreWeight = 1.0; // wins primary
+  const avgWeight = useAvg ? 0.01 : 0; // small weight so avg influences tiebreaks (tunable)
+  const ranked = entrants.slice().map(e=>({
+    id:e.id, name:e.name, wins:wins[e.id]||0, avg:e.avg||0
+  })).sort((a,b)=>{
+    if (b.wins!==a.wins) return b.wins-a.wins;
+    if (useAvg) return (b.avg||0)-(a.avg||0);
+    return a.name.localeCompare(b.name);
+  });
+
+  // Display
+  const out = ['<ol>'];
+  ranked.forEach(r=>{ out.push(`<li><strong>${escapeHtml(r.name)}</strong> — wins: ${r.wins}${r.avg?(' — avg:'+r.avg.toFixed(2)) : ''}</li>`); });
+  out.push('</ol>');
+  q('#resultsArea').innerHTML = out.join('\n');
+  q('#playArea').style.display = 'none';
+}
+
+resetBtn.addEventListener('click', ()=>{
+  entrants=[]; pairs=[]; idx=0; wins={}; matchesPlayed=0;
+  q('#idInput').value=''; fetchFill.style.width='0%'; fetchTextUpdate('Idle'); beginBtn.disabled = true;
+  q('#loadingNotice').style.display = 'block'; q('#playArea').style.display='none'; q('#resultsArea').innerHTML = 'No results yet.';
+});
+
+// small UX: enable begin only when thumbnails fetched
+// computed when load completes - handled by loadBtn
+
+// Commit helper: none here. This is a single-file utility.
+
+</script>
+</body>
+</html>
