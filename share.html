@@ -175,6 +175,11 @@ let thumbsMap = {};
 let draggedIndex = null;
 let auditLogs = { exact: 0, fuzzy: [], missed: [] };
 
+// Normalize string for broad matching (remove all non-alpha-numeric and lowercase)
+function normalize(str) {
+  return str.toLowerCase().replace(/[^a-z0-9]/g, '');
+}
+
 function parseCSV(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const out=[];
@@ -232,26 +237,41 @@ async function parseAndFetch(){
     const collXml = await fetchAPI('collection','',`&username=${encodeURIComponent(user)}&stats=1`);
     const doc = new DOMParser().parseFromString(collXml,'text/xml');
     const items = Array.from(doc.querySelectorAll('item'));
-    const collMap = {};
+    
+    const collMap = {}; // Stores raw names
+    const normalizedCollMap = {}; // Stores alpha-numeric versions
+    
     items.forEach(it=>{
       const name = it.querySelector('name')?.textContent?.trim();
       const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
-      if(name) collMap[name.toLowerCase()] = {thumb, original: name};
+      if(name) {
+        const entry = {thumb, original: name};
+        collMap[name.toLowerCase()] = entry;
+        normalizedCollMap[normalize(name)] = entry;
+      }
     });
 
     for(const p of parsedList){
       const n = p.name.trim();
       const key = n.toLowerCase();
+      const normKey = normalize(n);
       
+      // 1. Exact Match
       if(collMap[key]) {
         thumbsMap[n]= {thumb: collMap[key].thumb, isExact: true};
         auditLogs.exact++;
       }
+      // 2. Alphanumeric / Character-agnostic match
+      else if(normalizedCollMap[normKey]) {
+        thumbsMap[n] = {thumb: normalizedCollMap[normKey].thumb, isExact: false, matchedTo: normalizedCollMap[normKey].original};
+        auditLogs.fuzzy.push({input: n, matched: normalizedCollMap[normKey].original, reason: 'normalized'});
+      }
+      // 3. Substring / Includes match
       else {
         const foundKey = Object.keys(collMap).find(k=>k.includes(key) || key.includes(k));
         if(foundKey) {
           thumbsMap[n] = {thumb: collMap[foundKey].thumb, isExact: false, matchedTo: collMap[foundKey].original};
-          auditLogs.fuzzy.push({input: n, matched: collMap[foundKey].original});
+          auditLogs.fuzzy.push({input: n, matched: collMap[foundKey].original, reason: 'substring'});
         } else {
           thumbsMap[n] = {thumb: '', isExact: false};
           auditLogs.missed.push(n);
@@ -281,7 +301,12 @@ function displayAudit() {
         alertEl.classList.remove('hidden');
         let html = "";
         if(auditLogs.missed.length > 0) html += `<strong>Missing:</strong> ${auditLogs.missed.join(', ')}. `;
-        if(auditLogs.fuzzy.length > 0) html += `<strong>Fuzzy Matches:</strong> ${auditLogs.fuzzy.map(f => `"${f.input}" matched to "${f.matched}"`).join('; ')}.`;
+        if(auditLogs.fuzzy.length > 0) {
+            html += `<strong>Fuzzy Matches:</strong> ${auditLogs.fuzzy.map(f => {
+                const badge = f.reason === 'normalized' ? ' (Char Agnostic)' : ' (Partial)';
+                return `<span class="italic">"${f.input}"</span> → <span class="font-bold">"${f.matched}"</span>${badge}`;
+            }).join('; ')}.`;
+        }
         textEl.innerHTML = html;
     } else {
         alertEl.classList.add('hidden');
