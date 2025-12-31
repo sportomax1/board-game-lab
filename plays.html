@@ -922,29 +922,55 @@
             
             const headers = {};
             if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`;
-
-            for (let i = 0; i < 3; i++) {
+            // Retries with exponential backoff. Handles 202 (queued) and 429 (rate limit).
+            const maxAttempts = 6;
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
                 let res;
                 try {
                     res = await fetch(url, { headers });
                 } catch (netErr) {
                     console.error('Network error fetching', url, netErr);
-                    throw netErr;
+                    // network error: retry with backoff
+                    const wait = 1000 * Math.pow(2, attempt);
+                    await new Promise(r => setTimeout(r, wait));
+                    continue;
                 }
+
+                // If API returns 202, server is queuing; wait and retry
                 if (res.status === 202) {
                     await new Promise(r => setTimeout(r, 2000));
                     continue;
                 }
-                if (!res.ok) {
-                    // attempt to read body for diagnostics (may fail)
-                    let body = '';
-                    try { body = await res.text(); } catch(e) { body = '<unreadable body>'; }
-                    console.error(`BGG helper returned ${res.status} for ${url}`, body);
-                    throw new Error(`API Error: ${res.status} - ${body}`);
+
+                // OK
+                if (res.ok) {
+                    return await res.text();
                 }
-                return await res.text();
+
+                // Read body for diagnostic purposes (may be JSON with status info)
+                let body = '';
+                try { body = await res.text(); } catch(e) { body = '<unreadable body>'; }
+
+                // Detect BGG rate limit signals: explicit 429 or body mentioning status 429
+                const isRateLimit = (res.status === 429) || /"status"\s*:\s*429/.test(body) || /Too Many Requests/i.test(body);
+                if (isRateLimit) {
+                    // Respect Retry-After header if present
+                    let waitMs = 1000 * Math.pow(2, attempt); // exponential backoff base
+                    const ra = res.headers.get ? res.headers.get('Retry-After') : null;
+                    if (ra) {
+                        const raSec = parseInt(ra, 10);
+                        if (!Number.isNaN(raSec)) waitMs = Math.max(waitMs, raSec * 1000);
+                    }
+                    console.warn(`Rate limited by BGG/helper (status ${res.status}). Waiting ${waitMs}ms before retry. Body:`, body);
+                    await new Promise(r => setTimeout(r, waitMs));
+                    continue;
+                }
+
+                // Other non-OK responses: log and throw
+                console.error(`BGG helper returned ${res.status} for ${url}`, body);
+                throw new Error(`API Error: ${res.status} - ${body}`);
             }
-            throw new Error("BGG API timed out (202)");
+            throw new Error("BGG API timed out after repeated retries");
         }
 
         function parsePlays(xml) {
@@ -974,8 +1000,8 @@
         }
 
         async function fetchThingStats(ids) {
-            // Chunk IDs for performance
-            const chunkSize = 20;
+            // Chunk IDs for performance (reduce to lower pressure on BGG)
+            const chunkSize = 10;
             state.statsMap = {};
             
             for (let i = 0; i < ids.length; i += chunkSize) {
@@ -1228,20 +1254,23 @@
             });
             if(counts.length === 0) { container.innerHTML = ''; return; }
 
-            // Build rows starting at 1 upwards; ensure sequence from 1..max
-            const max = Math.max(...counts);
+            // Update sort button label to reflect current state
+            const sortBtn = document.getElementById('playCountSortBtn');
+            if(sortBtn) sortBtn.innerText = `Count: ${state.playCountSort === 'asc' ? '↑' : '↓'}`;
+
             const rows = [];
-            for(let i=1;i<=max;i++){
-                const group = byCount[i] || [];
-                if(group.length === 0) continue;
+            // Iterate actual counts in the chosen order
+            counts.forEach(c => {
+                const group = byCount[c] || [];
+                if(group.length === 0) return;
                 const thumbs = group.map(g => {
                     const thumb = (state.statsMap[g.gameId] && state.statsMap[g.gameId].thumb) || 'https://via.placeholder.com/40';
-                    const title = `${g.name} — ${i} play${i>1?'s':''}`;
+                    const title = `${g.name} — ${c} play${c>1?'s':''}`;
                     return `<img src="${thumb}" alt="${escapeHtml(g.name)}" title="${escapeHtml(title)}">`;
                 }).join('');
 
-                rows.push(`<div class="count-row"><div class="count-label">Played ${i}×</div><div class="count-thumbs">${thumbs}</div></div>`);
-            }
+                rows.push(`<div class="count-row"><div class="count-label">Played ${c}×</div><div class="count-thumbs">${thumbs}</div></div>`);
+            });
 
             container.innerHTML = rows.join('');
         }
