@@ -162,22 +162,21 @@
         <section id="ranking-section" class="hidden grid grid-cols-1 lg:grid-cols-12 gap-8 items-start">
             <!-- Search Column -->
             <div class="lg:col-span-5 space-y-6 lg:sticky lg:top-24">
+                <!-- Search removed: staging pool will be filled from user's collection randomly -->
                 <div class="bg-white p-4 rounded-3xl shadow-sm border border-gray-100 space-y-4">
-                    <h3 class="font-bold text-gray-900 px-1">Find Games</h3>
-                    <div class="relative">
-                        <input type="text" id="search-input" placeholder="Search BGG database..." class="w-full pl-11 pr-4 py-3 bg-gray-100 border-none rounded-2xl focus:ring-2 focus:ring-blue-500 text-gray-900">
-                        <svg class="w-5 h-5 absolute left-4 top-3.5 text-gray-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
-                    </div>
+                    <h3 class="font-bold text-gray-900 px-1">Staging Pool</h3>
                     <div id="loading-indicator" class="hidden flex items-center justify-center py-4">
                         <div class="spinner"></div>
-                        <span class="ml-3 text-sm font-medium text-gray-500">Searching BGG...</span>
+                        <span class="ml-3 text-sm font-medium text-gray-500">Loading collection...</span>
                     </div>
-                    <div id="search-results" class="space-y-2 max-h-[350px] overflow-y-auto scrollbar-hide"></div>
                 </div>
                 <div class="bg-gray-200/50 p-6 rounded-3xl min-h-[150px]">
                     <div class="flex justify-between items-center mb-4">
                         <h3 class="text-xs font-bold text-gray-400 uppercase tracking-widest">Staging Pool</h3>
-                        <span class="text-[10px] bg-gray-300 text-gray-600 px-2 py-0.5 rounded-full font-bold uppercase">Pool</span>
+                        <div class="flex items-center gap-2">
+                            <span id="subs-count" class="text-[10px] bg-gray-300 text-gray-600 px-2 py-0.5 rounded-full font-bold uppercase">Subs: 0</span>
+                            <span class="text-[10px] bg-gray-300 text-gray-600 px-2 py-0.5 rounded-full font-bold uppercase">Pool</span>
+                        </div>
                     </div>
                     <div id="pool-area" class="flex flex-wrap gap-3"></div>
                 </div>
@@ -273,6 +272,44 @@
         let selectedGames = []; 
         let rankedGames = []; 
         let username = "sportomax";
+        let originalCollection = []; // full collection fetched from BGG
+        let substitutionsCount = 0;
+
+        function sampleArray(arr, n) {
+            const copy = arr.slice();
+            const out = [];
+            for (let i = 0; i < n && copy.length > 0; i++) {
+                const idx = Math.floor(Math.random() * copy.length);
+                out.push(copy.splice(idx, 1)[0]);
+            }
+            return out;
+        }
+
+        function resamplePool() {
+            if (!originalCollection || originalCollection.length === 0) return;
+            selectedGames = sampleArray(originalCollection, sessionSlotSize).map(it => ({
+                id: it.id,
+                name: it.name,
+                image: it.image
+            }));
+            substitutionsCount = 0;
+            updateSubsCount();
+            renderPool();
+        }
+
+        function updateSubsCount(){
+            const el = document.getElementById('subs-count'); if(el) el.textContent = `Subs: ${substitutionsCount}`;
+        }
+
+        function substituteGame(oldId){
+            const usedIds = new Set(selectedGames.map(g=>g.id).concat(rankedGames.map(r=>r.game.id)));
+            const candidates = originalCollection.filter(it=>!usedIds.has(it.id));
+            if(candidates.length===0){ statusBar.textContent = 'No more substitute candidates available'; return; }
+            const pick = candidates[Math.floor(Math.random()*candidates.length)];
+            // replace in selectedGames
+            const idx = selectedGames.findIndex(g=>g.id===oldId);
+            if(idx!==-1){ selectedGames[idx] = {id: pick.id, name: pick.name, image: pick.image}; substitutionsCount++; updateSubsCount(); renderPool(); }
+        }
 
         // Resilient fetch for BGG helper: handles 202 (queued) and rate limits (429)
         async function fetchWithRetries(url, opts = {}, maxAttempts = 6) {
@@ -363,8 +400,7 @@
         const setupSection = document.getElementById('setup-section');
         const rankingSection = document.getElementById('ranking-section');
         const startBtn = document.getElementById('start-btn');
-        const searchInput = document.getElementById('search-input');
-        const searchResults = document.getElementById('search-results');
+        // search UI removed; staging pool is populated from collection
         const loadingIndicator = document.getElementById('loading-indicator');
         const poolArea = document.getElementById('pool-area');
         const rankingSlots = document.getElementById('ranking-slots');
@@ -383,6 +419,9 @@
                 slotBtns.forEach(b => b.classList.remove('bg-blue-50', 'text-blue-600', 'border-blue-600'));
                 btn.classList.add('bg-blue-50', 'text-blue-600', 'border-blue-600');
                 sessionSlotSize = parseInt(btn.dataset.slots);
+                document.getElementById('slot-count-display').textContent = sessionSlotSize;
+                // adjust pool size to match selected slot count
+                resamplePool();
             });
         });
 
@@ -409,42 +448,9 @@
             }
         }
 
-        let searchDebounce;
-        searchInput.addEventListener('input', (e) => {
-            clearTimeout(searchDebounce);
-            const query = e.target.value.trim();
-            if (query.length < 3) { searchResults.innerHTML = ''; return; }
-            searchDebounce = setTimeout(() => searchBGG(query), 500);
-        });
+        // search removed: no client-side search. Pool is filled randomly from collection.
 
-        async function searchBGG(query) {
-            loadingIndicator.classList.remove('hidden');
-            try {
-                const url = `${BGG_SEARCH_API}${encodeURIComponent(query)}`;
-                const text = await fetchWithRetries(url);
-                const items = Array.from(new DOMParser().parseFromString(text, "text/xml").querySelectorAll('item')).slice(0, 10);
-                searchResults.innerHTML = '';
-                for (const item of items) {
-                    const id = item.getAttribute('id');
-                    const name = item.querySelector('name').getAttribute('value');
-                    const year = item.querySelector('yearpublished')?.getAttribute('value') || 'N/A';
-                    const div = document.createElement('div');
-                    div.className = 'flex items-center justify-between p-3 bg-gray-50 rounded-2xl border border-gray-100';
-                    div.innerHTML = `<div class="flex flex-col"><span class="font-bold text-sm">${name}</span><span class="text-[10px] text-gray-400">${year}</span></div><button class="add-btn ios-btn bg-white border border-gray-200 text-gray-600 px-3 py-1.5 rounded-xl text-xs font-bold" data-id="${id}">Add</button>`;
-                    div.querySelector('.add-btn').addEventListener('click', () => fetchDetails(id));
-                    searchResults.appendChild(div);
-                }
-            } finally { loadingIndicator.classList.add('hidden'); }
-        }
-
-        async function fetchDetails(id) {
-            const url = `${BGG_THING_API}${id}`;
-            const text = await fetchWithRetries(url);
-            const item = new DOMParser().parseFromString(text, "text/xml").querySelector('item');
-            const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown';
-            const image = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || 'https://via.placeholder.com/100?text=No+Image';
-            addToPool({ id, name, image });
-        }
+        // search and manual add removed; use collection-based random pool and substitutes instead
 
         function addToPool(game) {
             if (selectedGames.find(g => g.id === game.id)) return;
@@ -456,12 +462,14 @@
             poolArea.innerHTML = '';
             selectedGames.forEach(game => {
                 const el = document.createElement('div');
-                el.className = 'drag-item w-16 h-16 rounded-2xl shadow-lg border-2 border-white overflow-hidden';
+                el.className = 'drag-item w-20 h-20 rounded-2xl shadow-lg border-2 border-white overflow-hidden relative bg-white';
                 el.draggable = true;
                 // route images through image proxy to avoid CORS when drawing later
                 const imgSrc = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
-                el.innerHTML = `<img src="${imgSrc}" class="w-full h-full object-cover">`;
+                const btnHtml = `<button class="sub-btn absolute top-1 right-1 bg-white/90 text-gray-600 rounded-full p-1 text-xs" title="Substitute">⤻</button>`;
+                el.innerHTML = `<div class="w-full h-full"><img src="${imgSrc}" class="w-full h-full object-cover"></div>${btnHtml}`;
                 el.addEventListener('dragstart', (e) => e.dataTransfer.setData('gameId', game.id));
+                el.querySelector('.sub-btn').addEventListener('click', (ev)=>{ ev.stopPropagation(); substituteGame(game.id); });
                 poolArea.appendChild(el);
             });
         }
@@ -515,15 +523,18 @@
                 const text = await fetchWithRetries(url);
                 const xml = new DOMParser().parseFromString(text, 'text/xml');
                 const items = Array.from(xml.querySelectorAll('item'));
-                // map to {id,name,image}
-                selectedGames = items.map(it => ({
+                // store full collection
+                originalCollection = items.map(it => ({
                     id: it.getAttribute('objectid') || it.getAttribute('id'),
                     name: it.querySelector('name')?.textContent || 'Unknown',
                     image: it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || 'https://via.placeholder.com/100?text=No+Image'
                 }));
-                if (selectedGames.length > 0) {
+                if (originalCollection.length > 0) {
+                    // pick random subset equal to sessionSlotSize
+                    selectedGames = sampleArray(originalCollection, sessionSlotSize).map(it=>({id:it.id,name:it.name,image:it.image}));
+                    substitutionsCount = 0; updateSubsCount();
                     renderPool();
-                    statusBar.textContent = `🎮 Loaded ${selectedGames.length} games from ${user}`;
+                    statusBar.textContent = `🎮 Loaded ${originalCollection.length} games from ${user} (pool ${selectedGames.length})`;
                 } else {
                     statusBar.textContent = '❌ No games found in collection';
                 }
