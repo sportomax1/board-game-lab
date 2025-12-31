@@ -122,6 +122,7 @@
             <div class="text-center space-y-4">
                 <h2 class="text-4xl font-extrabold text-gray-900 tracking-tight">Your shelf, sorted.</h2>
                 <p class="text-gray-500 text-lg max-w-md mx-auto">Rank & File connects to the BGG database to help you curate your personal definitive top lists.</p>
+                <p class="text-gray-500 text-sm max-w-lg mx-auto">Modes: "Pool" shows a staging area of several games so you can choose which to rank; "Blind" shows one game at a time so you rank sequentially without seeing the rest. Choose your default in Settings.</p>
             </div>
 
             <div class="grid grid-cols-1 md:grid-cols-3 gap-6 text-center">
@@ -210,6 +211,15 @@
                     <input type="text" id="username-input" class="w-full px-5 py-4 bg-gray-50 border-none rounded-2xl focus:ring-2 focus:ring-blue-500 text-gray-900 font-bold" placeholder="sportomax">
                 </div>
 
+                <div class="pt-4">
+                    <label class="text-xs font-bold text-gray-400 uppercase tracking-widest ml-1">Default Mode</label>
+                    <div class="mt-2 flex gap-3 items-center">
+                        <label class="inline-flex items-center gap-2"><input type="radio" name="mode" value="pool" id="mode-pool"> <span class="text-sm">Pool (see multiple)</span></label>
+                        <label class="inline-flex items-center gap-2"><input type="radio" name="mode" value="blind" id="mode-blind"> <span class="text-sm">Blind (one at a time)</span></label>
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2">When in Blind mode you will be presented one game at a time to place into the next available slot.</p>
+                </div>
+
                 <div class="pt-4 border-t border-gray-100">
                     <p class="text-xs text-gray-400 leading-relaxed">
                         This name will appear as the author on all shared rankings and clipboard exports. 
@@ -272,6 +282,8 @@
         let selectedGames = []; 
         let rankedGames = []; 
         let username = "sportomax";
+        let sessionMode = localStorage.getItem('rankfile_mode') || 'pool'; // 'pool' or 'blind'
+        let currentBlindIndex = 0;
         let originalCollection = []; // full collection fetched from BGG
         let substitutionsCount = 0;
 
@@ -396,6 +408,18 @@
             showToast("Profile Updated!");
         });
 
+        // Initialize mode radios
+        const modePool = document.getElementById('mode-pool');
+        const modeBlind = document.getElementById('mode-blind');
+        function applyModeUI(){
+            if(sessionMode==='blind'){ modeBlind.checked = true; } else { modePool.checked = true; }
+        }
+        applyModeUI();
+        [modePool, modeBlind].forEach(r=>r&&r.addEventListener('change', ()=>{
+            sessionMode = document.querySelector('input[name="mode"]:checked').value;
+            localStorage.setItem('rankfile_mode', sessionMode);
+        }));
+
         // Setup Phase Elements
         const setupSection = document.getElementById('setup-section');
         const rankingSection = document.getElementById('ranking-section');
@@ -432,6 +456,14 @@
             document.getElementById('slot-count-display').textContent = sessionSlotSize;
             initSlots();
             updateProgress();
+            // mode-specific startup
+            currentBlindIndex = 0;
+            if(sessionMode==='blind'){
+                // render only the current blind candidate
+                renderBlind();
+            } else {
+                renderPool();
+            }
         });
 
         function initSlots() {
@@ -472,6 +504,41 @@
                 el.querySelector('.sub-btn').addEventListener('click', (ev)=>{ ev.stopPropagation(); substituteGame(game.id); });
                 poolArea.appendChild(el);
             });
+            // ensure subs count updated
+            updateSubsCount();
+        }
+
+        // Blind-mode rendering: show only the currentBlindIndex item and allow click-to-place
+        function renderBlind(){
+            poolArea.innerHTML = '';
+            if(!selectedGames || selectedGames.length===0){ poolArea.innerHTML = '<div class="text-sm text-gray-500">No pool items</div>'; return; }
+            const idx = Math.min(currentBlindIndex, selectedGames.length-1);
+            const game = selectedGames[idx];
+            const el = document.createElement('div');
+            el.className = 'w-full p-4 bg-white rounded-2xl flex items-center gap-4';
+            const imgSrc = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
+            el.innerHTML = `<div class="w-24 h-24 rounded-xl overflow-hidden"><img src="${imgSrc}" class="w-full h-full object-cover"></div><div class="flex-1"><div class="font-bold">${game.name}</div><div class="text-xs text-gray-400 mt-1">#${idx+1} of ${selectedGames.length}</div></div><div class="flex flex-col gap-2"><button id="place-blind" class="ios-btn bg-blue-600 text-white px-3 py-2 rounded-2xl">Place</button><button id="skip-blind" class="ios-btn bg-gray-100 text-gray-700 px-3 py-2 rounded-2xl">Skip</button></div>`;
+            poolArea.appendChild(el);
+            document.getElementById('place-blind').addEventListener('click', ()=>{ assignBlindToNextSlot(game.id); });
+            document.getElementById('skip-blind').addEventListener('click', ()=>{ currentBlindIndex++; if(currentBlindIndex>=selectedGames.length) currentBlindIndex=0; renderBlind(); });
+            updateSubsCount();
+        }
+
+        function assignBlindToNextSlot(gameId){
+            // find first empty slot
+            const filledSlotIds = rankedGames.map(r=>r.slotId);
+            let nextSlot = null;
+            for(let i=1;i<=sessionSlotSize;i++){ if(!filledSlotIds.includes(String(i))) { nextSlot = String(i); break; } }
+            if(!nextSlot){ showToast('All slots filled'); return; }
+            const game = selectedGames.find(g=>g.id===gameId);
+            if(!game) return;
+            rankedGames.push({ slotId: nextSlot, game });
+            // remove the game from selectedGames (so it won't appear again)
+            selectedGames = selectedGames.filter(g=>g.id!==gameId);
+            // advance blind index if needed
+            if(currentBlindIndex >= selectedGames.length) currentBlindIndex = 0;
+            renderSlots(); updateProgress();
+            if(sessionMode==='blind') renderBlind(); else renderPool();
         }
 
         function handleDrop(e) {
