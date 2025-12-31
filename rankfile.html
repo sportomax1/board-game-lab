@@ -295,7 +295,6 @@
         let currentBlindIndex = 0;
         let originalCollection = []; // full collection fetched from BGG
         let substitutionsCount = 0;
-        let selectingSlotFor = null; // when set, clicking a slot will place this game id there
 
         function sampleArray(arr, n) {
             const copy = arr.slice();
@@ -488,12 +487,6 @@
                 slot.addEventListener('dragover', e => { e.preventDefault(); slot.classList.add('drag-over'); });
                 slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
                 slot.addEventListener('drop', handleDrop);
-                // clicking a slot can act as a manual placement target when in blind-place mode
-                slot.addEventListener('click', function(){
-                    if(selectingSlotFor){
-                        placeIntoSlot(this.dataset.slotId);
-                    }
-                });
                 rankingSlots.appendChild(slot);
             }
         }
@@ -518,13 +511,35 @@
                 const imgSrc = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
                 const btnHtml = `<button class="sub-btn absolute top-1 right-1 bg-white/90 text-gray-600 rounded-full p-1 text-xs" title="Substitute">⤻</button>`;
                 el.innerHTML = `<div class="w-full h-full"><img src="${imgSrc}" class="w-full h-full object-cover"></div>${btnHtml}`;
-                el.addEventListener('dragstart', (e) => e.dataTransfer.setData('gameId', game.id));
+                el.addEventListener('dragstart', (e) => {
+                    e.dataTransfer.setData('gameId', game.id);
+                });
                 el.querySelector('.sub-btn').addEventListener('click', (ev)=>{ ev.stopPropagation(); substituteGame(game.id); });
                 poolArea.appendChild(el);
             });
             // ensure subs count updated
             updateSubsCount();
         }
+
+        // allow dropping games back into pool to unplace them
+        poolArea.addEventListener('dragover', (e)=>e.preventDefault());
+        poolArea.addEventListener('drop', (e)=>{
+            e.preventDefault();
+            const gameId = e.dataTransfer.getData('gameId');
+            const sourceSlot = e.dataTransfer.getData('sourceSlot');
+            if(!gameId) return;
+            // if dragged from a slot, remove from rankedGames and add back to pool
+            if(sourceSlot){
+                const entry = rankedGames.find(rg=>rg.slotId===sourceSlot || rg.game.id===gameId);
+                if(entry){
+                    rankedGames = rankedGames.filter(rg=>rg.slotId!==entry.slotId);
+                    selectedGames.unshift(entry.game);
+                    renderSlots();
+                    if(sessionMode==='blind') renderBlind(); else renderPool();
+                    updateProgress();
+                }
+            }
+        });
 
         // Blind-mode rendering: show only the currentBlindIndex item and allow click-to-place
         function renderBlind(){
@@ -535,42 +550,18 @@
             const el = document.createElement('div');
             el.className = 'w-full p-4 bg-white rounded-2xl flex items-center gap-4';
             const imgSrc = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
-            el.innerHTML = `<div class="w-24 h-24 rounded-xl overflow-hidden"><img src="${imgSrc}" class="w-full h-full object-cover"></div><div class="flex-1"><div class="font-bold">${game.name}</div><div class="text-xs text-gray-400 mt-1">#${idx+1} of ${selectedGames.length}</div></div><div class="flex flex-col gap-2"><button id="place-blind" class="ios-btn bg-blue-600 text-white px-3 py-2 rounded-2xl">Place</button><button id="skip-blind" class="ios-btn bg-gray-100 text-gray-700 px-3 py-2 rounded-2xl">Skip</button></div>`;
+            el.innerHTML = `<div class="w-24 h-24 rounded-xl overflow-hidden"><img src="${imgSrc}" class="w-full h-full object-cover"></div><div class="flex-1"><div class="font-bold">${game.name}</div><div class="text-xs text-gray-400 mt-1">#${idx+1} of ${selectedGames.length}</div></div><div class="flex flex-col gap-2"><button id="skip-blind" class="ios-btn bg-gray-100 text-gray-700 px-3 py-2 rounded-2xl">Skip</button></div>`;
+            // make blind card draggable so user can drag it into slots
+            el.draggable = true;
+            el.addEventListener('dragstart', (ev)=>{
+                ev.dataTransfer.setData('gameId', game.id);
+            });
             poolArea.appendChild(el);
-            document.getElementById('place-blind').addEventListener('click', ()=>{ startSelectSlotForPlace(game.id); });
             document.getElementById('skip-blind').addEventListener('click', ()=>{ currentBlindIndex++; if(currentBlindIndex>=selectedGames.length) currentBlindIndex=0; renderBlind(); });
             updateSubsCount();
         }
 
-        // Begin manual placement helpers for Blind mode
-        function startSelectSlotForPlace(gameId){
-            selectingSlotFor = gameId;
-            document.querySelectorAll('.rank-slot').forEach(s=>s.classList.add('select-target'));
-            showToast('Select a slot to place this game');
-        }
-
-        function stopSelectSlotForPlace(){
-            selectingSlotFor = null;
-            document.querySelectorAll('.rank-slot').forEach(s=>s.classList.remove('select-target'));
-        }
-
-        function placeIntoSlot(slotId){
-            if(!selectingSlotFor) return;
-            const existing = rankedGames.find(rg=>rg.slotId===String(slotId));
-            if(existing){
-                if(!confirm('This slot is occupied. Replace existing entry?')){ return; }
-                rankedGames = rankedGames.filter(rg=>rg.slotId!==String(slotId));
-            }
-            const game = selectedGames.find(g=>g.id===selectingSlotFor);
-            if(!game){ stopSelectSlotForPlace(); return; }
-            rankedGames.push({ slotId: String(slotId), game });
-            selectedGames = selectedGames.filter(g=>g.id!==selectingSlotFor);
-            stopSelectSlotForPlace();
-            if(currentBlindIndex >= selectedGames.length) currentBlindIndex = 0;
-            renderSlots(); updateProgress();
-            if(sessionMode==='blind') renderBlind(); else renderPool();
-        }
-        // End manual placement helpers
+        // Manual placement helpers removed — placement is via drag & drop now
 
         function assignBlindToNextSlot(gameId){
             // find first empty slot
@@ -593,11 +584,29 @@
             e.preventDefault();
             this.classList.remove('drag-over');
             const gameId = e.dataTransfer.getData('gameId');
+            const sourceSlot = e.dataTransfer.getData('sourceSlot');
             const slotId = this.dataset.slotId;
+            // If dragging from another slot, move the rankedGames entry
+            if(sourceSlot){
+                const entry = rankedGames.find(rg=>rg.game.id===gameId || rg.slotId===sourceSlot);
+                if(entry){
+                    // remove any existing at target
+                    rankedGames = rankedGames.filter(rg=>rg.game.id!==gameId && rg.slotId!==slotId);
+                    entry.slotId = String(slotId);
+                    rankedGames.push(entry);
+                    renderSlots(); updateProgress();
+                }
+                return;
+            }
+
+            // otherwise, it's from the pool or blind card
             const game = selectedGames.find(g => g.id === gameId);
             if (game) {
+                // remove any previous placement of this game and any occupant of target slot
                 rankedGames = rankedGames.filter(rg => rg.game.id !== gameId && rg.slotId !== slotId);
-                rankedGames.push({ slotId, game });
+                rankedGames.push({ slotId: String(slotId), game });
+                // remove from pool
+                selectedGames = selectedGames.filter(g=>g.id!==gameId);
                 renderSlots();
                 updateProgress();
             }
@@ -609,10 +618,26 @@
                 const match = rankedGames.find(rg => rg.slotId === slotId);
                 if (match) {
                     slot.classList.add('occupied');
-                    slot.innerHTML = `<div class="flex-shrink-0 w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white">${slotId}</div><img src="${match.game.image}" class="w-12 h-12 rounded-lg object-cover"><div class="flex-grow"><h4 class="font-bold text-sm text-gray-900 line-clamp-1">${match.game.name}</h4></div><button class="remove-btn p-2 text-gray-300">×</button>`;
+                    slot.innerHTML = `<div class="flex-shrink-0 w-10 h-10 rounded-full bg-blue-600 flex items-center justify-center font-bold text-white">${slotId}</div><img src="${match.game.image}" class="w-12 h-12 rounded-lg object-cover slot-draggable" data-gameid="${match.game.id}"><div class="flex-grow"><h4 class="font-bold text-sm text-gray-900 line-clamp-1">${match.game.name}</h4></div><button class="remove-btn p-2 text-gray-300">×</button>`;
+                    // make the slot image draggable so user can move it to other slots or back to pool
+                    const imgEl = slot.querySelector('img.slot-draggable');
+                    if(imgEl){
+                        imgEl.draggable = true;
+                        imgEl.addEventListener('dragstart', (ev)=>{
+                            ev.dataTransfer.setData('gameId', imgEl.dataset.gameid);
+                            ev.dataTransfer.setData('sourceSlot', slotId);
+                        });
+                    }
                     slot.querySelector('.remove-btn').addEventListener('click', () => {
-                        rankedGames = rankedGames.filter(rg => rg.slotId !== slotId);
+                        // remove from ranked and return to pool
+                        const removed = rankedGames.find(rg=>rg.slotId===slotId);
+                        if(removed){
+                            rankedGames = rankedGames.filter(rg => rg.slotId !== slotId);
+                            selectedGames.unshift(removed.game);
+                        }
                         renderSlots();
+                        // re-render pool or blind view depending on mode
+                        if(sessionMode==='blind') renderBlind(); else renderPool();
                         updateProgress();
                     });
                 } else {
@@ -666,18 +691,17 @@
             loadCollectionForUser(username);
         });
 
-        // Full restart resets in-memory state and stored mode, then reloads collection
+        // Full restart resets in-memory state then reloads collection; it preserves saved default mode
         function fullRestart(){
-            if(!confirm('Full restart will clear current pool, placements, substitutions, and reset mode to Blind. Continue?')) return;
+            if(!confirm('Full restart will clear current pool, placements, and substitutions. Continue?')) return;
             // clear in-memory
             selectedGames = [];
             rankedGames = [];
             originalCollection = [];
             substitutionsCount = 0;
             currentBlindIndex = 0;
-            // clear stored mode and set default back to blind
-            localStorage.removeItem('rankfile_mode');
-            sessionMode = 'blind';
+            // preserve stored mode (don't clear rankfile_mode)
+            sessionMode = localStorage.getItem('rankfile_mode') || sessionMode || 'blind';
             applyModeUI();
             initSlots();
             updateProgress();
