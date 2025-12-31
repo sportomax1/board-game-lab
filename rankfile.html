@@ -68,6 +68,12 @@
             background-color: rgba(0, 122, 255, 0.05);
         }
 
+        .rank-slot.select-target {
+            border-color: #ff8c00;
+            background-color: rgba(255,140,0,0.06);
+            cursor: pointer;
+        }
+
         .ios-btn {
             transition: all 0.2s;
         }
@@ -109,9 +115,11 @@
                 </div>
                 <h1 class="text-xl font-bold tracking-tight text-gray-900">Rank & File</h1>
             </div>
-            <button id="finish-btn" class="ios-btn bg-blue-600 text-white px-5 py-2 rounded-full font-semibold text-sm shadow-md hover:bg-blue-700 opacity-50 pointer-events-none transition-all hidden">
-                Generate
-            </button>
+            <div class="flex items-center gap-3">
+                <span id="status-bar" class="text-xs text-gray-500 hidden"></span>
+                <button id="full-restart-btn" class="ios-btn bg-white border border-gray-200 text-gray-700 px-3 py-2 rounded-full font-semibold text-sm hover:bg-gray-50">Restart</button>
+                <button id="finish-btn" class="ios-btn bg-blue-600 text-white px-5 py-2 rounded-full font-semibold text-sm shadow-md hover:bg-blue-700 opacity-50 pointer-events-none transition-all hidden">Generate</button>
+            </div>
         </div>
     </header>
 
@@ -282,10 +290,12 @@
         let selectedGames = []; 
         let rankedGames = []; 
         let username = "sportomax";
-        let sessionMode = localStorage.getItem('rankfile_mode') || 'pool'; // 'pool' or 'blind'
+        // Default to blind mode unless user has explicitly chosen otherwise
+        let sessionMode = localStorage.getItem('rankfile_mode') || 'blind'; // 'pool' or 'blind'
         let currentBlindIndex = 0;
         let originalCollection = []; // full collection fetched from BGG
         let substitutionsCount = 0;
+        let selectingSlotFor = null; // when set, clicking a slot will place this game id there
 
         function sampleArray(arr, n) {
             const copy = arr.slice();
@@ -376,6 +386,8 @@
         const usernameInput = document.getElementById('username-input');
         const saveSettingsBtn = document.getElementById('save-settings-btn');
         const initialsDisplay = document.getElementById('initials-display');
+        const statusBar = document.getElementById('status-bar');
+        const fullRestartBtn = document.getElementById('full-restart-btn');
 
         // Navigation Logic
         function switchTab(tab) {
@@ -476,6 +488,12 @@
                 slot.addEventListener('dragover', e => { e.preventDefault(); slot.classList.add('drag-over'); });
                 slot.addEventListener('dragleave', () => slot.classList.remove('drag-over'));
                 slot.addEventListener('drop', handleDrop);
+                // clicking a slot can act as a manual placement target when in blind-place mode
+                slot.addEventListener('click', function(){
+                    if(selectingSlotFor){
+                        placeIntoSlot(this.dataset.slotId);
+                    }
+                });
                 rankingSlots.appendChild(slot);
             }
         }
@@ -519,10 +537,40 @@
             const imgSrc = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
             el.innerHTML = `<div class="w-24 h-24 rounded-xl overflow-hidden"><img src="${imgSrc}" class="w-full h-full object-cover"></div><div class="flex-1"><div class="font-bold">${game.name}</div><div class="text-xs text-gray-400 mt-1">#${idx+1} of ${selectedGames.length}</div></div><div class="flex flex-col gap-2"><button id="place-blind" class="ios-btn bg-blue-600 text-white px-3 py-2 rounded-2xl">Place</button><button id="skip-blind" class="ios-btn bg-gray-100 text-gray-700 px-3 py-2 rounded-2xl">Skip</button></div>`;
             poolArea.appendChild(el);
-            document.getElementById('place-blind').addEventListener('click', ()=>{ assignBlindToNextSlot(game.id); });
+            document.getElementById('place-blind').addEventListener('click', ()=>{ startSelectSlotForPlace(game.id); });
             document.getElementById('skip-blind').addEventListener('click', ()=>{ currentBlindIndex++; if(currentBlindIndex>=selectedGames.length) currentBlindIndex=0; renderBlind(); });
             updateSubsCount();
         }
+
+        // Begin manual placement helpers for Blind mode
+        function startSelectSlotForPlace(gameId){
+            selectingSlotFor = gameId;
+            document.querySelectorAll('.rank-slot').forEach(s=>s.classList.add('select-target'));
+            showToast('Select a slot to place this game');
+        }
+
+        function stopSelectSlotForPlace(){
+            selectingSlotFor = null;
+            document.querySelectorAll('.rank-slot').forEach(s=>s.classList.remove('select-target'));
+        }
+
+        function placeIntoSlot(slotId){
+            if(!selectingSlotFor) return;
+            const existing = rankedGames.find(rg=>rg.slotId===String(slotId));
+            if(existing){
+                if(!confirm('This slot is occupied. Replace existing entry?')){ return; }
+                rankedGames = rankedGames.filter(rg=>rg.slotId!==String(slotId));
+            }
+            const game = selectedGames.find(g=>g.id===selectingSlotFor);
+            if(!game){ stopSelectSlotForPlace(); return; }
+            rankedGames.push({ slotId: String(slotId), game });
+            selectedGames = selectedGames.filter(g=>g.id!==selectingSlotFor);
+            stopSelectSlotForPlace();
+            if(currentBlindIndex >= selectedGames.length) currentBlindIndex = 0;
+            renderSlots(); updateProgress();
+            if(sessionMode==='blind') renderBlind(); else renderPool();
+        }
+        // End manual placement helpers
 
         function assignBlindToNextSlot(gameId){
             // find first empty slot
@@ -617,6 +665,28 @@
         window.addEventListener('load', () => {
             loadCollectionForUser(username);
         });
+
+        // Full restart resets in-memory state and stored mode, then reloads collection
+        function fullRestart(){
+            if(!confirm('Full restart will clear current pool, placements, substitutions, and reset mode to Blind. Continue?')) return;
+            // clear in-memory
+            selectedGames = [];
+            rankedGames = [];
+            originalCollection = [];
+            substitutionsCount = 0;
+            currentBlindIndex = 0;
+            // clear stored mode and set default back to blind
+            localStorage.removeItem('rankfile_mode');
+            sessionMode = 'blind';
+            applyModeUI();
+            initSlots();
+            updateProgress();
+            // reload collection and repopulate pool
+            loadCollectionForUser(username);
+            showToast('App restarted');
+        }
+
+        if(fullRestartBtn) fullRestartBtn.addEventListener('click', fullRestart);
 
         finishBtn.addEventListener('click', () => {
             const sorted = [...rankedGames].sort((a, b) => a.slotId - b.slotId);
