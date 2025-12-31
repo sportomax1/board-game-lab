@@ -117,10 +117,12 @@
             <select id="layoutSelect" onchange="renderThumbs()" class="text-sm font-bold outline-none bg-transparent py-1">
               <option value="grid9">Grid 3x3 (Top 9)</option>
               <option value="grid25">Grid 5x5 (Top 25)</option>
+              <option value="grid100">Grid 10x10 (Top 100)</option>
               <option value="shelfie">Shelfie View (Top 10)</option>
               <option value="list10">List Mode (Top 10)</option>
               <option value="list50">List Mode (Top 50)</option>
               <option value="list100">List Mode (Top 100)</option>
+              <option value="listAll">List All Records</option>
             </select>
           </div>
           <div class="flex flex-col">
@@ -175,12 +177,16 @@ let thumbsMap = {};
 let draggedIndex = null;
 let auditLogs = { exact: 0, fuzzy: [], missed: [] };
 
-// Advanced normalization: remove non-alphanumeric AND common filler words
+// Advanced normalization: handles special characters/diacritics and filler words
 function normalize(str, removeFillers = false) {
-  let s = str.toLowerCase().replace(/&/g, 'and'); // Normalize ampersands
+  // 1. Remove diacritics (Orléans -> Orleans)
+  let s = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+  // 2. Normalize common symbols
+  s = s.toLowerCase().replace(/&/g, 'and'); 
+  
   if (removeFillers) {
     const fillers = ['a', 'the', 'and', 'of', 'in', 'on', 'with', 'by', 'an'];
-    // Split by non-alphanumeric, filter out fillers, join
+    // Split by non-alphanumeric, filter out fillers
     const words = s.split(/[^a-z0-9]/).filter(w => w && !fillers.includes(w));
     return words.join('');
   }
@@ -266,22 +272,18 @@ async function parseAndFetch(){
       const normBasic = normalize(n, false);
       const normStrict = normalize(n, true);
       
-      // 1. Exact Match
       if(collMap[key]) {
         thumbsMap[n]= {thumb: collMap[key].thumb, isExact: true};
         auditLogs.exact++;
       }
-      // 2. Basic Alphanumeric match (ignoring spaces/punctuation)
       else if(normMapBasic[normBasic]) {
         thumbsMap[n] = {thumb: normMapBasic[normBasic].thumb, isExact: false, matchedTo: normMapBasic[normBasic].original};
         auditLogs.fuzzy.push({input: n, matched: normMapBasic[normBasic].original, reason: 'normalized'});
       }
-      // 3. Keyword/Filler-less match (ignoring "The", "And", etc)
       else if(normMapStrict[normStrict]) {
         thumbsMap[n] = {thumb: normMapStrict[normStrict].thumb, isExact: false, matchedTo: normMapStrict[normStrict].original};
         auditLogs.fuzzy.push({input: n, matched: normMapStrict[normStrict].original, reason: 'keywords'});
       }
-      // 4. Substring fallback
       else {
         const foundKey = Object.keys(collMap).find(k=>k.includes(key) || key.includes(k));
         if(foundKey) {
@@ -317,12 +319,7 @@ function displayAudit() {
         let html = "";
         if(auditLogs.missed.length > 0) html += `<strong>Missing:</strong> ${auditLogs.missed.join(', ')}. `;
         if(auditLogs.fuzzy.length > 0) {
-            html += `<strong>Matches found:</strong> ${auditLogs.fuzzy.map(f => {
-                let badge = " (Partial)";
-                if (f.reason === 'normalized') badge = " (Char Agnostic)";
-                if (f.reason === 'keywords') badge = " (Keyword Only)";
-                return `<span class="italic">"${f.input}"</span> → <span class="font-bold">"${f.matched}"</span>${badge}`;
-            }).join('; ')}.`;
+            html += `<strong>Fuzzy:</strong> ${auditLogs.fuzzy.map(f => `"${f.input}" → "${f.matched}"`).join('; ')}.`;
         }
         textEl.innerHTML = html;
     } else {
@@ -348,8 +345,12 @@ function renderThumbs(){
 
   if(layout==='grid9'){ limit=9; gridCols='repeat(3, 1fr)'; container.style.maxWidth = '600px'; }
   else if(layout==='grid25'){ limit=25; gridCols='repeat(5, 1fr)'; container.style.maxWidth = '800px'; }
+  else if(layout==='grid100'){ limit=100; gridCols='repeat(10, 1fr)'; container.style.maxWidth = '1000px'; }
   else if(isShelf){ limit=10; container.style.maxWidth = '900px'; }
-  else if(layout.startsWith('list')){ limit = parseInt(layout.replace('list','')); isList=true; container.style.maxWidth = '600px'; }
+  else if(layout.startsWith('list')){ 
+    limit = layout === 'listAll' ? parsedList.length : parseInt(layout.replace('list','')); 
+    isList=true; container.style.maxWidth = '600px'; 
+  }
 
   const list = parsedList.slice(0, limit);
   const grid = document.createElement('div');
@@ -357,7 +358,7 @@ function renderThumbs(){
   if(isShelf) {
     grid.className = 'flex flex-wrap justify-center gap-x-2 gap-y-12 shelf-container py-12';
   } else {
-    grid.className = isList ? 'flex flex-col gap-3' : 'grid gap-3';
+    grid.className = isList ? 'flex flex-col gap-3' : 'grid gap-2';
     if(!isList) grid.style.gridTemplateColumns = gridCols;
   }
 
@@ -369,12 +370,9 @@ function renderThumbs(){
     wrapper.dataset.index = idx;
     setupDragEvents(wrapper, idx);
 
-    const isFuzzy = thumbsMap[p.name] && !thumbsMap[p.name].isExact && thumbsMap[p.name].thumb;
-
     if(isShelf) {
-        wrapper.className = `shelf-item relative w-32 h-44 bg-slate-800 rounded-sm overflow-hidden border-r-4 border-black/20 ${isFuzzy ? 'ring-2 ring-amber-400' : ''}`;
-        const img = createImg(p.name, `w-full h-full object-cover`);
-        wrapper.appendChild(img);
+        wrapper.className = `shelf-item relative w-32 h-44 bg-slate-800 rounded-sm overflow-hidden border-r-4 border-black/20`;
+        wrapper.appendChild(createImg(p.name, `w-full h-full object-cover`));
         if(showRanks) {
             const rb = document.createElement('div');
             rb.className = "absolute top-0 right-0 p-1 bg-black/40 text-[10px] text-white font-bold";
@@ -385,28 +383,27 @@ function renderThumbs(){
         base.className = "absolute -bottom-8 left-0 right-0 h-8 wood-floor -z-10 opacity-50";
         wrapper.appendChild(base);
     } else if(isList) {
-        wrapper.className = `flex items-center bg-white/5 rounded-xl p-2 border border-white/5 group transition-all hover:bg-white/10 ${isFuzzy ? 'border-amber-400/50' : ''}`;
+        wrapper.className = `flex items-center bg-white/5 rounded-xl p-2 border border-white/5 group transition-all hover:bg-white/10`;
         const img = createImg(p.name, `w-16 h-16 rounded-lg ${imgClass} bg-slate-800 shadow-inner`);
         const info = document.createElement('div');
         info.className = "ml-4 flex-1";
         info.innerHTML = `<div class="flex items-center gap-2">
             ${showRanks ? `<span style="color:${accentColor}" class="font-bold text-sm">#${idx+1}</span>` : ''}
             <span class="text-white font-bold text-base truncate">${showNames ? p.name : ''}</span>
-            ${isFuzzy ? '<i class="fa-solid fa-wand-sparkles text-amber-400 text-[10px]" title="Fuzzy Match"></i>' : ''}
         </div>`;
         wrapper.appendChild(img);
         wrapper.appendChild(info);
     } else {
-        wrapper.className = `relative aspect-square bg-slate-800 rounded-xl border border-white/10 overflow-hidden group shadow-md ${isFuzzy ? 'ring-2 ring-inset ring-amber-400' : ''}`;
-        const img = createImg(p.name, `w-full h-full ${imgClass}`);
-        wrapper.appendChild(img);
+        const isDense = limit > 25;
+        wrapper.className = `relative aspect-square bg-slate-800 rounded-${isDense ? 'md' : 'xl'} border border-white/10 overflow-hidden group shadow-md`;
+        wrapper.appendChild(createImg(p.name, `w-full h-full ${imgClass}`));
         if(showRanks){
             const rb = document.createElement('div');
-            rb.className = "absolute top-1 left-1 bg-black/70 text-white text-[9px] font-bold px-1.5 py-0.5 rounded backdrop-blur-md";
+            rb.className = `absolute top-1 left-1 bg-black/70 text-white font-bold px-1 py-0.5 rounded backdrop-blur-md ${isDense ? 'text-[7px]' : 'text-[9px]'}`;
             rb.innerText = idx + 1;
             wrapper.appendChild(rb);
         }
-        if(showNames){
+        if(showNames && !isDense){
             const nb = document.createElement('div');
             nb.className = "absolute bottom-0 left-0 right-0 bg-black/60 text-white text-[8px] p-1.5 font-medium truncate text-center backdrop-blur-sm opacity-0 group-hover:opacity-100 transition-opacity";
             nb.innerText = p.name;
@@ -448,8 +445,9 @@ async function getComposedCanvas() {
   
   let limit = 25;
   if(layout==='grid9') limit=9;
+  else if(layout==='grid100') limit=100;
   else if(layout==='shelfie') limit=10;
-  else if(layout.startsWith('list')) limit = parseInt(layout.replace('list',''));
+  else if(layout.startsWith('list')) limit = layout === 'listAll' ? parsedList.length : parseInt(layout.replace('list',''));
   
   const list = parsedList.slice(0,limit);
   let cols=1, rows=1, tile=400;
@@ -458,6 +456,7 @@ async function getComposedCanvas() {
 
   if(layout==='grid9'){ cols=3; rows=3; }
   else if(layout==='grid25'){ cols=5; rows=5; }
+  else if(layout==='grid100'){ cols=10; rows=10; tile=200; }
   else if(isShelf){ cols=5; rows=2; tile=350; }
   else if(isList){ cols=1; rows=list.length; tile=160; }
 
@@ -480,31 +479,22 @@ async function getComposedCanvas() {
     
     if(img){
         if(isShelf) {
-            ctx.fillStyle = '#1a0f0e';
-            ctx.fillRect(x, y + tile - 20, tile, 20);
-            ctx.save();
-            ctx.shadowBlur = 20; ctx.shadowColor = 'black';
+            ctx.fillStyle = '#1a0f0e'; ctx.fillRect(x, y + tile - 20, tile, 20);
+            ctx.save(); ctx.shadowBlur = 20; ctx.shadowColor = 'black';
             const boxW = tile * 0.7; const boxH = tile * 0.85;
             const bx = x + (tile-boxW)/2; const by = y + (tile-boxH) - 20;
-            ctx.drawImage(img, bx, by, boxW, boxH);
-            ctx.restore();
-            if(showRanks) {
-                ctx.fillStyle = 'rgba(255,255,255,0.3)';
-                ctx.font = '24px sans-serif';
-                ctx.fillText(i+1, bx+5, by+25);
-            }
+            ctx.drawImage(img, bx, by, boxW, boxH); ctx.restore();
+            if(showRanks) { ctx.fillStyle = 'rgba(255,255,255,0.3)'; ctx.font = '24px sans-serif'; ctx.fillText(i+1, bx+5, by+25); }
         } else if(isList) {
             const size = tile - 30;
-            const aspect = img.width / img.height;
-            let dw = size, dh = size;
             if(zoom) {
                 const scale = Math.max(size/img.width, size/img.height);
-                dw = img.width * scale; dh = img.height * scale;
-                ctx.save();
-                ctx.beginPath(); ctx.roundRect(15, y+15, size, size, 20); ctx.clip();
-                ctx.drawImage(img, 15 + (size-dw)/2, y + 15 + (size-dh)/2, dw, dh);
-                ctx.restore();
+                const dw = img.width * scale, dh = img.height * scale;
+                ctx.save(); ctx.beginPath(); ctx.roundRect(15, y+15, size, size, 20); ctx.clip();
+                ctx.drawImage(img, 15 + (size-dw)/2, y + 15 + (size-dh)/2, dw, dh); ctx.restore();
             } else {
+                const aspect = img.width / img.height;
+                let dw = size, dh = size;
                 if(aspect > 1) dh = size / aspect; else dw = size * aspect;
                 ctx.drawImage(img, 15 + (size-dw)/2, y + 15 + (size-dh)/2, dw, dh);
             }
@@ -522,8 +512,17 @@ async function getComposedCanvas() {
                 if(aspect > 1) dh = tile / aspect; else dw = tile * aspect;
                 ctx.drawImage(img, x + (tile-dw)/2, y + (tile-dh)/2, dw, dh);
             }
-            if(showRanks){ ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(x + 10, y + 10, 60, 60); ctx.fillStyle = 'white'; ctx.font = 'bold 30px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(i+1, x + 40, y + 50); }
-            if(showNames){ ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x, y + tile - 50, tile, 50); ctx.fillStyle = 'white'; ctx.font = '20px sans-serif'; ctx.textAlign = 'center'; ctx.fillText(list[i].name, x + tile/2, y + tile - 18); }
+            if(showRanks){ 
+                const fontSize = layout === 'grid100' ? 24 : 30;
+                ctx.fillStyle = 'rgba(0,0,0,0.7)'; ctx.fillRect(x + 5, y + 5, fontSize * 2, fontSize * 2); 
+                ctx.fillStyle = 'white'; ctx.font = `bold ${fontSize}px sans-serif`; ctx.textAlign = 'center'; 
+                ctx.fillText(i+1, x + fontSize + 5, y + fontSize + 15); 
+            }
+            if(showNames && layout !== 'grid100'){ 
+                ctx.fillStyle = 'rgba(0,0,0,0.6)'; ctx.fillRect(x, y + tile - 50, tile, 50); 
+                ctx.fillStyle = 'white'; ctx.font = '20px sans-serif'; ctx.textAlign = 'center'; 
+                ctx.fillText(list[i].name, x + tile/2, y + tile - 18); 
+            }
         }
     }
   });
