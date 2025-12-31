@@ -539,6 +539,44 @@
                 <input type="text" id="usernameInput" class="text-input" placeholder="sportomax" value="sportomax">
             </div>
 
+            <div class="input-group">
+                <label class="label">Plays Fetch Mode</label>
+                <div style="display:flex;flex-direction:column;gap:8px;">
+                    <label style="font-weight:500"><input type="radio" name="fetchMode" value="pages" checked onchange="onFetchModeChange()"> Fetch N pages (100 plays per page)</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <input type="number" id="pagesToFetch" class="text-input" style="width:120px;" min="1" max="500" value="1">
+                        <div style="font-size:13px;color:#666">pages (100 plays/page)</div>
+                    </div>
+
+                    <label style="font-weight:500"><input type="radio" name="fetchMode" value="daterange" onchange="onFetchModeChange()"> By date range</label>
+                    <div style="display:flex;gap:8px;">
+                        <input type="date" id="settingsStart" class="text-input">
+                        <input type="date" id="settingsEnd" class="text-input">
+                    </div>
+
+                    <label style="font-weight:500"><input type="radio" name="fetchMode" value="last" onchange="onFetchModeChange()"> Last period</label>
+                    <div style="display:flex;gap:8px;align-items:center;">
+                        <select id="lastPeriod" class="text-input">
+                            <option value="week">Last Week</option>
+                            <option value="month">Last Month</option>
+                            <option value="year">Last Year</option>
+                        </select>
+                    </div>
+
+                    <label style="font-weight:500"><input type="radio" name="fetchMode" value="specific" onchange="onFetchModeChange()"> Specific week / month / year</label>
+                    <div id="specificControls" style="display:none;flex-direction:column;gap:8px;">
+                        <select id="specificType" class="text-input" onchange="onSpecificTypeChange()">
+                            <option value="week">Week (choose a date within week)</option>
+                            <option value="month">Month</option>
+                            <option value="year">Year</option>
+                        </select>
+                        <input type="date" id="specificWeekDate" class="text-input" style="display:block">
+                        <input type="month" id="specificMonth" class="text-input" style="display:none">
+                        <input type="number" id="specificYear" class="text-input" min="1900" max="2100" style="display:none" placeholder="2023">
+                    </div>
+                </div>
+            </div>
+
             <!-- Token is handled in code, no input field shown -->
             <div style="background: #F2F2F7; padding: 12px; border-radius: 10px; font-size: 13px; color: #666; margin-bottom: 20px;">
                 🔒 Secure API Token loaded from environment.
@@ -611,6 +649,10 @@
             </div>
             
             <label class="label">Select & Reorder Fields (drag to reorder)</label>
+            <div style="display:flex;gap:10px;margin-bottom:10px;">
+                <button class="primary-btn" style="background:#E5E5EA;color:#000;padding:8px 12px;width:auto;" onclick="selectAllExportFields()">Select All Fields</button>
+                <button class="primary-btn" style="background:#fff;padding:8px 12px;border:1px solid #ddd;color:#000;width:auto;" onclick="selectNoneExportFields()">Select None</button>
+            </div>
             <div id="columnOrder" class="column-order-list" style="margin-bottom: 16px; padding: 12px; background: #f9f9f9; border-radius: 8px; border: 1px solid #ddd;">
                 <!-- Populated by initColumnOrder() -->
             </div>
@@ -666,7 +708,7 @@
         window.onload = () => {
             const savedUser = localStorage.getItem('bgg_username');
             els.inputUser.value = savedUser || DEFAULT_USER;
-            openModal('settingsModal');
+            openSettingsModal();
         };
 
         // Helper: robustly parse year strings from various BGG XML formats
@@ -692,27 +734,27 @@
 
             localStorage.setItem('bgg_username', user);
             closeModal('settingsModal');
-            
+
             state.loading = true;
             renderLoading();
-            
+
             try {
-                // 1. Fetch Plays
+                // 1. Fetch Plays (supports page limits and date/period options)
                 updateProgress(10);
-                const playsXml = await fetchAPI('plays', user, `&username=${encodeURIComponent(user)}`);
-                parsePlays(playsXml);
-                
+                const plays = await fetchPlaysWithOptions(user);
+                state.plays = plays;
+
                 if (state.plays.length === 0) throw new Error("No plays found.");
-                
+
                 // 2. Fetch Collection first to capture any yearpublished/thumb info
                 updateProgress(40);
                 const uniqueIds = [...new Set(state.plays.map(p => p.gameId))].filter(Boolean);
                 await fetchCollection(user, uniqueIds);
 
-                // 3. Fetch Deep Stats (Rank, Bayes, etc) — allow stats fetch to preserve yearPublished if collection provided it
+                // 3. Fetch Deep Stats (Rank, Bayes, etc)
                 updateProgress(70);
                 await fetchThingStats(uniqueIds);
-                
+
                 updateProgress(100);
                 setTimeout(() => { els.progress.style.display = 'none'; }, 500);
 
@@ -725,6 +767,128 @@
             } finally {
                 state.loading = false;
             }
+        }
+
+        // --- Fetch plays with pagination and stop conditions ---
+        async function fetchPlaysWithOptions(user) {
+            const mode = document.querySelector('input[name="fetchMode"]:checked')?.value || 'pages';
+            const pagesToFetch = Math.max(1, parseInt(document.getElementById('pagesToFetch').value || '1'));
+            const startDate = document.getElementById('settingsStart').value || null;
+            const endDate = document.getElementById('settingsEnd').value || null;
+            const lastPeriod = document.getElementById('lastPeriod')?.value || null;
+
+            const specificType = document.getElementById('specificType')?.value;
+            const specificWeekDate = document.getElementById('specificWeekDate')?.value;
+            const specificMonth = document.getElementById('specificMonth')?.value;
+            const specificYear = document.getElementById('specificYear')?.value;
+
+            let targetStart = null; // inclusive
+            let targetEnd = null;   // inclusive
+
+            if (mode === 'daterange') {
+                targetStart = startDate || null;
+                targetEnd = endDate || null;
+            } else if (mode === 'last') {
+                const now = new Date();
+                if (lastPeriod === 'week') {
+                    targetEnd = formatDateISO(now);
+                    const d = new Date(now); d.setDate(d.getDate() - 7); targetStart = formatDateISO(d);
+                } else if (lastPeriod === 'month') {
+                    targetEnd = formatDateISO(now);
+                    const d = new Date(now); d.setMonth(d.getMonth() - 1); targetStart = formatDateISO(d);
+                } else if (lastPeriod === 'year') {
+                    targetEnd = formatDateISO(now);
+                    const d = new Date(now); d.setFullYear(d.getFullYear() - 1); targetStart = formatDateISO(d);
+                }
+            } else if (mode === 'specific') {
+                if (specificType === 'week' && specificWeekDate) {
+                    const d = new Date(specificWeekDate);
+                    // find monday of that week
+                    const day = d.getDay();
+                    const diff = (day + 6) % 7; // days since monday
+                    const monday = new Date(d); monday.setDate(d.getDate() - diff);
+                    const sunday = new Date(monday); sunday.setDate(monday.getDate() + 6);
+                    targetStart = formatDateISO(monday);
+                    targetEnd = formatDateISO(sunday);
+                } else if (specificType === 'month' && specificMonth) {
+                    const [y, m] = specificMonth.split('-').map(Number);
+                    const first = new Date(y, m - 1, 1);
+                    const last = new Date(y, m, 0);
+                    targetStart = formatDateISO(first);
+                    targetEnd = formatDateISO(last);
+                } else if (specificType === 'year' && specificYear) {
+                    const y = parseInt(specificYear, 10);
+                    const first = new Date(y, 0, 1);
+                    const last = new Date(y, 11, 31);
+                    targetStart = formatDateISO(first);
+                    targetEnd = formatDateISO(last);
+                }
+            }
+
+            // iterate pages until conditions satisfied
+            const collected = [];
+            const maxPagesLimit = 500; // safety cap
+            let page = 1;
+            const pageLimit = mode === 'pages' ? Math.min(pagesToFetch, maxPagesLimit) : maxPagesLimit;
+
+            while (page <= pageLimit) {
+                updateProgress(10 + Math.round((page / pageLimit) * 40));
+                const txt = await fetchAPI('plays', user, `&username=${encodeURIComponent(user)}&page=${page}`);
+                const doc = new DOMParser().parseFromString(txt, 'text/xml');
+                const playsOnPage = parsePlaysDocToArray(doc, collected.length);
+                if (!playsOnPage || playsOnPage.length === 0) break;
+                collected.push(...playsOnPage);
+
+                // If mode is pages, stop when we've fetched requested pages
+                if (mode === 'pages') {
+                    if (page >= pagesToFetch) break;
+                }
+
+                // If mode is date-based, check if the last (oldest) play on this page is older than targetStart -> then we can stop
+                if ((mode === 'daterange' || mode === 'last' || mode === 'specific') && targetStart) {
+                    // playsOnPage are ordered newest->oldest typically; check oldest date
+                    const oldest = playsOnPage[playsOnPage.length - 1];
+                    if (oldest && oldest.date) {
+                        if (targetStart && oldest.date < targetStart) {
+                            // we've gone past the start window; can stop
+                            break;
+                        }
+                    }
+                }
+
+                page++;
+            }
+
+            return collected;
+        }
+
+        function formatDateISO(d) {
+            if (!d) return null;
+            const yyyy = d.getFullYear();
+            const mm = String(d.getMonth() + 1).padStart(2, '0');
+            const dd = String(d.getDate()).padStart(2, '0');
+            return `${yyyy}-${mm}-${dd}`;
+        }
+
+        function parsePlaysDocToArray(doc, baseIndex = 0) {
+            const plays = doc.querySelectorAll('play');
+            return Array.from(plays).map((p, idx) => {
+                const item = p.querySelector('item');
+                const players = Array.from(p.querySelectorAll('player')).map(pl => pl.getAttribute('name'));
+                const dateStr = p.getAttribute('date') || '';
+                const [date, time] = dateStr.includes(' ') ? dateStr.split(' ') : [dateStr, ''];
+                return {
+                    index: baseIndex + idx,
+                    id: p.getAttribute('id'),
+                    date: date,
+                    time: time,
+                    dateStr: dateStr,
+                    location: p.getAttribute('location') || '',
+                    gameName: item ? item.getAttribute('name') : 'Unknown',
+                    gameId: item ? item.getAttribute('objectid') : null,
+                    players: players
+                };
+            });
         }
 
         // Wrapper for fetches
@@ -1301,6 +1465,16 @@
             }));
         }
 
+        function selectAllExportFields() {
+            const list = document.getElementById('columnOrder');
+            list.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = true; });
+        }
+
+        function selectNoneExportFields() {
+            const list = document.getElementById('columnOrder');
+            list.querySelectorAll('input[type="checkbox"]').forEach(cb => { cb.checked = false; });
+        }
+
         function showPlayDetail(playIndex) {
             const play = state.plays[playIndex];
             const stats = state.statsMap[play.gameId] || {};
@@ -1379,7 +1553,7 @@
         function updateProgress(p) { els.fill.style.width = p + '%'; }
         function openModal(id) { document.getElementById(id).classList.add('open'); }
         function closeModal(id) { document.getElementById(id).classList.remove('open'); }
-        function openSettingsModal() { openModal('settingsModal'); }
+        function openSettingsModal() { onFetchModeChange(); onSpecificTypeChange(); openModal('settingsModal'); }
         function openSortModal() { openModal('sortModal'); }
         function openFilterModal() { openModal('filterModal'); }
         function clearFilters() { 
@@ -1389,6 +1563,19 @@
             document.getElementById('filterYearMin').value = ''; 
             document.getElementById('filterYearMax').value = ''; 
             applyFilters(); closeModal('filterModal'); 
+        }
+        
+        function onFetchModeChange() {
+            const mode = document.querySelector('input[name="fetchMode"]:checked')?.value;
+            const specific = document.getElementById('specificControls');
+            if (specific) specific.style.display = (mode === 'specific') ? 'flex' : 'none';
+        }
+
+        function onSpecificTypeChange() {
+            const t = document.getElementById('specificType').value;
+            document.getElementById('specificWeekDate').style.display = (t === 'week') ? 'block' : 'none';
+            document.getElementById('specificMonth').style.display = (t === 'month') ? 'block' : 'none';
+            document.getElementById('specificYear').style.display = (t === 'year') ? 'block' : 'none';
         }
         function escapeHtml(t) { return t ? t.replace(/&/g, "&amp;").replace(/</g, "&lt;") : ''; }
 
