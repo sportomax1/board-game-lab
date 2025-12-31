@@ -274,6 +274,50 @@
         let rankedGames = []; 
         let username = "sportomax";
 
+        // Resilient fetch for BGG helper: handles 202 (queued) and rate limits (429)
+        async function fetchWithRetries(url, opts = {}, maxAttempts = 6) {
+            const baseDelay = 800; // ms
+            for (let attempt = 0; attempt < maxAttempts; attempt++) {
+                try {
+                    const res = await fetch(url, opts);
+                    // If helper queued the BGG request
+                    if (res.status === 202) {
+                        const waitMs = baseDelay * Math.pow(2, attempt);
+                        console.warn(`BGG helper returned 202 (queued). Retrying after ${waitMs}ms`);
+                        await new Promise(r => setTimeout(r, waitMs));
+                        continue;
+                    }
+
+                    // If proxy returned a 502 with BGG rate-limit detail, inspect body
+                    if (res.status === 502) {
+                        const body = await res.text();
+                        const isRate = /429|Too Many Requests|Request Queued|queued/i.test(body);
+                        if (isRate && attempt < maxAttempts - 1) {
+                            const waitMs = baseDelay * Math.pow(2, attempt);
+                            console.warn(`BGG helper rate-limited (proxy 502). Retrying after ${waitMs}ms`);
+                            await new Promise(r => setTimeout(r, waitMs));
+                            continue;
+                        }
+                        throw new Error(`BGG helper error: ${body}`);
+                    }
+
+                    if (!res.ok) {
+                        const body = await res.text().catch(()=>'<unreadable>');
+                        throw new Error(`Fetch failed ${res.status}: ${body}`);
+                    }
+
+                    // success - return raw text body (XML)
+                    return await res.text();
+                } catch (err) {
+                    if (attempt === maxAttempts - 1) throw err;
+                    const waitMs = baseDelay * Math.pow(2, attempt);
+                    console.warn(`Fetch attempt ${attempt+1} failed, retrying in ${waitMs}ms:`, err.message);
+                    await new Promise(r => setTimeout(r, waitMs));
+                }
+            }
+            throw new Error('Exceeded fetchWithRetries attempts');
+        }
+
         // DOM Elements
         const viewPlay = document.getElementById('view-play');
         const viewSettings = document.getElementById('view-settings');
@@ -376,8 +420,8 @@
         async function searchBGG(query) {
             loadingIndicator.classList.remove('hidden');
             try {
-                const res = await fetch(`${BGG_SEARCH_API}${encodeURIComponent(query)}`);
-                const text = await res.text();
+                const url = `${BGG_SEARCH_API}${encodeURIComponent(query)}`;
+                const text = await fetchWithRetries(url);
                 const items = Array.from(new DOMParser().parseFromString(text, "text/xml").querySelectorAll('item')).slice(0, 10);
                 searchResults.innerHTML = '';
                 for (const item of items) {
@@ -394,11 +438,11 @@
         }
 
         async function fetchDetails(id) {
-            const res = await fetch(`${BGG_THING_API}${id}`);
-            const text = await res.text();
+            const url = `${BGG_THING_API}${id}`;
+            const text = await fetchWithRetries(url);
             const item = new DOMParser().parseFromString(text, "text/xml").querySelector('item');
-            const name = item.querySelector('name[type="primary"]').getAttribute('value');
-            const image = item.querySelector('thumbnail')?.textContent || 'https://via.placeholder.com/100?text=No+Image';
+            const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown';
+            const image = item.querySelector('thumbnail')?.textContent || item.querySelector('image')?.textContent || 'https://via.placeholder.com/100?text=No+Image';
             addToPool({ id, name, image });
         }
 
@@ -414,7 +458,9 @@
                 const el = document.createElement('div');
                 el.className = 'drag-item w-16 h-16 rounded-2xl shadow-lg border-2 border-white overflow-hidden';
                 el.draggable = true;
-                el.innerHTML = `<img src="${game.image}" class="w-full h-full object-cover">`;
+                // route images through image proxy to avoid CORS when drawing later
+                const imgSrc = `/api/image-proxy?url=${encodeURIComponent(game.image)}`;
+                el.innerHTML = `<img src="${imgSrc}" class="w-full h-full object-cover">`;
                 el.addEventListener('dragstart', (e) => e.dataTransfer.setData('gameId', game.id));
                 poolArea.appendChild(el);
             });
@@ -459,6 +505,40 @@
             if (count === sessionSlotSize) finishBtn.classList.remove('opacity-50', 'pointer-events-none');
             else finishBtn.classList.add('opacity-50', 'pointer-events-none');
         }
+
+        // Load default collection for username (own=1, stats=1) and populate pool
+        async function loadCollectionForUser(user) {
+            if (!user) return;
+            loadingIndicator.classList.remove('hidden');
+            try {
+                const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(user)}&own=1&stats=1`;
+                const text = await fetchWithRetries(url);
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                const items = Array.from(xml.querySelectorAll('item'));
+                // map to {id,name,image}
+                selectedGames = items.map(it => ({
+                    id: it.getAttribute('objectid') || it.getAttribute('id'),
+                    name: it.querySelector('name')?.textContent || 'Unknown',
+                    image: it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || 'https://via.placeholder.com/100?text=No+Image'
+                }));
+                if (selectedGames.length > 0) {
+                    renderPool();
+                    statusBar.textContent = `🎮 Loaded ${selectedGames.length} games from ${user}`;
+                } else {
+                    statusBar.textContent = '❌ No games found in collection';
+                }
+            } catch (err) {
+                console.error('Collection load failed', err);
+                statusBar.textContent = '❌ Error loading collection';
+            } finally {
+                loadingIndicator.classList.add('hidden');
+            }
+        }
+
+        // Auto-load default collection on startup
+        window.addEventListener('load', () => {
+            loadCollectionForUser(username);
+        });
 
         finishBtn.addEventListener('click', () => {
             const sorted = [...rankedGames].sort((a, b) => a.slotId - b.slotId);
