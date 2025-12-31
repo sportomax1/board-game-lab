@@ -920,12 +920,24 @@
             if (API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`;
 
             for (let i = 0; i < 3; i++) {
-                const res = await fetch(url, { headers });
+                let res;
+                try {
+                    res = await fetch(url, { headers });
+                } catch (netErr) {
+                    console.error('Network error fetching', url, netErr);
+                    throw netErr;
+                }
                 if (res.status === 202) {
                     await new Promise(r => setTimeout(r, 2000));
                     continue;
                 }
-                if (!res.ok) throw new Error(`API Error: ${res.status}`);
+                if (!res.ok) {
+                    // attempt to read body for diagnostics (may fail)
+                    let body = '';
+                    try { body = await res.text(); } catch(e) { body = '<unreadable body>'; }
+                    console.error(`BGG helper returned ${res.status} for ${url}`, body);
+                    throw new Error(`API Error: ${res.status} - ${body}`);
+                }
                 return await res.text();
             }
             throw new Error("BGG API timed out (202)");
@@ -1459,6 +1471,7 @@
             ];
 
             const list = document.getElementById('columnOrder');
+            if(!list) return;
             list.innerHTML = columns.map((col, idx) => `
                 <div class="column-item" draggable="true" data-column-id="${col.id}" data-index="${idx}">
                     <span class="drag-handle">☰</span>
@@ -1469,6 +1482,7 @@
 
             // Add drag event listeners
             list.querySelectorAll('.column-item').forEach(item => {
+                if(!item) return;
                 item.addEventListener('dragstart', handleDragStart);
                 item.addEventListener('dragover', handleDragOver);
                 item.addEventListener('drop', handleDrop);
@@ -1529,10 +1543,15 @@
 
         function getColumnOrder() {
             const list = document.getElementById('columnOrder');
-            return Array.from(list.querySelectorAll('.column-item')).map(item => ({
-                id: item.dataset.columnId,
-                checked: item.querySelector('input[type="checkbox"]').checked
-            }));
+            if(!list) return [];
+            return Array.from(list.querySelectorAll('.column-item')).map(item => {
+                if(!item || !item.dataset) return null;
+                const cb = item.querySelector('input[type="checkbox"]');
+                return {
+                    id: item.dataset.columnId || null,
+                    checked: !!(cb && cb.checked)
+                };
+            }).filter(Boolean);
         }
 
         function selectAllExportFields() {
