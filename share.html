@@ -199,8 +199,9 @@ function renderThumbs(){
     item.style.aspectRatio = '1 / 1';
     item.style.width = '100%';
     const img = document.createElement('img');
-    const t = thumbsMap[name] && thumbsMap[name].thumb ? thumbsMap[name].thumb : 'https://via.placeholder.com/300?text=No+Image';
-    img.src = t;
+    const orig = thumbsMap[name] && thumbsMap[name].thumb ? thumbsMap[name].thumb : 'https://via.placeholder.com/300?text=No+Image';
+    const proxied = `/api/image-proxy?url=${encodeURIComponent(orig)}`;
+    img.src = proxied;
     img.alt = name;
     img.style.maxWidth = '100%'; img.style.maxHeight = '100%'; img.style.objectFit = 'contain';
     // caption under grid items on larger screens; hide caption on very small screens
@@ -269,8 +270,9 @@ async function composeAndDownload(){
 
   // load images (no upscaling: we'll not enlarge images beyond natural size)
   const promises = list.map(p=>{
-    const src = (thumbsMap[p.name] && thumbsMap[p.name].thumb) ? thumbsMap[p.name].thumb : 'https://via.placeholder.com/300?text=No+Image';
-    return loadImage(src).then(img=>({img,p})).catch(e=>({img:null,p}));
+    const orig = (thumbsMap[p.name] && thumbsMap[p.name].thumb) ? thumbsMap[p.name].thumb : 'https://via.placeholder.com/300?text=No+Image';
+    const proxied = `/api/image-proxy?url=${encodeURIComponent(orig)}`;
+    return loadImage(proxied).then(img=>({img,p})).catch(e=>({img:null,p}));
   });
   const results = await Promise.all(promises);
   results.forEach((res,i)=>{
@@ -302,8 +304,17 @@ async function composeAndDownload(){
 function truncate(s,n){ return s.length>n? s.slice(0,n-1)+'…':s; }
 
 function loadImage(src){
-  return new Promise((resolve,reject)=>{
-    const img=new Image(); img.crossOrigin='anonymous'; img.onload=()=>resolve(img); img.onerror=reject; img.src=src;
+  // load image via fetch so we get same-origin blob (useful when src is our proxy)
+  return new Promise(async (resolve,reject)=>{
+    try{
+      const res = await fetch(src);
+      if(!res.ok) return reject(new Error('Image fetch failed: '+res.status));
+      const blob = await res.blob();
+      const url = URL.createObjectURL(blob);
+      const img = new Image(); img.onload = ()=>{ URL.revokeObjectURL(url); resolve(img); };
+      img.onerror = (e)=>{ URL.revokeObjectURL(url); reject(e); };
+      img.src = url;
+    }catch(err){ reject(err); }
   });
 }
 
