@@ -31,6 +31,7 @@
   <div style="margin-bottom:12px">
     <label>Paste CSV (rank,name) or single column names</label>
     <textarea id="csvInput" rows="6" placeholder="Paste CSV here... (Col1 rank optional, Col2 name)"></textarea>
+    <div id="parsedListContainer" style="margin-top:8px"></div>
   </div>
 
   <div style="margin-bottom:12px" class="row">
@@ -59,6 +60,13 @@ const API_TOKEN = '';
 const DEFAULT_USER = 'sportomax';
 let parsedList = []; // {rank?, name}
 let thumbsMap = {}; // name -> {thumb, id}
+
+// small icon-like buttons for compact mobile controls
+function makeIconButton(label, title){
+  const b = document.createElement('button'); b.type='button'; b.innerText = label; b.title = title;
+  b.style.padding='6px 8px'; b.style.fontSize='13px'; b.style.borderRadius='8px'; b.style.background='#f6f7fb'; b.style.color='#111'; b.style.border='1px solid #e6e6ee';
+  return b;
+}
 
 // CSV parsing: supports comma or tab; if first column numeric treat as rank
 function parseCSV(text){
@@ -90,6 +98,7 @@ async function parseAndFetch(){
   const txt = document.getElementById('csvInput').value.trim();
   if(!txt) return alert('Paste or upload CSV first');
   parsedList = parseCSV(txt);
+  renderParsedList();
   if(parsedList.length===0) return alert('No rows parsed');
   document.getElementById('progress').innerText = 'Fetching collection...';
   thumbsMap = {};
@@ -170,10 +179,11 @@ function renderThumbs(){
   const list = parsedList.slice(0,limit);
   const grid = document.createElement('div');
   grid.className='thumb-grid';
-  if(layout==='grid9') grid.style.gridTemplateColumns='repeat(3,120px)';
-  else if(layout==='grid25') grid.style.gridTemplateColumns='repeat(5,90px)';
-  else if(layout==='grid50') grid.style.gridTemplateColumns='repeat(10,60px)';
-  else if(layout==='row10') grid.style.gridTemplateColumns=`repeat(${list.length},80px)`;
+  // responsive column sizing using fractions so thumbnails scale on narrow screens
+  if(layout==='grid9') grid.style.gridTemplateColumns='repeat(3,1fr)';
+  else if(layout==='grid25') grid.style.gridTemplateColumns='repeat(5,1fr)';
+  else if(layout==='grid50') grid.style.gridTemplateColumns='repeat(10,1fr)';
+  else if(layout==='row10') grid.style.gridTemplateColumns=`repeat(${list.length},1fr)`;
 
   list.forEach((p,idx)=>{
     const name = p.name;
@@ -189,6 +199,39 @@ function renderThumbs(){
   });
   container.appendChild(grid);
   document.getElementById('progress').innerText = `Displayed ${list.length} thumbnails`;
+}
+
+// Render parsed rows with reorder controls and drag handles
+function renderParsedList(){
+  const container = document.getElementById('parsedListContainer');
+  container.innerHTML = '';
+  if(parsedList.length===0) return;
+  const listEl = document.createElement('div');
+  listEl.style.display='flex'; listEl.style.flexDirection='column'; listEl.style.gap='6px';
+  parsedList.forEach((p, idx)=>{
+    const row = document.createElement('div'); row.className='parsed-row row';
+    row.style.alignItems='center'; row.style.justifyContent='flex-start'; row.style.gap='8px';
+    row.draggable = true;
+    row.dataset.index = idx;
+    row.addEventListener('dragstart', e=>{ e.dataTransfer.setData('text/plain', idx); row.style.opacity='0.5'; });
+    row.addEventListener('dragend', e=>{ row.style.opacity='1'; });
+    row.addEventListener('dragover', e=>{ e.preventDefault(); });
+    row.addEventListener('drop', e=>{
+      e.preventDefault(); const from = parseInt(e.dataTransfer.getData('text/plain'),10); const to = parseInt(row.dataset.index,10);
+      if(!Number.isNaN(from) && !Number.isNaN(to) && from!==to){
+        const item = parsedList.splice(from,1)[0]; parsedList.splice(to,0,item); renderParsedList(); renderThumbs();
+      }
+    });
+
+    const handle = document.createElement('div'); handle.innerText='☰'; handle.style.cursor='grab'; handle.style.width='26px'; handle.style.textAlign='center';
+    const label = document.createElement('div'); label.style.flex='1'; label.style.fontSize='14px'; label.innerText = (p.rank? (p.rank+' - '):'')+p.name;
+    const up = makeIconButton('▲','Move up'); up.onclick = ()=>{ if(idx>0){ const it=parsedList.splice(idx,1)[0]; parsedList.splice(idx-1,0,it); renderParsedList(); renderThumbs(); }};
+    const down = makeIconButton('▼','Move down'); down.onclick = ()=>{ if(idx<parsedList.length-1){ const it=parsedList.splice(idx,1)[0]; parsedList.splice(idx+1,0,it); renderParsedList(); renderThumbs(); }};
+    const del = makeIconButton('✖','Delete'); del.onclick = ()=>{ parsedList.splice(idx,1); renderParsedList(); renderThumbs(); };
+    row.appendChild(handle); row.appendChild(label); row.appendChild(up); row.appendChild(down); row.appendChild(del);
+    listEl.appendChild(row);
+  });
+  container.appendChild(listEl);
 }
 
 // Compose canvas image from current thumbnails and download PNG
@@ -275,6 +318,13 @@ async function fetchAPI(endpoint,user,queryParams=''){
 
 function wait(ms){ return new Promise(r=>setTimeout(r,ms)); }
 
+// ensure paste into textarea triggers parse and updates parsed list
+document.getElementById('csvInput').addEventListener('paste', async (ev)=>{
+  try{
+    const text = (ev.clipboardData || window.clipboardData).getData('text');
+    if(text){ ev.preventDefault(); document.getElementById('csvInput').value = text; parsedList = parseCSV(text); renderParsedList(); }
+  }catch(e){ console.warn('paste err', e); }
+});
 </script>
 </body>
 </html>
