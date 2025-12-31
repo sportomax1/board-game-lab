@@ -1,0 +1,280 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+<title>BGG Share Thumbnails</title>
+<style>
+  :root{--primary:#007aff;--bg:#f7f7fb;--card:#fff}
+  body{font-family:-apple-system,system-ui,Segoe UI,Roboto,Arial;background:var(--bg);margin:0;padding:20px;color:#111}
+  .card{background:var(--card);padding:16px;border-radius:12px;box-shadow:0 6px 20px rgba(0,0,0,.06);max-width:980px;margin:16px auto}
+  .row{display:flex;gap:8px;align-items:center}
+  input[type=text],textarea{width:100%;padding:8px;border-radius:8px;border:1px solid #ddd}
+  button{background:var(--primary);color:white;border:none;padding:8px 12px;border-radius:8px;cursor:pointer}
+  .thumb-grid{display:grid;gap:6px;margin-top:12px}
+  .thumb-item img{width:100%;height:100%;object-fit:cover;border-radius:6px}
+  .controls{display:flex;gap:8px;flex-wrap:wrap}
+  .status{font-size:13px;color:#666}
+  .hidden{display:none}
+</style>
+</head>
+<body>
+<div class="card">
+  <h2>BGG Share Thumbnails</h2>
+  <p class="status">Default user: <strong>sportomax</strong>. Confirm username before loading CSV.</p>
+
+  <div style="margin-bottom:12px">
+    <label>BGG Username</label>
+    <input id="username" type="text" placeholder="sportomax" value="sportomax" />
+  </div>
+
+  <div style="margin-bottom:12px">
+    <label>Paste CSV (rank,name) or single column names</label>
+    <textarea id="csvInput" rows="6" placeholder="Paste CSV here... (Col1 rank optional, Col2 name)"></textarea>
+  </div>
+
+  <div style="margin-bottom:12px" class="row">
+    <input id="fileInput" type="file" accept=".csv" />
+    <button onclick="loadFromFile()">Load File</button>
+    <button onclick="parseAndFetch()">Load Thumbnails</button>
+    <div style="margin-left:auto" class="status" id="progress">Idle</div>
+  </div>
+
+  <div style="margin-top:8px" class="controls">
+    <label>Layout:</label>
+    <select id="layoutSelect">
+      <option value="grid9">Top 9 Grid (3x3)</option>
+      <option value="row10">Top 10 Row</option>
+      <option value="grid25">Top 25 Grid (5x5)</option>
+      <option value="grid50">Top 50 Grid (10x5)</option>
+    </select>
+    <button onclick="composeAndDownload()">Compose & Download Image</button>
+  </div>
+
+  <div id="thumbs" style="margin-top:16px"></div>
+</div>
+
+<script>
+const API_TOKEN = '';
+const DEFAULT_USER = 'sportomax';
+let parsedList = []; // {rank?, name}
+let thumbsMap = {}; // name -> {thumb, id}
+
+// CSV parsing: supports comma or tab; if first column numeric treat as rank
+function parseCSV(text){
+  const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+  const out=[];
+  for(const ln of lines){
+    const parts = ln.split(/,|\t/).map(p=>p.trim()).filter((v,i)=>v!=='' || i>0);
+    if(parts.length===0) continue;
+    if(parts.length===1){ out.push({name: parts[0]}); }
+    else {
+      // if first is integer, use as rank
+      const maybeNum = parseInt(parts[0].replace(/[^0-9-]/g,''),10);
+      if(!Number.isNaN(maybeNum)) out.push({rank: maybeNum, name: parts.slice(1).join(',')});
+      else out.push({name: parts.join(' ')});
+    }
+  }
+  return out;
+}
+
+function loadFromFile(){
+  const f = document.getElementById('fileInput').files[0];
+  if(!f) return alert('Choose a CSV file');
+  const r = new FileReader();
+  r.onload = e=>{ document.getElementById('csvInput').value = e.target.result; };
+  r.readAsText(f);
+}
+
+async function parseAndFetch(){
+  const txt = document.getElementById('csvInput').value.trim();
+  if(!txt) return alert('Paste or upload CSV first');
+  parsedList = parseCSV(txt);
+  if(parsedList.length===0) return alert('No rows parsed');
+  document.getElementById('progress').innerText = 'Fetching collection...';
+  thumbsMap = {};
+  const user = (document.getElementById('username').value||DEFAULT_USER).trim();
+  // fetch collection for username and map names
+  try{
+    const collXml = await fetchAPI('collection','',`&username=${encodeURIComponent(user)}&stats=1`);
+    const doc = new DOMParser().parseFromString(collXml,'text/xml');
+    const items = Array.from(doc.querySelectorAll('item'));
+    const collMap = {};
+    items.forEach(it=>{
+      const name = it.querySelector('name')?.textContent?.trim();
+      const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
+      const id = it.getAttribute('objectid')||it.getAttribute('objectid');
+      if(name) collMap[name.toLowerCase()] = {thumb,id};
+    });
+    // for each parsed name try exact match or includes
+    const needSearch = [];
+    parsedList.forEach(p=>{
+      const n = p.name.trim();
+      const key = n.toLowerCase();
+      if(collMap[key]) thumbsMap[n]= {thumb: collMap[key].thumb, id: collMap[key].id};
+      else {
+        // try find by contains
+        const found = Object.keys(collMap).find(k=>k.includes(key) || key.includes(k));
+        if(found) thumbsMap[n] = {thumb: collMap[found].thumb, id: collMap[found].id};
+        else needSearch.push(n);
+      }
+    });
+
+    // search for remaining names via helper search -> get id -> batch thing
+    if(needSearch.length>0){
+      document.getElementById('progress').innerText = `Searching ${needSearch.length} missing...`;
+      const searchIds = [];
+      for(const name of needSearch){
+        try{
+          const sTxt = await fetchAPI('search','',`&query=${encodeURIComponent(name)}`);
+          const sDoc = new DOMParser().parseFromString(sTxt,'text/xml');
+          const first = sDoc.querySelector('item');
+          if(first){ const id = first.getAttribute('id'); if(id) searchIds.push({name,id}); }
+        }catch(e){ console.warn('search fail', name, e); }
+      }
+      // batch thing calls (20 per) to get thumbnails
+      const ids = searchIds.map(s=>s.id);
+      const idToName = {};
+      searchIds.forEach(s=>idToName[s.id]=s.name);
+      const chunkSize = 20;
+      for(let i=0;i<ids.length;i+=chunkSize){
+        const chunk = ids.slice(i,i+chunkSize).join(',');
+        try{
+          const tTxt = await fetchAPI('thing','',`&id=${chunk}&stats=1`);
+          const tDoc = new DOMParser().parseFromString(tTxt,'text/xml');
+          tDoc.querySelectorAll('item').forEach(it=>{
+            const id = it.getAttribute('id');
+            const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
+            const name = idToName[id] || it.querySelector('name')?.textContent || '';
+            if(name) thumbsMap[name] = {thumb,id};
+          });
+        }catch(e){ console.warn('thing fail', e); }
+      }
+    }
+
+    document.getElementById('progress').innerText = 'Rendering thumbnails';
+    renderThumbs();
+  }catch(e){
+    console.error(e);
+    alert('Error fetching collection/search: '+(e.message||e));
+    document.getElementById('progress').innerText = 'Error';
+  }
+}
+
+function renderThumbs(){
+  const container = document.getElementById('thumbs');
+  container.innerHTML = '';
+  const layout = document.getElementById('layoutSelect').value;
+  let limit = 50;
+  if(layout==='grid9') limit=9; else if(layout==='row10') limit=10; else if(layout==='grid25') limit=25; else if(layout==='grid50') limit=50;
+  const list = parsedList.slice(0,limit);
+  const grid = document.createElement('div');
+  grid.className='thumb-grid';
+  if(layout==='grid9') grid.style.gridTemplateColumns='repeat(3,120px)';
+  else if(layout==='grid25') grid.style.gridTemplateColumns='repeat(5,90px)';
+  else if(layout==='grid50') grid.style.gridTemplateColumns='repeat(10,60px)';
+  else if(layout==='row10') grid.style.gridTemplateColumns=`repeat(${list.length},80px)`;
+
+  list.forEach((p,idx)=>{
+    const name = p.name;
+    const item = document.createElement('div'); item.className='thumb-item'; item.style.width='100%'; item.style.height=(layout==='row10' ? '80px' : '120px');
+    const img = document.createElement('img');
+    const t = thumbsMap[name] && thumbsMap[name].thumb ? thumbsMap[name].thumb : 'https://via.placeholder.com/300?text=No+Image';
+    img.src = t;
+    img.alt = name;
+    const caption = document.createElement('div'); caption.style.fontSize='12px'; caption.style.marginTop='4px'; caption.innerText = (p.rank?p.rank+' - ':'')+name;
+    item.appendChild(img);
+    item.appendChild(caption);
+    grid.appendChild(item);
+  });
+  container.appendChild(grid);
+  document.getElementById('progress').innerText = `Displayed ${list.length} thumbnails`;
+}
+
+// Compose canvas image from current thumbnails and download PNG
+async function composeAndDownload(){
+  const layout = document.getElementById('layoutSelect').value;
+  const limit = layout==='grid9'?9:layout==='row10'?10:layout==='grid25'?25:50;
+  const list = parsedList.slice(0,limit);
+  if(list.length===0) return alert('No thumbnails to compose');
+
+  // determine tile size based on layout
+  let cols=1, tile=200, rows=1;
+  if(layout==='grid9'){ cols=3; tile=300; rows=3; }
+  else if(layout==='row10'){ cols=list.length; tile=150; rows=1; }
+  else if(layout==='grid25'){ cols=5; tile=220; rows=5; }
+  else if(layout==='grid50'){ cols=10; tile=120; rows=Math.ceil(list.length/cols); }
+  const canvas = document.createElement('canvas');
+  canvas.width = cols * tile;
+  canvas.height = rows * tile;
+  const ctx = canvas.getContext('2d');
+  ctx.fillStyle = '#ffffff'; ctx.fillRect(0,0,canvas.width,canvas.height);
+
+  // load images
+  const promises = list.map(p=>{
+    const src = (thumbsMap[p.name] && thumbsMap[p.name].thumb) ? thumbsMap[p.name].thumb : 'https://via.placeholder.com/300?text=No+Image';
+    return loadImage(src).then(img=>({img,p})).catch(e=>({img:null,p}));
+  });
+  const results = await Promise.all(promises);
+  results.forEach((res,i)=>{
+    const c = i % cols; const r = Math.floor(i/cols);
+    const x = c * tile; const y = r * tile;
+    if(res.img){
+      // draw cover-cropped
+      const iw = res.img.width, ih = res.img.height;
+      const ratio = Math.max(tile/iw, tile/ih);
+      const nw = iw*ratio, nh = ih*ratio;
+      const sx = (nw - tile)/2/ratio, sy = (nh - tile)/2/ratio;
+      ctx.drawImage(res.img, sx, sy, iw - sx*2, ih - sy*2, x, y, tile, tile);
+    } else {
+      ctx.fillStyle='#ddd'; ctx.fillRect(x,y,tile,tile);
+    }
+
+    // draw rank/label overlay
+    ctx.fillStyle='rgba(0,0,0,0.6)'; ctx.fillRect(x, y + tile - 36, tile, 36);
+    ctx.fillStyle='#fff'; ctx.font='18px sans-serif'; ctx.fillText((list[i].rank?list[i].rank+' - ':'')+truncate(list[i].name, 24), x+8, y + tile - 10);
+  });
+
+  // download
+  const url = canvas.toDataURL('image/png');
+  const a = document.createElement('a'); a.href = url; a.download = `bgg_share_${Date.now()}.png`; document.body.appendChild(a); a.click(); a.remove();
+}
+
+function truncate(s,n){ return s.length>n? s.slice(0,n-1)+'…':s; }
+
+function loadImage(src){
+  return new Promise((resolve,reject)=>{
+    const img=new Image(); img.crossOrigin='anonymous'; img.onload=()=>resolve(img); img.onerror=reject; img.src=src;
+  });
+}
+
+// fetchAPI with backoff and Retry-After handling
+async function fetchAPI(endpoint,user,queryParams=''){ 
+  let url = `/api/bgg-helper?endpoint=${endpoint}${queryParams}`;
+  const headers = {};
+  if(API_TOKEN) headers['Authorization'] = `Bearer ${API_TOKEN}`;
+  const maxAttempts = 6;
+  for(let attempt=0; attempt<maxAttempts; attempt++){
+    let res;
+    try{ res = await fetch(url,{headers}); }catch(e){ console.warn('network err',e); await wait(1000*Math.pow(2,attempt)); continue; }
+    if(res.status===202){ await wait(2000); continue; }
+    if(res.ok) return await res.text();
+    const body = await (async ()=>{ try{ return await res.text(); }catch(e){return '<unreadable>';}})();
+    const isRateLimit = res.status===429 || /"status"\s*:\s*429/.test(body) || /Too Many Requests/i.test(body);
+    if(isRateLimit){
+      let waitMs = 1000*Math.pow(2,attempt);
+      const ra = res.headers.get ? res.headers.get('Retry-After') : null;
+      if(ra){ const s = parseInt(ra,10); if(!isNaN(s)) waitMs = Math.max(waitMs, s*1000); }
+      console.warn('rate limited, wait', waitMs, body);
+      await wait(waitMs); continue;
+    }
+    throw new Error(`API Error: ${res.status} - ${body}`);
+  }
+  throw new Error('BGG API timed out');
+}
+
+function wait(ms){ return new Promise(r=>setTimeout(r,ms)); }
+
+</script>
+</body>
+</html>
