@@ -196,6 +196,50 @@
         // Use server-side BGG proxy to avoid CORS and deprecated endpoints
         const BGG_HELPER = '/api/bgg-helper?endpoint=collection&';
 
+        function sleep(ms){ return new Promise(res=>setTimeout(res, ms)); }
+
+        async function fetchWithRetries(url, opts = {}, maxAttempts = 5, baseDelay = 1000){
+            let attempt = 0;
+            let last = null;
+            while(attempt < maxAttempts){
+                attempt++;
+                try{
+                    const res = await fetch(url, opts);
+                    const text = await res.text().catch(()=>'');
+                    let json = null;
+                    try{ json = text ? JSON.parse(text) : null; }catch(e){ json = null; }
+
+                    // If OK or queued, return immediately with parsed body for diagnostics
+                    if(res.ok || res.status === 202) return { res, text, json };
+
+                    // Inspect proxy-wrapped error bodies (common case: 502 with embedded 429)
+                    const statusHint = json?.status || res.status;
+                    if(statusHint === 429 || res.status === 429 || res.status === 502 || res.status === 503){
+                        // Retryable: compute delay (consider Retry-After header if present)
+                        const ra = res.headers.get('Retry-After');
+                        let delay = baseDelay * Math.pow(2, attempt-1);
+                        if(ra){
+                            const raSec = parseInt(ra, 10);
+                            if(!isNaN(raSec)) delay = Math.max(delay, raSec*1000);
+                        }
+                        last = { res, text, json };
+                        await sleep(delay);
+                        continue; // retry
+                    }
+
+                    // Non-retryable error: return for caller to handle
+                    return { res, text, json };
+                } catch(e){
+                    // Network-level error: retry after backoff
+                    last = { err: e };
+                    await sleep(baseDelay * Math.pow(2, attempt-1));
+                    continue;
+                }
+            }
+            // exhausted attempts
+            return last || { res: null, text: '', json: null };
+        }
+
         async function fetchCollection() {
             const user = document.getElementById('username').value;
             if(!user) return;
@@ -213,17 +257,31 @@
 
             try {
                 const url = BGG_HELPER + params;
-                const res = await fetch(url);
+                const { res, text, json, err } = await fetchWithRetries(url, {}, 6, 1200);
+                if(err){
+                    status.innerText = 'Sync Failed (network error).';
+                    console.error('BGG helper network error', err);
+                    return;
+                }
+                if(!res){
+                    status.innerText = 'Sync Failed (no response).';
+                    return;
+                }
                 if(res.status === 202){
                     status.innerText = 'BGG queued request. Try again shortly.';
                     return;
                 }
                 if(!res.ok){
-                    status.innerText = `Sync Failed (${res.status})`;
-                    console.error('BGG helper error', await res.text().catch(()=>'<no body>'));
+                    // If proxy returned JSON body with inner status (e.g., {status:429,...}), show that
+                    if(json){
+                        status.innerText = `Sync Failed (${json.status || res.status})`;
+                        console.error('BGG helper error', json);
+                    } else {
+                        status.innerText = `Sync Failed (${res.status})`;
+                        console.error('BGG helper error', text || '<no body>');
+                    }
                     return;
                 }
-                const text = await res.text();
                 if(!text || text.trim().length === 0){
                     status.innerText = 'Empty response from BGG helper.';
                     return;
