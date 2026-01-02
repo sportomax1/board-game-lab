@@ -138,6 +138,44 @@
             <label class="text-xs font-bold text-slate-500 uppercase">BGG Username</label>
             <input id="username" type="text" value="sportomax" class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all">
           </div>
+
+          <div class="space-y-2">
+            <label class="text-xs font-bold text-slate-500 uppercase">Collection Status Filters</label>
+            <div class="grid grid-cols-2 sm:grid-cols-4 gap-2">
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-own" checked onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Own</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-prevowned" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Prev. Owned</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-fortrade" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">For Trade</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-want" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Want</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-wanttoplay" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Want to Play</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-wanttobuy" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Want to Buy</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-wishlist" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Wishlist</span>
+              </label>
+              <label class="flex items-center gap-2 cursor-pointer bg-white p-2 rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors">
+                <input type="checkbox" id="filter-preordered" onchange="filterCollection()" class="w-4 h-4 rounded text-indigo-600">
+                <span class="text-xs font-bold text-slate-700">Preordered</span>
+              </label>
+            </div>
+          </div>
           
           <button onclick="fetchCollection()" class="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-100 flex items-center justify-center gap-2">
             <i class="fa-solid fa-download"></i> Fetch Collection
@@ -169,6 +207,7 @@
             class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all bg-white font-medium text-sm">
             <option value="rating">Sort by User Rating</option>
             <option value="average">Sort by BGG Average</option>
+            <option value="plays">Sort by Number of Plays</option>
             <option value="year">Sort by Year Published</option>
             <option value="name">Sort by Name</option>
           </select>
@@ -251,6 +290,7 @@
 
 <script>
 let collectionGames = [];
+let activeGames = [];
 let selectedGames = [];
 let currentTab = 0;
 let draggedIndex = null;
@@ -285,7 +325,8 @@ async function fetchCollection() {
   progressStatus.classList.remove('hidden');
   
   try {
-    const collXml = await fetchAPI('collection', username, '&stats=1&own=1');
+    // Fetch full collection with stats (no own=1 filter)
+    const collXml = await fetchAPI('collection', username, '&stats=1');
     const doc = new DOMParser().parseFromString(collXml, 'text/xml');
     const items = Array.from(doc.querySelectorAll('item'));
     
@@ -296,14 +337,25 @@ async function fetchCollection() {
       const rating = item.querySelector('stats rating[value]')?.getAttribute('value') || 'N/A';
       const average = item.querySelector('stats rating average')?.getAttribute('value') || 'N/A';
       const year = item.querySelector('yearpublished')?.textContent || '';
+      const numplays = parseInt(item.querySelector('numplays')?.textContent || '0');
       
-      return { name, objectid, thumb, rating, average, year, selected: false };
+      const statusNode = item.querySelector('status');
+      const status = {
+        own: statusNode?.getAttribute('own') === '1',
+        prevowned: statusNode?.getAttribute('prevowned') === '1',
+        fortrade: statusNode?.getAttribute('fortrade') === '1',
+        want: statusNode?.getAttribute('want') === '1',
+        wanttoplay: statusNode?.getAttribute('wanttoplay') === '1',
+        wanttobuy: statusNode?.getAttribute('wanttobuy') === '1',
+        wishlist: statusNode?.getAttribute('wishlist') === '1',
+        preordered: statusNode?.getAttribute('preordered') === '1'
+      };
+      
+      return { name, objectid, thumb, rating, average, year, numplays, status, selected: false };
     }).filter(game => game.name);
     
-    // Apply initial sort
-    sortGames();
-    
-    renderGameList();
+    // Apply filters and sort
+    filterCollection();
     
     // Enable selection tab
     document.getElementById('tab-1').disabled = false;
@@ -319,10 +371,47 @@ async function fetchCollection() {
   }
 }
 
+function filterCollection() {
+  const filters = {
+    own: document.getElementById('filter-own').checked,
+    prevowned: document.getElementById('filter-prevowned').checked,
+    fortrade: document.getElementById('filter-fortrade').checked,
+    want: document.getElementById('filter-want').checked,
+    wanttoplay: document.getElementById('filter-wanttoplay').checked,
+    wanttobuy: document.getElementById('filter-wanttobuy').checked,
+    wishlist: document.getElementById('filter-wishlist').checked,
+    preordered: document.getElementById('filter-preordered').checked
+  };
+
+  const hasAnyFilter = Object.values(filters).some(v => v);
+  
+  if (!hasAnyFilter) {
+    // If no filters selected, show nothing (or could show all, but usually filters are additive)
+    // Let's show nothing to encourage selecting a filter, or maybe show all?
+    // User said "add collection stattus flag filters to apply".
+    // Let's assume if nothing is checked, we show nothing.
+    activeGames = [];
+  } else {
+    activeGames = collectionGames.filter(game => {
+      if (filters.own && game.status.own) return true;
+      if (filters.prevowned && game.status.prevowned) return true;
+      if (filters.fortrade && game.status.fortrade) return true;
+      if (filters.want && game.status.want) return true;
+      if (filters.wanttoplay && game.status.wanttoplay) return true;
+      if (filters.wanttobuy && game.status.wanttobuy) return true;
+      if (filters.wishlist && game.status.wishlist) return true;
+      if (filters.preordered && game.status.preordered) return true;
+      return false;
+    });
+  }
+  
+  sortAndRender();
+}
+
 function sortGames() {
   const sortBy = document.getElementById('sortSelect').value || 'rating';
   
-  collectionGames.sort((a, b) => {
+  activeGames.sort((a, b) => {
     if (sortBy === 'rating') {
       // Sort by user rating (descending)
       const ratingA = parseFloat(a.rating);
@@ -337,6 +426,9 @@ function sortGames() {
       if (isNaN(avgA)) return 1;
       if (isNaN(avgB)) return -1;
       return avgB - avgA;
+    } else if (sortBy === 'plays') {
+      // Sort by number of plays (descending)
+      return b.numplays - a.numplays;
     } else if (sortBy === 'year') {
       // Sort by year published (descending, newest first)
       const yearA = parseInt(a.year);
@@ -362,7 +454,7 @@ function renderGameList() {
   gameList.innerHTML = '';
   
   const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-  const filteredGames = collectionGames.filter(game => 
+  const filteredGames = activeGames.filter(game => 
     game.name.toLowerCase().includes(searchTerm)
   );
   
@@ -387,7 +479,8 @@ function renderGameList() {
       <div class="text-xs text-slate-500">
         ${game.year ? `${game.year} • ` : ''}
         User: ${game.rating !== 'N/A' ? parseFloat(game.rating).toFixed(1) : 'N/A'} • 
-        Avg: ${game.average !== 'N/A' ? parseFloat(game.average).toFixed(1) : 'N/A'}
+        Avg: ${game.average !== 'N/A' ? parseFloat(game.average).toFixed(1) : 'N/A'} •
+        Plays: ${game.numplays}
       </div>
     `;
     
@@ -407,7 +500,7 @@ function toggleGameSelection(game) {
 
 function selectAll() {
   const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-  collectionGames.forEach(game => {
+  activeGames.forEach(game => {
     if (game.name.toLowerCase().includes(searchTerm)) {
       game.selected = true;
     }
@@ -417,7 +510,7 @@ function selectAll() {
 
 function deselectAll() {
   const searchTerm = document.getElementById('searchInput').value.toLowerCase();
-  collectionGames.forEach(game => {
+  activeGames.forEach(game => {
     if (game.name.toLowerCase().includes(searchTerm)) {
       game.selected = false;
     }
