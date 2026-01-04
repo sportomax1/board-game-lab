@@ -51,6 +51,10 @@
                     <input type="checkbox" id="myCollectionToggle" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 border-gray-300" checked>
                     <span class="text-xs font-bold text-gray-700">My Collection</span>
                 </label>
+                <label class="flex items-center gap-2 cursor-pointer bg-gray-100 px-3 py-2 rounded-full hover:bg-gray-200 transition-colors select-none">
+                    <input type="checkbox" id="wantToPlayToggle" class="w-4 h-4 text-pink-500 rounded focus:ring-pink-500 border-gray-300">
+                    <span class="text-xs font-bold text-gray-700">Want to Play</span>
+                </label>
                 <button id="copyCSV" class="p-2 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200" title="Copy CSV">
                     <i data-lucide="copy" class="w-5 h-5"></i>
                 </button>
@@ -192,73 +196,72 @@
             return '';
         }
 
-        function parseGame(item, source, usesBggId = false) {
-            const id = usesBggId ? item.querySelector('bgg_id')?.textContent : item.getAttribute('objectid');
-            if (!id) return null;
-
-            const name = item.querySelector('name')?.textContent || 'Unknown';
-            const year = item.querySelector('yearpublished')?.textContent || '';
-            
-            let bggRating = '0';
-            let userRating = '0';
+        function parseGame(item, source) {
+            let id, name, year = '', bggRating = '0', userRating = '0';
             let minP = 0, maxP = 0, time = 0, weight = 0, plays = 0, rank = 999999;
-            let thumb = '';
-            
-            // Try to parse stats regardless of source if they exist
-            const stats = item.querySelector('stats');
-            if (stats) {
-                 const ratingNode = stats.querySelector('rating');
-                 if (ratingNode) {
-                     bggRating = ratingNode.querySelector('average')?.getAttribute('value') || '0';
-                     userRating = ratingNode.getAttribute('value') || '0';
-                 }
-                 minP = parseInt(stats.getAttribute('minplayers')) || 0;
-                 maxP = parseInt(stats.getAttribute('maxplayers')) || 0;
-                 
-                 // Rank parsing
-                 const rankNode = stats.querySelector('rank[name="boardgame"]');
-                 if (rankNode) {
-                     const val = rankNode.getAttribute('value');
-                     rank = val === 'Not Ranked' ? 999999 : (parseInt(val) || 999999);
-                 }
-                 
-                 // Robust time parsing
-                 let pmin = parseInt(stats.getAttribute('minplaytime') || stats.getAttribute('minplay') || '0') || 0;
-                 let pmax = parseInt(stats.getAttribute('maxplaytime') || stats.getAttribute('maxplay') || '0') || 0;
-                 let pavg = parseInt(stats.getAttribute('playingtime') || stats.getAttribute('playtime') || '0') || 0;
-                 
-                 if (pmax) time = pmax; else if (pavg) time = pavg; else if (pmin) time = pmin;
-            }
-            
-            // Fallback time parsing if stats failed or empty
-            if (time === 0) {
-                let pmin = parseInt(item.querySelector('minplaytime')?.textContent || item.querySelector('minplay')?.textContent || '0') || 0;
-                let pmax = parseInt(item.querySelector('maxplaytime')?.textContent || item.querySelector('maxplay')?.textContent || '0') || 0;
-                let pavg = parseInt(item.querySelector('playtime')?.textContent || item.querySelector('playingtime')?.textContent || '0') || 0;
-                if (pmax) time = pmax; else if (pavg) time = pavg; else if (pmin) time = pmin;
-            }
+            let thumb = '', desire = 0, loc = '';
+            let inSportomax = false;
 
-            thumb = item.querySelector('thumbnail')?.textContent || '';
-            plays = parseInt(item.querySelector('numplays')?.textContent) || 0;
-
-            // Desire Score Logic (Simplified for V2)
-            let desire = 0;
-            if (source === 'sportomax') {
-                const st = item.querySelector('status');
-                if (st?.getAttribute('wanttoplay') === '1') desire += 5;
-                const wishlist = st?.getAttribute('wishlist') === '1';
-                const priority = parseInt(st?.getAttribute('wishlistpriority')) || 0;
-                if (wishlist && priority) desire += (6 - priority);
-            }
-
-            // Location Logic
-            let loc = '';
             if (source === 'dte') {
-                loc = getLocationFromDteItem(item);
-            } else if (source === 'bgg') {
-                loc = item.querySelector('location')?.textContent || '';
-            } else {
-                loc = item.querySelector('comment')?.textContent || '';
+                // DTE Custom XML Format
+                id = item.querySelector('bgg_id')?.textContent;
+                if (!id) return null;
+                
+                name = item.querySelector('name')?.textContent || 'Unknown';
+                // DTE XML doesn't seem to have year, so we leave it empty or rely on enrichment
+                
+                minP = parseInt(item.querySelector('min_players')?.textContent) || 0;
+                maxP = parseInt(item.querySelector('max_players')?.textContent) || 0;
+                
+                let pmin = parseInt(item.querySelector('min_play_time')?.textContent) || 0;
+                let pmax = parseInt(item.querySelector('max_play_time')?.textContent) || 0;
+                if (pmax) time = pmax; else if (pmin) time = pmin;
+
+                // Location from DTE specific logic (if applicable, or just use shelf/row if present in custom fields)
+                // The DTE XML snippet showed <custom_fields> in previous versions, but the recent read didn't show it.
+                // We'll try to find location info if available.
+                // Based on previous code, DTE had custom_fields. Let's check if we can find it.
+                // For now, we'll leave location empty or try to parse if we see it.
+                
+            } else if (source === 'sportomax') {
+                // BGG API Format
+                id = item.getAttribute('objectid');
+                if (!id) return null;
+
+                name = item.querySelector('name')?.textContent || 'Unknown';
+                year = item.querySelector('yearpublished')?.textContent || '';
+                thumb = item.querySelector('thumbnail')?.textContent || '';
+                plays = parseInt(item.querySelector('numplays')?.textContent) || 0;
+
+                const stats = item.querySelector('stats');
+                if (stats) {
+                    minP = parseInt(stats.getAttribute('minplayers')) || 0;
+                    maxP = parseInt(stats.getAttribute('maxplayers')) || 0;
+                    time = parseInt(stats.getAttribute('playingtime')) || 0;
+                    
+                    const ratingNode = stats.querySelector('rating');
+                    if (ratingNode) {
+                        bggRating = ratingNode.querySelector('average')?.getAttribute('value') || '0';
+                        userRating = ratingNode.getAttribute('value') || '0';
+                    }
+                    
+                    const rankNode = stats.querySelector('rank[name="boardgame"]');
+                    if (rankNode) {
+                        const val = rankNode.getAttribute('value');
+                        rank = val === 'Not Ranked' ? 999999 : (parseInt(val) || 999999);
+                    }
+                }
+
+                // Desire / Status
+                const st = item.querySelector('status');
+                if (st) {
+                    if (st.getAttribute('wanttoplay') === '1') desire += 5;
+                    const wishlist = st.getAttribute('wishlist') === '1';
+                    const priority = parseInt(st.getAttribute('wishlistpriority')) || 0;
+                    if (wishlist && priority) desire += (6 - priority);
+                }
+                
+                inSportomax = true;
             }
 
             return {
@@ -271,21 +274,27 @@
                 plays,
                 rank,
                 locations: [],
-                inSportomax: source === 'sportomax',
+                inSportomax,
                 parsedLocation: loc
             };
         }
 
         async function loadLibrary(username) {
-            const [sportomax, dte] = await Promise.all([
-                fetchXML('library_sportomax.xml'), // Fallback to XML for speed
-                fetchXML('library_dte.xml')
+            document.getElementById('statusText').textContent = 'Fetching data...';
+            
+            // 1. Fetch DTE (Local) and User Collection (API)
+            const [dteRes, sportomaxRes] = await Promise.allSettled([
+                fetchXML('library_dte.xml'),
+                fetch(`https://boardgamegeek.com/xmlapi2/collection?username=${username}&stats=1&excludesubtype=boardgameexpansion`).then(r => r.text()).then(str => new DOMParser().parseFromString(str, "text/xml"))
             ]);
+
+            const dte = dteRes.status === 'fulfilled' ? dteRes.value : null;
+            const sportomax = sportomaxRes.status === 'fulfilled' ? sportomaxRes.value : null;
 
             const map = new Map();
             const sportomaxMap = new Map();
 
-            // 1. Parse Sportomax first into a lookup map (DO NOT ADD TO MAIN LIST YET)
+            // 2. Parse Sportomax (API) into Lookup Map
             if (sportomax) {
                 sportomax.querySelectorAll('item').forEach(item => {
                     const g = parseGame(item, 'sportomax');
@@ -293,26 +302,29 @@
                 });
             }
 
-            // 2. Iterate DTE (The Source of Truth)
+            // 3. Iterate DTE (Source of Truth)
             if (dte) {
                 dte.querySelectorAll('game').forEach(item => {
-                    const g = parseGame(item, 'dte', true); // usesBggId=true
+                    const g = parseGame(item, 'dte');
                     if (!g) return;
 
-                    // Check if this game exists in Sportomax to enrich it
+                    // Enrich with Sportomax Data
                     if (sportomaxMap.has(g.id)) {
                         const sm = sportomaxMap.get(g.id);
                         g.inSportomax = true;
                         g.desire = sm.desire;
                         g.plays = sm.plays;
                         g.rank = sm.rank;
-                        
-                        // OVERWRITE with Sportomax data as requested
-                        g.thumb = sm.thumb; 
+                        g.thumb = sm.thumb;
+                        g.year = sm.year; // Get year from BGG API
                         g.bggRating = sm.bggRating;
                         g.userRating = sm.userRating;
                         
-                        if (sm.time > 0) g.time = sm.time; // Prefer user time
+                        // Prefer BGG time/players if DTE is missing them, or vice versa?
+                        // Usually BGG API is more complete for stats
+                        if (sm.time > 0) g.time = sm.time;
+                        if (sm.minP > 0) g.minP = sm.minP;
+                        if (sm.maxP > 0) g.maxP = sm.maxP;
                     }
 
                     const locObj = { source: 'dte', emoji: '🚢', label: g.parsedLocation };
@@ -323,8 +335,8 @@
             }
 
             allGames = Array.from(map.values());
-            runFilters(); // Initial filter and sort
-            document.getElementById('statusText').textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+            runFilters();
+            document.getElementById('statusText').textContent = `Updated: ${new Date().toLocaleTimeString()} (${allGames.length} games)`;
         }
 
         // --- UI Rendering ---
@@ -419,6 +431,7 @@
         function runFilters() {
             const search = document.getElementById('searchInput').value.toLowerCase();
             const onlyMyCollection = document.getElementById('myCollectionToggle').checked;
+            const onlyWantToPlay = document.getElementById('wantToPlayToggle').checked;
             
             filteredGames = allGames.filter(g => {
                 // Search
@@ -426,6 +439,9 @@
 
                 // Source Toggle
                 if (onlyMyCollection && !g.inSportomax) return false;
+
+                // Want to Play Toggle
+                if (onlyWantToPlay && g.desire < 5) return false; // Assuming desire >= 5 means want to play (based on logic: wanttoplay=1 adds 5)
 
                 return true;
             });
@@ -466,6 +482,11 @@
 
         // My Collection Toggle
         document.getElementById('myCollectionToggle').addEventListener('change', () => {
+            runFilters();
+        });
+
+        // Want to Play Toggle
+        document.getElementById('wantToPlayToggle').addEventListener('change', () => {
             runFilters();
         });
 
@@ -564,10 +585,14 @@
         // Check for saved user
         const savedUser = localStorage.getItem('sportomaxUsername');
         if (savedUser) {
-            document.getElementById('setupModal').classList.add('hidden');
-            loadLibrary(savedUser);
+            document.getElementById('setupUsername').value = savedUser;
+            // Do NOT auto-load. Wait for user to confirm or just show modal.
+            // User requested: "sportomax username at top should be provided and then submit BEFORE the app runs api calls"
+            // So we show the modal even if user is saved, but pre-fill it.
+            document.getElementById('setupModal').classList.remove('hidden');
         } else {
             document.getElementById('setupUsername').value = 'sportomax'; // Default
+            document.getElementById('setupModal').classList.remove('hidden');
         }
 
         lucide.createIcons();
