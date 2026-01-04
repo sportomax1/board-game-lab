@@ -46,7 +46,11 @@
                     <i data-lucide="x" class="w-4 h-4"></i>
                 </button>
             </div>
-            <div class="flex gap-2">
+            <div class="flex gap-2 items-center">
+                <label class="flex items-center gap-2 cursor-pointer bg-gray-100 px-3 py-2 rounded-full hover:bg-gray-200 transition-colors select-none">
+                    <input type="checkbox" id="myCollectionToggle" class="w-4 h-4 text-indigo-600 rounded focus:ring-indigo-500 border-gray-300" checked>
+                    <span class="text-xs font-bold text-gray-700">My Collection</span>
+                </label>
                 <button id="copyCSV" class="p-2 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200" title="Copy CSV">
                     <i data-lucide="copy" class="w-5 h-5"></i>
                 </button>
@@ -269,36 +273,41 @@
             ]);
 
             const map = new Map();
+            const sportomaxMap = new Map();
 
-            // Helper to merge/add games
-            const add = (xml, source, emoji, usesBggId=false) => {
-                if (!xml) return;
-                const items = usesBggId ? xml.querySelectorAll('game') : xml.querySelectorAll('item');
-                items.forEach(item => {
-                    const g = parseGame(item, source, usesBggId);
-                    if (!g) return;
-                    
-                    const locObj = { source, emoji, label: g.parsedLocation };
-
-                    if (map.has(g.id)) {
-                        const existing = map.get(g.id);
-                        existing.locations.push(locObj);
-                        if (source === 'sportomax') {
-                            existing.inSportomax = true;
-                            existing.desire = g.desire; // Update desire from user collection
-                            existing.plays = g.plays; // Update plays from user collection
-                            existing.rank = g.rank; // Update rank from user collection
-                            if (g.time > 0) existing.time = g.time; // Prefer user time if available
-                        }
-                    } else {
-                        g.locations.push(locObj);
-                        map.set(g.id, g);
-                    }
+            // 1. Parse Sportomax first into a lookup map (DO NOT ADD TO MAIN LIST YET)
+            if (sportomax) {
+                sportomax.querySelectorAll('item').forEach(item => {
+                    const g = parseGame(item, 'sportomax');
+                    if (g) sportomaxMap.set(g.id, g);
                 });
-            };
+            }
 
-            add(sportomax, 'sportomax', '📚');
-            add(dte, 'dte', '🚢', true); // DTE uses BGG XML format
+            // 2. Iterate DTE (The Source of Truth)
+            if (dte) {
+                dte.querySelectorAll('game').forEach(item => {
+                    const g = parseGame(item, 'dte', true); // usesBggId=true
+                    if (!g) return;
+
+                    // Check if this game exists in Sportomax to enrich it
+                    if (sportomaxMap.has(g.id)) {
+                        const sm = sportomaxMap.get(g.id);
+                        g.inSportomax = true;
+                        g.desire = sm.desire;
+                        g.plays = sm.plays;
+                        g.rank = sm.rank;
+                        if (sm.time > 0) g.time = sm.time; // Prefer user time
+                        
+                        // Add Sportomax location/status if needed, though we mainly use DTE location
+                        // We can add a marker or just rely on inSportomax flag
+                    }
+
+                    const locObj = { source: 'dte', emoji: '🚢', label: g.parsedLocation };
+                    g.locations.push(locObj);
+                    
+                    map.set(g.id, g);
+                });
+            }
 
             allGames = Array.from(map.values());
             runFilters(); // Initial filter and sort
@@ -394,16 +403,14 @@
         // --- Filtering Logic ---
         function runFilters() {
             const search = document.getElementById('searchInput').value.toLowerCase();
+            const onlyMyCollection = document.getElementById('myCollectionToggle').checked;
             
             filteredGames = allGames.filter(g => {
                 // Search
                 if (search && !g.name.toLowerCase().includes(search)) return false;
 
-                // Source
-                if (filters.source !== 'all') {
-                    if (filters.source === 'sportomax' && !g.inSportomax) return false;
-                    if (filters.source !== 'sportomax' && !g.locations.some(l => l.source === filters.source)) return false;
-                }
+                // Source Toggle
+                if (onlyMyCollection && !g.inSportomax) return false;
 
                 return true;
             });
@@ -439,6 +446,11 @@
             input.value = '';
             input.dispatchEvent(new Event('input'));
             input.focus();
+        });
+
+        // My Collection Toggle
+        document.getElementById('myCollectionToggle').addEventListener('change', () => {
+            runFilters();
         });
 
         // Sort Chips
