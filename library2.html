@@ -1,0 +1,531 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Game Library V2</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>📱</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://unpkg.com/lucide@latest"></script>
+    <style>
+        /* Mobile optimizations */
+        body { -webkit-tap-highlight-color: transparent; overscroll-behavior-y: none; }
+        .hide-scrollbar::-webkit-scrollbar { display: none; }
+        .hide-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        
+        /* Smooth transitions */
+        .transition-transform { transition-property: transform; transition-timing-function: cubic-bezier(0.4, 0, 0.2, 1); transition-duration: 300ms; }
+        
+        /* Filter Drawer */
+        .drawer-backdrop { background-color: rgba(0,0,0,0.5); transition: opacity 0.3s ease-out; }
+        .drawer { transform: translateY(100%); transition: transform 0.3s cubic-bezier(0.16, 1, 0.3, 1); }
+        .drawer.open { transform: translateY(0); }
+        
+        /* Game Card */
+        .game-card { transition: transform 0.1s; }
+        .game-card:active { transform: scale(0.98); }
+        
+        /* Range Slider Customization */
+        input[type=range]::-webkit-slider-thumb { -webkit-appearance: none; height: 20px; width: 20px; border-radius: 50%; background: #4f46e5; margin-top: -8px; box-shadow: 0 2px 6px rgba(0,0,0,0.2); }
+        input[type=range]::-webkit-slider-runnable-track { width: 100%; height: 4px; background: #e5e7eb; border-radius: 2px; }
+        
+        /* Loading Skeleton */
+        .skeleton { background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
+        @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+    </style>
+</head>
+<body class="bg-gray-50 text-gray-900 h-screen flex flex-col overflow-hidden">
+
+    <!-- Header -->
+    <header class="bg-white border-b border-gray-200 px-4 py-3 flex items-center gap-3 z-20 shadow-sm shrink-0">
+        <div class="relative flex-1">
+            <i data-lucide="search" class="absolute left-3 top-1/2 -translate-y-1/2 text-gray-400 w-4 h-4"></i>
+            <input type="text" id="searchInput" placeholder="Search games..." class="w-full bg-gray-100 border-none rounded-full py-2 pl-9 pr-4 text-sm focus:ring-2 focus:ring-indigo-500 outline-none transition-shadow">
+            <button id="clearSearch" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-400 hidden">
+                <i data-lucide="x" class="w-4 h-4"></i>
+            </button>
+        </div>
+        <button id="filterBtn" class="relative p-2 rounded-full hover:bg-gray-100 active:bg-gray-200 transition-colors">
+            <i data-lucide="sliders-horizontal" class="w-5 h-5 text-gray-600"></i>
+            <span id="activeFilterCount" class="absolute top-1 right-1 w-2.5 h-2.5 bg-indigo-600 rounded-full border-2 border-white hidden"></span>
+        </button>
+    </header>
+
+    <!-- Main Content -->
+    <main id="gameList" class="flex-1 overflow-y-auto p-3 space-y-3 hide-scrollbar pb-24">
+        <!-- Initial Loading State -->
+        <div class="flex flex-col items-center justify-center h-64 text-gray-400 space-y-4">
+            <div class="w-8 h-8 border-4 border-indigo-200 border-t-indigo-600 rounded-full animate-spin"></div>
+            <p class="text-sm font-medium">Loading Library...</p>
+        </div>
+    </main>
+
+    <!-- Stats / Floating Action Button Area -->
+    <div class="absolute bottom-6 right-6 z-10">
+        <button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" class="bg-indigo-600 text-white p-3 rounded-full shadow-lg hover:bg-indigo-700 active:scale-95 transition-all">
+            <i data-lucide="arrow-up" class="w-5 h-5"></i>
+        </button>
+    </div>
+
+    <!-- Bottom Status Bar -->
+    <div class="bg-white border-t border-gray-200 px-4 py-2 text-xs text-gray-500 flex justify-between items-center shrink-0 z-20">
+        <span id="statusText">Ready</span>
+        <span id="countText">0 games</span>
+    </div>
+
+    <!-- Filter Drawer -->
+    <div id="filterDrawerBackdrop" class="fixed inset-0 drawer-backdrop opacity-0 pointer-events-none z-40"></div>
+    <div id="filterDrawer" class="fixed inset-x-0 bottom-0 bg-white rounded-t-2xl shadow-2xl z-50 drawer h-[85vh] flex flex-col">
+        <div class="p-4 border-b border-gray-100 flex justify-between items-center shrink-0">
+            <h2 class="text-lg font-bold">Filters</h2>
+            <button id="closeFilter" class="p-2 bg-gray-100 rounded-full hover:bg-gray-200"><i data-lucide="x" class="w-4 h-4"></i></button>
+        </div>
+        
+        <div class="flex-1 overflow-y-auto p-4 space-y-6">
+            <!-- Collection Source -->
+            <section>
+                <h3 class="text-sm font-bold text-gray-900 mb-3 uppercase tracking-wider">Collection</h3>
+                <div class="grid grid-cols-2 gap-2">
+                    <button class="filter-chip active" data-group="source" data-value="all">All Sources</button>
+                    <button class="filter-chip" data-group="source" data-value="sportomax">📚 My Collection</button>
+                    <button class="filter-chip" data-group="source" data-value="bgg">⭐ BGG Top 100</button>
+                    <button class="filter-chip" data-group="source" data-value="dte">🚢 DTE Library</button>
+                    <button class="filter-chip" data-group="source" data-value="dtw">🎲 DTW Library</button>
+                </div>
+            </section>
+
+            <!-- Player Count -->
+            <section>
+                <h3 class="text-sm font-bold text-gray-900 mb-3 uppercase tracking-wider">Player Count</h3>
+                <div class="flex gap-2 overflow-x-auto pb-2 hide-scrollbar">
+                    <button class="filter-chip active whitespace-nowrap" data-group="players" data-value="any">Any</button>
+                    <button class="filter-chip w-10 h-10 flex items-center justify-center rounded-full p-0" data-group="players" data-value="1">1</button>
+                    <button class="filter-chip w-10 h-10 flex items-center justify-center rounded-full p-0" data-group="players" data-value="2">2</button>
+                    <button class="filter-chip w-10 h-10 flex items-center justify-center rounded-full p-0" data-group="players" data-value="3">3</button>
+                    <button class="filter-chip w-10 h-10 flex items-center justify-center rounded-full p-0" data-group="players" data-value="4">4</button>
+                    <button class="filter-chip w-10 h-10 flex items-center justify-center rounded-full p-0" data-group="players" data-value="5">5</button>
+                    <button class="filter-chip w-10 h-10 flex items-center justify-center rounded-full p-0" data-group="players" data-value="6">6+</button>
+                </div>
+            </section>
+
+            <!-- Play Time -->
+            <section>
+                <h3 class="text-sm font-bold text-gray-900 mb-3 uppercase tracking-wider">Play Time</h3>
+                <div class="grid grid-cols-2 gap-2">
+                    <button class="filter-chip active" data-group="time" data-value="any">Any Time</button>
+                    <button class="filter-chip" data-group="time" data-value="30">&lt; 30 mins</button>
+                    <button class="filter-chip" data-group="time" data-value="60">30-60 mins</button>
+                    <button class="filter-chip" data-group="time" data-value="120">60-120 mins</button>
+                    <button class="filter-chip" data-group="time" data-value="long">120+ mins</button>
+                </div>
+            </section>
+
+            <!-- Complexity / Weight -->
+            <section>
+                <h3 class="text-sm font-bold text-gray-900 mb-3 uppercase tracking-wider">Complexity</h3>
+                <div class="grid grid-cols-3 gap-2">
+                    <button class="filter-chip active" data-group="weight" data-value="any">Any</button>
+                    <button class="filter-chip" data-group="weight" data-value="light">Light</button>
+                    <button class="filter-chip" data-group="weight" data-value="medium">Medium</button>
+                    <button class="filter-chip" data-group="weight" data-value="heavy">Heavy</button>
+                </div>
+            </section>
+        </div>
+
+        <div class="p-4 border-t border-gray-100 flex gap-3 shrink-0 bg-white pb-8">
+            <button id="resetFilters" class="flex-1 py-3 text-gray-600 font-bold bg-gray-100 rounded-xl hover:bg-gray-200">Reset</button>
+            <button id="applyFilters" class="flex-[2] py-3 text-white font-bold bg-indigo-600 rounded-xl hover:bg-indigo-700 shadow-lg shadow-indigo-200">Show Results</button>
+        </div>
+    </div>
+
+    <!-- Setup Modal -->
+    <div id="setupModal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-4 backdrop-blur-sm">
+        <div class="bg-white rounded-2xl p-6 w-full max-w-sm shadow-2xl">
+            <div class="text-center mb-6">
+                <div class="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
+                    <i data-lucide="library" class="w-8 h-8 text-indigo-600"></i>
+                </div>
+                <h2 class="text-xl font-bold text-gray-900">Welcome</h2>
+                <p class="text-sm text-gray-500 mt-1">Enter your BGG username to sync your collection</p>
+            </div>
+            <input type="text" id="setupUsername" placeholder="BGG Username" class="w-full bg-gray-50 border border-gray-200 rounded-xl px-4 py-3 mb-4 focus:ring-2 focus:ring-indigo-500 outline-none font-medium text-center">
+            <button onclick="startApp()" class="w-full bg-indigo-600 text-white font-bold py-3.5 rounded-xl hover:bg-indigo-700 transition-transform active:scale-95">
+                Load Library
+            </button>
+        </div>
+    </div>
+
+    <script>
+        // --- State Management ---
+        let allGames = [];
+        let filteredGames = [];
+        const filters = {
+            source: 'all',
+            players: 'any',
+            time: 'any',
+            weight: 'any'
+        };
+        
+        // --- IndexedDB Cache ---
+        const dbName = 'GameLibraryDB';
+        const storeName = 'xmlCache';
+        
+        function initIndexedDB() {
+            return new Promise((resolve, reject) => {
+                const req = indexedDB.open(dbName, 1);
+                req.onerror = () => reject(req.error);
+                req.onsuccess = () => resolve(req.result);
+                req.onupgradeneeded = (e) => {
+                    const db = e.target.result;
+                    if (!db.objectStoreNames.contains(storeName)) {
+                        db.createObjectStore(storeName, { keyPath: 'filename' });
+                    }
+                };
+            });
+        }
+
+        async function getCachedXML(filename) {
+            try {
+                const db = await initIndexedDB();
+                return new Promise((resolve, reject) => {
+                    const tx = db.transaction(storeName, 'readonly');
+                    const store = tx.objectStore(storeName);
+                    const req = store.get(filename);
+                    req.onsuccess = () => {
+                        const data = req.result;
+                        if (data && Date.now() - data.timestamp < 24*60*60*1000) resolve(data.xml);
+                        else resolve(null);
+                    };
+                    req.onerror = () => reject(req.error);
+                });
+            } catch (e) { return null; }
+        }
+
+        async function setCachedXML(filename, xmlString) {
+            try {
+                const db = await initIndexedDB();
+                const tx = db.transaction(storeName, 'readwrite');
+                tx.objectStore(storeName).put({ filename, xml: xmlString, timestamp: Date.now() });
+            } catch (e) {}
+        }
+
+        async function fetchXML(file) {
+            const cached = await getCachedXML(file);
+            if (cached) return new DOMParser().parseFromString(cached, 'text/xml');
+            
+            try {
+                const r = await fetch(file);
+                if (!r.ok) return null;
+                const t = await r.text();
+                if (t.trim()) await setCachedXML(file, t);
+                return new DOMParser().parseFromString(t, 'text/xml');
+            } catch (e) { return null; }
+        }
+
+        // --- Data Processing ---
+        function parseGame(item, source, usesBggId = false) {
+            const id = usesBggId ? item.querySelector('bgg_id')?.textContent : item.getAttribute('objectid');
+            if (!id) return null;
+
+            const name = item.querySelector('name')?.textContent || 'Unknown';
+            const year = item.querySelector('yearpublished')?.textContent || '';
+            
+            let rating = '0', minP = 0, maxP = 0, time = 0, weight = 0;
+            let thumb = '';
+            
+            if (!usesBggId) {
+                const stats = item.querySelector('stats');
+                rating = stats?.querySelector('rating average')?.getAttribute('value') || '0';
+                minP = parseInt(stats?.getAttribute('minplayers')) || 0;
+                maxP = parseInt(stats?.getAttribute('maxplayers')) || 0;
+                time = parseInt(stats?.getAttribute('playingtime') || stats?.getAttribute('playtime') || '0') || 0;
+                thumb = item.querySelector('thumbnail')?.textContent || '';
+            } else {
+                thumb = item.querySelector('thumbnail')?.textContent || '';
+            }
+
+            // Desire Score Logic (Simplified for V2)
+            let desire = 0;
+            if (source === 'sportomax') {
+                const st = item.querySelector('status');
+                if (st?.getAttribute('wanttoplay') === '1') desire += 5;
+                const wishlist = st?.getAttribute('wishlist') === '1';
+                const priority = parseInt(st?.getAttribute('wishlistpriority')) || 0;
+                if (wishlist && priority) desire += (6 - priority);
+            }
+
+            return {
+                id, name, year, 
+                rating: parseFloat(rating).toFixed(1),
+                minP, maxP, time, weight,
+                desire,
+                thumb,
+                locations: [],
+                inSportomax: source === 'sportomax'
+            };
+        }
+
+        async function loadLibrary(username) {
+            const [sportomax, bgg, dte, dtw] = await Promise.all([
+                fetchXML('library_sportomax.xml'), // Fallback to XML for speed
+                fetchXML('library_bgg.xml'),
+                fetchXML('library_dte.xml'),
+                fetchXML('library_dtw.xml')
+            ]);
+
+            const map = new Map();
+
+            // Helper to merge/add games
+            const add = (xml, source, emoji, usesBggId=false) => {
+                if (!xml) return;
+                const items = usesBggId ? xml.querySelectorAll('game') : xml.querySelectorAll('item');
+                items.forEach(item => {
+                    const g = parseGame(item, source, usesBggId);
+                    if (!g) return;
+                    
+                    if (map.has(g.id)) {
+                        const existing = map.get(g.id);
+                        existing.locations.push({ source, emoji });
+                        if (source === 'sportomax') {
+                            existing.inSportomax = true;
+                            existing.desire = g.desire; // Update desire from user collection
+                        }
+                    } else {
+                        g.locations.push({ source, emoji });
+                        map.set(g.id, g);
+                    }
+                });
+            };
+
+            add(sportomax, 'sportomax', '📚');
+            add(dtw, 'dtw', '🎲');
+            add(dte, 'dte', '🚢', true); // DTE uses BGG XML format
+            add(bgg, 'bgg', '⭐', true);
+
+            allGames = Array.from(map.values()).sort((a,b) => b.desire - a.desire || b.rating - a.rating);
+            filteredGames = allGames;
+            renderList();
+            document.getElementById('statusText').textContent = `Updated: ${new Date().toLocaleTimeString()}`;
+        }
+
+        // --- UI Rendering ---
+        function renderList() {
+            const container = document.getElementById('gameList');
+            const countEl = document.getElementById('countText');
+            
+            if (filteredGames.length === 0) {
+                container.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-64 text-gray-400">
+                        <i data-lucide="ghost" class="w-12 h-12 mb-2 opacity-50"></i>
+                        <p>No games found</p>
+                    </div>`;
+                countEl.textContent = '0 games';
+                lucide.createIcons();
+                return;
+            }
+
+            // Virtual scrolling optimization: Render first 50, then the rest
+            const chunk = filteredGames.slice(0, 50);
+            
+            container.innerHTML = chunk.map(g => {
+                const locs = g.locations.map(l => l.emoji).join(' ');
+                const badgeColor = g.desire >= 8 ? 'bg-green-500' : (g.desire >= 5 ? 'bg-blue-500' : 'bg-gray-400');
+                
+                return `
+                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
+                    <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative">
+                        <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                        <div class="absolute top-0 right-0 ${badgeColor} text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">
+                            ${g.desire}
+                        </div>
+                    </div>
+                    <div class="flex-1 min-w-0 flex flex-col justify-center">
+                        <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
+                        <div class="flex items-center gap-3 text-xs text-gray-500 mb-1.5">
+                            <span class="flex items-center gap-1"><i data-lucide="star" class="w-3 h-3 text-amber-400 fill-amber-400"></i> ${g.rating}</span>
+                            <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
+                            <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                        </div>
+                        <div class="text-xs text-gray-400 tracking-wide">${locs}</div>
+                    </div>
+                    <i data-lucide="chevron-right" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5"></i>
+                </div>`;
+            }).join('');
+
+            countEl.textContent = `${filteredGames.length} games`;
+            lucide.createIcons();
+
+            // Lazy render the rest if needed (simple implementation)
+            if (filteredGames.length > 50) {
+                setTimeout(() => {
+                    const rest = filteredGames.slice(50).map(g => {
+                        const locs = g.locations.map(l => l.emoji).join(' ');
+                        const badgeColor = g.desire >= 8 ? 'bg-green-500' : (g.desire >= 5 ? 'bg-blue-500' : 'bg-gray-400');
+                        return `
+                        <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
+                            <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative">
+                                <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                                <div class="absolute top-0 right-0 ${badgeColor} text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">
+                                    ${g.desire}
+                                </div>
+                            </div>
+                            <div class="flex-1 min-w-0 flex flex-col justify-center">
+                                <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
+                                <div class="flex items-center gap-3 text-xs text-gray-500 mb-1.5">
+                                    <span class="flex items-center gap-1"><i data-lucide="star" class="w-3 h-3 text-amber-400 fill-amber-400"></i> ${g.rating}</span>
+                                    <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
+                                    <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                                </div>
+                                <div class="text-xs text-gray-400 tracking-wide">${locs}</div>
+                            </div>
+                            <i data-lucide="chevron-right" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5"></i>
+                        </div>`;
+                    }).join('');
+                    container.insertAdjacentHTML('beforeend', rest);
+                    lucide.createIcons();
+                }, 100);
+            }
+        }
+
+        // --- Filtering Logic ---
+        function runFilters() {
+            const search = document.getElementById('searchInput').value.toLowerCase();
+            
+            filteredGames = allGames.filter(g => {
+                // Search
+                if (search && !g.name.toLowerCase().includes(search)) return false;
+
+                // Source
+                if (filters.source !== 'all') {
+                    if (filters.source === 'sportomax' && !g.inSportomax) return false;
+                    if (filters.source !== 'sportomax' && !g.locations.some(l => l.source === filters.source)) return false;
+                }
+
+                // Players
+                if (filters.players !== 'any') {
+                    const p = parseInt(filters.players);
+                    if (p === 6) { if (g.maxP < 6) return false; }
+                    else { if (g.minP > p || g.maxP < p) return false; }
+                }
+
+                // Time
+                if (filters.time !== 'any') {
+                    const t = g.time;
+                    if (filters.time === '30' && t > 30) return false;
+                    if (filters.time === '60' && (t <= 30 || t > 60)) return false;
+                    if (filters.time === '120' && (t <= 60 || t > 120)) return false;
+                    if (filters.time === 'long' && t <= 120) return false;
+                }
+
+                // Weight (Placeholder - requires API enrichment usually, but we can try if data exists)
+                // Skipping weight for now as XML often lacks it or it's unreliable without API
+                
+                return true;
+            });
+
+            renderList();
+            
+            // Update active filter indicator
+            const activeCount = Object.values(filters).filter(v => v !== 'all' && v !== 'any').length;
+            const indicator = document.getElementById('activeFilterCount');
+            if (activeCount > 0) {
+                indicator.classList.remove('hidden');
+            } else {
+                indicator.classList.add('hidden');
+            }
+        }
+
+        // --- Event Listeners ---
+        
+        // Search
+        document.getElementById('searchInput').addEventListener('input', (e) => {
+            const clearBtn = document.getElementById('clearSearch');
+            if (e.target.value) clearBtn.classList.remove('hidden');
+            else clearBtn.classList.add('hidden');
+            runFilters();
+        });
+        
+        document.getElementById('clearSearch').addEventListener('click', () => {
+            const input = document.getElementById('searchInput');
+            input.value = '';
+            input.dispatchEvent(new Event('input'));
+            input.focus();
+        });
+
+        // Drawer
+        const drawer = document.getElementById('filterDrawer');
+        const backdrop = document.getElementById('filterDrawerBackdrop');
+        
+        function openDrawer() {
+            drawer.classList.add('open');
+            backdrop.classList.remove('opacity-0', 'pointer-events-none');
+        }
+        
+        function closeDrawer() {
+            drawer.classList.remove('open');
+            backdrop.classList.add('opacity-0', 'pointer-events-none');
+        }
+
+        document.getElementById('filterBtn').addEventListener('click', openDrawer);
+        document.getElementById('closeFilter').addEventListener('click', closeDrawer);
+        document.getElementById('filterDrawerBackdrop').addEventListener('click', closeDrawer);
+        document.getElementById('applyFilters').addEventListener('click', () => {
+            runFilters();
+            closeDrawer();
+        });
+
+        // Filter Chips
+        document.querySelectorAll('.filter-chip').forEach(btn => {
+            btn.addEventListener('click', (e) => {
+                const group = btn.dataset.group;
+                const value = btn.dataset.value;
+                
+                // Update UI
+                document.querySelectorAll(`.filter-chip[data-group="${group}"]`).forEach(b => b.classList.remove('active', 'bg-indigo-600', 'text-white', 'ring-2', 'ring-indigo-200'));
+                btn.classList.add('active', 'bg-indigo-600', 'text-white', 'ring-2', 'ring-indigo-200');
+                
+                // Update State
+                filters[group] = value;
+            });
+        });
+        
+        // Initialize Chip Styles
+        document.querySelectorAll('.filter-chip.active').forEach(btn => {
+            btn.classList.add('bg-indigo-600', 'text-white', 'ring-2', 'ring-indigo-200');
+        });
+
+        document.getElementById('resetFilters').addEventListener('click', () => {
+            filters.source = 'all';
+            filters.players = 'any';
+            filters.time = 'any';
+            filters.weight = 'any';
+            
+            document.querySelectorAll('.filter-chip').forEach(b => b.classList.remove('active', 'bg-indigo-600', 'text-white', 'ring-2', 'ring-indigo-200'));
+            document.querySelectorAll('.filter-chip[data-value="all"], .filter-chip[data-value="any"]').forEach(b => b.classList.add('active', 'bg-indigo-600', 'text-white', 'ring-2', 'ring-indigo-200'));
+            
+            runFilters();
+        });
+
+        // --- Initialization ---
+        function startApp() {
+            const username = document.getElementById('setupUsername').value.trim();
+            if (username) {
+                localStorage.setItem('sportomaxUsername', username);
+                document.getElementById('setupModal').classList.add('hidden');
+                loadLibrary(username);
+            }
+        }
+
+        // Check for saved user
+        const savedUser = localStorage.getItem('sportomaxUsername');
+        if (savedUser) {
+            document.getElementById('setupModal').classList.add('hidden');
+            loadLibrary(savedUser);
+        } else {
+            document.getElementById('setupUsername').value = 'sportomax'; // Default
+        }
+
+        lucide.createIcons();
+    </script>
+</body>
+</html>
