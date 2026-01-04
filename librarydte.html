@@ -65,6 +65,9 @@
                 <button id="copyCSV" class="p-2 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200" title="Copy CSV">
                     <i data-lucide="copy" class="w-5 h-5"></i>
                 </button>
+                <button id="showSwimLanes" class="p-2 text-indigo-600 bg-indigo-50 rounded-full hover:bg-indigo-100" title="Shelf View">
+                    <i data-lucide="layout-grid" class="w-5 h-5"></i>
+                </button>
                 <button id="exportCSV" class="p-2 text-indigo-600 bg-indigo-50 rounded-full hover:bg-indigo-100" title="Export CSV">
                     <i data-lucide="download" class="w-5 h-5"></i>
                 </button>
@@ -121,6 +124,22 @@
             <button onclick="startApp()" class="w-full bg-indigo-600 text-white font-bold py-3.5 rounded-xl hover:bg-indigo-700 transition-transform active:scale-95">
                 Load Library
             </button>
+        </div>
+    </div>
+
+    <!-- Swim Lane Modal -->
+    <div id="swimLaneModal" class="fixed inset-0 bg-black/90 z-50 hidden flex flex-col">
+        <div class="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shrink-0">
+            <h2 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <i data-lucide="layout-grid" class="w-5 h-5 text-indigo-600"></i>
+                Shelf View
+            </h2>
+            <button onclick="document.getElementById('swimLaneModal').classList.add('hidden')" class="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <i data-lucide="x" class="w-5 h-5 text-gray-500"></i>
+            </button>
+        </div>
+        <div id="swimLaneContent" class="flex-1 overflow-y-auto p-4 space-y-6 bg-gray-50">
+            <!-- Content injected here -->
         </div>
     </div>
 
@@ -339,27 +358,41 @@
 
             // 3. Iterate DTE (Source of Truth)
             allGames = [];
+            const gamesMap = new Map();
+
             if (dte) {
                 dte.querySelectorAll('game').forEach(item => {
                     const dteGame = parseGame(item, 'dte');
                     if (!dteGame) return;
 
-                    let finalGame = dteGame;
-                    const apiGame = sportomaxMap.get(dteGame.id);
+                    if (gamesMap.has(dteGame.id)) {
+                        // Duplicate found - merge location
+                        const existingGame = gamesMap.get(dteGame.id);
+                        existingGame.copies = (existingGame.copies || 1) + 1;
+                        if (dteGame.parsedLocation) {
+                            existingGame.locations.push({ source: 'dte', label: dteGame.parsedLocation, emoji: '📍' });
+                        }
+                    } else {
+                        // New game
+                        let finalGame = dteGame;
+                        const apiGame = sportomaxMap.get(dteGame.id);
 
-                    if (apiGame) {
-                        // Merge: API data takes precedence for metadata
-                        finalGame = { ...dteGame, ...apiGame, locations: [] };
-                        // Restore location from DTE
-                        finalGame.parsedLocation = dteGame.parsedLocation;
+                        if (apiGame) {
+                            // Merge: API data takes precedence for metadata
+                            finalGame = { ...dteGame, ...apiGame, locations: [] };
+                            // Restore location from DTE
+                            finalGame.parsedLocation = dteGame.parsedLocation;
+                        }
+
+                        // Add location object
+                        if (finalGame.parsedLocation) {
+                            finalGame.locations.push({ source: 'dte', label: finalGame.parsedLocation, emoji: '📍' });
+                        }
+                        
+                        finalGame.copies = 1;
+                        gamesMap.set(finalGame.id, finalGame);
+                        allGames.push(finalGame);
                     }
-
-                    // Add location object
-                    if (finalGame.parsedLocation) {
-                        finalGame.locations.push({ source: 'dte', label: finalGame.parsedLocation, emoji: '📍' });
-                    }
-
-                    allGames.push(finalGame);
                 });
             }
             
@@ -407,6 +440,7 @@
                         <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
                             #${idx + 1}
                         </div>
+                        ${g.copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
                     </div>
                     <div class="flex-1 min-w-0 flex flex-col justify-center">
                         <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
@@ -445,6 +479,7 @@
                                 <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
                                     #${realIdx + 1}
                                 </div>
+                                ${g.copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
                             </div>
                             <div class="flex-1 min-w-0 flex flex-col justify-center">
                                 <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
@@ -552,6 +587,72 @@
                 filters.sort = value;
                 runFilters();
             });
+        });
+
+        // Swim Lane View
+        document.getElementById('showSwimLanes').addEventListener('click', () => {
+            const modal = document.getElementById('swimLaneModal');
+            const content = document.getElementById('swimLaneContent');
+            modal.classList.remove('hidden');
+            
+            // Group by Shelf
+            const shelves = new Map();
+            filteredGames.forEach(g => {
+                // Use all locations for this view, or just the primary?
+                // If a game is on multiple shelves, show it on all of them?
+                // The user said "from shelf numbers left to right".
+                // Let's iterate through all locations of the game.
+                g.locations.forEach(loc => {
+                    if (loc.source === 'dte') { // Only physical locations
+                        const shelfName = loc.label || 'Unsorted';
+                        if (!shelves.has(shelfName)) shelves.set(shelfName, []);
+                        shelves.get(shelfName).push(g);
+                    }
+                });
+            });
+
+            // Sort Shelves
+            const sortedShelves = Array.from(shelves.keys()).sort((a, b) => 
+                a.localeCompare(b, undefined, { numeric: true })
+            );
+
+            if (sortedShelves.length === 0) {
+                content.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-64 text-gray-400">
+                        <i data-lucide="ghost" class="w-12 h-12 mb-2 opacity-50"></i>
+                        <p>No shelves found</p>
+                    </div>`;
+                return;
+            }
+
+            content.innerHTML = sortedShelves.map(shelf => {
+                const games = shelves.get(shelf);
+                // Sort games within shelf (optional, maybe by name?)
+                games.sort((a, b) => a.name.localeCompare(b.name));
+
+                return `
+                <div class="bg-white rounded-xl shadow-sm border border-gray-200 overflow-hidden">
+                    <div class="bg-gray-50 px-4 py-2 border-b border-gray-200 font-bold text-sm text-gray-700 flex justify-between items-center">
+                        <span>${shelf}</span>
+                        <span class="text-xs text-gray-500 font-normal">${games.length} games</span>
+                    </div>
+                    <div class="p-3 overflow-x-auto hide-scrollbar">
+                        <div class="flex gap-3">
+                            ${games.map(g => `
+                                <div class="flex-shrink-0 w-24 group cursor-pointer" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
+                                    <div class="w-24 h-24 bg-gray-100 rounded-lg overflow-hidden relative shadow-sm group-hover:shadow-md transition-all">
+                                        <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                                        ${g.copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
+                                    </div>
+                                    <div class="mt-1 text-[10px] text-gray-600 font-medium truncate text-center group-hover:text-indigo-600 transition-colors">${g.name}</div>
+                                </div>
+                            `).join('')}
+                        </div>
+                    </div>
+                </div>`;
+            }).join('');
+            
+            lucide.createIcons();
         });
 
         // Export CSV
