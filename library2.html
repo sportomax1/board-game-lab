@@ -223,6 +223,20 @@
         }
 
         // --- Data Processing ---
+        function getLocationFromDteItem(item) {
+            const customFieldsNode = item.querySelector('custom_fields');
+            if (!customFieldsNode) return '';
+            let shelf = '', row = '';
+            Array.from(customFieldsNode.children).forEach(field => {
+                if (field.tagName.toLowerCase() === 'shelf') shelf = field.textContent.trim();
+                if (field.tagName.toLowerCase() === 'row') row = field.textContent.trim();
+            });
+            if (shelf && row) return `${shelf}-${row}`;
+            if (shelf) return shelf;
+            if (row) return row;
+            return '';
+        }
+
         function parseGame(item, source, usesBggId = false) {
             const id = usesBggId ? item.querySelector('bgg_id')?.textContent : item.getAttribute('objectid');
             if (!id) return null;
@@ -230,7 +244,7 @@
             const name = item.querySelector('name')?.textContent || 'Unknown';
             const year = item.querySelector('yearpublished')?.textContent || '';
             
-            let rating = '0', minP = 0, maxP = 0, time = 0, weight = 0;
+            let rating = '0', minP = 0, maxP = 0, time = 0, weight = 0, plays = 0;
             let thumb = '';
             
             if (!usesBggId) {
@@ -238,8 +252,21 @@
                 rating = stats?.querySelector('rating average')?.getAttribute('value') || '0';
                 minP = parseInt(stats?.getAttribute('minplayers')) || 0;
                 maxP = parseInt(stats?.getAttribute('maxplayers')) || 0;
-                time = parseInt(stats?.getAttribute('playingtime') || stats?.getAttribute('playtime') || '0') || 0;
+                
+                // Robust time parsing
+                let pmin = parseInt(stats?.getAttribute('minplaytime') || stats?.getAttribute('minplay') || '0') || 0;
+                let pmax = parseInt(stats?.getAttribute('maxplaytime') || stats?.getAttribute('maxplay') || '0') || 0;
+                let pavg = parseInt(stats?.getAttribute('playingtime') || stats?.getAttribute('playtime') || '0') || 0;
+                
+                // Fallback to text content
+                if (!pmin) pmin = parseInt(item.querySelector('minplaytime')?.textContent || item.querySelector('minplay')?.textContent || '0') || 0;
+                if (!pmax) pmax = parseInt(item.querySelector('maxplaytime')?.textContent || item.querySelector('maxplay')?.textContent || '0') || 0;
+                if (!pavg) pavg = parseInt(item.querySelector('playtime')?.textContent || item.querySelector('playingtime')?.textContent || '0') || 0;
+                
+                if (pmax) time = pmax; else if (pavg) time = pavg; else if (pmin) time = pmin;
+
                 thumb = item.querySelector('thumbnail')?.textContent || '';
+                plays = parseInt(item.querySelector('numplays')?.textContent) || 0;
             } else {
                 thumb = item.querySelector('thumbnail')?.textContent || '';
             }
@@ -254,14 +281,26 @@
                 if (wishlist && priority) desire += (6 - priority);
             }
 
+            // Location Logic
+            let loc = '';
+            if (source === 'dte') {
+                loc = getLocationFromDteItem(item);
+            } else if (source === 'bgg') {
+                loc = item.querySelector('location')?.textContent || '';
+            } else {
+                loc = item.querySelector('comment')?.textContent || '';
+            }
+
             return {
                 id, name, year, 
                 rating: parseFloat(rating).toFixed(1),
                 minP, maxP, time, weight,
                 desire,
                 thumb,
+                plays,
                 locations: [],
-                inSportomax: source === 'sportomax'
+                inSportomax: source === 'sportomax',
+                parsedLocation: loc // Temporary storage for the location string
             };
         }
 
@@ -283,15 +322,19 @@
                     const g = parseGame(item, source, usesBggId);
                     if (!g) return;
                     
+                    const locObj = { source, emoji, label: g.parsedLocation };
+
                     if (map.has(g.id)) {
                         const existing = map.get(g.id);
-                        existing.locations.push({ source, emoji });
+                        existing.locations.push(locObj);
                         if (source === 'sportomax') {
                             existing.inSportomax = true;
                             existing.desire = g.desire; // Update desire from user collection
+                            existing.plays = g.plays; // Update plays from user collection
+                            if (g.time > 0) existing.time = g.time; // Prefer user time if available
                         }
                     } else {
-                        g.locations.push({ source, emoji });
+                        g.locations.push(locObj);
                         map.set(g.id, g);
                     }
                 });
@@ -328,7 +371,11 @@
             const chunk = filteredGames.slice(0, 50);
             
             container.innerHTML = chunk.map(g => {
-                const locs = g.locations.map(l => l.emoji).join(' ');
+                const locs = g.locations.map(l => {
+                    const label = l.label ? ` ${l.label}` : '';
+                    return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
+                }).join('');
+                
                 const badgeColor = g.desire >= 8 ? 'bg-green-500' : (g.desire >= 5 ? 'bg-blue-500' : 'bg-gray-400');
                 
                 return `
@@ -345,8 +392,9 @@
                             <span class="flex items-center gap-1"><i data-lucide="star" class="w-3 h-3 text-amber-400 fill-amber-400"></i> ${g.rating}</span>
                             <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
                             <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                            ${g.plays > 0 ? `<span class="flex items-center gap-1 text-green-600 font-medium"><i data-lucide="play-circle" class="w-3 h-3"></i> ${g.plays}</span>` : ''}
                         </div>
-                        <div class="text-xs text-gray-400 tracking-wide">${locs}</div>
+                        <div class="flex flex-wrap gap-y-1">${locs}</div>
                     </div>
                     <i data-lucide="chevron-right" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5"></i>
                 </div>`;
@@ -359,7 +407,11 @@
             if (filteredGames.length > 50) {
                 setTimeout(() => {
                     const rest = filteredGames.slice(50).map(g => {
-                        const locs = g.locations.map(l => l.emoji).join(' ');
+                        const locs = g.locations.map(l => {
+                            const label = l.label ? ` ${l.label}` : '';
+                            return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
+                        }).join('');
+                        
                         const badgeColor = g.desire >= 8 ? 'bg-green-500' : (g.desire >= 5 ? 'bg-blue-500' : 'bg-gray-400');
                         return `
                         <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
@@ -375,8 +427,9 @@
                                     <span class="flex items-center gap-1"><i data-lucide="star" class="w-3 h-3 text-amber-400 fill-amber-400"></i> ${g.rating}</span>
                                     <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
                                     <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                                    ${g.plays > 0 ? `<span class="flex items-center gap-1 text-green-600 font-medium"><i data-lucide="play-circle" class="w-3 h-3"></i> ${g.plays}</span>` : ''}
                                 </div>
-                                <div class="text-xs text-gray-400 tracking-wide">${locs}</div>
+                                <div class="flex flex-wrap gap-y-1">${locs}</div>
                             </div>
                             <i data-lucide="chevron-right" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5"></i>
                         </div>`;
