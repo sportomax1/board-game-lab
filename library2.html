@@ -32,9 +32,16 @@
         /* Loading Skeleton */
         .skeleton { background: linear-gradient(90deg, #f3f4f6 25%, #e5e7eb 50%, #f3f4f6 75%); background-size: 200% 100%; animation: shimmer 1.5s infinite; }
         @keyframes shimmer { 0% { background-position: 200% 0; } 100% { background-position: -200% 0; } }
+
+        /* Top Loading Bar */
+        #topLoadingBar { transition: width 0.3s ease; }
     </style>
 </head>
 <body class="bg-gray-50 text-gray-900 h-screen flex flex-col overflow-hidden">
+    <!-- Top Loading Bar -->
+    <div id="loadingContainer" class="fixed top-0 left-0 w-full h-1 bg-gray-200 z-50 hidden">
+        <div id="topLoadingBar" class="h-full bg-indigo-600 w-0"></div>
+    </div>
 
     <!-- Header -->
     <header class="bg-white border-b border-gray-200 flex flex-col z-20 shadow-sm shrink-0">
@@ -74,6 +81,7 @@
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="desire">Desire</button>
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="plays">Plays</button>
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="time">Time</button>
+            <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="shelf">Shelf</button>
         </div>
     </header>
 
@@ -217,10 +225,7 @@
                 let pmax = parseInt(item.querySelector('max_play_time')?.textContent) || 0;
                 if (pmax) time = pmax; else if (pmin) time = pmin;
 
-                // Location from DTE specific logic (if applicable, or just use shelf/row if present in custom fields)
-                // The DTE XML snippet showed <custom_fields> in previous versions, but the recent read didn't show it.
-                // We'll try to find location info if available.
-                // Based on previous code, DTE had custom_fields. Let's check if we can find it.
+                loc = getLocationFromDteItem(item);can find it.
                 // For now, we'll leave location empty or try to parse if we see it.
                 
             } else if (source === 'sportomax') {
@@ -281,14 +286,46 @@
 
         async function loadLibrary(username) {
             document.getElementById('statusText').textContent = 'Fetching data...';
+            fetchWithRetry(url, retries = 5, backoff = 2000) {
+            const loadingBar = document.getElementById('topLoadingBar');
+            const statusText = document.getElementById('statusText');
             
+            for (let i = 0; i < retries; i++) {
+                try {
+                    const res = await fetch(url);
+                    if (res.status === 202) {
+                        // BGG is processing
+                        statusText.textContent = `Building collection... (Attempt ${i + 1}/${retries})`;
+                        loadingBar.style.width = `${((i + 1) / retries) * 100}%`;
+                        await new Promise(r => setTimeout(r, backoff * Math.pow(1.5, i))); // Exponential backoff
+                        continue;
+                    }
+                    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                    return res;
+                } catch (e) {
+                    if (i === retries - 1) throw e;
+                    await new Promise(r => setTimeout(r, backoff));
+                }
+            }
+            throw new Error('Max retries reached');
+        }
+
+        async function loadLibrary(username) {
+            document.getElementById('statusText').textContent = 'Fetching data...';
+            const loadingContainer = document.getElementById('loadingContainer');
+            const loadingBar = document.getElementById('topLoadingBar');
+            
+            loadingContainer.classList.remove('hidden');
+            loadingBar.style.width = '10%';
+
             // 1. Fetch DTE (Local) and User Collection (API via Proxy)
+            // Use fetchWithRetry for the API call
             const [dteRes, sportomaxRes] = await Promise.allSettled([
                 fetchXML('library_dte.xml'),
-                fetch(`/api/bgg-helper?endpoint=collection&username=${username}&stats=1&excludesubtype=boardgameexpansion`).then(r => r.text()).then(str => new DOMParser().parseFromString(str, "text/xml"))
+                fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${username}&stats=1&excludesubtype=boardgameexpansion`).then(r => r.text()).then(str => new DOMParser().parseFromString(str, "text/xml"))
             ]);
 
-            const dte = dteRes.status === 'fulfilled' ? dteRes.value : null;
+            loadingBar.style.width = '80%'nst dte = dteRes.status === 'fulfilled' ? dteRes.value : null;
             const sportomax = sportomaxRes.status === 'fulfilled' ? sportomaxRes.value : null;
 
             const map = new Map();
@@ -305,36 +342,12 @@
             // 3. Iterate DTE (Source of Truth)
             if (dte) {
                 dte.querySelectorAll('game').forEach(item => {
-                    const g = parseGame(item, 'dte');
-                    if (!g) return;
+            
+            document.getElementById('topLoadingBar').style.width = '100%';
+            setTimeout(() => {
+                document.getElementById('loadingContainer').classList.add('hidden');
+            }, 500);
 
-                    // Enrich with Sportomax Data
-                    if (sportomaxMap.has(g.id)) {
-                        const sm = sportomaxMap.get(g.id);
-                        g.inSportomax = true;
-                        g.desire = sm.desire;
-                        g.plays = sm.plays;
-                        g.rank = sm.rank;
-                        g.thumb = sm.thumb;
-                        g.year = sm.year; // Get year from BGG API
-                        g.bggRating = sm.bggRating;
-                        g.userRating = sm.userRating;
-                        
-                        // Prefer BGG time/players if DTE is missing them, or vice versa?
-                        // Usually BGG API is more complete for stats
-                        if (sm.time > 0) g.time = sm.time;
-                        if (sm.minP > 0) g.minP = sm.minP;
-                        if (sm.maxP > 0) g.maxP = sm.maxP;
-                    }
-
-                    const locObj = { source: 'dte', emoji: '🚢', label: g.parsedLocation };
-                    g.locations.push(locObj);
-                    
-                    map.set(g.id, g);
-                });
-            }
-
-            allGames = Array.from(map.values());
             runFilters();
             document.getElementById('statusText').textContent = `Updated: ${new Date().toLocaleTimeString()} (${allGames.length} games)`;
         }
@@ -358,16 +371,19 @@
             // Virtual scrolling optimization: Render first 50, then the rest
             const chunk = filteredGames.slice(0, 50);
             
-            container.innerHTML = chunk.map(g => {
+            container.innerHTML = chunk.map((g, idx) => {
                 const locs = g.locations.map(l => {
                     const label = l.label ? ` ${l.label}` : '';
                     return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
                 }).join('');
                 
                 return `
-                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
-                    <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative">
+                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
+                    <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative cursor-pointer" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
                         <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                        <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
+                            #${idx + 1}
+                        </div>
                     </div>
                     <div class="flex-1 min-w-0 flex flex-col justify-center">
                         <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
@@ -383,12 +399,44 @@
                         </div>
                         <div class="flex flex-wrap gap-y-1">${locs}</div>
                     </div>
-                    <i data-lucide="chevron-right" class="absolute right-3 top-1/2 -translate-y-1/2 text-gray-300 w-5 h-5"></i>
                 </div>`;
             }).join('');
 
             countEl.textContent = `${filteredGames.length} games`;
             lucide.createIcons();
+
+            // Lazy render the rest if needed (simple implementation)
+            if (filteredGames.length > 50) {
+                setTimeout(() => {
+                    const rest = filteredGames.slice(50).map((g, idx) => {
+                        const realIdx = idx + 50;
+                        const locs = g.locations.map(l => {
+                            const label = l.label ? ` ${l.label}` : '';
+                            return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
+                        }).join('');
+                        
+                        return `
+                        <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
+                            <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative cursor-pointer" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
+                                <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                                <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
+                                    #${realIdx + 1}
+                                </div>
+                            </div>
+                            <div class="flex-1 min-w-0 flex flex-col justify-center">
+                                <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
+                                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-1.5">
+                                    <span class="flex items-center gap-1"><i data-lucide="calendar" class="w-3 h-3 text-gray-400"></i> ${g.year}</span>
+                                    <span class="flex items-center gap-1" title="BGG Rating"><i data-lucide="globe" class="w-3 h-3 text-blue-400"></i> ${g.bggRating}</span>
+                                    <span class="flex items-center gap-1" title="My Rating"><i data-lucide="star" class="w-3 h-3 text-amber-400 fill-amber-400"></i> ${g.userRating > 0 ? g.userRating : '-'}</span>
+                                    ${g.rank < 999999 ? `<span class="flex items-center gap-1 text-indigo-600 font-medium"><i data-lucide="trophy" class="w-3 h-3"></i> ${g.rank}</span>` : ''}
+                                    ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
+                                    <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
+                                    <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                                    ${g.plays > 0 ? `<span class="flex items-center gap-1 text-green-600 font-medium"><i data-lucide="play-circle" class="w-3 h-3"></i> ${g.plays}</span>` : ''}
+                                </div>
+                                <div class="flex flex-wrap gap-y-1">${locs}</div>
+                            </div
 
             // Lazy render the rest if needed (simple implementation)
             if (filteredGames.length > 50) {
@@ -414,7 +462,11 @@
                                     ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
                                     <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
                                     <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
-                                    ${g.plays > 0 ? `<span class="flex items-center gap-1 text-green-600 font-medium"><i data-lucide="play-circle" class="w-3 h-3"></i> ${g.plays}</span>` : ''}
+                          shelf': return (a.parsedLocation || '').localeCompare(b.parsedLocation || '');
+                    case 'desire': 
+                        if (b.desire !== a.desire) return b.desire - a.desire;
+                        if (b.bggRating !== a.bggRating) return b.bggRating - a.bggRating;
+                        return a.name.localeCompare(b.name)ass="flex items-center gap-1 text-green-600 font-medium"><i data-lucide="play-circle" class="w-3 h-3"></i> ${g.plays}</span>` : ''}
                                 </div>
                                 <div class="flex flex-wrap gap-y-1">${locs}</div>
                             </div>
