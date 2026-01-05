@@ -75,12 +75,7 @@
         </div>
     </main>
 
-    <!-- Scroll to Top Button -->
-    <div class="absolute bottom-6 right-6 z-10">
-        <button onclick="window.scrollTo({top: 0, behavior: 'smooth'})" class="bg-indigo-600 text-white p-3 rounded-full shadow-lg hover:bg-indigo-700 active:scale-95 transition-all">
-            <i data-lucide="arrow-up" class="w-5 h-5"></i>
-        </button>
-    </div>
+
 
     <!-- Bottom Status Bar -->
     <div class="bg-white border-t border-gray-200 px-4 py-2 text-xs text-gray-500 flex justify-between items-center shrink-0 z-20">
@@ -245,7 +240,7 @@
             const thumb = item.querySelector('thumbnail')?.textContent || '';
             const plays = parseInt(item.querySelector('numplays')?.textContent) || 0;
 
-            let minP = 0, maxP = 0, time = 0, bggRating = '0', rank = 999999;
+            let minP = 0, maxP = 0, time = 0, bggRating = '0', rank = 999999, desire = 0;
 
             const stats = item.querySelector('stats');
             if (stats) {
@@ -265,11 +260,20 @@
                 }
             }
 
+            // Desire / Status calculation
+            const st = item.querySelector('status');
+            if (st) {
+                if (st.getAttribute('wanttoplay') === '1') desire += 5;
+                const wishlist = st.getAttribute('wishlist') === '1';
+                const priority = parseInt(st.getAttribute('wishlistpriority')) || 0;
+                if (wishlist && priority) desire += (6 - priority);
+            }
+
             return {
                 id, name, year,
                 bggRating: parseFloat(bggRating).toFixed(1),
                 minP, maxP, time,
-                thumb, plays, rank,
+                thumb, plays, rank, desire,
                 locations: []
             };
         }
@@ -311,16 +315,9 @@
                         bggMap.set(game.id, game);
                         const nm = game.name.toLowerCase();
                         const nb = normalize(game.name, false);
-                        const ns = normalize(game.name, true);
-                        if (!normMapBasic.has(nb)) normMapBasic.set(nb, game);
-                        if (!normMapStrict.has(ns)) normMapStrict.set(ns, game);
-                    }
-                });
-
-                loadingBar.style.width = '80%';
-
-                // Process DTE rows and match with BGG data
+                const gamesMap = new Map();
                 allGames = [];
+                
                 dteRows.forEach((row, idx) => {
                     const dteGameName = row.name.trim();
                     const shelf = row.shelf.trim();
@@ -352,23 +349,46 @@
                     }
 
                     // Build final game object
+                    let finalGame;
                     if (bggGame) {
-                        const gameEntry = {
+                        finalGame = {
                             ...bggGame,
                             shelf,
                             matchStatus,
                             locations: [{ source: 'dte', label: shelf, emoji: '📍' }]
                         };
-                        allGames.push(gameEntry);
                     } else {
                         // Game not found in BGG, add basic entry
-                        const gameEntry = {
+                        finalGame = {
                             id: `dte-${idx}`,
                             name: dteGameName,
                             year: '',
                             bggRating: '-',
                             minP: 0,
                             maxP: 0,
+                            time: 0,
+                            thumb: '',
+                            plays: 0,
+                            rank: 999999,
+                            desire: 0,
+                            shelf,
+                            matchStatus: 'miss',
+                            locations: [{ source: 'dte', label: shelf, emoji: '📍' }]
+                        };
+                    }
+
+                    // Check for duplicates
+                    const gameId = finalGame.id;
+                    if (gamesMap.has(gameId)) {
+                        const existingGame = gamesMap.get(gameId);
+                        existingGame.copies = (existingGame.copies || 1) + 1;
+                        if (shelf) {
+                            existingGame.locations.push({ source: 'dte', label: shelf, emoji: '📍' });
+                        }
+                    } else {
+                        finalGame.copies = 1;
+                        gamesMap.set(gameId, finalGame);
+                        allGames.push(finalGame
                             time: 0,
                             thumb: '',
                             plays: 0,
@@ -404,7 +424,8 @@
                 container.innerHTML = `
                     <div class="flex flex-col items-center justify-center h-64 text-gray-400">
                         <i data-lucide="ghost" class="w-12 h-12 mb-2 opacity-50"></i>
-                        <p>No games found</p>
+                        <p>Ncopies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
+                        ${g.matchStatus === 'miss' ? `<div class="absolute bottom-0 right-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-t
                     </div>`;
                 countEl.textContent = '0 games';
                 lucide.createIcons();
@@ -420,7 +441,8 @@
                     return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
                 }).join('');
                 
-                const bggUrl = g.id && !g.id.startsWith('dte-') ? `https://boardgamegeek.com/boardgame/${g.id}` : null;
+                const bggUrl${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
+                             = g.id && !g.id.startsWith('dte-') ? `https://boardgamegeek.com/boardgame/${g.id}` : null;
                 
                 return `
                 <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
@@ -445,7 +467,8 @@
                 </div>`;
             }).join('');
 
-            countEl.textContent = `${filteredGames.length} games`;
+            const totalCopies = filteredGames.reduce((sum, g) => sum + (g.copies || 1), 0);
+            countEl.textContent = `${filteredGames.length} games (${totalCopies} total)`;
             lucide.createIcons();
 
             if (filteredGames.length > 50) {
@@ -464,7 +487,8 @@
                             <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative ${bggUrl ? 'cursor-pointer' : ''}" ${bggUrl ? `onclick="window.open('${bggUrl}', '_blank')"` : ''}>
                                 <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
                                 <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
-                                    #${realIdx + 1}
+                                    copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
+                                ${g.matchStatus === 'miss' ? `<div class="absolute bottom-0 right-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-t
                                 </div>
                                 ${g.matchStatus === 'miss' ? `<div class="absolute top-0 right-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">⚠</div>` : ''}
                             </div>
@@ -472,6 +496,7 @@
                                 <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
                                 <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-1.5">
                                     <span class="flex items-center gap-1"><i data-lucide="calendar" class="w-3 h-3 text-gray-400"></i> ${g.year || '-'}</span>
+                                    ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
                                     <span class="flex items-center gap-1" title="BGG Rating"><i data-lucide="globe" class="w-3 h-3 text-blue-400"></i> ${g.bggRating}</span>
                                     ${g.rank < 999999 ? `<span class="flex items-center gap-1 text-indigo-600 font-medium"><i data-lucide="trophy" class="w-3 h-3"></i> #${g.rank}</span>` : ''}
                                     <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
