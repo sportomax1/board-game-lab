@@ -1,0 +1,132 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>DTE Library — Built from dte.csv</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    body { font-family: system-ui, -apple-system, 'Segoe UI', Roboto, Arial; background:#f8fafc; }
+    .card { background: white; border-radius: 12px; padding: 12px; box-shadow: 0 4px 12px rgba(0,0,0,0.06); }
+  </style>
+</head>
+<body class="p-6">
+  <main class="max-w-6xl mx-auto">
+    <div class="flex items-center justify-between mb-4">
+      <h1 class="text-2xl font-bold">DTE Library — from dte.csv</h1>
+      <div class="flex items-center gap-2">
+        <input id="username" class="border rounded px-3 py-2 text-sm" value="sportomax" title="BGG username for images/enrichment">
+        <button id="buildBtn" class="bg-indigo-600 text-white px-4 py-2 rounded">Build DTE List</button>
+        <button id="exportBtn" class="bg-emerald-600 text-white px-4 py-2 rounded">Export CSV</button>
+      </div>
+    </div>
+
+    <div id="status" class="card mb-4 text-sm text-gray-600">Idle</div>
+
+    <div id="preview" class="grid grid-cols-1 md:grid-cols-4 gap-4"></div>
+  </main>
+
+  <script>
+  // Read CSV, parse simple two-column: "Game Name","Shelf"
+  async function loadCSV(){
+    const r = await fetch('dte.csv');
+    if(!r.ok) throw new Error('Could not load dte.csv');
+    return await r.text();
+  }
+
+  function parseDTECSV(text){
+    const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
+    const out = [];
+    for(const ln of lines){
+      const m = ln.match(/^\s*"?(.+?)"?\s*,\s*"?(.+?)"?\s*$/);
+      if(m){ out.push({ name: m[1].trim(), shelf: m[2].trim() }); }
+    }
+    return out;
+  }
+
+  // Normalization (copied from share.html)
+  function normalize(str, removeFillers = false) {
+    let s = String(str || '').normalize('NFD').replace(/[^\x00-\x7F]/g,'');
+    s = s.normalize('NFD').replace(/[\u0300-\u036f]/g, '');
+    s = s.toLowerCase().replace(/&/g, 'and');
+    if (removeFillers) {
+      const fillers = ['a', 'the', 'and', 'of', 'in', 'on', 'with', 'by', 'an'];
+      const words = s.split(/[^a-z0-9]/).filter(w => w && !fillers.includes(w));
+      return words.join('');
+    }
+    return s.replace(/[^a-z0-9]/g, '');
+  }
+
+  async function fetchAPI(endpoint, params=''){
+    const url = `/api/bgg-helper?endpoint=${endpoint}${params}`;
+    for(let i=0;i<5;i++){
+      try{ const r = await fetch(url); if(r.status===202){ await new Promise(r=>setTimeout(r,1500)); continue; } if(r.ok) return await r.text(); }catch(e){ await new Promise(r=>setTimeout(r,1500)); }
+    }
+    throw new Error('BGG proxy failure');
+  }
+
+  function createCard(game){
+    const div = document.createElement('div'); div.className='card';
+    div.innerHTML = `
+      <div class="h-40 bg-gray-100 rounded overflow-hidden mb-2 flex items-center justify-center">${game.thumb?`<img src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" class="w-full h-full object-cover">`:`<i class="fa-solid fa-box-open text-3xl text-gray-400"></i>`}</div>
+      <div class="font-semibold text-sm">${game.name}</div>
+      <div class="text-xs text-gray-500">Shelf: ${game.shelf || ''}</div>
+    `;
+    return div;
+  }
+
+  document.getElementById('buildBtn').addEventListener('click', async ()=>{
+    const status = document.getElementById('status'); status.textContent = 'Loading CSV...';
+    try{
+      const txt = await loadCSV();
+      const rows = parseDTECSV(txt);
+      status.textContent = `Loaded ${rows.length} rows — fetching user collection...`;
+
+      const user = (document.getElementById('username').value||'sportomax').trim();
+      const collXml = await fetchAPI('collection', `&username=${encodeURIComponent(user)}&stats=1&excludesubtype=boardgameexpansion`);
+      const doc = new DOMParser().parseFromString(collXml,'text/xml');
+      const items = Array.from(doc.querySelectorAll('item'));
+
+      const collMap = {}; const normMapBasic = {}; const normMapStrict = {};
+      items.forEach(it=>{
+        const name = it.querySelector('name')?.textContent?.trim();
+        const thumb = it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '';
+        if(name){ const entry={thumb, original:name}; collMap[name.toLowerCase()] = entry; normMapBasic[normalize(name,false)]=entry; normMapStrict[normalize(name,true)]=entry; }
+      });
+
+      // Match rows
+      const matched = [];
+      const misses = [];
+      for(const r of rows){
+        const n = r.name.trim(); const key = n.toLowerCase(); const nb = normalize(n,false); const ns = normalize(n,true);
+        let thumb=''; let matchStatus='miss';
+        if(collMap[key]){ thumb=collMap[key].thumb; matchStatus='exact'; }
+        else if(normMapBasic[nb]){ thumb=normMapBasic[nb].thumb; matchStatus='fuzzy'; }
+        else if(normMapStrict[ns]){ thumb=normMapStrict[ns].thumb; matchStatus='fuzzy'; }
+        else { const foundKey = Object.keys(collMap).find(k=>k.includes(key) || key.includes(k)); if(foundKey){ thumb=collMap[foundKey].thumb; matchStatus='fuzzy'; } }
+        matched.push({ name: r.name, shelf: r.shelf, thumb, matchStatus }); if(matchStatus==='miss') misses.push(r.name);
+      }
+
+      status.textContent = `Matched ${matched.length - misses.length} / ${matched.length} (missed ${misses.length})`;
+      const preview = document.getElementById('preview'); preview.innerHTML='';
+      matched.forEach(m=> preview.appendChild(createCard(m)));
+    }catch(e){ console.error(e); status.textContent = 'Error: '+ (e.message||e); }
+  });
+
+  document.getElementById('exportBtn').addEventListener('click', ()=>{
+    const nodes = Array.from(document.getElementById('preview').children);
+    if(nodes.length===0){ alert('Nothing to export'); return; }
+    const rows = [['Name','Shelf','MatchStatus','Thumbnail']];
+    nodes.forEach(n=>{
+      const name = n.querySelector('.font-semibold')?.textContent||'';
+      const shelf = n.querySelector('.text-xs')?.textContent?.replace('Shelf: ','')||'';
+      const img = n.querySelector('img')?.src || '';
+      rows.push([name,shelf,'',img]);
+    });
+    const csv = rows.map(r=>r.map(c=>'"'+String(c||'').replace(/"/g,'""')+'"').join(',')).join('\n');
+    const blob = new Blob([csv], { type: 'text/csv' }); const url = URL.createObjectURL(blob); const a = document.createElement('a'); a.href = url; a.download = 'dte_export.csv'; a.click();
+  });
+  </script>
+</body>
+</html>
