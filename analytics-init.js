@@ -16,9 +16,16 @@
 // Or directly in a module context
 
 // Import inject function from @vercel/analytics
-import { inject } from '@vercel/analytics';
-
-// Initialize Web Analytics tracking
-inject();
-
-console.log('Vercel Web Analytics initialized successfully');
+// Try dynamic import so page doesn't fail when the package isn't available in the browser
+(async function initVercelAnalytics(){
+	try {
+		const mod = await import('@vercel/analytics');
+		if (mod && typeof mod.inject === 'function') {
+			mod.inject();
+			console.log('Vercel Web Analytics initialized successfully');
+		}
+	} catch (err) {
+		// Graceful fallback for local/dev environments where the package isn't resolvable in-browser
+		console.warn('Vercel analytics not available in this environment:', err && err.message ? err.message : err);
+	}
+})();
