@@ -113,12 +113,17 @@
     </section>
 
     <!-- Match Audit Alert -->
-    <div id="auditAlert" class="hidden bg-amber-50 border border-amber-100 rounded-xl p-4 flex items-start gap-3">
-        <i class="fa-solid fa-circle-exclamation text-amber-500 mt-1"></i>
-        <div>
-            <h4 class="text-sm font-bold text-amber-900">Inexact Matches Detected</h4>
-            <p id="auditText" class="text-xs text-amber-700 leading-relaxed mt-1"></p>
+    <div id="auditAlert" class="hidden bg-amber-50 border border-amber-100 rounded-xl p-4 flex flex-col gap-3">
+        <div class="flex items-start gap-3">
+            <i class="fa-solid fa-circle-exclamation text-amber-500 mt-1"></i>
+            <div>
+                <h4 class="text-sm font-bold text-amber-900">Inexact Matches Detected</h4>
+                <p id="auditText" class="text-xs text-amber-700 leading-relaxed mt-1"></p>
+            </div>
         </div>
+        <button id="fixMissingBtn" onclick="fetchMissingThumbnails()" class="hidden self-end bg-amber-100 text-amber-800 text-xs font-bold px-3 py-1.5 rounded-lg hover:bg-amber-200 transition-colors">
+            <i class="fa-solid fa-magnifying-glass mr-1"></i> Search BGG for Missing
+        </button>
     </div>
 
     <section id="editorSection" class="hidden space-y-6">
@@ -295,9 +300,10 @@ async function loadSelectedList() {
 }
 
 // --- BGG Data Fetching ---
+const PLACEHOLDER_IMG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150' viewBox='0 0 150 150' fill='%23f1f5f9'%3E%3Crect width='150' height='150'/%3E%3Ctext x='50%25' y='50%25' font-family='sans-serif' font-size='20' text-anchor='middle' dy='.3em' fill='%2394a3b8'%3E%3F%3C/text%3E%3C/svg%3E";
+
 async function fetchAPI(endpoint, id, params='') {
     // Use local proxy if available, or direct BGG (might have CORS issues if not proxied)
-    // Assuming /api/bgg-helper exists as per other files in workspace
     try {
         const res = await fetch(`/api/bgg-helper?endpoint=${endpoint}&id=${id}${params}`);
         if (res.ok) return await res.text();
@@ -307,6 +313,56 @@ async function fetchAPI(endpoint, id, params='') {
     const url = `https://boardgamegeek.com/xmlapi2/${endpoint}?id=${id}${params}`;
     const r = await fetch(url);
     return await r.text();
+}
+
+async function fetchMissingThumbnails() {
+    const btn = document.getElementById('fixMissingBtn');
+    const originalText = btn.innerHTML;
+    btn.disabled = true;
+    btn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin mr-1"></i> Searching...';
+    
+    const missing = [...auditLogs.missed]; // Copy
+    let foundCount = 0;
+
+    for (const name of missing) {
+        try {
+            // 1. Search for ID
+            const searchXml = await fetchAPI('search', '', `&query=${encodeURIComponent(name)}&type=boardgame`);
+            const searchDoc = new DOMParser().parseFromString(searchXml, 'text/xml');
+            const firstItem = searchDoc.querySelector('item');
+            
+            if (firstItem) {
+                const id = firstItem.getAttribute('id');
+                // 2. Get Thing (Thumbnail)
+                const thingXml = await fetchAPI('thing', id);
+                const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                const thumb = thingDoc.querySelector('thumbnail')?.textContent || thingDoc.querySelector('image')?.textContent;
+                
+                if (thumb) {
+                    thumbsMap[name] = { thumb: thumb, isExact: false, matchedTo: 'BGG Search' };
+                    // Remove from missed list in auditLogs (visual only)
+                    auditLogs.missed = auditLogs.missed.filter(n => n !== name);
+                    auditLogs.fuzzy.push({ input: name, matched: `ID:${id}`, reason: 'search' });
+                    foundCount++;
+                }
+            }
+        } catch (e) {
+            console.error(`Failed to search for ${name}`, e);
+        }
+        // Rate limit niceness
+        await new Promise(r => setTimeout(r, 1000));
+    }
+
+    btn.innerHTML = originalText;
+    btn.disabled = false;
+    
+    if (foundCount > 0) {
+        displayAudit();
+        renderThumbs();
+        alert(`Found ${foundCount} missing thumbnails!`);
+    } else {
+        alert('Could not find any missing thumbnails.');
+    }
 }
 
 // Advanced normalization: handles special characters/diacritics and filler words
@@ -404,6 +460,13 @@ function displayAudit() {
         if (auditLogs.fuzzy.length > 0) msg += `<b>Fuzzy Matches (${auditLogs.fuzzy.length}):</b> ` + auditLogs.fuzzy.map(f => `${f.input} → ${f.matched}`).join(', ') + '<br>';
         if (auditLogs.missed.length > 0) msg += `<b>Missed (${auditLogs.missed.length}):</b> ` + auditLogs.missed.join(', ');
         text.innerHTML = msg;
+        
+        // Show fix button if there are missed items
+        if (auditLogs.missed.length > 0) {
+            document.getElementById('fixMissingBtn').classList.remove('hidden');
+        } else {
+            document.getElementById('fixMissingBtn').classList.add('hidden');
+        }
     } else {
         alertBox.classList.add('hidden');
     }
@@ -447,7 +510,7 @@ function renderThumbs() {
             const imgData = thumbsMap[item.name] || {thumb: ''};
             return `
             <div class="relative aspect-square bg-white/10 rounded-xl overflow-hidden shadow-lg border border-white/20 group" draggable="true" data-index="${i}">
-                <img src="${imgData.thumb || 'https://via.placeholder.com/150?text=No+Image'}" class="w-full h-full ${zoom ? 'img-zoom' : 'img-contain'} bg-black/20">
+                <img src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full ${zoom ? 'img-zoom' : 'img-contain'} bg-black/20">
                 ${showRanks ? `<div class="absolute top-2 left-2 bg-white/90 text-black font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs shadow-sm">${item.rank}</div>` : ''}
                 ${showPercentiles ? `<div class="absolute top-2 right-2 bg-emerald-500 text-white font-bold px-1.5 py-0.5 rounded text-[10px] shadow-sm">${item.percentile}%</div>` : ''}
                 ${showNames ? `<div class="absolute bottom-0 left-0 w-full bg-black/60 backdrop-blur-sm p-1 text-center"><p class="text-[10px] text-white font-medium truncate px-1">${item.name}</p></div>` : ''}
@@ -467,7 +530,7 @@ function renderThumbs() {
             <div class="flex items-center gap-4 bg-white/80 backdrop-blur-sm p-3 rounded-xl shadow-sm border border-white/40" draggable="true" data-index="${i}">
                 ${showRanks ? `<div class="text-xl font-bold text-slate-400 w-8 text-center">${item.rank}</div>` : ''}
                 <div class="w-12 h-12 bg-slate-100 rounded-lg overflow-hidden flex-shrink-0">
-                    <img src="${imgData.thumb || 'https://via.placeholder.com/150?text=?'}" class="w-full h-full object-cover">
+                    <img src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full object-cover">
                 </div>
                 <div class="flex-1 min-w-0">
                     <h3 class="font-bold text-slate-800 truncate">${item.name}</h3>
@@ -485,7 +548,7 @@ function renderThumbs() {
             return `
             <div class="shelf-item relative w-12 bg-slate-800 rounded-sm shadow-xl" style="height: ${height}px;" draggable="true" data-index="${i}">
                 <div class="absolute inset-0 overflow-hidden rounded-sm opacity-80">
-                     <img src="${imgData.thumb || 'https://via.placeholder.com/150?text=?'}" class="w-full h-full object-cover opacity-50">
+                     <img src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full object-cover opacity-50">
                 </div>
                 <div class="absolute inset-0 flex items-center justify-center">
                     <span class="text-white font-bold text-xs -rotate-90 whitespace-nowrap tracking-wider drop-shadow-md">${item.name.substring(0, 15)}</span>
