@@ -302,12 +302,26 @@ async function loadSelectedList() {
 // --- BGG Data Fetching ---
 const PLACEHOLDER_IMG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='150' height='150' viewBox='0 0 150 150' fill='%23f1f5f9'%3E%3Crect width='150' height='150'/%3E%3Ctext x='50%25' y='50%25' font-family='sans-serif' font-size='20' text-anchor='middle' dy='.3em' fill='%2394a3b8'%3E%3F%3C/text%3E%3C/svg%3E";
 
-async function fetchAPI(endpoint, id, params='') {
-    // Use local proxy if available, or direct BGG (might have CORS issues if not proxied)
-    try {
-        const res = await fetch(`/api/bgg-helper?endpoint=${endpoint}&id=${id}${params}`);
-        if (res.ok) return await res.text();
-    } catch (e) { console.warn('Proxy failed, trying direct (may fail CORS)', e); }
+async function fetchAPI(endpoint, id, params='', retries=5, backoff=2000) {
+    for (let i = 0; i < retries; i++) {
+        try {
+            const res = await fetch(`/api/bgg-helper?endpoint=${endpoint}&id=${id}${params}`);
+            if (res.status === 202) {
+                // BGG is still processing, wait and retry
+                console.log(`BGG processing (attempt ${i + 1}/${retries}), waiting...`);
+                await new Promise(r => setTimeout(r, backoff * Math.pow(1.5, i)));
+                continue;
+            }
+            if (res.ok) return await res.text();
+        } catch (e) { 
+            if (i < retries - 1) {
+                console.warn(`Attempt ${i + 1} failed, retrying...`, e);
+                await new Promise(r => setTimeout(r, backoff * Math.pow(1.5, i)));
+                continue;
+            }
+            console.warn('Proxy failed, trying direct (may fail CORS)', e); 
+        }
+    }
     
     // Fallback (likely to fail in browser without proxy)
     const url = `https://boardgamegeek.com/xmlapi2/${endpoint}?id=${id}${params}`;
@@ -385,8 +399,8 @@ async function fetchBGGData(){
   const user = (document.getElementById('username').value||'sportomax').trim();
   
   try{
-    // Fetch user collection to match games
-    const collXml = await fetchAPI('collection','',`&username=${encodeURIComponent(user)}&stats=1&excludesubtype=boardgameexpansion`);
+    // Fetch user collection to match games with retries
+    const collXml = await fetchAPI('collection','',`&username=${encodeURIComponent(user)}&stats=1&excludesubtype=boardgameexpansion`, 5, 2000);
     const doc = new DOMParser().parseFromString(collXml,'text/xml');
     const items = Array.from(doc.querySelectorAll('item'));
     
