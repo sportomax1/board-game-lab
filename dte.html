@@ -58,6 +58,9 @@
             <button id="showSwimLanes" class="p-2 text-indigo-600 bg-indigo-50 rounded-full hover:bg-indigo-100" title="Shelf View">
                 <i data-lucide="layout-grid" class="w-5 h-5"></i>
             </button>
+            <button id="showNotInLibrary" class="p-2 text-amber-600 bg-amber-50 rounded-full hover:bg-amber-100" title="Not in Library">
+                <i data-lucide="package" class="w-5 h-5"></i>
+            </button>
             <button id="exportCSV" class="p-2 text-indigo-600 bg-indigo-50 rounded-full hover:bg-indigo-100" title="Export CSV">
                 <i data-lucide="download" class="w-5 h-5"></i>
             </button>
@@ -125,10 +128,27 @@
         </div>
     </div>
 
+    <!-- Not in Library Modal -->
+    <div id="notInLibraryModal" class="fixed inset-0 bg-black/90 z-50 hidden flex flex-col">
+        <div class="bg-white border-b border-gray-200 px-4 py-3 flex items-center justify-between shrink-0">
+            <h2 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                <i data-lucide="package" class="w-5 h-5 text-amber-600"></i>
+                Not in Library
+            </h2>
+            <button onclick="document.getElementById('notInLibraryModal').classList.add('hidden')" class="p-2 hover:bg-gray-100 rounded-full transition-colors">
+                <i data-lucide="x" class="w-5 h-5 text-gray-500"></i>
+            </button>
+        </div>
+        <div id="notInLibraryContent" class="flex-1 overflow-y-auto p-3 space-y-3 bg-gray-50">
+            <!-- Content injected here -->
+        </div>
+    </div>
+
     <script>
         // --- State Management ---
         let allGames = [];
         let filteredGames = [];
+        let notInLibraryGames = [];
         const filters = {
             sort: 'default'
         };
@@ -270,19 +290,21 @@
             }
 
             // Desire / Status calculation
+            let myRating = 0;
             const st = item.querySelector('status');
             if (st) {
                 if (st.getAttribute('wanttoplay') === '1') desire += 5;
                 const wishlist = st.getAttribute('wishlist') === '1';
                 const priority = parseInt(st.getAttribute('wishlistpriority')) || 0;
                 if (wishlist && priority) desire += (6 - priority);
+                myRating = parseFloat(st.querySelector('rating')?.getAttribute('value') || '0');
             }
 
             return {
                 id, name, year,
                 bggRating: parseFloat(bggRating).toFixed(1),
                 minP, maxP, time,
-                thumb, plays, rank, desire,
+                thumb, plays, rank, desire, myRating,
                 locations: []
             };
         }
@@ -334,6 +356,7 @@
 
                 // Process DTE rows and match with BGG data
                 const gamesMap = new Map();
+                const matchedBggIds = new Set();
                 allGames = [];
                 
                 dteRows.forEach((row, idx) => {
@@ -369,6 +392,7 @@
                     // Build final game object
                     let finalGame;
                     if (bggGame) {
+                        matchedBggIds.add(bggGame.id);
                         finalGame = {
                             ...bggGame,
                             shelf,
@@ -411,6 +435,21 @@
                         allGames.push(finalGame);
                     }
                 });
+
+                // Find games in BGG collection NOT in DTE library (own=1 only)
+                notInLibraryGames = [];
+                sportomaxDoc.querySelectorAll('item').forEach(item => {
+                    const status = item.querySelector('status');
+                    if (status && status.getAttribute('own') === '1') {
+                        const game = parseGameFromBGG(item);
+                        if (game && !matchedBggIds.has(game.id)) {
+                            notInLibraryGames.push(game);
+                        }
+                    }
+                });
+                
+                // Sort by my rating descending
+                notInLibraryGames.sort((a, b) => (b.myRating || 0) - (a.myRating || 0));
 
                 loadingBar.style.width = '100%';
                 runFilters();
@@ -659,6 +698,52 @@
                 </div>`;
             }).join('');
             
+            lucide.createIcons();
+        });
+
+        // Not in Library View
+        document.getElementById('showNotInLibrary').addEventListener('click', () => {
+            const modal = document.getElementById('notInLibraryModal');
+            const content = document.getElementById('notInLibraryContent');
+            modal.classList.remove('hidden');
+
+            if (notInLibraryGames.length === 0) {
+                content.innerHTML = `
+                    <div class="flex flex-col items-center justify-center h-64 text-gray-400">
+                        <i data-lucide="ghost" class="w-12 h-12 mb-2 opacity-50"></i>
+                        <p>No unmatched games in your BGG collection</p>
+                    </div>`;
+                lucide.createIcons();
+                return;
+            }
+
+            content.innerHTML = notInLibraryGames.map((g, idx) => {
+                const bggUrl = `https://boardgamegeek.com/boardgame/${g.id}`;
+                
+                return `
+                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
+                    <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative cursor-pointer" onclick="window.open('${bggUrl}', '_blank')">
+                        <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                        <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
+                            #${idx + 1}
+                        </div>
+                        ${g.myRating > 0 ? `<div class="absolute top-0 right-0 bg-amber-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">⭐${g.myRating.toFixed(1)}</div>` : ''}
+                    </div>
+                    <div class="flex-1 min-w-0 flex flex-col justify-center">
+                        <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
+                        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-1.5">
+                            <span class="flex items-center gap-1"><i data-lucide="calendar" class="w-3 h-3 text-gray-400"></i> ${g.year || '-'}</span>
+                            <span class="flex items-center gap-1" title="BGG Rating"><i data-lucide="globe" class="w-3 h-3 text-blue-400"></i> ${g.bggRating}</span>
+                            ${g.rank < 999999 ? `<span class="flex items-center gap-1 text-indigo-600 font-medium"><i data-lucide="trophy" class="w-3 h-3"></i> #${g.rank}</span>` : ''}
+                            ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
+                            <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
+                            <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                        </div>
+                        <div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded"><strong>Status:</strong> Owned on BGG but not in DTE library</div>
+                    </div>
+                </div>`;
+            }).join('');
+
             lucide.createIcons();
         });
 
