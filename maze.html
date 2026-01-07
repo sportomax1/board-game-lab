@@ -245,13 +245,41 @@
             document.getElementById('loadingStatus').textContent = 'Fetching games from BoardGameGeek...';
             
             try {
-                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                // Retry logic with exponential backoff
+                let xml;
+                let retries = 0;
+                const maxRetries = 5;
+                const baseDelay = 1000; // Start with 1 second
                 
-                if (!res.ok) {
-                    throw new Error(`Failed to fetch collection: ${res.status} ${res.statusText}`);
+                while (retries < maxRetries) {
+                    try {
+                        const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                        
+                        if (!res.ok) {
+                            if (res.status === 429 || res.status >= 500) {
+                                // Rate limit or server error - retry with backoff
+                                throw new Error(`API returned ${res.status}, will retry`);
+                            }
+                            throw new Error(`Failed to fetch collection: ${res.status} ${res.statusText}`);
+                        }
+                        
+                        xml = await res.text();
+                        break; // Success - exit retry loop
+                    } catch (fetchError) {
+                        retries++;
+                        if (retries >= maxRetries) {
+                            throw new Error(`Failed after ${maxRetries} attempts: ${fetchError.message}`);
+                        }
+                        
+                        // Calculate exponential backoff delay
+                        const delay = baseDelay * Math.pow(2, retries - 1);
+                        document.getElementById('loadingStatus').textContent = 
+                            `BGG API busy, retrying in ${(delay/1000).toFixed(1)}s... (attempt ${retries}/${maxRetries})`;
+                        
+                        await new Promise(resolve => setTimeout(resolve, delay));
+                        document.getElementById('loadingStatus').textContent = 'Fetching games from BoardGameGeek...';
+                    }
                 }
-                
-                const xml = await res.text();
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(xml, 'text/xml');
                 
