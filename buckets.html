@@ -549,6 +549,72 @@
             background: #5568d3;
         }
 
+        .tag-section {
+            margin-bottom: 15px;
+            padding: 15px;
+            background: #f0f0f0;
+            border-radius: 8px;
+        }
+
+        .tag-section label {
+            font-size: 14px;
+            font-weight: 600;
+            margin-bottom: 10px;
+            display: block;
+        }
+
+        .tags-container {
+            display: flex;
+            flex-wrap: wrap;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .tag-btn {
+            padding: 6px 12px;
+            background: white;
+            border: 2px solid #ddd;
+            border-radius: 20px;
+            font-size: 13px;
+            cursor: pointer;
+            transition: all 0.2s ease;
+        }
+
+        .tag-btn:hover {
+            border-color: #667eea;
+            background: #f8f9fa;
+        }
+
+        .tag-btn.active {
+            background: #667eea;
+            color: white;
+            border-color: #667eea;
+        }
+
+        .new-tag-input {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 10px;
+        }
+
+        .new-tag-input input {
+            flex: 1;
+            padding: 8px 12px;
+            border: 2px solid #ddd;
+            border-radius: 6px;
+            font-size: 14px;
+        }
+
+        .new-tag-input button {
+            padding: 8px 16px;
+            background: #28a745;
+            color: white;
+            border: none;
+            border-radius: 6px;
+            cursor: pointer;
+            font-weight: 600;
+        }
+
         .bucket-item {
             display: flex;
             justify-content: space-between;
@@ -689,6 +755,7 @@
             <div class="input-group">
                 <label>Number of Buckets</label>
                 <div class="bucket-selector">
+                    <div class="bucket-option" onclick="selectBucketCount(1)">1 (Tags)</div>
                     <div class="bucket-option selected" onclick="selectBucketCount(2)">2</div>
                     <div class="bucket-option" onclick="selectBucketCount(3)">3</div>
                     <div class="bucket-option" onclick="selectBucketCount(4)">4</div>
@@ -832,6 +899,8 @@
             buckets: [],
             unassignedItems: [],
             itemBuckets: {},
+            itemTags: {}, // Store tags for each item
+            availableTags: [], // Store unique tags
             assignmentHistory: [], // Track bucket assignments for undo
             currentBucket: 0,
             comparisonMode: 'roundrobin',
@@ -1189,6 +1258,37 @@
                 const currentItem = state.unassignedItems[0];
                 const itemIndex = state.items.indexOf(currentItem);
                 const thumb = state.thumbsMap[currentItem]?.thumb || '';
+                const currentTags = state.itemTags[currentItem] || [];
+                
+                // Build tag section HTML
+                let tagsSectionHTML = '';
+                if (state.bucketCount > 1 || state.bucketCount === 1) {
+                    const existingTagsHTML = state.availableTags.map(tag => 
+                        `<button class="tag-btn ${currentTags.includes(tag) ? 'active' : ''}" onclick="toggleTag('${tag}', '${itemIndex}')">${escapeHtml(tag)}</button>`
+                    ).join('');
+                    
+                    tagsSectionHTML = `
+                        <div class="tag-section">
+                            <label>🏷️ Tags</label>
+                            <div class="tags-container">
+                                ${existingTagsHTML}
+                            </div>
+                            <div class="new-tag-input">
+                                <input type="text" id="newTagInput" placeholder="Add new tag..." autocomplete="off">
+                                <button onclick="addNewTag('${itemIndex}')">Add</button>
+                            </div>
+                        </div>
+                    `;
+                }
+                
+                // Build bucket buttons (hide if only 1 bucket for tagging mode)
+                const bucketButtonsHTML = state.bucketCount === 1 
+                    ? ''
+                    : `<div class="assign-buttons">
+                        ${state.buckets.map((_, index) => 
+                            `<button class="assign-btn" data-item-index="${itemIndex}" data-bucket="${index}" onclick="assignFromButton(this)">${index + 1}</button>`
+                        ).join('')}
+                    </div>`;
                 
                 unassignedList.innerHTML = `
                     <div class="unassigned-item">
@@ -1197,11 +1297,9 @@
                         </div>
                         ${thumb ? `<img src="${thumb}" style="width: 80px; height: 80px; object-fit: cover; border-radius: 8px; margin: 0 auto 10px; display: block;" onerror="this.style.display='none'">` : ''}
                         <div class="unassigned-item-name">${escapeHtml(currentItem)}</div>
-                        <div class="assign-buttons">
-                            ${state.buckets.map((_, index) => 
-                                `<button class="assign-btn" data-item-index="${itemIndex}" data-bucket="${index}" onclick="assignFromButton(this)">${index + 1}</button>`
-                            ).join('')}
-                        </div>
+                        ${tagsSectionHTML}
+                        ${bucketButtonsHTML}
+                        ${state.bucketCount === 1 ? `<button class="btn btn-primary" onclick="moveToNextItem()">Next Item →</button>` : ''}
                     </div>
                 `;
                 autoBtn.style.display = 'block';
@@ -1264,6 +1362,56 @@
             const bucketIndex = parseInt(button.getAttribute('data-bucket'));
             const item = state.items[itemIndex];
             assignToBucket(item, bucketIndex);
+        }
+
+        function toggleTag(tag, itemIndex) {
+            const item = state.items[itemIndex];
+            if (!state.itemTags[item]) {
+                state.itemTags[item] = [];
+            }
+            
+            const tagIndex = state.itemTags[item].indexOf(tag);
+            if (tagIndex > -1) {
+                state.itemTags[item].splice(tagIndex, 1);
+            } else {
+                state.itemTags[item].push(tag);
+            }
+            
+            displayBuckets();
+        }
+
+        function addNewTag(itemIndex) {
+            const input = document.getElementById('newTagInput');
+            const newTag = input.value.trim();
+            
+            if (!newTag) {
+                showToast('Please enter a tag name');
+                return;
+            }
+            
+            if (!state.availableTags.includes(newTag)) {
+                state.availableTags.push(newTag);
+            }
+            
+            const item = state.items[itemIndex];
+            if (!state.itemTags[item]) {
+                state.itemTags[item] = [];
+            }
+            
+            if (!state.itemTags[item].includes(newTag)) {
+                state.itemTags[item].push(newTag);
+            }
+            
+            input.value = '';
+            displayBuckets();
+            showToast(`✓ Added tag: ${newTag}`);
+        }
+
+        function moveToNextItem() {
+            if (state.unassignedItems.length > 0) {
+                state.unassignedItems.shift();
+                displayBuckets();
+            }
         }
 
         function removeFromButton(button) {
@@ -1703,17 +1851,22 @@
                 return;
             }
             
-            // Create CSV header
-            let csv = 'Item,Bucket\n';
+            // Create CSV header with tags column
+            let csv = 'Item,Bucket,Tags\n';
             
-            // Add each item with its bucket number
+            // Add each item with its bucket number and tags
             state.buckets.forEach((bucket, bucketIndex) => {
                 bucket.forEach(item => {
                     // Escape quotes and wrap in quotes if item contains comma or quote
                     const escapedItem = item.includes(',') || item.includes('"') 
                         ? `"${item.replace(/"/g, '""')}"` 
                         : item;
-                    csv += `${escapedItem},${bucketIndex + 1}\n`;
+                    
+                    // Get tags for this item
+                    const tags = state.itemTags[item] || [];
+                    const tagsStr = tags.length > 0 ? `"${tags.join('; ')}"` : '';
+                    
+                    csv += `${escapedItem},${bucketIndex + 1},${tagsStr}\n`;
                 });
             });
             
@@ -1741,6 +1894,8 @@
                 state.unassignedItems = [];
                 state.assignmentHistory = [];
                 state.itemBuckets = {};
+                state.itemTags = {};
+                state.availableTags = [];
                 state.comparisons = [];
                 state.history = [];
                 state.rankings = [];
