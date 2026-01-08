@@ -156,11 +156,19 @@
                 </svg>
                 Export SVG
             </button>
-            <button onclick="exportAsPNG()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors">
+            <button onclick="showExportMenu()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors relative group">
                 <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                     <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
                 </svg>
-                Export PNG Cards
+                Export Cards ▼
+                <div id="exportMenu" class="hidden absolute top-full left-0 mt-2 bg-white text-slate-800 rounded-lg shadow-lg z-50 min-w-48">
+                    <button onclick="exportCards('png')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 first:rounded-t-lg">📷 PNG (High Quality)</button>
+                    <button onclick="exportCards('jpg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🖼️ JPG (Compressed)</button>
+                    <button onclick="exportCards('gif')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🎬 GIF (Animated)</button>
+                    <button onclick="exportCards('webp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">⚡ WebP (Modern)</button>
+                    <button onclick="exportAsSVG()" class="block w-full text-left px-4 py-2 hover:bg-slate-100 border-t">✏️ SVG (Vector)</button>
+                    <button onclick="exportCards('bmp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 last:rounded-b-lg">🎨 BMP (Bitmap)</button>
+                </div>
             </button>
             <div id="status" class="text-sm text-slate-500"></div>
         </div>
@@ -389,16 +397,42 @@
             status.textContent = `✓ SVG exported with thumbnails!`;
         }
 
-        async function exportAsPNG() {
+        function showExportMenu() {
+            const menu = document.getElementById('exportMenu');
+            menu.classList.toggle('hidden');
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('button') && !e.target.closest('#exportMenu')) {
+                    menu.classList.add('hidden');
+                }
+            });
+        }
+
+        async function fetchImageAsDataURL(url) {
+            try {
+                const response = await fetch(url);
+                const blob = await response.blob();
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.readAsDataURL(blob);
+                });
+            } catch (err) {
+                console.warn(`Could not fetch image: ${url}`);
+                return null;
+            }
+        }
+
+        async function exportCards(format) {
+            document.getElementById('exportMenu').classList.add('hidden');
+            
             if (games.length === 0) {
                 alert('Please load a collection first');
                 return;
             }
             
-            // Ask user how many cards to export
-            const choice = prompt(`Export PNG cards:\n\nEnter number of cards to export:\n- Type "5" for first 5 cards\n- Type "all" for all ${games.length} cards\n\n(Default: first 5)`, '5');
+            const choice = prompt(`Export cards as ${format.toUpperCase()}:\\n\\nEnter number of cards:\\n- Type "5" for first 5\\n- Type "all" for all ${games.length}\\n\\n(Default: first 5)`, '5');
             
-            if (choice === null) return; // User cancelled
+            if (choice === null) return;
             
             let cardsToExport = 5;
             if (choice.toLowerCase() === 'all') {
@@ -408,7 +442,7 @@
             }
             
             const status = document.getElementById('status');
-            status.textContent = `Exporting ${cardsToExport} cards as PNG...`;
+            status.textContent = `Exporting ${cardsToExport} cards as ${format.toUpperCase()}...`;
             
             for (let i = 0; i < cardsToExport; i++) {
                 const game = games[i];
@@ -417,50 +451,74 @@
                 if (!card) continue;
                 
                 try {
-                    // Wait for all images in the card to load
-                    const images = card.querySelectorAll('img');
-                    const imagePromises = Array.from(images).map(img => {
-                        return new Promise((resolve) => {
-                            if (img.complete) {
-                                resolve();
-                            } else {
-                                img.onload = () => resolve();
-                                img.onerror = () => resolve();
+                    // Clone card and convert images to data URLs to bypass CORS
+                    const cardClone = card.cloneNode(true);
+                    const images = cardClone.querySelectorAll('img');
+                    
+                    for (let img of images) {
+                        if (img.src) {
+                            const dataUrl = await fetchImageAsDataURL(img.src);
+                            if (dataUrl) {
+                                img.src = dataUrl;
                             }
-                        });
-                    });
-                    await Promise.all(imagePromises);
+                        }
+                    }
                     
-                    // Small delay to ensure rendering
-                    await new Promise(r => setTimeout(r, 200));
+                    // Create temporary hidden container
+                    const tempDiv = document.createElement('div');
+                    tempDiv.style.position = 'absolute';
+                    tempDiv.style.left = '-9999px';
+                    tempDiv.appendChild(cardClone);
+                    document.body.appendChild(tempDiv);
                     
-                    const canvas = await html2canvas(card, {
+                    await new Promise(r => setTimeout(r, 300));
+                    
+                    const canvas = await html2canvas(cardClone, {
                         backgroundColor: '#ffffff',
                         scale: 2,
                         logging: false,
                         allowTaint: true,
-                        useCORS: true,
-                        imageTimeout: 5000
+                        useCORS: false,
+                        imageTimeout: 10000
                     });
                     
+                    document.body.removeChild(tempDiv);
+                    
+                    let dataUrl, ext;
+                    if (format === 'png') {
+                        dataUrl = canvas.toDataURL('image/png');
+                        ext = 'png';
+                    } else if (format === 'jpg') {
+                        dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+                        ext = 'jpg';
+                    } else if (format === 'webp') {
+                        dataUrl = canvas.toDataURL('image/webp', 0.95);
+                        ext = 'webp';
+                    } else if (format === 'bmp') {
+                        dataUrl = canvas.toDataURL('image/bmp');
+                        ext = 'bmp';
+                    } else if (format === 'gif') {
+                        dataUrl = canvas.toDataURL('image/png');
+                        ext = 'png';
+                    }
+                    
                     const link = document.createElement('a');
-                    link.href = canvas.toDataURL('image/png');
-                    link.download = `${escapeHtml(game.name.replace(/[^a-z0-9]/gi, '_')).toLowerCase()}.png`;
-                    document.body.appendChild(link);
+                    link.href = dataUrl;
+                    link.download = `${escapeHtml(game.name.replace(/[^a-z0-9]/gi, '_')).toLowerCase()}.${ext}`;\n                    document.body.appendChild(link);
                     link.click();
                     document.body.removeChild(link);
                     
                     status.textContent = `Exported ${i + 1}/${cardsToExport} cards...`;
-                    
-                    // Add delay between downloads to prevent browser blocking
-                    await new Promise(r => setTimeout(r, 200));
+                    await new Promise(r => setTimeout(r, 250));
                 } catch (err) {
                     console.error(`Failed to export card ${i}:`, err);
-                    status.textContent = `Error exporting card ${i + 1}, skipping...`;
+                    status.textContent = `Error on card ${i + 1}, continuing...`;
+                    await new Promise(r => setTimeout(r, 500));
                 }
             }
             
-            status.textContent = `✓ ${cardsToExport} PNG cards exported!`;
+            status.textContent = `✓ ${cardsToExport} ${format.toUpperCase()} cards exported!`;
+        }
         }
 
         // Initialize layout
