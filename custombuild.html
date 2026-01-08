@@ -409,7 +409,8 @@
 
         async function fetchImageAsDataURL(url) {
             try {
-                const response = await fetch(url);
+                // Try direct fetch first
+                const response = await fetch(url, { mode: 'cors' });
                 const blob = await response.blob();
                 return new Promise((resolve) => {
                     const reader = new FileReader();
@@ -417,8 +418,20 @@
                     reader.readAsDataURL(blob);
                 });
             } catch (err) {
-                console.warn(`Could not fetch image: ${url}`);
-                return null;
+                try {
+                    // Fallback: use CORS proxy
+                    const proxyUrl = `https://cors-anywhere.herokuapp.com/${url}`;
+                    const response = await fetch(proxyUrl);
+                    const blob = await response.blob();
+                    return new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.readAsDataURL(blob);
+                    });
+                } catch (proxyErr) {
+                    console.warn(`Could not fetch image via proxy: ${url}`);
+                    return null;
+                }
             }
         }
 
@@ -451,38 +464,31 @@
                 if (!card) continue;
                 
                 try {
-                    // Clone card and convert images to data URLs to bypass CORS
-                    const cardClone = card.cloneNode(true);
-                    const images = cardClone.querySelectorAll('img');
-                    
-                    for (let img of images) {
-                        if (img.src) {
-                            const dataUrl = await fetchImageAsDataURL(img.src);
-                            if (dataUrl) {
-                                img.src = dataUrl;
+                    // Wait for images in the original card
+                    const images = card.querySelectorAll('img');
+                    const imagePromises = Array.from(images).map(img => {
+                        return new Promise((resolve) => {
+                            if (img.complete) {
+                                resolve();
+                            } else {
+                                img.onload = () => resolve();
+                                img.onerror = () => resolve(); // Continue even if image fails
                             }
-                        }
-                    }
+                        });
+                    });
+                    await Promise.all(imagePromises);
                     
-                    // Create temporary hidden container
-                    const tempDiv = document.createElement('div');
-                    tempDiv.style.position = 'absolute';
-                    tempDiv.style.left = '-9999px';
-                    tempDiv.appendChild(cardClone);
-                    document.body.appendChild(tempDiv);
+                    await new Promise(r => setTimeout(r, 400));
                     
-                    await new Promise(r => setTimeout(r, 300));
-                    
-                    const canvas = await html2canvas(cardClone, {
+                    // Render the card directly from the DOM
+                    const canvas = await html2canvas(card, {
                         backgroundColor: '#ffffff',
                         scale: 2,
                         logging: false,
                         allowTaint: true,
-                        useCORS: false,
-                        imageTimeout: 10000
+                        useCORS: true,
+                        imageTimeout: 15000
                     });
-                    
-                    document.body.removeChild(tempDiv);
                     
                     let dataUrl, ext;
                     if (format === 'png') {
@@ -510,10 +516,10 @@
                     document.body.removeChild(link);
                     
                     status.textContent = `Exported ${i + 1}/${cardsToExport} cards...`;
-                    await new Promise(r => setTimeout(r, 250));
+                    await new Promise(r => setTimeout(r, 300));
                 } catch (err) {
                     console.error(`Failed to export card ${i}:`, err);
-                    status.textContent = `Error on card ${i + 1}, continuing...`;
+                    status.textContent = `Error exporting card ${i + 1}, retrying...`;
                     await new Promise(r => setTimeout(r, 500));
                 }
             }
