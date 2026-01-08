@@ -306,43 +306,70 @@
             const selected = document.getElementById('layoutSelect').value;
             const layout = layouts[selected];
             
-            // Create SVG root
-            const svgWidth = 8.5 * 96; // Convert inches to pixels (96 DPI)
-            const svgHeight = games.length > 9 ? (Math.ceil(games.length / layout.cols) * (layout.height * 96 + layout.gap * 96) + layout.marginY * 96 * 2) : 11 * 96;
+            // Create SVG root with proper dimensions
+            const pxPerInch = 96;
+            const cardWidthPx = layout.width * pxPerInch;
+            const cardHeightPx = layout.height * pxPerInch;
+            const gapPx = layout.gap * pxPerInch;
+            const marginXPx = layout.marginX * pxPerInch;
+            const marginYPx = layout.marginY * pxPerInch;
+            const thumbHeightPx = cardHeightPx * 0.5;
+            
+            const totalRowsNeeded = Math.ceil(games.length / layout.cols);
+            const svgWidth = 8.5 * pxPerInch;
+            const svgHeight = (totalRowsNeeded * cardHeightPx) + ((totalRowsNeeded - 1) * gapPx) + (marginYPx * 2);
             
             let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">`;
-            svg += `<defs><style>.card-text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI'; } .stat { font-size: 9px; } .name { font-weight: bold; font-size: 11px; } </style></defs>`;
+            svg += `<defs><style>.card-name { font-family: Arial, sans-serif; font-weight: bold; font-size: 12px; fill: #333; } .card-stat { font-family: Arial, sans-serif; font-size: 9px; fill: #555; } </style></defs>`;
             
-            let x = layout.marginX * 96;
-            let y = layout.marginY * 96;
+            let x = marginXPx;
+            let y = marginYPx;
             let col = 0;
             
             for (let i = 0; i < games.length; i++) {
                 const game = games[i];
-                const cardWidth = layout.width * 96;
-                const cardHeight = layout.height * 96;
-                const thumbHeight = cardHeight * 0.5;
                 
-                // Card background
-                svg += `<rect x="${x}" y="${y}" width="${cardWidth}" height="${cardHeight}" fill="white" stroke="#ddd" stroke-width="1" rx="2"/>`;
+                // Card background with darker border
+                svg += `<rect x="${x}" y="${y}" width="${cardWidthPx}" height="${cardHeightPx}" fill="white" stroke="#000" stroke-width="2" rx="3"/>`;
                 
                 // Add thumbnail image (top 50% of card)
                 if (game.thumbnail) {
-                    svg += `<image x="${x}" y="${y}" width="${cardWidth}" height="${thumbHeight}" xlink:href="${game.thumbnail}" preserveAspectRatio="xMidYMid slice"/>`;
+                    svg += `<image x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" xlink:href="${game.thumbnail}" preserveAspectRatio="xMidYMid slice" clip-path="url(#clip-thumb-${i})"/>`;
+                    svg += `<defs><clipPath id="clip-thumb-${i}"><rect x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" rx="3"/></clipPath></defs>`;
+                } else {
+                    // Gray placeholder if no image
+                    svg += `<rect x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" fill="#f0f0f0"/>`;
                 }
                 
-                // Game name
-                svg += `<text x="${x + 5}" y="${y + cardHeight - 25}" class="card-text name">${escapeHtml(game.name.substring(0, 20))}</text>`;
-                svg += `<text x="${x + 5}" y="${y + cardHeight - 12}" class="card-text stat">P: ${game.minplayers}-${game.maxplayers}</text>`;
-                svg += `<text x="${x + 5}" y="${y + cardHeight - 3}" class="card-text stat">T: ${game.playingtime}m R: ${game.rating}</text>`;
+                // Separator line between thumbnail and info
+                svg += `<line x1="${x}" y1="${y + thumbHeightPx}" x2="${x + cardWidthPx}" y2="${y + thumbHeightPx}" stroke="#000" stroke-width="1"/>`;
+                
+                // Game name (2 lines max)
+                const nameLines = escapeHtml(game.name).split(' ');
+                let line1 = '', line2 = '';
+                for (let j = 0; j < nameLines.length; j++) {
+                    if ((line1 + nameLines[j]).length <= 15) {
+                        line1 += (line1 ? ' ' : '') + nameLines[j];
+                    } else if (!line2) {
+                        line2 = nameLines[j];
+                    } else {
+                        line2 += ' ' + nameLines[j];
+                    }
+                }
+                if (line1) svg += `<text x="${x + 4}" y="${y + thumbHeightPx + 14}" class="card-name">${line1.substring(0, 18)}</text>`;
+                if (line2) svg += `<text x="${x + 4}" y="${y + thumbHeightPx + 26}" class="card-name">${line2.substring(0, 18)}</text>`;
+                
+                // Stats
+                svg += `<text x="${x + 4}" y="${y + cardHeightPx - 12}" class="card-stat">👥 ${game.minplayers}-${game.maxplayers}</text>`;
+                svg += `<text x="${x + 4}" y="${y + cardHeightPx - 2}" class="card-stat">⏱️ ${game.playingtime}m | ⭐ ${game.rating}</text>`;
                 
                 col++;
                 if (col >= layout.cols) {
                     col = 0;
-                    x = layout.marginX * 96;
-                    y += cardHeight + layout.gap * 96;
+                    x = marginXPx;
+                    y += cardHeightPx + gapPx;
                 } else {
-                    x += cardWidth + layout.gap * 96;
+                    x += cardWidthPx + gapPx;
                 }
             }
             
@@ -390,12 +417,30 @@
                 if (!card) continue;
                 
                 try {
+                    // Wait for all images in the card to load
+                    const images = card.querySelectorAll('img');
+                    const imagePromises = Array.from(images).map(img => {
+                        return new Promise((resolve) => {
+                            if (img.complete) {
+                                resolve();
+                            } else {
+                                img.onload = () => resolve();
+                                img.onerror = () => resolve();
+                            }
+                        });
+                    });
+                    await Promise.all(imagePromises);
+                    
+                    // Small delay to ensure rendering
+                    await new Promise(r => setTimeout(r, 200));
+                    
                     const canvas = await html2canvas(card, {
                         backgroundColor: '#ffffff',
                         scale: 2,
                         logging: false,
                         allowTaint: true,
-                        useCORS: true
+                        useCORS: true,
+                        imageTimeout: 5000
                     });
                     
                     const link = document.createElement('a');
@@ -408,9 +453,10 @@
                     status.textContent = `Exported ${i + 1}/${cardsToExport} cards...`;
                     
                     // Add delay between downloads to prevent browser blocking
-                    await new Promise(r => setTimeout(r, 150));
+                    await new Promise(r => setTimeout(r, 200));
                 } catch (err) {
                     console.error(`Failed to export card ${i}:`, err);
+                    status.textContent = `Error exporting card ${i + 1}, skipping...`;
                 }
             }
             
