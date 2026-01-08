@@ -146,8 +146,7 @@
     </main>
 
     <script>
-        // ===== API & Core Logic from menu.html =====
-        const BGG_API_BASE = 'https://boardgamegeek.com/xmlapi2';
+        // ===== API & Core Logic using BGG Proxy from menu.html =====
         let currentSortedGames = [];
         let currentGameDetails = {};
 
@@ -175,16 +174,15 @@
 
         async function fetchBGGCollection(username) {
             setStatus(`Fetching collection from BGG for ${username}...`);
-            const url = `${BGG_API_BASE}/collection?username=${username}&own=1&excludesubtype=boardgameexpansion`;
+            const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${username}&own=1&stats=1`);
             
-            let response = await fetch(url);
             if (response.status === 202) {
                 setStatus("BGG is preparing your data. Retrying in 3 seconds...");
                 await new Promise(r => setTimeout(r, 3000));
                 return fetchBGGCollection(username);
             }
 
-            if (!response.ok) throw new Error("Failed to fetch collection from BGG.");
+            if (!response.ok) throw new Error("Failed to fetch collection.");
             
             const text = await response.text();
             const parser = new DOMParser();
@@ -193,25 +191,18 @@
             
             let games = [];
             items.forEach(item => {
-                const name = item.querySelector('name')?.textContent || '';
-                const yearElem = item.querySelector('yearpublished');
-                const year = yearElem?.textContent || 'Unknown';
-                const minPlayersElem = item.querySelector('minplayers');
-                const maxPlayersElem = item.querySelector('maxplayers');
-                const playingTimeElem = item.querySelector('playingtime');
-                const thumbnail = item.querySelector('thumbnail')?.textContent || '';
-                const bayesElem = item.querySelector('stats rating bayesaverage');
-                const bayesAverage = bayesElem?.textContent ? parseFloat(bayesElem.textContent) : 0;
+                const stats = item.querySelector('stats');
+                const bayesElem = stats?.querySelector('rating bayesaverage');
 
                 games.push({
                     objectId: item.getAttribute('objectid'),
-                    name: name,
-                    year: year,
-                    minPlayers: parseInt(minPlayersElem?.getAttribute('value') || '0'),
-                    maxPlayers: parseInt(maxPlayersElem?.getAttribute('value') || '0'),
-                    playingTime: playingTimeElem?.getAttribute('value') || '0',
-                    thumbnail: thumbnail,
-                    bayesAverage: bayesAverage
+                    name: item.querySelector('name')?.textContent || '',
+                    year: item.querySelector('yearpublished')?.textContent || 'Unknown',
+                    minPlayers: parseInt(stats?.getAttribute('minplayers') || '0'),
+                    maxPlayers: parseInt(stats?.getAttribute('maxplayers') || '0'),
+                    playingTime: stats?.getAttribute('playingtime') || '0',
+                    thumbnail: item.querySelector('thumbnail')?.textContent || '',
+                    bayesAverage: bayesElem ? parseFloat(bayesElem.getAttribute('value') || '0') : 0
                 });
             });
             return games;
@@ -226,11 +217,11 @@
             
             for (let i = 0; i < gameIds.length; i += batchSize) {
                 const batch = gameIds.slice(i, i + batchSize);
-                const idString = batch.join(',');
-                const url = `${BGG_API_BASE}/thing?id=${idString}&stats=1`;
                 
                 try {
-                    const response = await fetch(url);
+                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${batch.join(',')}&stats=1`);
+                    if (!response.ok) continue;
+                    
                     const text = await response.text();
                     const parser = new DOMParser();
                     const xml = parser.parseFromString(text, "text/xml");
@@ -242,8 +233,7 @@
                         const players = {};
                         
                         if (poll) {
-                            const results = poll.querySelectorAll('results');
-                            results.forEach(res => {
+                            poll.querySelectorAll('results').forEach(res => {
                                 const num = res.getAttribute('numplayers');
                                 const best = parseInt(res.querySelector('result[value="Best"]')?.getAttribute('numvotes') || '0');
                                 const rec = parseInt(res.querySelector('result[value="Recommended"]')?.getAttribute('numvotes') || '0');
