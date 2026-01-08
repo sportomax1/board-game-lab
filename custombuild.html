@@ -5,6 +5,7 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>Custom BGG Card Builder</title>
     <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
     <style id="dynamic-styles">
         :root {
             --card-width: 2.5in;
@@ -149,6 +150,18 @@
                 </svg>
                 Print / PDF
             </button>
+            <button onclick="exportAsSVG()" class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m4-3H8m7-9H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2z" />
+                </svg>
+                Export SVG
+            </button>
+            <button onclick="exportAsPNG()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Export PNG Cards
+            </button>
             <div id="status" class="text-sm text-slate-500"></div>
         </div>
     </div>
@@ -279,6 +292,108 @@
             const div = document.createElement('div');
             div.textContent = text;
             return div.innerHTML;
+        }
+
+        async function exportAsSVG() {
+            if (games.length === 0) {
+                alert('Please load a collection first');
+                return;
+            }
+            
+            const status = document.getElementById('status');
+            status.textContent = 'Generating SVG...';
+            
+            const selected = document.getElementById('layoutSelect').value;
+            const layout = layouts[selected];
+            
+            // Create SVG root
+            const svgWidth = 8.5 * 96; // Convert inches to pixels (96 DPI)
+            const svgHeight = games.length > 9 ? (Math.ceil(games.length / layout.cols) * (layout.height * 96 + layout.gap * 96) + layout.marginY * 96 * 2) : 11 * 96;
+            
+            let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg">`;
+            svg += `<defs><style>.card-text { font-family: -apple-system, BlinkMacSystemFont, 'Segoe UI'; } .stat { font-size: 9px; } .name { font-weight: bold; font-size: 11px; } </style></defs>`;
+            
+            let x = layout.marginX * 96;
+            let y = layout.marginY * 96;
+            let col = 0;
+            
+            for (let i = 0; i < games.length; i++) {
+                const game = games[i];
+                const cardWidth = layout.width * 96;
+                const cardHeight = layout.height * 96;
+                
+                // Card background
+                svg += `<rect x="${x}" y="${y}" width="${cardWidth}" height="${cardHeight}" fill="white" stroke="#ddd" stroke-width="1" rx="2"/>`;
+                
+                // Game name (simple text, since we can't embed images easily in SVG export)
+                svg += `<text x="${x + 5}" y="${y + cardHeight - 15}" class="card-text name">${escapeHtml(game.name.substring(0, 20))}</text>`;
+                svg += `<text x="${x + 5}" y="${y + cardHeight - 3}" class="card-text stat">Players: ${game.minplayers}-${game.maxplayers}</text>`;
+                
+                col++;
+                if (col >= layout.cols) {
+                    col = 0;
+                    x = layout.marginX * 96;
+                    y += cardHeight + layout.gap * 96;
+                } else {
+                    x += cardWidth + layout.gap * 96;
+                }
+            }
+            
+            svg += `</svg>`;
+            
+            // Download SVG
+            const blob = new Blob([svg], { type: 'image/svg+xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `bgg-cards-${new Date().getTime()}.svg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+            
+            status.textContent = `✓ SVG exported!`;
+        }
+
+        async function exportAsPNG() {
+            if (games.length === 0) {
+                alert('Please load a collection first');
+                return;
+            }
+            
+            const status = document.getElementById('status');
+            status.textContent = `Exporting ${games.length} cards as PNG...`;
+            
+            for (let i = 0; i < games.length; i++) {
+                const game = games[i];
+                const card = document.querySelectorAll('.game-card')[i];
+                
+                if (!card) continue;
+                
+                try {
+                    const canvas = await html2canvas(card, {
+                        backgroundColor: '#ffffff',
+                        scale: 2,
+                        logging: false
+                    });
+                    
+                    const link = document.createElement('a');
+                    link.href = canvas.toDataURL('image/png');
+                    link.download = `${escapeHtml(game.name.replace(/[^a-z0-9]/gi, '_')).toLowerCase()}.png`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    status.textContent = `Exported ${i + 1}/${games.length} cards...`;
+                    
+                    // Add delay between downloads to prevent browser blocking
+                    await new Promise(r => setTimeout(r, 100));
+                } catch (err) {
+                    console.error(`Failed to export card ${i}:`, err);
+                }
+            }
+            
+            status.textContent = `✓ All ${games.length} PNG cards exported!`;
         }
 
         // Initialize layout
