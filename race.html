@@ -295,6 +295,34 @@
             document.head.appendChild(style);
         })();
         let collection = [];
+        
+        async function fetchWithRetry(url, delays = [1000, 3000, 5000, 10000]) {
+            let lastError;
+            for (let i = 0; i <= delays.length; i++) {
+                try {
+                    const res = await fetch(url);
+                    if (res.status === 202) {
+                        if (i < delays.length) {
+                            const delay = delays[i];
+                            console.log(`BGG API is busy (202). Retrying in ${delay / 1000} seconds...`);
+                            await new Promise(r => setTimeout(r, delay));
+                            continue;
+                        } else {
+                            throw new Error('BGG API busy after retries');
+                        }
+                    }
+                    if (!res.ok) throw new Error(`HTTP ${res.status}: ${res.statusText}`);
+                    return res;
+                } catch (err) {
+                    lastError = err;
+                    if (i < delays.length) {
+                        console.log(`Fetch failed: ${err.message}. Retrying in ${delays[i]/1000}s...`);
+                        await new Promise(r => setTimeout(r, delays[i]));
+                    }
+                }
+            }
+            throw lastError || new Error('Fetch failed after all retries');
+        }
         let settings = {};
         let selectedGames = [];
         let raceInProgress = false;
@@ -331,7 +359,7 @@
             if (collection.length === 0) {
                 try {
                     const subtype = includeExpansions ? '' : '&subtype=boardgame';
-                    const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1${subtype}&stats=1`);
+                    const res = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1${subtype}&stats=1`);
                     const xml = await res.text();
                     const parser = new DOMParser().parseFromString(xml, 'text/xml');
                     const items = Array.from(parser.querySelectorAll('item'));
