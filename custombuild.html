@@ -464,31 +464,53 @@
                 if (!card) continue;
                 
                 try {
-                    // Wait for images in the original card
-                    const images = card.querySelectorAll('img');
-                    const imagePromises = Array.from(images).map(img => {
-                        return new Promise((resolve) => {
-                            if (img.complete) {
-                                resolve();
-                            } else {
-                                img.onload = () => resolve();
-                                img.onerror = () => resolve(); // Continue even if image fails
+                    // Clone the card and convert all images to data URLs
+                    const cardClone = card.cloneNode(true);
+                    const images = cardClone.querySelectorAll('img');
+                    
+                    // Convert each image to data URL using image-proxy endpoint
+                    for (let img of images) {
+                        if (img.src) {
+                            try {
+                                // Use the vercel image-proxy endpoint
+                                const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(img.src)}`;
+                                const response = await fetch(proxyUrl);
+                                const blob = await response.blob();
+                                
+                                img.src = await new Promise((resolve, reject) => {
+                                    const reader = new FileReader();
+                                    reader.onload = () => resolve(reader.result);
+                                    reader.onerror = reject;
+                                    reader.readAsDataURL(blob);
+                                });
+                            } catch (imgErr) {
+                                console.warn(`Could not proxy image:`, img.src, imgErr);
+                                // Leave original src if proxy fails
                             }
-                        });
-                    });
-                    await Promise.all(imagePromises);
+                        }
+                    }
                     
-                    await new Promise(r => setTimeout(r, 400));
+                    // Create temp container for clone
+                    const tempDiv = document.createElement('div');
+                    tempDiv.style.position = 'absolute';
+                    tempDiv.style.left = '-9999px';
+                    tempDiv.style.width = 'fit-content';
+                    tempDiv.appendChild(cardClone);
+                    document.body.appendChild(tempDiv);
                     
-                    // Render the card directly from the DOM
-                    const canvas = await html2canvas(card, {
+                    await new Promise(r => setTimeout(r, 200));
+                    
+                    // Render the cloned card with data URL images
+                    const canvas = await html2canvas(cardClone, {
                         backgroundColor: '#ffffff',
                         scale: 2,
                         logging: false,
                         allowTaint: true,
-                        useCORS: true,
+                        useCORS: false,
                         imageTimeout: 15000
                     });
+                    
+                    document.body.removeChild(tempDiv);
                     
                     let dataUrl, ext;
                     if (format === 'png') {
