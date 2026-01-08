@@ -100,7 +100,7 @@
 
         .card-name {
             font-weight: 900;
-            font-size: calc(0.75rem * var(--font-scale));
+            font-size: calc(0.95rem * var(--font-scale));
             margin: 0;
             line-height: 1.05;
             overflow: hidden;
@@ -112,10 +112,10 @@
         }
 
         .card-stat {
-            font-size: calc(0.55rem * var(--font-scale));
-            color: #555;
+            font-size: calc(0.8rem * var(--font-scale));
+            color: #333;
             margin: 0;
-            line-height: 1.1;
+            line-height: 1.2;
             flex-shrink: 0;
         }
 
@@ -175,15 +175,42 @@
                 </svg>
                 Export Cards ▼
                 <div id="exportMenu" class="hidden absolute top-full left-0 mt-2 bg-white text-slate-800 rounded-lg shadow-lg z-50 min-w-48">
-                    <button onclick="exportCards('png')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 first:rounded-t-lg">📷 PNG (High Quality)</button>
-                    <button onclick="exportCards('jpg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🖼️ JPG (Compressed)</button>
-                    <button onclick="exportCards('gif')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🎬 GIF (Animated)</button>
-                    <button onclick="exportCards('webp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">⚡ WebP (Modern)</button>
-                    <button onclick="exportAsSVG()" class="block w-full text-left px-4 py-2 hover:bg-slate-100 border-t">✏️ SVG (Vector)</button>
-                    <button onclick="exportCards('bmp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 last:rounded-b-lg">🎨 BMP (Bitmap)</button>
+                    <button onclick="openExportModal('png')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 first:rounded-t-lg">📷 PNG (High Quality)</button>
+                    <button onclick="openExportModal('jpg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🖼️ JPG (Compressed)</button>
+                    <button onclick="openExportModal('gif')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🎬 GIF (Animated)</button>
+                    <button onclick="openExportModal('webp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">⚡ WebP (Modern)</button>
+                    <button onclick="openExportModal('svg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 border-t">✏️ SVG (Vector)</button>
+                    <button onclick="openExportModal('bmp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 last:rounded-b-lg">🎨 BMP (Bitmap)</button>
                 </div>
             </button>
             <div id="status" class="text-sm text-slate-500"></div>
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div id="exportModal" class="fixed inset-0 z-60 hidden items-center justify-center bg-black bg-opacity-40">
+        <div class="bg-white rounded-lg p-6 w-96 shadow-lg">
+            <h3 class="text-lg font-bold mb-3">Export Cards</h3>
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Format</label>
+                <select id="exportFormat" class="w-full rounded border px-3 py-2">
+                    <option value="png">PNG (High Quality)</option>
+                    <option value="jpg">JPG (Compressed)</option>
+                    <option value="webp">WebP (Modern)</option>
+                    <option value="gif">GIF (Animated -> PNG fallback)</option>
+                    <option value="bmp">BMP (Bitmap)</option>
+                    <option value="svg">SVG (Vector)</option>
+                </select>
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Number of cards</label>
+                <input id="exportCount" type="text" class="w-full rounded border px-3 py-2" placeholder="Enter number or type 'all'" value="5">
+                <div class="text-xs text-slate-500 mt-1">Type <strong>all</strong> to export all cards.</div>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="closeExportModal()" class="px-4 py-2 rounded bg-gray-200">Cancel</button>
+                <button onclick="exportFromModal()" class="px-4 py-2 rounded bg-indigo-600 text-white">Export</button>
+            </div>
         </div>
     </div>
 
@@ -315,18 +342,28 @@
             return div.innerHTML;
         }
 
-        async function exportAsSVG() {
+        async function exportAsSVG(limit) {
             if (games.length === 0) {
                 alert('Please load a collection first');
                 return;
             }
-            
+
             const status = document.getElementById('status');
             status.textContent = 'Generating SVG with thumbnails...';
-            
+
             const selected = document.getElementById('layoutSelect').value;
             const layout = layouts[selected];
-            
+
+            // Determine set of games to export
+            const exportGames = typeof limit === 'number' ? games.slice(0, limit) : (limit === 'all' ? games : games.slice(0));
+
+            // Pre-fetch thumbnails as data URLs to ensure consistent rendering (matches preview)
+            const thumbData = await Promise.all(exportGames.map(async g => {
+                if (!g.thumbnail) return null;
+                const data = await fetchImageAsDataURL(g.thumbnail).catch(() => null);
+                return data || g.thumbnail;
+            }));
+
             // Create SVG root with proper dimensions
             const pxPerInch = 96;
             const cardWidthPx = layout.width * pxPerInch;
@@ -335,41 +372,42 @@
             const marginXPx = layout.marginX * pxPerInch;
             const marginYPx = layout.marginY * pxPerInch;
             const thumbHeightPx = cardHeightPx * 0.5;
-            
-            const totalRowsNeeded = Math.ceil(games.length / layout.cols);
+
+            const totalRowsNeeded = Math.ceil(exportGames.length / layout.cols);
             const svgWidth = 8.5 * pxPerInch;
             const svgHeight = (totalRowsNeeded * cardHeightPx) + ((totalRowsNeeded - 1) * gapPx) + (marginYPx * 2);
-            
+
             let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">`;
-            svg += `<defs><style>.card-name { font-family: Arial, sans-serif; font-weight: bold; font-size: 14px; fill: #333; } .card-stat { font-family: Arial, sans-serif; font-size: 11px; fill: #333; } </style></defs>`;
-            
+            svg += `<defs><style>.card-name { font-family: Arial, sans-serif; font-weight: bold; font-size: 16px; fill: #333; } .card-stat { font-family: Arial, sans-serif; font-size: 12px; fill: #333; }</style></defs>`;
+
             let x = marginXPx;
             let y = marginYPx;
             let col = 0;
-            
-            for (let i = 0; i < games.length; i++) {
-                const game = games[i];
-                
+
+            for (let i = 0; i < exportGames.length; i++) {
+                const game = exportGames[i];
+
                 // Card background with darker border
                 svg += `<rect x="${x}" y="${y}" width="${cardWidthPx}" height="${cardHeightPx}" fill="white" stroke="#000" stroke-width="2" rx="14" ry="14"/>`;
-                
-                // Add thumbnail image (top 50% of card)
-                if (game.thumbnail) {
-                    svg += `<image x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" xlink:href="${game.thumbnail}" preserveAspectRatio="xMidYMid slice" clip-path="url(#clip-thumb-${i})"/>`;
+
+                // Add thumbnail image (top 50% of card) using data URL if available
+                const href = thumbData[i] || game.thumbnail;
+                if (href) {
                     svg += `<defs><clipPath id="clip-thumb-${i}"><rect x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" rx="14" ry="14"/></clipPath></defs>`;
+                    svg += `<image x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" xlink:href="${href}" preserveAspectRatio="xMidYMid meet" clip-path="url(#clip-thumb-${i})"/>`;
                 } else {
                     // Gray placeholder if no image
                     svg += `<rect x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" fill="#f0f0f0"/>`;
                 }
-                
+
                 // Separator line between thumbnail and info
                 svg += `<line x1="${x}" y1="${y + thumbHeightPx}" x2="${x + cardWidthPx}" y2="${y + thumbHeightPx}" stroke="#000" stroke-width="1"/>`;
-                
+
                 // Game name (2 lines max)
                 const nameLines = escapeHtml(game.name).split(' ');
                 let line1 = '', line2 = '';
                 for (let j = 0; j < nameLines.length; j++) {
-                    if ((line1 + nameLines[j]).length <= 15) {
+                    if ((line1 + nameLines[j]).length <= 20) {
                         line1 += (line1 ? ' ' : '') + nameLines[j];
                     } else if (!line2) {
                         line2 = nameLines[j];
@@ -377,14 +415,14 @@
                         line2 += ' ' + nameLines[j];
                     }
                 }
-                if (line1) svg += `<text x="${x + 4}" y="${y + thumbHeightPx + 16}" class="card-name">${line1.substring(0, 18)}</text>`;
-                if (line2) svg += `<text x="${x + 4}" y="${y + thumbHeightPx + 30}" class="card-name">${line2.substring(0, 18)}</text>`;
-                
+                if (line1) svg += `<text x="${x + 6}" y="${y + thumbHeightPx + 20}" class="card-name">${line1.substring(0, 36)}</text>`;
+                if (line2) svg += `<text x="${x + 6}" y="${y + thumbHeightPx + 38}" class="card-name">${line2.substring(0, 36)}</text>`;
+
                 // Stats with emojis
-                svg += `<text x="${x + 4}" y="${y + cardHeightPx - 22}" class="card-stat">👥 ${game.minplayers}-${game.maxplayers}</text>`;
-                svg += `<text x="${x + 4}" y="${y + cardHeightPx - 10}" class="card-stat">⏱️ ${game.playingtime}m</text>`;
-                svg += `<text x="${x + 4}" y="${y + cardHeightPx + 2}" class="card-stat">⭐ ${game.rating} | 🏆 #${game.rank}</text>`;
-                
+                svg += `<text x="${x + 6}" y="${y + cardHeightPx - 28}" class="card-stat">👥 ${game.minplayers}-${game.maxplayers}</text>`;
+                svg += `<text x="${x + 6}" y="${y + cardHeightPx - 12}" class="card-stat">⏱️ ${game.playingtime}m</text>`;
+                svg += `<text x="${x + 6}" y="${y + cardHeightPx + 6}" class="card-stat">⭐ ${game.rating} | 🏆 #${game.rank}</text>`;
+
                 col++;
                 if (col >= layout.cols) {
                     col = 0;
@@ -394,9 +432,9 @@
                     x += cardWidthPx + gapPx;
                 }
             }
-            
+
             svg += `</svg>`;
-            
+
             // Download SVG
             const blob = new Blob([svg], { type: 'image/svg+xml' });
             const url = URL.createObjectURL(blob);
@@ -407,7 +445,7 @@
             a.click();
             document.body.removeChild(a);
             URL.revokeObjectURL(url);
-            
+
             status.textContent = `✓ SVG exported with thumbnails!`;
         }
 
@@ -419,6 +457,36 @@
                     menu.classList.add('hidden');
                 }
             });
+        }
+
+        function openExportModal(format) {
+            const modal = document.getElementById('exportModal');
+            document.getElementById('exportFormat').value = format;
+            document.getElementById('exportCount').value = '5';
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeExportModal() {
+            const modal = document.getElementById('exportModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        async function exportFromModal() {
+            const format = document.getElementById('exportFormat').value;
+            const countInput = document.getElementById('exportCount').value.trim();
+            let count = 5;
+            if (countInput.toLowerCase() === 'all') count = games.length;
+            else if (!isNaN(parseInt(countInput))) count = Math.min(parseInt(countInput), games.length);
+
+            closeExportModal();
+
+            if (format === 'svg') {
+                await exportAsSVG(count === games.length ? 'all' : count);
+            } else {
+                await exportCards(format, count);
+            }
         }
 
         async function fetchImageAsDataURL(url) {
@@ -449,25 +517,29 @@
             }
         }
 
-        async function exportCards(format) {
+        async function exportCards(format, cardsToExportParam) {
             document.getElementById('exportMenu').classList.add('hidden');
-            
+
             if (games.length === 0) {
                 alert('Please load a collection first');
                 return;
             }
-            
-            const choice = prompt(`Export cards as ${format.toUpperCase()}:\\n\\nEnter number of cards:\\n- Type "5" for first 5\\n- Type "all" for all ${games.length}\\n\\n(Default: first 5)`, '5');
-            
-            if (choice === null) return;
-            
-            let cardsToExport = 5;
-            if (choice.toLowerCase() === 'all') {
-                cardsToExport = games.length;
-            } else if (!isNaN(parseInt(choice))) {
-                cardsToExport = Math.min(parseInt(choice), games.length);
+
+            let cardsToExport = typeof cardsToExportParam === 'number' ? cardsToExportParam : null;
+            if (cardsToExport === null) {
+                const choice = prompt(`Export cards as ${format.toUpperCase()}:\\n\\nEnter number of cards:\\n- Type "5" for first 5\\n- Type "all" for all ${games.length}\\n\\n(Default: first 5)`, '5');
+                if (choice === null) return;
+                if (choice.toLowerCase() === 'all') {
+                    cardsToExport = games.length;
+                } else if (!isNaN(parseInt(choice))) {
+                    cardsToExport = Math.min(parseInt(choice), games.length);
+                } else {
+                    cardsToExport = 5;
+                }
+            } else {
+                cardsToExport = Math.min(cardsToExport, games.length);
             }
-            
+
             const status = document.getElementById('status');
             status.textContent = `Exporting ${cardsToExport} cards as ${format.toUpperCase()}...`;
             
