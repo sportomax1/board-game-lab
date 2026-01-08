@@ -6,6 +6,7 @@
     <title>Custom BGG Card Builder</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
     <style id="dynamic-styles">
         :root {
             --card-width: 2.5in;
@@ -177,10 +178,8 @@
                 <div id="exportMenu" class="hidden absolute top-full left-0 mt-2 bg-white text-slate-800 rounded-lg shadow-lg z-50 min-w-48">
                     <button onclick="openExportModal('png')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 first:rounded-t-lg">📷 PNG (High Quality)</button>
                     <button onclick="openExportModal('jpg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🖼️ JPG (Compressed)</button>
-                    <button onclick="openExportModal('gif')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🎬 GIF (Animated)</button>
-                    <button onclick="openExportModal('webp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">⚡ WebP (Modern)</button>
                     <button onclick="openExportModal('svg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 border-t">✏️ SVG (Vector)</button>
-                    <button onclick="openExportModal('bmp')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 last:rounded-b-lg">🎨 BMP (Bitmap)</button>
+                    <button onclick="openExportModal('pdf')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 last:rounded-b-lg">📄 PDF</button>
                 </div>
             </button>
             <div id="status" class="text-sm text-slate-500"></div>
@@ -196,10 +195,8 @@
                 <select id="exportFormat" class="w-full rounded border px-3 py-2">
                     <option value="png">PNG (High Quality)</option>
                     <option value="jpg">JPG (Compressed)</option>
-                    <option value="webp">WebP (Modern)</option>
-                    <option value="gif">GIF (Animated -> PNG fallback)</option>
-                    <option value="bmp">BMP (Bitmap)</option>
                     <option value="svg">SVG (Vector)</option>
+                    <option value="pdf">PDF (Sheet)</option>
                 </select>
             </div>
             <div class="mb-4">
@@ -484,6 +481,8 @@
 
             if (format === 'svg') {
                 await exportAsSVG(count === games.length ? 'all' : count);
+            } else if (format === 'pdf') {
+                await exportToPDF(count === games.length ? 'all' : count);
             } else {
                 await exportCards(format, count);
             }
@@ -558,20 +557,12 @@
                     for (let img of images) {
                         if (img.src) {
                             try {
-                                // Use the vercel image-proxy endpoint
-                                const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(img.src)}`;
-                                const response = await fetch(proxyUrl);
-                                const blob = await response.blob();
-                                
-                                img.src = await new Promise((resolve, reject) => {
-                                    const reader = new FileReader();
-                                    reader.onload = () => resolve(reader.result);
-                                    reader.onerror = reject;
-                                    reader.readAsDataURL(blob);
-                                });
+                                // Try to fetch as data URL (handles CORS with fallback proxy inside fetchImageAsDataURL)
+                                const dataUrl = await fetchImageAsDataURL(img.src);
+                                if (dataUrl) img.src = dataUrl;
                             } catch (imgErr) {
-                                console.warn(`Could not proxy image:`, img.src, imgErr);
-                                // Leave original src if proxy fails
+                                console.warn(`Could not convert image to data URL:`, img.src, imgErr);
+                                // Leave original src if conversion fails
                             }
                         }
                     }
@@ -605,12 +596,6 @@
                     } else if (format === 'jpg') {
                         dataUrl = canvas.toDataURL('image/jpeg', 0.95);
                         ext = 'jpg';
-                    } else if (format === 'webp') {
-                        dataUrl = canvas.toDataURL('image/webp', 0.95);
-                        ext = 'webp';
-                    } else if (format === 'bmp') {
-                        dataUrl = canvas.toDataURL('image/bmp');
-                        ext = 'bmp';
                     } else if (format === 'gif') {
                         dataUrl = canvas.toDataURL('image/png');
                         ext = 'png';
@@ -633,6 +618,89 @@
             }
             
             status.textContent = `✓ ${cardsToExport} ${format.toUpperCase()} cards exported!`;
+        }
+
+        async function exportToPDF(count) {
+            if (games.length === 0) {
+                alert('Please load a collection first');
+                return;
+            }
+
+            const { jsPDF } = window.jspdf || {};
+            if (!jsPDF) {
+                alert('PDF library not loaded');
+                return;
+            }
+
+            const selected = document.getElementById('layoutSelect').value;
+            const layout = layouts[selected];
+            const cardsPerPageMap = { standard: 9, compact: 12, yolo: 12, mini: 20 };
+            const perPage = cardsPerPageMap[selected] || 9;
+            const total = count === 'all' ? games.length : Math.min(count, games.length);
+
+            const status = document.getElementById('status');
+            status.textContent = `Building PDF (${total} cards)...`;
+
+            // PDF in points (72 per inch) for letter size
+            const ptsPerInch = 72;
+            const pdfW = 8.5 * ptsPerInch;
+            const pdfH = 11 * ptsPerInch;
+
+            const pdf = new jsPDF({ unit: 'pt', format: [pdfW, pdfH] });
+
+            let pageIdx = 0;
+            for (let start = 0; start < total; start += perPage) {
+                const end = Math.min(start + perPage, total);
+
+                // build page canvas by drawing each card image and adding to pdf
+                // render each card to canvas first
+                const cardImages = [];
+                for (let i = start; i < end; i++) {
+                    const card = document.querySelectorAll('.game-card')[i];
+                    if (!card) continue;
+                    const clone = card.cloneNode(true);
+                    const imgs = clone.querySelectorAll('img');
+                    for (let img of imgs) {
+                        try {
+                            const data = await fetchImageAsDataURL(img.src);
+                            if (data) img.src = data;
+                        } catch (e) {
+                            console.warn('image fetch for pdf failed', e);
+                        }
+                    }
+                    const temp = document.createElement('div');
+                    temp.style.position = 'absolute';
+                    temp.style.left = '-9999px';
+                    temp.appendChild(clone);
+                    document.body.appendChild(temp);
+                    await new Promise(r => setTimeout(r, 120));
+                    const canvas = await html2canvas(clone, { backgroundColor: '#ffffff', scale: 2, logging: false, imageTimeout: 15000 });
+                    document.body.removeChild(temp);
+                    cardImages.push(canvas.toDataURL('image/jpeg', 0.95));
+                }
+
+                // place images on PDF page according to layout
+                const cols = layout.cols;
+                const cardWpt = layout.width * ptsPerInch;
+                const cardHpt = layout.height * ptsPerInch;
+                const gapPt = layout.gap * ptsPerInch;
+                const marginXpt = layout.marginX * ptsPerInch;
+                const marginYpt = layout.marginY * ptsPerInch;
+
+                for (let idx = 0; idx < cardImages.length; idx++) {
+                    const col = idx % cols;
+                    const row = Math.floor(idx / cols);
+                    const x = marginXpt + col * (cardWpt + gapPt);
+                    const y = marginYpt + row * (cardHpt + gapPt);
+                    pdf.addImage(cardImages[idx], 'JPEG', x, y, cardWpt, cardHpt);
+                }
+
+                pageIdx++;
+                if (start + perPage < total) pdf.addPage();
+            }
+
+            pdf.save(`bgg-cards-${Date.now()}.pdf`);
+            status.textContent = `✓ PDF saved (${total} cards)`;
         }
 
         // Initialize layout
