@@ -21,6 +21,15 @@
             -ms-user-select: text !important;
             cursor: text;
         }
+        /* Layer tree styles */
+        #layerTreeContainer details > summary {
+            padding: 6px 8px;
+            border-radius: 6px;
+        }
+        #layerTreeContainer details[open] > summary {
+            background: linear-gradient(90deg,#f8fafc,#eef2ff);
+        }
+        #layerTreeContainer pre { white-space: pre-wrap; }
 
         .api-card {
             transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
@@ -94,6 +103,33 @@
                 <p class="text-[9px] text-gray-400 font-black uppercase tracking-widest mt-1">Dev Console</p>
             </div>
         </div>
+
+            <!-- Layered View Modal -->
+            <div id="layerModal" class="hidden fixed inset-0 z-[120] modal-backdrop bg-black/60 items-center justify-center p-4">
+                <div class="bg-white rounded-2xl shadow-2xl max-w-4xl w-full max-h-[92vh] overflow-hidden modal-content-animate flex flex-col">
+                    <div class="bg-indigo-600 text-white px-6 py-3 flex items-center justify-between">
+                        <div class="flex items-center gap-3">
+                            <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><path d="M7 3v14"></path><path d="M11 3v10"></path><path d="M15 3v6"></path><path d="M19 3v2"></path></svg>
+                            <h3 class="font-bold text-lg">Layered View</h3>
+                        </div>
+                        <div class="flex items-center gap-2">
+                            <label class="inline-flex items-center gap-2 text-sm">
+                                <input id="singleChildFocus" type="checkbox" class="w-4 h-4" />
+                                <span class="text-sm font-semibold">Single-child focus</span>
+                            </label>
+                            <button onclick="closeLayerModal()" class="w-9 h-9 bg-white/10 hover:bg-white/20 rounded-lg flex items-center justify-center">
+                                <svg xmlns="http://www.w3.org/2000/svg" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="18" y1="6" x2="6" y2="18"></line><line x1="6" y1="6" x2="18" y2="18"></line></svg>
+                            </button>
+                        </div>
+                    </div>
+                    <div class="p-4 overflow-auto flex-1 bg-slate-50">
+                        <div class="mb-3 text-xs text-gray-500">Endpoint:</div>
+                        <div id="layerEndpointURL" class="mb-4 font-mono text-xs text-slate-700 break-all bg-white border border-gray-100 rounded-lg p-3"></div>
+                        <div id="layerTreeContainer" class="bg-white border border-gray-100 rounded-lg p-3 overflow-auto max-h-[60vh]"></div>
+                        <div class="mt-3 text-sm text-gray-500">Click any node to focus its ancestry and descendants. Enable <strong>Single-child focus</strong> to collapse sibling branches.</div>
+                    </div>
+                </div>
+            </div>
     </header>
 
     <!-- Main Content -->
@@ -169,6 +205,10 @@
                     <button onclick="openFullResponseModal()" class="flex-1 action-btn flex items-center justify-center gap-2 py-3 px-4 bg-slate-800 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-slate-900">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 7h18M3 12h18M3 17h18"></path></svg>
                         View Full
+                    </button>
+                    <button onclick="openLayerModal()" class="flex-1 action-btn flex items-center justify-center gap-2 py-3 px-4 bg-indigo-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-indigo-700">
+                        <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M3 3v18h18"></path><path d="M7 3v14"></path><path d="M11 3v10"></path><path d="M15 3v6"></path><path d="M19 3v2"></path></svg>
+                        View Layers
                     </button>
                     <button onclick="resubmitCall()" class="flex-1 action-btn flex items-center justify-center gap-2 py-3 px-4 bg-orange-600 text-white rounded-xl text-xs font-black uppercase tracking-wider hover:bg-orange-700">
                         <svg xmlns="http://www.w3.org/2000/svg" width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="23 4 23 10 17 10"></polyline><path d="M20.49 15a9 9 0 1 1-2.12-9.36L23 10"></path></svg>
@@ -746,6 +786,149 @@
                 pre.scrollIntoView({ behavior: 'smooth', block: 'center' });
             } catch (e) {
                 console.warn('Select failed', e);
+            }
+        }
+
+        // Layer modal: parse response and render tree
+        function openLayerModal() {
+            const modal = document.getElementById('layerModal');
+            const urlEl = document.getElementById('layerEndpointURL');
+            const container = document.getElementById('layerTreeContainer');
+
+            const text = lastFullResponse || document.getElementById('responseContent').textContent || '';
+            urlEl.textContent = lastRequestUrl || '';
+            container.innerHTML = '';
+
+            if (!text || text.trim().length === 0) {
+                container.innerHTML = '<div class="text-sm text-gray-500">No response available to parse.</div>';
+                modal.classList.remove('hidden'); modal.classList.add('flex');
+                return;
+            }
+
+            // Try parse as XML, then JSON
+            let doc = null;
+            try {
+                const parser = new DOMParser();
+                const parsed = parser.parseFromString(text, 'text/xml');
+                if (!parsed.querySelector('parsererror')) doc = parsed;
+            } catch (e) { doc = null; }
+
+            if (doc) {
+                buildTreeFromXML(doc, container);
+            } else {
+                // Try JSON
+                try {
+                    const obj = JSON.parse(text);
+                    buildTreeFromJSON(obj, container);
+                } catch (e) {
+                    container.innerHTML = '<div class="text-sm text-gray-500">Response is not valid XML or JSON. Unable to build layered view.</div>';
+                }
+            }
+
+            modal.classList.remove('hidden'); modal.classList.add('flex');
+        }
+
+        function closeLayerModal() {
+            const modal = document.getElementById('layerModal');
+            modal.classList.add('hidden'); modal.classList.remove('flex');
+        }
+
+        function buildTreeFromXML(xmlDoc, container) {
+            container.innerHTML = '';
+            const root = xmlDoc.documentElement;
+            const tree = renderXmlNode(root);
+            container.appendChild(tree);
+        }
+
+        function renderXmlNode(node) {
+            const details = document.createElement('details');
+            details.open = true;
+            const summary = document.createElement('summary');
+            const attrs = node.attributes && node.attributes.length ? Array.from(node.attributes).map(a=>`${a.name}="${a.value}"`).join(' ') : '';
+            summary.innerHTML = `<span class="font-mono text-xs">&lt;${node.nodeName}${attrs ? ' ' + attrs : ''}&gt;</span>`;
+            details.appendChild(summary);
+
+            // Text content
+            const textNodes = Array.from(node.childNodes).filter(n => n.nodeType === Node.TEXT_NODE && n.textContent.trim());
+            if (textNodes.length) {
+                const pre = document.createElement('pre');
+                pre.className = 'text-xs font-mono text-slate-700 p-2 bg-slate-50 rounded';
+                pre.textContent = textNodes.map(t=>t.textContent.trim()).join('\n');
+                details.appendChild(pre);
+            }
+
+            // Children elements
+            const childElements = Array.from(node.children || []);
+            if (childElements.length) {
+                const wrapper = document.createElement('div');
+                wrapper.className = 'pl-3';
+                childElements.forEach(child => {
+                    wrapper.appendChild(renderXmlNode(child));
+                });
+                details.appendChild(wrapper);
+            }
+
+            // click handler for focus
+            summary.style.cursor = 'pointer';
+            summary.addEventListener('click', (e) => {
+                e.stopPropagation();
+                // focus this details
+                focusTreeNode(details);
+            });
+
+            return details;
+        }
+
+        function buildTreeFromJSON(obj, container) {
+            container.innerHTML = '';
+            function renderObj(key, val) {
+                const details = document.createElement('details');
+                details.open = true;
+                const summary = document.createElement('summary');
+                summary.innerHTML = `<span class="font-mono text-xs">${key}</span>`;
+                details.appendChild(summary);
+
+                if (val && typeof val === 'object' && !Array.isArray(val)) {
+                    const wrapper = document.createElement('div'); wrapper.className='pl-3';
+                    Object.keys(val).forEach(k => wrapper.appendChild(renderObj(k, val[k])));
+                    details.appendChild(wrapper);
+                } else if (Array.isArray(val)) {
+                    const wrapper = document.createElement('div'); wrapper.className='pl-3';
+                    val.forEach((it, idx) => wrapper.appendChild(renderObj(`[${idx}]`, it)));
+                    details.appendChild(wrapper);
+                } else {
+                    const pre = document.createElement('pre'); pre.className='text-xs font-mono text-slate-700 p-2 bg-slate-50 rounded';
+                    pre.textContent = String(val);
+                    details.appendChild(pre);
+                }
+
+                summary.addEventListener('click', (e) => { e.stopPropagation(); focusTreeNode(details); });
+                return details;
+            }
+
+            container.appendChild(renderObj('root', obj));
+        }
+
+        function focusTreeNode(detailsEl) {
+            // remove previous highlights
+            document.querySelectorAll('#layerTreeContainer summary').forEach(s => s.classList.remove('bg-yellow-100'));
+            const summary = detailsEl.querySelector('summary');
+            if (summary) summary.classList.add('bg-yellow-100');
+
+            const singleFocus = document.getElementById('singleChildFocus')?.checked;
+            if (singleFocus) {
+                // collapse siblings up the chain except this branch
+                let cur = detailsEl;
+                while (cur && cur.id !== 'layerTreeContainer') {
+                    const parent = cur.parentElement.closest('details');
+                    if (parent) {
+                        // collapse all children details of parent except cur
+                        Array.from(parent.querySelectorAll(':scope > div > details')).forEach(d => {
+                            if (d !== cur) d.open = false;
+                        });
+                    }
+                    cur = parent;
+                }
             }
         }
 
