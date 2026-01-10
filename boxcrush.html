@@ -163,7 +163,7 @@
 
     <!-- Start Screen / Loading Overlay -->
     <div id="overlay">
-        <h1 class="text-4xl font-black mb-8 italic text-white tracking-tighter">BGG SAGA</h1>
+        <h1 class="text-4xl font-black mb-8 italic text-white tracking-tighter">Box Crush</h1>
         
         <div id="setup-form" class="w-full max-w-xs flex flex-col gap-4">
             <input type="text" id="username-input" placeholder="BGG Username" value="sportomax"
@@ -205,9 +205,9 @@
     <div id="grid" class="grid-container"></div>
 
     <script>
-        // Use server-side proxy to avoid exposing secrets to the client.
-        // Ensure you have a serverless endpoint at `/api/bgg/collection` that
-        // forwards requests to BGG using your Vercel secret.
+        // Use server-side proxy helper to avoid exposing secrets to the client.
+        // This uses the shared `/api/bgg-helper` endpoint which reads secrets
+        // server-side and forwards requests to BoardGameGeek.
         const GRID_SIZE = 8;
         
         let allBggGames = [];
@@ -229,6 +229,28 @@
         const statusText = document.getElementById('status');
         const previewBar = document.getElementById('asset-preview');
 
+        // Helper: small delay
+        function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+        // fetchBGG helper mirrors the pattern used in other pages: it calls
+        // the server-side `/api/bgg-helper` endpoint and handles 202 retry logic.
+        async function fetchBGG(endpoint, params = {}, retries = 5) {
+            const query = new URLSearchParams(params).toString();
+            const url = `/api/bgg-helper?endpoint=${endpoint}&${query}`;
+            try {
+                const res = await fetch(url);
+                if (res.status === 202 && retries > 0) {
+                    statusText.innerText = 'BGG is preparing your vault...';
+                    await wait(3000);
+                    return fetchBGG(endpoint, params, retries - 1);
+                }
+                if (!res.ok) throw new Error(`BGG fetch failed: ${res.status} ${res.statusText}`);
+                return await res.text();
+            } catch (err) {
+                throw err;
+            }
+        }
+
         async function startGame() {
             const username = document.getElementById('username-input').value.trim();
             if (!username) return;
@@ -240,20 +262,11 @@
         }
 
         async function initBGGData(username) {
-                // Call server-side proxy which holds the secret server-side.
-                const PROXY_URL = `/api/bgg/collection?username=${encodeURIComponent(username)}&own=1`;
-
+                // Use shared fetch helper that calls `/api/bgg-helper` and
+                // handles BGG 202 "please wait" responses with retries.
                 try {
-                    const response = await fetch(PROXY_URL);
-                
-                if (response.status === 202) {
-                    statusText.innerText = "BGG is preparing your vault...";
-                    setTimeout(() => initBGGData(username), 4000);
-                    return;
-                }
-
-                const text = await response.text();
-                const xml = new DOMParser().parseFromString(text, "text/xml");
+                    const text = await fetchBGG('collection', { username: username, own: '1' });
+                    const xml = new DOMParser().parseFromString(text, "text/xml");
                 const items = Array.from(xml.getElementsByTagName("item"));
                 
                 allBggGames = [];
