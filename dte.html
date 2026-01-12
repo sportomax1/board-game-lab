@@ -538,35 +538,40 @@
                 const matchedBGGGameIds = Array.from(matchedBggIds); // Only games that matched with BGG
                 if (matchedBGGGameIds.length > 0) {
                     try {
-                        // Query in smaller batches to avoid timeout
-                        const batchSize = 25;
+                        // Query in VERY small batches to prevent 502 timeout
+                        const batchSize = 5; // Reduced from 25 to 5 to avoid timeouts
                         for (let i = 0; i < matchedBGGGameIds.length; i += batchSize) {
                             const batch = matchedBGGGameIds.slice(i, i + batchSize);
-                            const familyRes = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${batch.join(',')}&type=boardgame`);
-                            const familyXml = await familyRes.text();
-                            const familyDoc = new DOMParser().parseFromString(familyXml, 'text/xml');
-                            
-                            // Check for XML parsing errors
-                            if (familyDoc && familyDoc.getElementsByTagName('parsererror').length === 0) {
-                                const items = familyDoc.querySelectorAll('item');
-                                items.forEach(item => {
-                                    if (!item) return;
-                                    const itemId = item.getAttribute('id');
-                                    if (!itemId) return;
-                                    
-                                    const families = item.querySelectorAll('link[type="boardgamefamily"]');
-                                    families.forEach(fam => {
-                                        if (!fam) return;
-                                        const famId = fam.getAttribute('id');
-                                        const famValue = fam.getAttribute('value');
-                                        // Check for family ID 70360 or "Board Game Arena" in name
-                                        if ((famId === '70360') || (famValue && famValue.toLowerCase().includes('board game arena'))) {
-                                            bgaGameIds.add(itemId);
-                                        }
+                            try {
+                                const familyRes = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${batch.join(',')}&type=boardgame`);
+                                const familyXml = await familyRes.text();
+                                const familyDoc = new DOMParser().parseFromString(familyXml, 'text/xml');
+                                
+                                // Check for XML parsing errors
+                                if (familyDoc && familyDoc.getElementsByTagName('parsererror').length === 0) {
+                                    const items = familyDoc.querySelectorAll('item');
+                                    items.forEach(item => {
+                                        if (!item) return;
+                                        const itemId = item.getAttribute('id');
+                                        if (!itemId) return;
+                                        
+                                        const families = item.querySelectorAll('link[type="boardgamefamily"]');
+                                        families.forEach(fam => {
+                                            if (!fam) return;
+                                            const famId = fam.getAttribute('id');
+                                            const famValue = fam.getAttribute('value');
+                                            // Check for family ID 70360 or "Board Game Arena" in name
+                                            if ((famId === '70360') || (famValue && famValue.toLowerCase().includes('board game arena'))) {
+                                                bgaGameIds.add(itemId);
+                                            }
+                                        });
                                     });
-                                });
+                                }
+                            } catch (batchErr) {
+                                console.warn(`BGA batch ${i}-${i+batchSize} failed, skipping:`, batchErr.message);
+                                // Continue to next batch instead of failing completely
                             }
-                            await new Promise(r => setTimeout(r, 100)); // Small delay between batches
+                            await new Promise(r => setTimeout(r, 250)); // Longer delay between batches
                         }
                     } catch (err) {
                         console.warn('Could not fetch family data for BGA detection:', err);
