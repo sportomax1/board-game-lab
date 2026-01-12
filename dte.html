@@ -446,47 +446,7 @@
 
                 loadingBar.style.width = '80%';
 
-                // Fetch family data for BGA detection (for matched BGG games)
-                const bgaGameIds = new Set();
-                const matchedIds = Array.from(bggMap.keys()).slice(0, 50); // Query first 50 games to avoid timeouts
-                if (matchedIds.length > 0) {
-                    try {
-                        const familyRes = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${matchedIds.join(',')}&type=boardgame`);
-                        const familyXml = await familyRes.text();
-                        const familyDoc = new DOMParser().parseFromString(familyXml, 'text/xml');
-                        
-                        // Check for XML parsing errors
-                        if (!familyDoc || familyDoc.getElementsByTagName('parsererror').length > 0) {
-                            console.warn('XML parsing error in family data');
-                        } else {
-                            const items = familyDoc.querySelectorAll('item');
-                            items.forEach(item => {
-                                if (!item) return;
-                                const itemId = item.getAttribute('id');
-                                if (!itemId) return;
-                                
-                                const families = item.querySelectorAll('link[type="boardgamefamily"]');
-                                let foundBGA = false;
-                                families.forEach(fam => {
-                                    if (!fam) return;
-                                    const famValue = fam.getAttribute('value');
-                                    if (famValue && famValue.toLowerCase().includes('board game arena')) {
-                                        foundBGA = true;
-                                    }
-                                });
-                                if (foundBGA) {
-                                    bgaGameIds.add(itemId);
-                                }
-                            });
-                        }
-                    } catch (err) {
-                        console.warn('Could not fetch family data for BGA detection:', err);
-                    }
-                }
-
-                loadingBar.style.width = '85%';
-
-                // Process DTE rows and match with BGG data
+                // Process DTE rows and match with BGG data FIRST
                 const gamesMap = new Map();
                 const matchedBggIds = new Set();
                 allGames = [];
@@ -521,16 +481,15 @@
                         }
                     }
 
-                    // Build final game object
+                    // Build final game object (without BGA yet - we'll add that later)
                     let finalGame;
-                    const hasBGA = bggGame && bgaGameIds.has(String(bggGame.id));
                     
                     if (bggGame) {
                         matchedBggIds.add(bggGame.id);
                         finalGame = {
                             ...bggGame,
                             shelf,
-                            hasBGA,
+                            hasBGA: false,
                             matchReason: matchStatus === 'fuzzy' ? (normMapBasic.has(nbNorm) ? 'normalized match' : normMapStrict.has(nsNorm) ? 'strict normalized match' : 'partial name match') : '',
                             locations: [{ source: 'dte', label: shelf, emoji: '📍' }]
                         };
@@ -571,6 +530,55 @@
                         allGames.push(finalGame);
                     }
                 });
+
+                loadingBar.style.width = '85%';
+
+                // NOW fetch family data for BGA detection using matched BGG game IDs
+                const bgaGameIds = new Set();
+                const matchedBGGGameIds = Array.from(matchedBggIds); // Only games that matched with BGG
+                if (matchedBGGGameIds.length > 0) {
+                    try {
+                        // Query in smaller batches to avoid timeout
+                        const batchSize = 25;
+                        for (let i = 0; i < matchedBGGGameIds.length; i += batchSize) {
+                            const batch = matchedBGGGameIds.slice(i, i + batchSize);
+                            const familyRes = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${batch.join(',')}&type=boardgame`);
+                            const familyXml = await familyRes.text();
+                            const familyDoc = new DOMParser().parseFromString(familyXml, 'text/xml');
+                            
+                            // Check for XML parsing errors
+                            if (familyDoc && familyDoc.getElementsByTagName('parsererror').length === 0) {
+                                const items = familyDoc.querySelectorAll('item');
+                                items.forEach(item => {
+                                    if (!item) return;
+                                    const itemId = item.getAttribute('id');
+                                    if (!itemId) return;
+                                    
+                                    const families = item.querySelectorAll('link[type="boardgamefamily"]');
+                                    families.forEach(fam => {
+                                        if (!fam) return;
+                                        const famId = fam.getAttribute('id');
+                                        const famValue = fam.getAttribute('value');
+                                        // Check for family ID 70360 or "Board Game Arena" in name
+                                        if ((famId === '70360') || (famValue && famValue.toLowerCase().includes('board game arena'))) {
+                                            bgaGameIds.add(itemId);
+                                        }
+                                    });
+                                });
+                            }
+                            await new Promise(r => setTimeout(r, 100)); // Small delay between batches
+                        }
+                    } catch (err) {
+                        console.warn('Could not fetch family data for BGA detection:', err);
+                    }
+                }
+
+                // Update allGames with BGA data now
+                allGames.forEach(g => {
+                    g.hasBGA = bgaGameIds.has(String(g.id));
+                });
+
+                loadingBar.style.width = '90%';
 
                 // Find games in BGG collection NOT in DTE library (own=1 only)
                 notInLibraryGames = [];
