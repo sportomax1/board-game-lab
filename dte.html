@@ -665,7 +665,9 @@
             
             const hasValidBggId = g.id && !g.id.startsWith('dte-');
             const cardClickable = hasValidBggId ? 'cursor-pointer hover:shadow-md transition-shadow' : '';
-            const cardOnClick = hasValidBggId ? `onclick="showGameDetails('${g.id}', '${g.name.replace(/'/g, "\\'")}', event)"` : '';
+            // Properly escape game name for use in onclick attribute
+            const escapedGameName = g.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
+            const cardOnClick = hasValidBggId ? `onclick="showGameDetails('${g.id}', '${escapedGameName}', event)"` : '';
             
             return `
             <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden ${cardClickable}" ${cardOnClick}>
@@ -1163,7 +1165,13 @@
             const title = document.getElementById('gameDetailsTitle');
             const content = document.getElementById('gameDetailsContent');
             
-            title.innerHTML = `<i data-lucide="info" class="w-5 h-5 text-indigo-600"></i> ${gameName}`;
+            // Safely set the title text
+            const icon = document.createElement('i');
+            icon.setAttribute('data-lucide', 'info');
+            icon.className = 'w-5 h-5 text-indigo-600';
+            title.textContent = ' ' + gameName;
+            title.insertBefore(icon, title.firstChild);
+            
             modal.classList.remove('hidden');
             
             content.innerHTML = `
@@ -1243,10 +1251,17 @@
                         <p>No ${tabName} found</p>
                     </div>`;
             } else {
+                // Escape HTML to prevent XSS
+                const escapeHtml = (text) => {
+                    const div = document.createElement('div');
+                    div.textContent = text;
+                    return div.innerHTML;
+                };
+                
                 content.innerHTML = items.map(item => `
                     <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200 flex items-center justify-between">
-                        <span class="font-medium text-gray-900">${item.name}</span>
-                        <a href="https://boardgamegeek.com/${tabName === 'categories' ? 'boardgamecategory' : tabName === 'mechanics' ? 'boardgamemechanic' : 'boardgamefamily'}/${item.id}" 
+                        <span class="font-medium text-gray-900">${escapeHtml(item.name)}</span>
+                        <a href="https://boardgamegeek.com/${tabName === 'categories' ? 'boardgamecategory' : tabName === 'mechanics' ? 'boardgamemechanic' : 'boardgamefamily'}/${encodeURIComponent(item.id)}" 
                            target="_blank" 
                            rel="noopener noreferrer" 
                            class="text-indigo-600 hover:text-indigo-800 text-xs flex items-center gap-1"
@@ -1290,23 +1305,30 @@
                         <p>All games matched in BGG!</p>
                     </div>`;
             } else {
+                // Escape HTML to prevent XSS
+                const escapeHtml = (text) => {
+                    const div = document.createElement('div');
+                    div.textContent = text;
+                    return div.innerHTML;
+                };
+                
                 content.innerHTML = notFoundGames.map((g, idx) => `
                     <div class="bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3">
                         <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative">
-                            <img src="${g.thumb || ''}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                            <img src="${escapeHtml(g.thumb || '')}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
                             <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
                                 #${idx + 1}
                             </div>
                         </div>
                         <div class="flex-1 min-w-0 flex flex-col justify-center">
-                            <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${g.name}</h3>
+                            <h3 class="font-bold text-gray-900 leading-tight truncate mb-1">${escapeHtml(g.name)}</h3>
                             <div class="text-[10px] text-red-600 bg-red-50 px-2 py-1 rounded mt-1">
-                                <strong>Match failed:</strong> ${g.matchReason || 'not found in BGG collection'}
+                                <strong>Match failed:</strong> ${escapeHtml(g.matchReason || 'not found in BGG collection')}
                             </div>
                             <div class="flex flex-wrap gap-y-1 mt-1">
                                 ${g.locations.map(l => {
                                     const label = l.label ? ` ${l.label}` : '';
-                                    return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
+                                    return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${escapeHtml(l.emoji)}${escapeHtml(label)}</span>`;
                                 }).join('')}
                             </div>
                         </div>
@@ -1319,19 +1341,26 @@
 
         function copyNotFoundNames() {
             const notFoundGames = allGames.filter(g => g.matchStatus === 'miss');
+            const btn = document.getElementById('copyNotFoundNamesBtn');
             if (notFoundGames.length === 0) {
-                alert('No games to copy');
+                const original = btn.innerHTML;
+                btn.innerHTML = '<i data-lucide="x" class="w-5 h-5 text-red-600"></i>';
+                lucide.createIcons();
+                setTimeout(() => { btn.innerHTML = original; lucide.createIcons(); }, 2000);
                 return;
             }
             const namesText = notFoundGames.map(g => g.name).join('\n');
             navigator.clipboard.writeText(namesText).then(() => {
-                const btn = document.getElementById('copyNotFoundNamesBtn');
                 const original = btn.innerHTML;
                 btn.innerHTML = '<i data-lucide="check" class="w-5 h-5 text-green-600"></i>';
                 lucide.createIcons();
                 setTimeout(() => { btn.innerHTML = original; lucide.createIcons(); }, 2000);
             }).catch(err => {
-                alert('Failed to copy names: ' + err);
+                console.error('Failed to copy names:', err);
+                const original = btn.innerHTML;
+                btn.innerHTML = '<i data-lucide="x" class="w-5 h-5 text-red-600"></i>';
+                lucide.createIcons();
+                setTimeout(() => { btn.innerHTML = original; lucide.createIcons(); }, 2000);
             });
         }
 
