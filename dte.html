@@ -836,6 +836,12 @@
                     const nmLower = dteGameName.toLowerCase();
                     const nbNorm = normalize(dteGameName, false);
                     const nsNorm = normalize(dteGameName, true);
+                    
+                    if (isTerraMars) {
+                        console.log(`[DEBUG] Normalization - Basic: "${nbNorm}", Strict: "${nsNorm}"`);
+                        console.log(`[DEBUG] normMapBasic has "${nbNorm}": ${normMapBasic.has(nbNorm)}`);
+                        console.log(`[DEBUG] normMapStrict has "${nsNorm}": ${normMapStrict.has(nsNorm)}`);
+                    }
 
                     // Exact match in normalization
                     if (normMapBasic.has(nbNorm)) {
@@ -1415,17 +1421,31 @@
             URL.revokeObjectURL(url);
         }
 
+        // Cache for volume data to avoid re-fetching
+        const volumeDataCache = {};
+
         // Fetch volume data for a game
         async function getGameVolume(gameId) {
+            // Return cached data if available
+            if (volumeDataCache[gameId] !== undefined) {
+                return volumeDataCache[gameId];
+            }
+
             try {
                 const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame`);
-                if (!response.ok) return null;
+                if (!response.ok) {
+                    volumeDataCache[gameId] = null;
+                    return null;
+                }
                 
                 const xmlText = await response.text();
                 const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
                 const item = xml.querySelector('item');
                 
-                if (!item) return null;
+                if (!item) {
+                    volumeDataCache[gameId] = null;
+                    return null;
+                }
                 
                 // Try to find dimensions
                 const lengthEl = item.querySelector('length');
@@ -1444,12 +1464,16 @@
                     const widthInches = width / 25.4;
                     const heightInches = height / 25.4;
                     const volume = lengthInches * widthInches * heightInches;
-                    return { volume, weight, length: lengthInches, width: widthInches, height: heightInches };
+                    const result = { volume, weight, length: lengthInches, width: widthInches, height: heightInches };
+                    volumeDataCache[gameId] = result;
+                    return result;
                 }
                 
+                volumeDataCache[gameId] = null;
                 return null;
             } catch (err) {
                 console.warn(`Failed to fetch volume for ${gameId}:`, err);
+                volumeDataCache[gameId] = null;
                 return null;
             }
         }
@@ -1471,18 +1495,82 @@
             
             countEl.textContent = `${notInLibraryGames.length} games`;
 
-            // Fetch volume data for all games
-            content.innerHTML = `<div class="flex items-center justify-center h-20 text-gray-400"><p>Loading volume data...</p></div>`;
-            
-            const volumeMap = {};
+            // Attach initial volume data (use cached data if available)
+            notInLibraryGames.forEach(g => {
+                g.volumeData = volumeDataCache[g.id] || null;
+            });
+
+            // Render all games immediately with TBD for unknown volumes
+            renderNotInLibraryCards();
+
+            // Add progress bar
+            const progressBar = document.createElement('div');
+            progressBar.id = 'volumeProgressBar';
+            progressBar.className = 'fixed bottom-0 left-0 right-0 bg-amber-100 border-t border-amber-300 px-4 py-2 flex items-center gap-3';
+            progressBar.innerHTML = `
+                <div class="flex-1 bg-amber-200 rounded-full h-2 overflow-hidden">
+                    <div id="volumeProgress" class="bg-amber-600 h-full transition-all duration-300" style="width: 0%"></div>
+                </div>
+                <span id="volumeProgressText" class="text-xs text-amber-700 font-medium">Loading volumes...</span>
+            `;
+            document.body.appendChild(progressBar);
+
+            // Fetch volume data for all games in background
+            let loadedCount = 0;
             for (const game of notInLibraryGames) {
-                volumeMap[game.id] = await getGameVolume(game.id);
+                // Skip if already cached
+                if (volumeDataCache[game.id] !== undefined) {
+                    loadedCount++;
+                } else {
+                    // Fetch and update
+                    getGameVolume(game.id).then(() => {
+                        loadedCount++;
+                        const progressPercent = (loadedCount / notInLibraryGames.length) * 100;
+                        document.getElementById('volumeProgress').style.width = progressPercent + '%';
+                        document.getElementById('volumeProgressText').textContent = `Loading volumes... ${loadedCount}/${notInLibraryGames.length}`;
+                        
+                        // Update the card with new volume data
+                        const card = document.querySelector(`[data-game-id="${game.id}"]`);
+                        if (card) {
+                            const vol = volumeDataCache[game.id];
+                            const volumeEl = card.querySelector('[data-volume]');
+                            if (volumeEl) {
+                                if (vol && vol.volume) {
+                                    const formattedVol = vol.volume.toFixed(1);
+                                    volumeEl.innerHTML = `<span class="flex items-center gap-1" title="Volume: ${formattedVol} cubic inches"><i data-lucide="box" class="w-3 h-3 text-green-600"></i> ${formattedVol} cu.in</span>`;
+                                    if (vol.weight) {
+                                        volumeEl.innerHTML += ` <span class="flex items-center gap-1" title="Weight"><i data-lucide="weight" class="w-3 h-3 text-purple-600"></i> ${vol.weight.toFixed(1)} oz</span>`;
+                                    }
+                                }
+                                lucide.createIcons();
+                            }
+                        }
+                        
+                        // Hide progress bar when done
+                        if (loadedCount === notInLibraryGames.length) {
+                            setTimeout(() => {
+                                progressBar.remove();
+                            }, 500);
+                        }
+                    });
+                }
             }
             
-            // Attach volume data to games
-            notInLibraryGames.forEach(g => {
-                g.volumeData = volumeMap[g.id];
-            });
+            // Immediately update progress bar for cached items
+            const progressPercent = (loadedCount / notInLibraryGames.length) * 100;
+            document.getElementById('volumeProgress').style.width = progressPercent + '%';
+            document.getElementById('volumeProgressText').textContent = `Loading volumes... ${loadedCount}/${notInLibraryGames.length}`;
+            
+            // Hide if all are cached
+            if (loadedCount === notInLibraryGames.length) {
+                setTimeout(() => {
+                    progressBar.remove();
+                }, 500);
+            }
+        }
+
+        function renderNotInLibraryCards() {
+            const content = document.getElementById('notInLibraryContent');
 
             // Sort based on current sort option
             let sortedGames = [...notInLibraryGames];
@@ -1515,7 +1603,7 @@
                 const bggUrl = `https://boardgamegeek.com/boardgame/${g.id}`;
                 const vol = g.volumeData;
                 
-                // Format volume display
+                // Format volume display - show TBD if not loaded yet
                 let volumeDisplay = '';
                 if (vol && vol.volume) {
                     const formattedVol = vol.volume.toFixed(1);
@@ -1523,10 +1611,16 @@
                     if (vol.weight) {
                         volumeDisplay += ` <span class="flex items-center gap-1" title="Weight"><i data-lucide="weight" class="w-3 h-3 text-purple-600"></i> ${vol.weight.toFixed(1)} oz</span>`;
                     }
+                } else if (vol === null && volumeDataCache[g.id] !== undefined) {
+                    // Already tried to fetch but no data available
+                    volumeDisplay = `<span class="flex items-center gap-1 text-gray-400"><i data-lucide="box" class="w-3 h-3"></i> No dimensions</span>`;
+                } else {
+                    // Still loading
+                    volumeDisplay = `<span class="flex items-center gap-1 text-amber-600"><i data-lucide="box" class="w-3 h-3"></i> TBD</span>`;
                 }
                 
                 return `
-                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
+                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden" data-game-id="${g.id}">
                     <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative cursor-pointer" onclick="window.open('${bggUrl}', '_blank')">
                         <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
                         <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
@@ -1544,7 +1638,7 @@
                             <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
                             <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
                         </div>
-                        ${volumeDisplay ? `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 mb-1.5">${volumeDisplay}</div>` : ''}
+                        ${volumeDisplay ? `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 mb-1.5" data-volume>${volumeDisplay}</div>` : ''}
                         <div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded"><strong>Status:</strong> Owned on BGG but not in DTE library</div>
                     </div>
                 </div>`;
@@ -1564,7 +1658,7 @@
                 btn.classList.add('active', 'bg-amber-600', 'text-white', 'ring-2', 'ring-amber-200');
                 
                 notInLibrarySort = btn.dataset.sort;
-                renderNotInLibrary();
+                renderNotInLibraryCards(); // Just re-render, don't re-fetch volume data
             });
         });
 
