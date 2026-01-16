@@ -788,6 +788,7 @@
                 const dteRows = parseCSV(csvText);
                 if (dteRows.length === 0) throw new Error('CSV is empty');
                 
+                console.log(`[DEBUG] CSV Parsing: ${dteRows.length} rows parsed from dte.csv`);
                 loadingBar.style.width = '30%';
 
                 // Fetch user's BGG collection for enrichment
@@ -997,6 +998,8 @@
                         allGames.push(finalGame);
                     }
                 });
+
+                console.log(`[DEBUG] After DTE processing: ${allGames.length} unique games from ${dteRows.length} CSV rows (${dteRows.length - allGames.length} duplicates/filtered)`);
 
                 loadingBar.style.width = '85%';
 
@@ -1585,21 +1588,37 @@
                 content.appendChild(progressBar);
             }
 
-            // Fetch volume data for all games in background
+            // Fetch volume data for all games in background - batched (20 at a time)
+            const BATCH_SIZE = 20;
             let loadedCount = 0;
-            for (const game of notInLibraryGames) {
-                // Skip if already cached
-                if (volumeDataCache[game.id] !== undefined) {
-                    loadedCount++;
-                } else {
-                    // Fetch and update
-                    getGameVolume(game.id).then(() => {
-                        loadedCount++;
-                        const progressPercent = (loadedCount / notInLibraryGames.length) * 100;
-                        document.getElementById('volumeProgress').style.width = progressPercent + '%';
-                        document.getElementById('volumeProgressText').textContent = `Loading volumes... ${loadedCount}/${notInLibraryGames.length}`;
+            
+            // Separate games into "need fetching" and "already cached"
+            const gamesToFetch = notInLibraryGames.filter(g => volumeDataCache[g.id] === undefined);
+            const cachedCount = notInLibraryGames.length - gamesToFetch.length;
+            loadedCount = cachedCount;
+            
+            // Update initial progress with cached games
+            const initialProgress = (loadedCount / notInLibraryGames.length) * 100;
+            document.getElementById('volumeProgress').style.width = initialProgress + '%';
+            document.getElementById('volumeProgressText').textContent = `Loading volumes... ${loadedCount}/${notInLibraryGames.length}`;
+            
+            // Process games in batches of 20
+            for (let i = 0; i < gamesToFetch.length; i += BATCH_SIZE) {
+                const batch = gamesToFetch.slice(i, i + BATCH_SIZE);
+                
+                // Fetch all games in this batch in parallel
+                Promise.all(batch.map(game => getGameVolume(game.id))).then(() => {
+                    // All games in this batch are done
+                    loadedCount += batch.length;
+                    const progressPercent = (loadedCount / notInLibraryGames.length) * 100;
+                    document.getElementById('volumeProgress').style.width = progressPercent + '%';
+                    document.getElementById('volumeProgressText').textContent = `Loading volumes... ${loadedCount}/${notInLibraryGames.length}`;
+                    
+                    // Update cards for all games in this batch with their new volume data
+                    batch.forEach(game => {
+                        // Update the game object's volumeData
+                        game.volumeData = volumeDataCache[game.id] || null;
                         
-                        // Update the card with new volume data
                         const card = document.querySelector(`[data-game-id="${game.id}"]`);
                         if (card) {
                             const vol = volumeDataCache[game.id];
@@ -1611,30 +1630,27 @@
                                     if (vol.weight) {
                                         volumeEl.innerHTML += ` <span class="flex items-center gap-1" title="Weight"><i data-lucide="weight" class="w-3 h-3 text-purple-600"></i> ${vol.weight.toFixed(1)} oz</span>`;
                                     }
+                                } else if (vol === null) {
+                                    volumeEl.innerHTML = `<span class="text-xs text-gray-400">No dimensions</span>`;
                                 }
                                 lucide.createIcons();
                             }
                         }
-                        
-                        // Hide progress bar when done
-                        if (loadedCount === notInLibraryGames.length) {
-                            setTimeout(() => {
-                                progressBar.style.display = 'none';
-                            }, 500);
-                        }
                     });
-                }
+                    
+                    // Hide progress bar when done
+                    if (loadedCount === notInLibraryGames.length) {
+                        setTimeout(() => {
+                            document.getElementById('volumeProgressBar').style.display = 'none';
+                        }, 500);
+                    }
+                });
             }
-            
-            // Immediately update progress bar for cached items
-            const progressPercent = (loadedCount / notInLibraryGames.length) * 100;
-            document.getElementById('volumeProgress').style.width = progressPercent + '%';
-            document.getElementById('volumeProgressText').textContent = `Loading volumes... ${loadedCount}/${notInLibraryGames.length}`;
             
             // Hide if all are cached
             if (loadedCount === notInLibraryGames.length) {
                 setTimeout(() => {
-                    progressBar.style.display = 'none';
+                    document.getElementById('volumeProgressBar').style.display = 'none';
                 }, 500);
             }
         }
