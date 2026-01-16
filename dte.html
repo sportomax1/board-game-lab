@@ -56,6 +56,10 @@
                 <input type="checkbox" id="boardGameArenaToggle" class="w-4 h-4 text-purple-600 rounded focus:ring-purple-500 border-gray-300" checked>
                 <span class="text-xs font-bold text-gray-700">🎮 BGA</span>
             </label>
+            <label class="flex items-center gap-2 cursor-pointer bg-gray-100 px-3 py-2 rounded-full hover:bg-gray-200 transition-colors select-none">
+                <input type="checkbox" id="neverPlayedToggle" class="w-4 h-4 text-orange-600 rounded focus:ring-orange-500 border-gray-300">
+                <span class="text-xs font-bold text-gray-700">Never Played</span>
+            </label>
             <button id="copyCSV" class="p-2 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200" title="Copy CSV">
                 <i data-lucide="copy" class="w-5 h-5"></i>
             </button>
@@ -398,6 +402,7 @@
             return {
                 id, name, year,
                 bggRating: parseFloat(bggRating).toFixed(1),
+                average: parseFloat(bggRating), // Store as float for sorting
                 minP, maxP, time,
                 thumb, plays, rank, desire, myRating,
                 locations: []
@@ -503,6 +508,7 @@
                             name: dteGameName,
                             year: '',
                             bggRating: '-',
+                            average: 0, // No average rating
                             minP: 0,
                             maxP: 0,
                             time: 0,
@@ -595,6 +601,47 @@
         }
 
         // --- UI Rendering ---
+        let currentRenderIndex = 0;
+        let isRendering = false;
+        
+        function renderGameCard(g, idx) {
+            const locs = g.locations.map(l => {
+                const label = l.label ? ` ${l.label}` : '';
+                return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
+            }).join('');
+            
+            const bggUrl = g.id && !g.id.startsWith('dte-') ? `https://boardgamegeek.com/boardgame/${g.id}` : null;
+            
+            return `
+            <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
+                <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative ${bggUrl ? 'cursor-pointer' : ''}" ${bggUrl ? `onclick="window.open('${bggUrl}', '_blank')"` : ''}>
+                    <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                    <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
+                        #${idx + 1}
+                    </div>
+                    ${g.copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
+                    ${g.matchStatus === 'miss' ? `<div class="absolute bottom-0 right-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-tl-lg shadow-sm">⚠</div>` : ''}
+                </div>
+                <div class="flex-1 min-w-0 flex flex-col justify-center">
+                    <h3 class="font-bold text-gray-900 leading-tight truncate mb-1 flex items-center gap-1">
+                        ${g.name}
+                        ${g.hasBGA ? `<span class="text-sm flex-shrink-0" title="Available on Board Game Arena">🎮</span>` : ''}
+                    </h3>
+                    <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-1.5">
+                        <span class="flex items-center gap-1"><i data-lucide="calendar" class="w-3 h-3 text-gray-400"></i> ${g.year || '-'}</span>
+                        <span class="flex items-center gap-1" title="BGG Rating"><i data-lucide="globe" class="w-3 h-3 text-blue-400"></i> ${g.bggRating}</span>
+                        ${g.rank < 999999 ? `<span class="flex items-center gap-1 text-indigo-600 font-medium"><i data-lucide="trophy" class="w-3 h-3"></i> #${g.rank}</span>` : ''}
+                        ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
+                        <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
+                        <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
+                        <span class="flex items-center gap-1" title="Play Count"><i data-lucide="play" class="w-3 h-3 text-green-500"></i> ${g.plays}</span>
+                    </div>
+                    ${g.matchStatus === 'miss' ? `<div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1"><strong>Match failed:</strong> ${g.matchReason || 'unknown reason'}</div>` : g.matchReason ? `<div class="text-[10px] text-gray-500 px-2 py-1 rounded mt-1"><strong>Match:</strong> ${g.matchReason}</div>` : ''}
+                    <div class="flex flex-wrap gap-y-1">${locs}</div>
+                </div>
+            </div>`;
+        }
+        
         function renderList() {
             const container = document.getElementById('gameList');
             const countEl = document.getElementById('countText');
@@ -603,6 +650,8 @@
             
             loadingContainer.classList.remove('hidden');
             loadingBar.style.width = '100%';
+            
+            currentRenderIndex = 0;
             
             if (filteredGames.length === 0) {
                 container.innerHTML = `
@@ -616,95 +665,40 @@
                 return;
             }
 
-            const chunk = filteredGames.slice(0, 50);
-            
-            container.innerHTML = chunk.map((g, idx) => {
-                const locs = g.locations.map(l => {
-                    const label = l.label ? ` ${l.label}` : '';
-                    return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
-                }).join('');
-                
-                const bggUrl = g.id && !g.id.startsWith('dte-') ? `https://boardgamegeek.com/boardgame/${g.id}` : null;
-                
-                return `
-                <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
-                    <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative ${bggUrl ? 'cursor-pointer' : ''}" ${bggUrl ? `onclick="window.open('${bggUrl}', '_blank')"` : ''}>
-                        <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
-                        <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
-                            #${idx + 1}
-                        </div>
-                        ${g.copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
-                        ${g.matchStatus === 'miss' ? `<div class="absolute bottom-0 right-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-tl-lg shadow-sm">⚠</div>` : ''}
-                    </div>
-                    <div class="flex-1 min-w-0 flex flex-col justify-center">
-                        <h3 class="font-bold text-gray-900 leading-tight truncate mb-1 flex items-center gap-1">
-                            ${g.name}
-                            ${g.hasBGA ? `<span class="text-sm flex-shrink-0" title="Available on Board Game Arena">🎮</span>` : ''}
-                        </h3>
-                        <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-1.5">
-                            <span class="flex items-center gap-1"><i data-lucide="calendar" class="w-3 h-3 text-gray-400"></i> ${g.year || '-'}</span>
-                            <span class="flex items-center gap-1" title="BGG Rating"><i data-lucide="globe" class="w-3 h-3 text-blue-400"></i> ${g.bggRating}</span>
-                            ${g.rank < 999999 ? `<span class="flex items-center gap-1 text-indigo-600 font-medium"><i data-lucide="trophy" class="w-3 h-3"></i> #${g.rank}</span>` : ''}
-                            ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
-                            <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
-                            <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
-                        </div>
-                        ${g.matchStatus === 'miss' ? `<div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1"><strong>Match failed:</strong> ${g.matchReason || 'unknown reason'}</div>` : g.matchReason ? `<div class="text-[10px] text-gray-500 px-2 py-1 rounded mt-1"><strong>Match:</strong> ${g.matchReason}</div>` : ''}
-                        <div class="flex flex-wrap gap-y-1">${locs}</div>
-                    </div>
-                </div>`;
-            }).join('');
+            // Render first 50 games immediately
+            const initialChunk = Math.min(50, filteredGames.length);
+            container.innerHTML = filteredGames.slice(0, initialChunk).map((g, idx) => renderGameCard(g, idx)).join('');
 
             const totalCopies = filteredGames.reduce((sum, g) => sum + (g.copies || 1), 0);
             countEl.textContent = `${filteredGames.length} games (${totalCopies} total)`;
             lucide.createIcons();
+            
+            currentRenderIndex = initialChunk;
 
-            if (filteredGames.length > 50) {
-                setTimeout(() => {
-                    const rest = filteredGames.slice(50).map((g, idx) => {
-                        const realIdx = idx + 50;
-                        const locs = g.locations.map(l => {
-                            const label = l.label ? ` ${l.label}` : '';
-                            return `<span class="inline-flex items-center bg-gray-100 px-1.5 py-0.5 rounded text-[10px] text-gray-600 mr-1">${l.emoji}${label}</span>`;
-                        }).join('');
-                        
-                        const bggUrl = g.id && !g.id.startsWith('dte-') ? `https://boardgamegeek.com/boardgame/${g.id}` : null;
-                        
-                        return `
-                        <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
-                            <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative ${bggUrl ? 'cursor-pointer' : ''}" ${bggUrl ? `onclick="window.open('${bggUrl}', '_blank')"` : ''}>
-                                <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
-                                <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
-                                    #${realIdx + 1}
-                                </div>
-                                ${g.copies > 1 ? `<div class="absolute top-0 right-0 bg-indigo-600 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-bl-lg shadow-sm">${g.copies}x</div>` : ''}
-                                ${g.matchStatus === 'miss' ? `<div class="absolute bottom-0 right-0 bg-amber-500 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-tl-lg shadow-sm">⚠</div>` : ''}
-                            </div>
-                            <div class="flex-1 min-w-0 flex flex-col justify-center">
-                                <h3 class="font-bold text-gray-900 leading-tight truncate mb-1 flex items-center gap-1">
-                                    ${g.name}
-                                    ${g.hasBGA ? `<span class="text-sm flex-shrink-0" title="Available on Board Game Arena">🎮</span>` : ''}
-                                </h3>
-                                <div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-500 mb-1.5">
-                                    <span class="flex items-center gap-1"><i data-lucide="calendar" class="w-3 h-3 text-gray-400"></i> ${g.year || '-'}</span>
-                                    <span class="flex items-center gap-1" title="BGG Rating"><i data-lucide="globe" class="w-3 h-3 text-blue-400"></i> ${g.bggRating}</span>
-                                    ${g.rank < 999999 ? `<span class="flex items-center gap-1 text-indigo-600 font-medium"><i data-lucide="trophy" class="w-3 h-3"></i> #${g.rank}</span>` : ''}
-                                    ${g.desire > 0 ? `<span class="flex items-center gap-1 text-pink-500 font-medium"><i data-lucide="heart" class="w-3 h-3 fill-pink-500"></i> ${g.desire}</span>` : ''}
-                                    <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
-                                    <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
-                                </div>
-                                ${g.matchStatus === 'miss' ? `<div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1"><strong>Match failed:</strong> ${g.matchReason || 'unknown reason'}</div>` : g.matchReason ? `<div class="text-[10px] text-gray-500 px-2 py-1 rounded mt-1"><strong>Match:</strong> ${g.matchReason}</div>` : ''}
-                                <div class="flex flex-wrap gap-y-1">${locs}</div>
-                            </div>
-                        </div>`;
-                    }).join('');
-                    container.insertAdjacentHTML('beforeend', rest);
-                    lucide.createIcons();
-                    setTimeout(() => { loadingContainer.classList.add('hidden'); loadingBar.style.width = '0'; }, 300);
-                }, 100);
-            } else {
-                setTimeout(() => { loadingContainer.classList.add('hidden'); loadingBar.style.width = '0'; }, 300);
-            }
+            setTimeout(() => { 
+                loadingContainer.classList.add('hidden'); 
+                loadingBar.style.width = '0'; 
+            }, 300);
+        }
+        
+        // Incremental rendering on scroll
+        function loadMoreGames() {
+            if (isRendering || currentRenderIndex >= filteredGames.length) return;
+            
+            isRendering = true;
+            const container = document.getElementById('gameList');
+            const chunkSize = 30;
+            const endIndex = Math.min(currentRenderIndex + chunkSize, filteredGames.length);
+            
+            const fragment = filteredGames.slice(currentRenderIndex, endIndex)
+                .map((g, idx) => renderGameCard(g, currentRenderIndex + idx))
+                .join('');
+            
+            container.insertAdjacentHTML('beforeend', fragment);
+            lucide.createIcons();
+            
+            currentRenderIndex = endIndex;
+            isRendering = false;
         }
 
         // --- Filtering & Sorting ---
@@ -713,6 +707,7 @@
             const onlyMyCollection = document.getElementById('myCollectionToggle').checked;
             const onlyWantToPlay = document.getElementById('wantToPlayToggle').checked;
             const onlyBoardGameArena = document.getElementById('boardGameArenaToggle').checked;
+            const onlyNeverPlayed = document.getElementById('neverPlayedToggle').checked;
             
             filteredGames = allGames.filter(g => {
                 if (search && !g.name.toLowerCase().includes(search)) return false;
@@ -725,6 +720,9 @@
                 
                 // Board Game Arena filter - show only games with BGA when filter is on
                 if (onlyBoardGameArena && !g.hasBGA) return false;
+                
+                // Never Played filter - show only games with 0 plays when filter is on
+                if (onlyNeverPlayed && g.plays > 0) return false;
                 
                 // Desire Level Filters - check individual desire level
                 const desireStr = String(Math.min(10, Math.max(0, g.desire)));
@@ -741,7 +739,11 @@
                     case 'year': return (b.year - a.year) || b.bggRating - a.bggRating || a.name.localeCompare(b.name);
                     case 'bgg_rating': return b.bggRating - a.bggRating;
                     case 'rank': return a.rank - b.rank;
-                    case 'desire': return b.desire - a.desire;
+                    case 'desire': 
+                        // Sort by desire DESC, then average rating DESC, then name ASC
+                        return b.desire - a.desire || 
+                               (b.average || 0) - (a.average || 0) || 
+                               a.name.localeCompare(b.name);
                     default: return (a.shelf || '').localeCompare(b.shelf || '', undefined, { numeric: true }) || a.name.localeCompare(b.name);
                 }
             });
@@ -784,6 +786,11 @@
 
         // Board Game Arena Toggle
         document.getElementById('boardGameArenaToggle').addEventListener('change', () => {
+            runFilters();
+        });
+
+        // Never Played Toggle
+        document.getElementById('neverPlayedToggle').addEventListener('change', () => {
             runFilters();
         });
 
@@ -1107,6 +1114,24 @@
             document.getElementById('setupUsername').value = 'sportomax';
         }
         document.getElementById('setupModal').classList.remove('hidden');
+
+        // Scroll event listener for incremental loading with throttling
+        let scrollTimeout = null;
+        document.getElementById('gameList').addEventListener('scroll', (e) => {
+            if (scrollTimeout) return;
+            
+            scrollTimeout = setTimeout(() => {
+                const container = e.target;
+                const scrollPosition = container.scrollTop + container.clientHeight;
+                const threshold = container.scrollHeight - 500; // Load more 500px before bottom
+                
+                if (scrollPosition >= threshold) {
+                    loadMoreGames();
+                }
+                
+                scrollTimeout = null;
+            }, 100); // Throttle to max once per 100ms
+        });
 
         lucide.createIcons();
     </script>
