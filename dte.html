@@ -834,13 +834,29 @@
                         bggGame = normMapStrict.get(nsNorm);
                         matchStatus = 'fuzzy';
                     } else {
-                        // Partial match
+                        // Partial match - prioritize exact name match, then longer matches
+                        let candidates = [];
                         for (const [, game] of bggMap) {
-                            if (nmLower.includes(game.name.toLowerCase()) || game.name.toLowerCase().includes(nmLower)) {
-                                bggGame = game;
-                                matchStatus = 'fuzzy';
+                            const gameLower = game.name.toLowerCase();
+                            if (gameLower === nmLower) {
+                                // Exact name match - highest priority
+                                candidates = [{game, priority: 3}];
                                 break;
+                            } else if (nmLower.includes(gameLower) || gameLower.includes(nmLower)) {
+                                // One contains the other
+                                const priority = gameLower === nmLower ? 3 : (gameLower.length > nmLower.length ? 2 : 1);
+                                candidates.push({game, priority});
                             }
+                        }
+                        
+                        if (candidates.length > 0) {
+                            // Sort by priority (higher is better), then by name length (prefer exact/shorter matches)
+                            candidates.sort((a, b) => {
+                                if (b.priority !== a.priority) return b.priority - a.priority;
+                                return a.game.name.length - b.game.name.length;
+                            });
+                            bggGame = candidates[0].game;
+                            matchStatus = 'fuzzy';
                         }
                     }
 
@@ -1932,7 +1948,7 @@
             lucide.createIcons();
             
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame`);
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame&videos=1`);
                 if (!response.ok) throw new Error('Failed to fetch game details');
                 
                 const xmlText = await response.text();
@@ -1956,7 +1972,8 @@
                     implementations: [],
                     versions: [],
                     videogames: [],
-                    rpgitems: []
+                    rpgitems: [],
+                    videos: []
                 };
                 
                 // Categorical & Gameplay
@@ -2062,6 +2079,20 @@
                     currentGameDetails.rpgitems.push({
                         id: link.getAttribute('id'),
                         name: link.getAttribute('value')
+                    });
+                });
+                
+                // Extract videos
+                item.querySelectorAll('videos video').forEach(videoEl => {
+                    currentGameDetails.videos.push({
+                        id: videoEl.getAttribute('id'),
+                        title: videoEl.getAttribute('title'),
+                        category: videoEl.getAttribute('category') || 'other',
+                        language: videoEl.getAttribute('language') || 'Unknown',
+                        link: videoEl.getAttribute('link'),
+                        username: videoEl.getAttribute('username'),
+                        postdate: videoEl.getAttribute('postdate'),
+                        thumbnail: videoEl.getAttribute('thumbnail') || ''
                     });
                 });
                 
@@ -2388,60 +2419,44 @@
                     return;
                     
                 case 'videos':
-                    // Render Videos tab
-                    const vid = currentGameDetails.videogames || [];
-                    const rpg = currentGameDetails.rpgitems || [];
+                    // Render Videos tab with actual video content
+                    const videos = currentGameDetails.videos || [];
                     
-                    if (vid.length === 0 && rpg.length === 0) {
+                    if (videos.length === 0) {
                         content.innerHTML = `
                             <div class="flex flex-col items-center justify-center h-64 text-gray-400">
                                 <i data-lucide="inbox" class="w-12 h-12 mb-2 opacity-50"></i>
-                                <p>No video games or RPG items found</p>
+                                <p>No videos found for this game</p>
                             </div>`;
                         lucide.createIcons();
                         return;
                     }
                     
-                    let vidHTML = '';
-                    if (vid.length > 0) {
-                        vidHTML += `
-                            <div class="mb-4">
-                                <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                                    <i data-lucide="play" class="w-4 h-4 text-red-600"></i>
-                                    Video Games (${vid.length})
-                                </h3>
-                                <div class="space-y-2">
-                                    ${vid.map(item => `
-                                        <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200 flex items-center justify-between">
-                                            <span class="font-medium text-gray-900">${escapeHtml(item.name)}</span>
-                                            <a href="https://boardgamegeek.com/videogame/${item.id}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 hover:text-indigo-800 text-xs flex items-center gap-1 game-detail-external-link">
-                                                <i data-lucide="external-link" class="w-3 h-3"></i>View
-                                            </a>
-                                        </div>
-                                    `).join('')}
+                    const getCategoryEmoji = (category) => {
+                        const emojis = {
+                            instructional: '📚',
+                            review: '⭐',
+                            preview: '👀',
+                            other: '🎥'
+                        };
+                        return emojis[category] || '🎥';
+                    };
+                    
+                    content.innerHTML = `
+                        <div class="space-y-3">
+                            ${videos.map(v => `
+                                <div class="bg-white p-4 rounded-lg shadow-sm border border-gray-200">
+                                    ${v.thumbnail ? `<div class="mb-3 h-32 rounded-lg overflow-hidden bg-gray-100"><img src="/api/image-proxy?url=${encodeURIComponent(v.thumbnail)}" alt="" style="width: 100%; height: 100%; object-fit: cover;" onerror="this.parentElement.style.display='none';"></div>` : ''}
+                                    <div class="font-semibold text-gray-900 mb-2">${escapeHtml(v.title)}</div>
+                                    <div class="flex flex-wrap gap-2 mb-2">
+                                        <span class="inline-block text-[10px] bg-blue-100 text-blue-700 px-2 py-1 rounded">${getCategoryEmoji(v.category)} ${v.category.charAt(0).toUpperCase() + v.category.slice(1)}</span>
+                                        <span class="inline-block text-[10px] bg-gray-100 text-gray-600 px-2 py-1 rounded">${v.language}</span>
+                                    </div>
+                                    <div class="text-xs text-gray-600 mb-3">👤 ${escapeHtml(v.username)}</div>
+                                    <a href="${v.link}" target="_blank" rel="noopener noreferrer" class="inline-block text-xs px-3 py-2 bg-indigo-600 text-white rounded hover:bg-indigo-700">▶️ Watch Video</a>
                                 </div>
-                            </div>`;
-                    }
-                    if (rpg.length > 0) {
-                        vidHTML += `
-                            <div class="mb-4">
-                                <h3 class="text-sm font-bold text-gray-700 mb-2 flex items-center gap-2">
-                                    <i data-lucide="dice-1" class="w-4 h-4 text-yellow-600"></i>
-                                    RPG Items (${rpg.length})
-                                </h3>
-                                <div class="space-y-2">
-                                    ${rpg.map(item => `
-                                        <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200 flex items-center justify-between">
-                                            <span class="font-medium text-gray-900">${escapeHtml(item.name)}</span>
-                                            <a href="https://boardgamegeek.com/rpgitem/${item.id}" target="_blank" rel="noopener noreferrer" class="text-indigo-600 hover:text-indigo-800 text-xs flex items-center gap-1 game-detail-external-link">
-                                                <i data-lucide="external-link" class="w-3 h-3"></i>View
-                                            </a>
-                                        </div>
-                                    `).join('')}
-                                </div>
-                            </div>`;
-                    }
-                    content.innerHTML = vidHTML;
+                            `).join('')}
+                        </div>`;
                     lucide.createIcons();
                     return;
             }
