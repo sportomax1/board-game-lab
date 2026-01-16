@@ -289,10 +289,13 @@
     <div id="notInLibraryModal" class="fixed inset-0 bg-black/90 z-50 hidden flex flex-col">
         <div class="bg-white border-b border-gray-200 px-4 py-3 flex flex-col shrink-0">
             <div class="flex items-center justify-between mb-3">
-                <h2 class="text-lg font-bold text-gray-900 flex items-center gap-2">
-                    <i data-lucide="package" class="w-5 h-5 text-amber-600"></i>
-                    Not in Library
-                </h2>
+                <div>
+                    <h2 class="text-lg font-bold text-gray-900 flex items-center gap-2">
+                        <i data-lucide="package" class="w-5 h-5 text-amber-600"></i>
+                        Not in Library
+                    </h2>
+                    <p id="notInLibraryCount" class="text-xs text-gray-500 mt-1"></p>
+                </div>
                 <div class="flex items-center gap-2">
                     <button id="copyNotInNamesBtn" onclick="copyNotInLibraryNames()" class="p-2 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200" title="Copy game names">
                         <i data-lucide="copy" class="w-5 h-5"></i>
@@ -311,6 +314,7 @@
                 <button class="nil-sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="name">Name</button>
                 <button class="nil-sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="rank">Rank</button>
                 <button class="nil-sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="average">BGG Rating</button>
+                <button class="nil-sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="volume-asc">📦 Volume (Small→Large)</button>
             </div>
         </div>
         <div id="notInLibraryContent" class="flex-1 overflow-y-auto p-3 space-y-3 bg-gray-50">
@@ -1368,10 +1372,10 @@
         });
 
         // Not in Library View
-        document.getElementById('showNotInLibrary').addEventListener('click', () => {
+        document.getElementById('showNotInLibrary').addEventListener('click', async () => {
             document.getElementById('notInLibraryModal').classList.remove('hidden');
             lucide.createIcons(); // Ensure icons in modal header are rendered
-            renderNotInLibrary();
+            await renderNotInLibrary();
         });
 
         // Copy names and Download CSV for Not-in-Library list
@@ -1411,10 +1415,51 @@
             URL.revokeObjectURL(url);
         }
 
-        function renderNotInLibrary() {
+        // Fetch volume data for a game
+        async function getGameVolume(gameId) {
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame`);
+                if (!response.ok) return null;
+                
+                const xmlText = await response.text();
+                const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
+                const item = xml.querySelector('item');
+                
+                if (!item) return null;
+                
+                // Try to find dimensions
+                const lengthEl = item.querySelector('length');
+                const widthEl = item.querySelector('width');
+                const heightEl = item.querySelector('height');
+                const weightEl = item.querySelector('weight');
+                
+                let length = lengthEl ? parseFloat(lengthEl.getAttribute('value')) : null;
+                let width = widthEl ? parseFloat(widthEl.getAttribute('value')) : null;
+                let height = heightEl ? parseFloat(heightEl.getAttribute('value')) : null;
+                let weight = weightEl ? parseFloat(weightEl.getAttribute('value')) : null;
+                
+                // Convert mm to inches and calculate volume if available
+                if (length && width && height) {
+                    const lengthInches = length / 25.4;
+                    const widthInches = width / 25.4;
+                    const heightInches = height / 25.4;
+                    const volume = lengthInches * widthInches * heightInches;
+                    return { volume, weight, length: lengthInches, width: widthInches, height: heightInches };
+                }
+                
+                return null;
+            } catch (err) {
+                console.warn(`Failed to fetch volume for ${gameId}:`, err);
+                return null;
+            }
+        }
+
+        async function renderNotInLibrary() {
             const content = document.getElementById('notInLibraryContent');
+            const countEl = document.getElementById('notInLibraryCount');
 
             if (notInLibraryGames.length === 0) {
+                countEl.textContent = '0 games';
                 content.innerHTML = `
                     <div class="flex flex-col items-center justify-center h-64 text-gray-400">
                         <i data-lucide="ghost" class="w-12 h-12 mb-2 opacity-50"></i>
@@ -1423,6 +1468,21 @@
                 lucide.createIcons();
                 return;
             }
+            
+            countEl.textContent = `${notInLibraryGames.length} games`;
+
+            // Fetch volume data for all games
+            content.innerHTML = `<div class="flex items-center justify-center h-20 text-gray-400"><p>Loading volume data...</p></div>`;
+            
+            const volumeMap = {};
+            for (const game of notInLibraryGames) {
+                volumeMap[game.id] = await getGameVolume(game.id);
+            }
+            
+            // Attach volume data to games
+            notInLibraryGames.forEach(g => {
+                g.volumeData = volumeMap[g.id];
+            });
 
             // Sort based on current sort option
             let sortedGames = [...notInLibraryGames];
@@ -1442,10 +1502,28 @@
                 case 'average':
                     sortedGames.sort((a, b) => parseFloat(b.bggRating) - parseFloat(a.bggRating));
                     break;
+                case 'volume-asc':
+                    sortedGames.sort((a, b) => {
+                        const volA = a.volumeData?.volume || Infinity;
+                        const volB = b.volumeData?.volume || Infinity;
+                        return volA - volB;
+                    });
+                    break;
             }
 
             content.innerHTML = sortedGames.map((g, idx) => {
                 const bggUrl = `https://boardgamegeek.com/boardgame/${g.id}`;
+                const vol = g.volumeData;
+                
+                // Format volume display
+                let volumeDisplay = '';
+                if (vol && vol.volume) {
+                    const formattedVol = vol.volume.toFixed(1);
+                    volumeDisplay = `<span class="flex items-center gap-1" title="Volume: ${formattedVol} cubic inches"><i data-lucide="box" class="w-3 h-3 text-green-600"></i> ${formattedVol} cu.in</span>`;
+                    if (vol.weight) {
+                        volumeDisplay += ` <span class="flex items-center gap-1" title="Weight"><i data-lucide="weight" class="w-3 h-3 text-purple-600"></i> ${vol.weight.toFixed(1)} oz</span>`;
+                    }
+                }
                 
                 return `
                 <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden">
@@ -1466,6 +1544,7 @@
                             <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
                             <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
                         </div>
+                        ${volumeDisplay ? `<div class="flex flex-wrap items-center gap-x-3 gap-y-1 text-xs text-gray-600 mb-1.5">${volumeDisplay}</div>` : ''}
                         <div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded"><strong>Status:</strong> Owned on BGG but not in DTE library</div>
                     </div>
                 </div>`;
