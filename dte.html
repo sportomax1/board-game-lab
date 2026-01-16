@@ -1505,7 +1505,8 @@
             }
 
             try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame`);
+                // Fetch with versions=1 to get dimension data from specific versions
+                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame&versions=1`);
                 if (!response.ok) {
                     volumeDataCache[gameId] = null;
                     return null;
@@ -1520,33 +1521,66 @@
                     return null;
                 }
                 
-                // Try to find dimensions - they can be either as getAttribute('value') or textContent
-                let length = null, width = null, height = null, weight = null;
+                // Strategy: Look for dimensions in versions first (like size.html), then fallback to main item
+                let length = 0, width = 0, height = 0, weight = 0;
+                let foundInVersion = false;
                 
-                const lengthEl = item.querySelector('length');
-                if (lengthEl) {
-                    length = parseFloat(lengthEl.getAttribute('value')) || parseFloat(lengthEl.textContent);
+                // Helper to check for English language
+                const isEnglish = (vName) => {
+                    if (!vName) return false;
+                    const lower = vName.toLowerCase();
+                    if (lower.includes('english')) return true;
+                    const otherLangs = ['german', 'french', 'spanish', 'italian', 'dutch', 'polish', 'japanese', 'chinese', 'korean', 'russian', 'portuguese', 'czech', 'hungarian'];
+                    return !otherLangs.some(lang => lower.includes(lang));
+                };
+
+                // Get all versions with volume
+                const versions = Array.from(item.querySelectorAll('versions item')).map(v => {
+                    const l = parseFloat(v.querySelector('length')?.getAttribute('value') || 0);
+                    const w = parseFloat(v.querySelector('width')?.getAttribute('value') || 0);
+                    const d = parseFloat(v.querySelector('depth')?.getAttribute('value') || 0);
+                    return {
+                        name: v.querySelector('name')?.getAttribute('value') || "Standard",
+                        l, w, d,
+                        vol: l * w * d,
+                        weight: parseFloat(v.querySelector('weight')?.getAttribute('value') || 0)
+                    };
+                }).filter(v => v.vol > 0);
+
+                if (versions.length > 0) {
+                    // Prioritize English versions
+                    let candidates = versions.filter(v => isEnglish(v.name));
+                    if (candidates.length === 0) candidates = versions;
+                    
+                    // Sort by volume (descending? or median?) 
+                    // Let's pick the largest volume as a "safety" size, or median?
+                    // size.html shows all. Here we need ONE canonical size.
+                    // Usually largest English version is the best bet (e.g. Big Box > Standard, but safety wise bigger is better for shelf planning)
+                    // Or maybe we want the most "common"? Hard to know without vote counts.
+                    // Let's take the first English candidate found.
+                    const best = candidates[0];
+                    length = best.l;
+                    width = best.w;
+                    height = best.d;
+                    weight = best.weight;
+                    foundInVersion = true;
+                }
+
+                // Fallback to main item stats if no version info found
+                if (!foundInVersion) {
+                    const lEl = item.querySelector('statistics ratings width') || item.querySelector('width'); // Check standard locations
+                    const wEl = item.querySelector('statistics ratings length') || item.querySelector('length'); // BGG API is inconsistent
+                    const hEl = item.querySelector('statistics ratings depth') || item.querySelector('depth');
+                    
+                    // Direct children check
+                    length = parseFloat(item.querySelector('length')?.getAttribute('value') || 0);
+                    width = parseFloat(item.querySelector('width')?.getAttribute('value') || 0);
+                    height = parseFloat(item.querySelector('depth')?.getAttribute('value') || 0);
+                    weight = parseFloat(item.querySelector('weight')?.getAttribute('value') || 0);
                 }
                 
-                const widthEl = item.querySelector('width');
-                if (widthEl) {
-                    width = parseFloat(widthEl.getAttribute('value')) || parseFloat(widthEl.textContent);
-                }
-                
-                const heightEl = item.querySelector('depth');
-                if (heightEl) {
-                    height = parseFloat(heightEl.getAttribute('value')) || parseFloat(heightEl.textContent);
-                }
-                
-                const weightEl = item.querySelector('weight');
-                if (weightEl) {
-                    weight = parseFloat(weightEl.getAttribute('value')) || parseFloat(weightEl.textContent);
-                }
-                
-                // Debug log for first 5 games
-                if (gameId < 5) {
-                    console.log(`[DEBUG-VOL] ID ${gameId}: length=${length}, width=${width}, height=${height}, weight=${weight}`);
-                }
+                // Convert mm to inches
+
                 
                 // Convert mm to inches and calculate volume if available
                 if (length && width && height) {
