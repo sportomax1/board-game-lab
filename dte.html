@@ -3669,23 +3669,19 @@
         let csvAnalysisShowDupOnly = false;
 
         function renderCSVAnalysis() {
-            if (!allGames.length) return;
+            if (!dteRows.length) return;
 
-            // Calculate stats
-            const uniqueGames = allGames.length;
-            const totalRecords = allGames.reduce((sum, g) => sum + (g.copies || 1), 0);
-            const shelves = new Set(allGames.flatMap(g => g.locations.map(l => l.label)));
+            // Calculate stats from dteRows only
+            const uniqueGames = new Set(dteRows.map(r => r.name)).size;
+            const totalRecords = dteRows.length;
+            const shelves = new Set(dteRows.map(r => r.shelf));
             const uniqueShelves = shelves.size;
 
             // Find complete duplicates (same name and same shelf)
             const duplicateMap = {};
-            allGames.forEach(g => {
-                if ((g.copies || 1) > 1) {
-                    g.locations.forEach(loc => {
-                        const key = `${g.name}|||${loc.label}`;
-                        duplicateMap[key] = (duplicateMap[key] || 0) + 1;
-                    });
-                }
+            dteRows.forEach(row => {
+                const key = `${row.name}|||${row.shelf}`;
+                duplicateMap[key] = (duplicateMap[key] || 0) + 1;
             });
             const duplicateCount = Object.keys(duplicateMap).filter(k => duplicateMap[k] > 1).length;
 
@@ -3712,30 +3708,29 @@
             const table = document.getElementById('csvDataTable');
             const searchVal = (document.getElementById('csvAnalysisSearch')?.value || '').toLowerCase();
             
-            let rows = [];
+            // Build duplicate map from raw dteRows
             const duplicateMap = {};
-            
-            allGames.forEach(g => {
-                g.locations.forEach(loc => {
-                    const key = `${g.name}|||${loc.label}`;
-                    duplicateMap[key] = (duplicateMap[key] || 0) + 1;
-                });
+            dteRows.forEach(row => {
+                const key = `${row.name}|||${row.shelf}`;
+                duplicateMap[key] = (duplicateMap[key] || 0) + 1;
             });
 
-            allGames.forEach(g => {
-                g.locations.forEach(loc => {
-                    const key = `${g.name}|||${loc.label}`;
-                    const isDuplicate = duplicateMap[key] > 1;
-                    
-                    if (csvAnalysisShowDupOnly && !isDuplicate) return;
-                    if (searchVal && !g.name.toLowerCase().includes(searchVal) && !loc.label.toLowerCase().includes(searchVal)) return;
-                    
-                    rows.push({
-                        name: g.name,
-                        shelf: loc.label,
-                        isDuplicate
-                    });
-                });
+            // Filter and render dteRows
+            let rows = dteRows.filter(row => {
+                const key = `${row.name}|||${row.shelf}`;
+                const isDuplicate = duplicateMap[key] > 1;
+                
+                if (csvAnalysisShowDupOnly && !isDuplicate) return false;
+                if (searchVal && !row.name.toLowerCase().includes(searchVal) && !row.shelf.toLowerCase().includes(searchVal)) return false;
+                
+                return true;
+            }).map(row => {
+                const key = `${row.name}|||${row.shelf}`;
+                return {
+                    name: row.name,
+                    shelf: row.shelf,
+                    isDuplicate: duplicateMap[key] > 1
+                };
             });
 
             table.innerHTML = rows.map((row, idx) => `
@@ -3746,7 +3741,7 @@
                 </tr>
             `).join('');
 
-            document.getElementById('csvDataShowing').textContent = `Showing ${rows.length} of ${allGames.reduce((sum, g) => sum + (g.copies || 1), 0)} records`;
+            document.getElementById('csvDataShowing').textContent = `Showing ${rows.length} of ${dteRows.length} records`;
         }
 
         function renderCSVDuplicates(duplicateMap) {
@@ -3771,10 +3766,9 @@
             const shelfDiv = document.getElementById('csvShelfBreakdown');
             const shelfCounts = {};
             
-            allGames.forEach(g => {
-                g.locations.forEach(loc => {
-                    shelfCounts[loc.label] = (shelfCounts[loc.label] || 0) + (g.copies || 1);
-                });
+            // Count from raw dteRows
+            dteRows.forEach(row => {
+                shelfCounts[row.shelf] = (shelfCounts[row.shelf] || 0) + 1;
             });
 
             const sorted = Object.entries(shelfCounts).sort((a, b) => b[1] - a[1]);
@@ -3791,34 +3785,37 @@
             const healthDiv = document.getElementById('csvHealthReport');
             const issues = [];
 
-            // Check for missing dimensions in "Not in Library"
-            const missingDimensions = notInLibraryGames.filter(g => !volumeDataCache[g.id] || volumeDataCache[g.id] === null).length;
-            if (missingDimensions > 0) {
-                issues.push(`⚠️ <strong>${missingDimensions}</strong> unowned games missing dimensions`);
+            // Check for duplicate entries (same name + shelf)
+            const duplicateMap = {};
+            dteRows.forEach(row => {
+                const key = `${row.name}|||${row.shelf}`;
+                duplicateMap[key] = (duplicateMap[key] || 0) + 1;
+            });
+            const duplicates = Object.keys(duplicateMap).filter(k => duplicateMap[k] > 1).length;
+            if (duplicates > 0) {
+                issues.push(`⚠️ <strong>${duplicates}</strong> duplicate entries found (same game on same shelf)`);
             }
 
-            // Check for games with 0 rating
-            const zeroRating = allGames.filter(g => parseInt(g.bggRating) === 0).length;
-            if (zeroRating > 0) {
-                issues.push(`⚠️ <strong>${zeroRating}</strong> games with zero BGG rating`);
+            // Check for empty game names
+            const emptyNames = dteRows.filter(r => !r.name || r.name.trim() === '').length;
+            if (emptyNames > 0) {
+                issues.push(`⚠️ <strong>${emptyNames}</strong> rows with missing game names`);
             }
 
-            // Check for unmatched games
-            const unmatched = allGames.filter(g => g.matchStatus === 'miss').length;
-            if (unmatched > 0) {
-                issues.push(`⚠️ <strong>${unmatched}</strong> games not found in BGG collection`);
+            // Check for empty shelf locations
+            const emptyShelves = dteRows.filter(r => !r.shelf || r.shelf.trim() === '').length;
+            if (emptyShelves > 0) {
+                issues.push(`⚠️ <strong>${emptyShelves}</strong> rows with missing shelf locations`);
             }
 
             // Check for shelf naming inconsistencies
             const shelfSet = new Set();
             const shelfIssues = [];
-            allGames.forEach(g => {
-                g.locations.forEach(loc => {
-                    const shelf = loc.label;
-                    if (shelf.match(/\d+ [a-z]/) && !shelf.match(/\d+ [A-Z]/)) {
-                        shelfIssues.push(shelf);
-                    }
-                });
+            dteRows.forEach(row => {
+                const shelf = row.shelf;
+                if (shelf.match(/\d+ [a-z]/) && !shelf.match(/\d+ [A-Z]/)) {
+                    shelfIssues.push(shelf);
+                }
             });
             const uniqueShelfIssues = new Set(shelfIssues);
             if (uniqueShelfIssues.size > 0) {
