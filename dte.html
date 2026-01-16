@@ -1509,7 +1509,6 @@
             btn.disabled = true;
             
             try {
-                const IMAGE_PROXY = 'https://images.weserv.nl/?url=';
                 const games = filteredGames.slice(0, 25); // Limit to 25 games for performance
                 const gridSize = Math.ceil(Math.sqrt(games.length));
                 const cellSize = 300;
@@ -1524,37 +1523,35 @@
                 ctx.fillStyle = '#f0f2f5';
                 ctx.fillRect(0, 0, canvas.width, canvas.height);
                 
-                // Draw each game thumbnail
-                const drawPromises = games.map((game, index) => {
+                // Helper function to load image via proxy
+                const loadImageViaProxy = (thumbUrl) => {
                     return new Promise((resolve) => {
-                        if (!game.thumb) {
-                            // Draw placeholder for missing image
-                            const x = (index % gridSize) * cellSize;
-                            const y = Math.floor(index / gridSize) * cellSize;
-                            ctx.fillStyle = '#e5e7eb';
-                            ctx.fillRect(x, y, cellSize, cellSize);
-                            ctx.fillStyle = '#6b7280';
-                            ctx.font = 'bold 16px Arial';
-                            ctx.textAlign = 'center';
-                            ctx.textBaseline = 'middle';
-                            ctx.fillText(game.name.substring(0, 20), x + cellSize / 2, y + cellSize / 2);
-                            resolve();
+                        if (!thumbUrl) {
+                            resolve(null);
                             return;
                         }
-                        
-                        const img = new Image();
-                        img.crossOrigin = 'Anonymous';
-                        const x = (index % gridSize) * cellSize;
-                        const y = Math.floor(index / gridSize) * cellSize;
-                        
-                        const drawImage = () => {
+                        try {
+                            const proxyUrl = `/api/image-proxy?url=${encodeURIComponent(thumbUrl)}`;
+                            const img = new Image();
+                            img.onload = () => resolve(img);
+                            img.onerror = () => resolve(null);
+                            img.src = proxyUrl;
+                        } catch (e) {
+                            resolve(null);
+                        }
+                    });
+                };
+                
+                // Draw each game thumbnail
+                const drawPromises = games.map(async (game, index) => {
+                    const x = (index % gridSize) * cellSize;
+                    const y = Math.floor(index / gridSize) * cellSize;
+                    
+                    try {
+                        const img = await loadImageViaProxy(game.thumb);
+                        if (img) {
                             ctx.drawImage(img, x, y, cellSize, cellSize);
-                            resolve();
-                        };
-                        
-                        img.onload = drawImage;
-                        img.onerror = () => {
-                            // Fallback: draw placeholder
+                        } else {
                             ctx.fillStyle = '#e5e7eb';
                             ctx.fillRect(x, y, cellSize, cellSize);
                             ctx.fillStyle = '#6b7280';
@@ -1562,12 +1559,10 @@
                             ctx.textAlign = 'center';
                             ctx.textBaseline = 'middle';
                             ctx.fillText(game.name.substring(0, 20), x + cellSize / 2, y + cellSize / 2);
-                            resolve();
-                        };
-                        
-                        // Use proxied URL to avoid CORS issues
-                        img.src = game.thumb ? `${IMAGE_PROXY}${game.thumb}` : '';
-                    });
+                        }
+                    } catch (e) {
+                        console.error('Error drawing game:', game.name, e);
+                    }
                 });
                 
                 await Promise.all(drawPromises);
@@ -2514,7 +2509,7 @@
                         
                         return `
                         <div class="relative group" style="aspect-ratio: 1/1;">
-                            <img src="${g.thumb}" 
+                            <img src="/api/image-proxy?url=${encodeURIComponent(g.thumb)}" 
                                  loading="lazy" 
                                  class="w-full h-full object-cover rounded-lg shadow-sm group-hover:shadow-md transition-shadow"
                                  onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'"
@@ -2580,9 +2575,8 @@
                     const y = padding + row * (cellSize + gap);
                     
                     try {
-                        // Try to load the image
+                        // Try to load the image via proxy
                         const img = new Image();
-                        // Don't use crossOrigin to avoid CORS issues - just use src directly
                         await new Promise((resolve, reject) => {
                             img.onload = () => {
                                 try {
@@ -2610,7 +2604,8 @@
                                 ctx.fillRect(x, y, cellSize, cellSize);
                                 resolve();
                             };
-                            img.src = g.thumb || 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>';
+                            // Use /api/image-proxy for CORS-safe image loading
+                            img.src = g.thumb ? `/api/image-proxy?url=${encodeURIComponent(g.thumb)}` : 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>';
                         });
                     } catch (err) {
                         console.warn('Error processing image:', err);
