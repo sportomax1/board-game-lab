@@ -1943,28 +1943,132 @@
             }
         });
         
-        // Share grid (copy to clipboard)
+        // Share grid (share image using Web Share API or copy to clipboard)
         document.getElementById('shareGridBtn').addEventListener('click', async () => {
-            const gridSize = parseInt(document.getElementById('gridSizeSelect').value);
-            const games = filteredGames.slice(0, gridSize * gridSize);
+            const btn = document.getElementById('shareGridBtn');
+            const originalHTML = btn.innerHTML;
             
-            // Create a shareable text list
-            const shareText = `My Game Collection Grid (${gridSize}×${gridSize}):\n\n` +
-                games.map((g, i) => `${i + 1}. ${g.name}${g.locations && g.locations[0] ? ` (${g.locations[0].label})` : ''}`).join('\n');
+            // Placeholder SVG for missing images
+            const PLACEHOLDER_SVG = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>';
             
             try {
-                await navigator.clipboard.writeText(shareText);
-                const btn = document.getElementById('shareGridBtn');
-                const originalHTML = btn.innerHTML;
-                btn.innerHTML = '<i data-lucide="check" class="w-5 h-5 text-green-600"></i>';
+                // Show loading state
+                btn.innerHTML = '<div class="w-5 h-5 border-2 border-blue-200 border-t-blue-600 rounded-full animate-spin"></div>';
+                btn.disabled = true;
+                
+                const gridSize = parseInt(document.getElementById('gridSizeSelect').value);
+                const games = filteredGames.slice(0, gridSize * gridSize);
+                
+                // Generate the canvas/image first
+                const content = document.getElementById('thumbnailGridContent');
+                const images = content.querySelectorAll('img');
+                
+                // Wait for all images to load
+                await Promise.all(Array.from(images).map(img => {
+                    return new Promise((resolve) => {
+                        if (img.complete) resolve();
+                        else {
+                            img.onload = resolve;
+                            img.onerror = resolve;
+                        }
+                    });
+                }));
+                
+                // Create canvas
+                const canvas = document.createElement('canvas');
+                const ctx = canvas.getContext('2d');
+                const cellSize = 120;
+                const gap = 8;
+                const padding = 16;
+                
+                canvas.width = gridSize * cellSize + (gridSize - 1) * gap + padding * 2;
+                canvas.height = gridSize * cellSize + (gridSize - 1) * gap + padding * 2;
+                
+                // Fill background
+                ctx.fillStyle = '#ffffff';
+                ctx.fillRect(0, 0, canvas.width, canvas.height);
+                
+                // Reusable image object for better performance
+                const img = new Image();
+                img.crossOrigin = 'anonymous';
+                
+                // Draw grid
+                for (let i = 0; i < games.length; i++) {
+                    const g = games[i];
+                    const row = Math.floor(i / gridSize);
+                    const col = i % gridSize;
+                    const x = padding + col * (cellSize + gap);
+                    const y = padding + row * (cellSize + gap);
+                    
+                    await new Promise((resolve) => {
+                        img.onload = () => {
+                            ctx.drawImage(img, x, y, cellSize, cellSize);
+                            
+                            // Draw shelf label at bottom
+                            if (g.locations && g.locations.length > 0 && g.locations[0].label) {
+                                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                                ctx.fillRect(x, y + cellSize - 16, cellSize, 16);
+                                ctx.fillStyle = '#ffffff';
+                                ctx.font = '10px system-ui, -apple-system, sans-serif';
+                                ctx.textAlign = 'center';
+                                ctx.fillText(g.locations[0].label, x + cellSize / 2, y + cellSize - 5, cellSize - 4);
+                            }
+                            
+                            resolve();
+                        };
+                        img.onerror = resolve;
+                        img.src = g.thumb || PLACEHOLDER_SVG;
+                    });
+                }
+                
+                // Convert canvas to blob
+                const blob = await new Promise(resolve => canvas.toBlob(resolve, 'image/png'));
+                const username = localStorage.getItem('dteUsername') || 'dte-grid';
+                const file = new File([blob], `${username}-thumbnail-grid-${gridSize}x${gridSize}.png`, { type: 'image/png' });
+                
+                // Create shareable text
+                const shareText = `My Game Collection Grid (${gridSize}×${gridSize}):\n\n` +
+                    games.map((g, i) => `${i + 1}. ${g.name}${g.locations && g.locations[0] ? ` (${g.locations[0].label})` : ''}`).join('\n');
+                
+                // Check if Web Share API is supported
+                if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+                    await navigator.share({
+                        files: [file],
+                        title: 'My DTE Game Collection Grid',
+                        text: shareText
+                    });
+                    btn.innerHTML = '<i data-lucide="check" class="w-5 h-5 text-green-600"></i>';
+                } else {
+                    // Fallback: Copy image to clipboard
+                    if (navigator.clipboard && window.ClipboardItem) {
+                        await navigator.clipboard.write([
+                            new ClipboardItem({ 'image/png': blob })
+                        ]);
+                        btn.innerHTML = '<i data-lucide="check" class="w-5 h-5 text-green-600"></i>';
+                    } else {
+                        // Ultimate fallback: copy text only
+                        await navigator.clipboard.writeText(shareText);
+                        btn.innerHTML = '<i data-lucide="check" class="w-5 h-5 text-green-600"></i>';
+                    }
+                }
+                
                 lucide.createIcons();
                 setTimeout(() => {
                     btn.innerHTML = originalHTML;
+                    btn.disabled = false;
                     lucide.createIcons();
                 }, 2000);
+                
             } catch (error) {
-                console.error('Failed to copy to clipboard:', error);
-                alert('Failed to copy grid to clipboard');
+                console.error('Share error:', error);
+                btn.innerHTML = '<i data-lucide="x" class="w-5 h-5 text-red-600"></i>';
+                lucide.createIcons();
+                setTimeout(() => {
+                    btn.innerHTML = originalHTML;
+                    btn.disabled = false;
+                    lucide.createIcons();
+                }, 2000);
+                alert('Failed to share grid image. Please check your network connection and try again, or use the Download button instead.');
             }
         });
 
