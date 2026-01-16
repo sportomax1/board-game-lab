@@ -297,6 +297,7 @@
                     <p id="notInLibraryCount" class="text-xs text-gray-500 mt-1"></p>
                 </div>
                 <div class="flex items-center gap-2">
+                    <input type="text" id="notInLibrarySearch" placeholder="Search unowned games..." class="px-3 py-1.5 text-sm bg-gray-100 border-none rounded-full focus:ring-2 focus:ring-amber-500 outline-none w-48 transition-all hidden sm:block">
                     <button id="copyNotInNamesBtn" onclick="copyNotInLibraryNames()" class="p-2 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200" title="Copy game names">
                         <i data-lucide="copy" class="w-5 h-5"></i>
                     </button>
@@ -658,58 +659,54 @@
             }
         }
 
-        // --- CSV Parsing ---
+        // --- CSV Parsing (State Machine) ---
         function parseCSV(text) {
-            const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+            const lines = text.split(/\r?\n/).filter(l => l.trim());
             const out = [];
             const dropped = [];
             
-            // Skip header if present
-            let startIndex = 0;
-            if (lines.length > 0 && (lines[0].toLowerCase().includes('game name') || lines[0].toLowerCase().includes('shelf location'))) {
-                startIndex = 1;
+            // Skip header check
+            let start = 0;
+            if (lines.length > 0) {
+                const header = lines[0].toLowerCase();
+                if (header.includes('game name') || header.includes('shelf')) start = 1;
             }
-            
-            for (let i = startIndex; i < lines.length; i++) {
-                const ln = lines[i];
-                // Regex improvement: Handle quoted strings containing commas
-                // Matches: "optional quote", (capture group 1), "optional quote", comma, "optional quote", (capture group 2), "optional quote"
-                // But simplified: split by last comma if no quotes?
-                // Or better regex for CSV:
-                // ^\s* "([^"]+)" \s*,\s* "([^"]+)" \s*$  (Strictly quoted)
-                // | ^\s* ([^,]+) \s*,\s* "([^"]+)" \s*$  (First unquoted, second quoted)
-                // | ^\s* "([^"]+)" \s*,\s* ([^,]+) \s*$  (First quoted, second unquoted)
-                // | ^\s* ([^,]+) \s*,\s* ([^,]+) \s*$    (Both unquoted)
+
+            for (let i = start; i < lines.length; i++) {
+                const line = lines[i];
+                let parts = [];
+                let current = '';
+                let inQuote = false;
                 
-                // Let's try a robust match:
-                // Look for the LAST comma as the separator if the shelf is simple (usually is short like "7 D", "BIN")
-                // Shelf usually doesn't have commas. Name might.
-                
-                const lastCommaIdx = ln.lastIndexOf(',');
-                if (lastCommaIdx > -1) {
-                    let namePart = ln.substring(0, lastCommaIdx).trim();
-                    let shelfPart = ln.substring(lastCommaIdx + 1).trim();
-                    
-                    // Strip quotes if wrapping
-                    if (namePart.startsWith('"') && namePart.endsWith('"')) namePart = namePart.slice(1, -1);
-                    if (shelfPart.startsWith('"') && shelfPart.endsWith('"')) shelfPart = shelfPart.slice(1, -1);
-                    
-                    // Decode double quotes "" -> "
-                    namePart = namePart.replace(/""/g, '"');
-                    shelfPart = shelfPart.replace(/""/g, '"');
-                    
-                    if (namePart && shelfPart) {
-                        out.push({ name: namePart.trim(), shelf: shelfPart.trim() });
+                for (let j = 0; j < line.length; j++) {
+                    const c = line[j];
+                    if (c === '"') {
+                        inQuote = !inQuote;
+                    } else if (c === ',' && !inQuote) {
+                        parts.push(current.trim());
+                        current = '';
                         continue;
                     }
+                    current += c;
                 }
+                parts.push(current.trim());
                 
-                dropped.push(ln);
+                if (parts.length >= 2) {
+                    let name = parts[0];
+                    let shelf = parts[1]; 
+                    
+                    const clean = (s) => s.replace(/^"|"$/g, '').replace(/""/g, '"');
+                    
+                    out.push({
+                        name: clean(name),
+                        shelf: clean(shelf)
+                    });
+                } else {
+                    dropped.push(line);
+                }
             }
             
-            if (dropped.length > 0) {
-                console.warn(`[CSV] Dropped ${dropped.length} rows due to parsing errors:`, dropped.slice(0, 5));
-            }
+            if (dropped.length > 0) console.warn(`[CSV] Dropped ${dropped.length} lines`, dropped);
             
             return out;
         }
@@ -1777,9 +1774,16 @@
 
         function renderNotInLibraryCards() {
             const content = document.getElementById('notInLibraryContent');
+            const searchVal = (document.getElementById('notInLibrarySearch')?.value || '').toLowerCase().trim();
+
+            // Filter logic
+            let filteredGames = notInLibraryGames;
+            if (searchVal) {
+                filteredGames = filteredGames.filter(g => g.name.toLowerCase().includes(searchVal));
+            }
 
             // Sort based on current sort option
-            let sortedGames = [...notInLibraryGames];
+            let sortedGames = [...filteredGames];
             switch (notInLibrarySort) {
                 case 'rating':
                     sortedGames.sort((a, b) => (b.myRating || 0) - (a.myRating || 0));
@@ -1852,6 +1856,11 @@
 
             lucide.createIcons();
         }
+
+        // Not in Library Search Listener
+        document.getElementById('notInLibrarySearch')?.addEventListener('input', () => {
+             renderNotInLibraryCards();
+        });
 
         // Not in Library Sort Chips
         document.querySelectorAll('.nil-sort-chip').forEach(btn => {
