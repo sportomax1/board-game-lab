@@ -662,6 +662,7 @@
         function parseCSV(text) {
             const lines = text.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
             const out = [];
+            const dropped = [];
             
             // Skip header if present
             let startIndex = 0;
@@ -671,11 +672,45 @@
             
             for (let i = startIndex; i < lines.length; i++) {
                 const ln = lines[i];
-                const m = ln.match(/^\s*"?(.+?)"?\s*,\s*"?(.+?)"?\s*$/);
-                if (m) {
-                    out.push({ name: m[1].trim(), shelf: m[2].trim() });
+                // Regex improvement: Handle quoted strings containing commas
+                // Matches: "optional quote", (capture group 1), "optional quote", comma, "optional quote", (capture group 2), "optional quote"
+                // But simplified: split by last comma if no quotes?
+                // Or better regex for CSV:
+                // ^\s* "([^"]+)" \s*,\s* "([^"]+)" \s*$  (Strictly quoted)
+                // | ^\s* ([^,]+) \s*,\s* "([^"]+)" \s*$  (First unquoted, second quoted)
+                // | ^\s* "([^"]+)" \s*,\s* ([^,]+) \s*$  (First quoted, second unquoted)
+                // | ^\s* ([^,]+) \s*,\s* ([^,]+) \s*$    (Both unquoted)
+                
+                // Let's try a robust match:
+                // Look for the LAST comma as the separator if the shelf is simple (usually is short like "7 D", "BIN")
+                // Shelf usually doesn't have commas. Name might.
+                
+                const lastCommaIdx = ln.lastIndexOf(',');
+                if (lastCommaIdx > -1) {
+                    let namePart = ln.substring(0, lastCommaIdx).trim();
+                    let shelfPart = ln.substring(lastCommaIdx + 1).trim();
+                    
+                    // Strip quotes if wrapping
+                    if (namePart.startsWith('"') && namePart.endsWith('"')) namePart = namePart.slice(1, -1);
+                    if (shelfPart.startsWith('"') && shelfPart.endsWith('"')) shelfPart = shelfPart.slice(1, -1);
+                    
+                    // Decode double quotes "" -> "
+                    namePart = namePart.replace(/""/g, '"');
+                    shelfPart = shelfPart.replace(/""/g, '"');
+                    
+                    if (namePart && shelfPart) {
+                        out.push({ name: namePart.trim(), shelf: shelfPart.trim() });
+                        continue;
+                    }
                 }
+                
+                dropped.push(ln);
             }
+            
+            if (dropped.length > 0) {
+                console.warn(`[CSV] Dropped ${dropped.length} rows due to parsing errors:`, dropped.slice(0, 5));
+            }
+            
             return out;
         }
 
@@ -1009,8 +1044,20 @@
 
                 // Calculate total games with copies counted
                 const totalCopies = allGames.reduce((sum, g) => sum + (g.copies || 1), 0);
-                console.log(`[DEBUG] After DTE processing: ${allGames.length} unique games from ${dteRows.length} CSV rows (${dteRows.length - totalCopies} duplicates/filtered)`);
-                console.log(`[DEBUG] Total game instances (copies): ${totalCopies}`);
+                
+                // Detailed Stats Logging
+                console.log(`[Stats] Raw CSV Lines: ${dteRows.length}`);
+                console.log(`[Stats] Unique Games: ${allGames.length}`);
+                console.log(`[Stats] Total Copies (Physcially on shelf): ${totalCopies}`);
+                console.log(`[Stats] Duplicates Collapsed: ${totalCopies - allGames.length}`);
+                
+                // Show stats in UI Status Text
+                document.getElementById('statusText').innerHTML = `
+                    Updated: ${new Date().toLocaleTimeString()}<br>
+                    <span class="text-xs">
+                        CSV: ${dteRows.length} rows | Unique: ${allGames.length} | Total Items: ${totalCopies}
+                    </span>
+                `;
 
                 loadingBar.style.width = '85%';
 
