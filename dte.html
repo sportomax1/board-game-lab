@@ -849,45 +849,78 @@
                         console.log(`[DEBUG] normMapStrict has "${nsNorm}": ${normMapStrict.has(nsNorm)}`);
                     }
 
-                    // Exact match in normalization
-                    if (normMapBasic.has(nbNorm)) {
-                        bggGame = normMapBasic.get(nbNorm);
-                        if (isTerraMars) console.log(`[DEBUG] ✓ Found in normMapBasic`);
-                        matchStatus = 'fuzzy';
-                    } else if (normMapStrict.has(nsNorm)) {
-                        bggGame = normMapStrict.get(nsNorm);
-                        if (isTerraMars) console.log(`[DEBUG] ✓ Found in normMapStrict`);
-                        matchStatus = 'fuzzy';
-                    } else {
-                        if (isTerraMars) console.log(`[DEBUG] Not in norm maps, trying partial match...`);
-                        // Partial match - prioritize exact name match, then longer matches
+                    // TIER 1: DIRECT MATCH - Character by character (case-insensitive, exact spacing/punctuation)
+                    if (isTerraMars) console.log(`[DEBUG] === TIER 1: Direct Match ===`);
+                    if (isTerraMars) console.log(`[DEBUG] Looking for exact match (case-insensitive): "${dteGameName}"`);
+                    
+                    for (const [, game] of bggMap) {
+                        if (game.name.toLowerCase() === nmLower) {
+                            bggGame = game;
+                            matchStatus = 'direct';
+                            if (isTerraMars) console.log(`[DEBUG] ✓✓✓ TIER 1 MATCH: "${game.name}" (ID: ${game.id})`);
+                            break;
+                        }
+                    }
+
+                    // TIER 2: NORMALIZED MATCH - Remove spaces and special chars, but keep all words
+                    if (!bggGame) {
+                        if (isTerraMars) console.log(`[DEBUG] === TIER 2: Normalized Match (spaces/special chars removed) ===`);
+                        if (isTerraMars) console.log(`[DEBUG] Normalized form: "${nbNorm}"`);
+                        
+                        for (const [, game] of bggMap) {
+                            const gameNormBasic = normalize(game.name, false);
+                            if (gameNormBasic === nbNorm) {
+                                bggGame = game;
+                                matchStatus = 'normalized';
+                                if (isTerraMars) console.log(`[DEBUG] ✓✓ TIER 2 MATCH: "${game.name}" (ID: ${game.id}), normalized: "${gameNormBasic}"`);
+                                break;
+                            }
+                        }
+                    }
+
+                    // TIER 3: PARTIAL LOOSE MATCH - Contains relationship, prioritize by length and exact word match
+                    if (!bggGame) {
+                        if (isTerraMars) console.log(`[DEBUG] === TIER 3: Partial Loose Match ===`);
+                        if (isTerraMars) console.log(`[DEBUG] Looking for games containing or contained by: "${nmLower}"`);
+                        
                         let candidates = [];
+                        
                         for (const [, game] of bggMap) {
                             const gameLower = game.name.toLowerCase();
-                            if (gameLower === nmLower) {
-                                // Exact name match - highest priority
-                                if (isTerraMars) console.log(`[DEBUG]   Exact match found: "${game.name}" (ID: ${game.id})`);
-                                candidates = [{game, priority: 3}];
-                                break;
-                            } else if (nmLower.includes(gameLower) || gameLower.includes(nmLower)) {
-                                // One contains the other
-                                const priority = gameLower === nmLower ? 3 : (gameLower.length > nmLower.length ? 2 : 1);
-                                if (isTerraMars) console.log(`[DEBUG]   Partial match: "${game.name}" (priority: ${priority}, ID: ${game.id})`);
-                                candidates.push({game, priority});
+                            const gameNorm = normalize(game.name, false);
+                            
+                            // Check normalized containment as priority
+                            if (nbNorm.includes(gameNorm) || gameNorm.includes(nbNorm)) {
+                                let priority = 3; // Default: one contains the other
+                                
+                                // If exact normalized match (shouldn't happen, but safety)
+                                if (nbNorm === gameNorm) priority = 4;
+                                // If one is substring
+                                else if (gameNorm.length > nbNorm.length) priority = 2; // BGG is longer (likely expansion)
+                                else if (gameNorm.length < nbNorm.length) priority = 1; // CSV is longer
+                                
+                                if (isTerraMars) console.log(`[DEBUG]   Candidate: "${game.name}" (ID: ${game.id}), priority: ${priority}, norm: "${gameNorm}"`);
+                                candidates.push({game, priority, nameLength: game.name.length});
+                            }
+                            // Also check case-insensitive raw containment
+                            else if (nmLower.includes(gameLower) || gameLower.includes(nmLower)) {
+                                let priority = 2;
+                                if (isTerraMars) console.log(`[DEBUG]   Candidate (raw): "${game.name}" (ID: ${game.id}), priority: ${priority}`);
+                                candidates.push({game, priority, nameLength: game.name.length});
                             }
                         }
                         
                         if (candidates.length > 0) {
-                            // Sort by priority (higher is better), then by name length (prefer exact/shorter matches)
+                            // Sort by: priority DESC, then name length ASC (prefer shorter/more specific)
                             candidates.sort((a, b) => {
                                 if (b.priority !== a.priority) return b.priority - a.priority;
-                                return a.game.name.length - b.game.name.length;
+                                return a.nameLength - b.nameLength;
                             });
                             bggGame = candidates[0].game;
-                            if (isTerraMars) console.log(`[DEBUG] ✓ Selected after sort: "${bggGame.name}" (ID: ${bggGame.id})`);
-                            matchStatus = 'fuzzy';
+                            matchStatus = 'partial';
+                            if (isTerraMars) console.log(`[DEBUG] ✓ TIER 3 MATCH: "${bggGame.name}" (ID: ${bggGame.id}) (priority: ${candidates[0].priority})`);
                         } else if (isTerraMars) {
-                            console.log(`[DEBUG] ✗ NO MATCH FOUND at all!`);
+                            console.log(`[DEBUG] ✗✗✗ NO MATCH FOUND at ANY tier!`);
                         }
                     }
 
