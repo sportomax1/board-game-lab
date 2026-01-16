@@ -664,15 +664,14 @@
             const bggUrl = g.id && !g.id.startsWith('dte-') ? `https://boardgamegeek.com/boardgame/${g.id}` : null;
             
             const hasValidBggId = g.id && !g.id.startsWith('dte-');
-            const cardClickable = hasValidBggId ? 'cursor-pointer hover:shadow-md transition-shadow' : '';
-            // Properly escape game name for use in onclick attribute
-            const escapedGameName = g.name.replace(/\\/g, '\\\\').replace(/'/g, "\\'").replace(/"/g, '&quot;').replace(/\n/g, '\\n').replace(/\r/g, '\\r');
-            const cardOnClick = hasValidBggId ? `onclick="showGameDetails('${g.id}', '${escapedGameName}', event)"` : '';
+            const cardClickable = hasValidBggId ? 'cursor-pointer hover:shadow-md transition-shadow game-card-clickable' : '';
+            const gameDataAttrs = hasValidBggId ? `data-game-id="${g.id}" data-game-name="${g.name.replace(/"/g, '&quot;')}"` : '';
+            const thumbDataAttrs = bggUrl ? `data-bgg-url="${bggUrl}"` : '';
             
             return `
-            <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden ${cardClickable}" ${cardOnClick}>
-                <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative" onclick="event.stopPropagation(); ${bggUrl ? `window.open('${bggUrl}', '_blank')` : ''}">
-                    <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+            <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden ${cardClickable}" ${gameDataAttrs}>
+                <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative game-card-thumb" ${thumbDataAttrs}>
+                    <img src="${g.thumb}" loading="lazy" class="w-full h-full object-cover" alt="${g.name.replace(/"/g, '&quot;')}">
                     <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
                         #${idx + 1}
                     </div>
@@ -1158,19 +1157,19 @@
         let currentGameDetails = null;
         let currentGameDetailsTab = 'categories';
 
-        async function showGameDetails(gameId, gameName, event) {
-            if (event) event.stopPropagation();
-            
+        async function showGameDetails(gameId, gameName) {
             const modal = document.getElementById('gameDetailsModal');
             const title = document.getElementById('gameDetailsTitle');
             const content = document.getElementById('gameDetailsContent');
             
             // Safely set the title text
+            title.innerHTML = '';
             const icon = document.createElement('i');
             icon.setAttribute('data-lucide', 'info');
             icon.className = 'w-5 h-5 text-indigo-600';
-            title.textContent = ' ' + gameName;
-            title.insertBefore(icon, title.firstChild);
+            const textNode = document.createTextNode(' ' + gameName);
+            title.appendChild(icon);
+            title.appendChild(textNode);
             
             modal.classList.remove('hidden');
             
@@ -1258,10 +1257,18 @@
                     return div.innerHTML;
                 };
                 
+                // Map tab names to BGG link types
+                const linkTypeMap = {
+                    'categories': 'boardgamecategory',
+                    'mechanics': 'boardgamemechanic',
+                    'families': 'boardgamefamily'
+                };
+                const linkType = linkTypeMap[tabName] || 'boardgamefamily';
+                
                 content.innerHTML = items.map(item => `
                     <div class="bg-white p-3 rounded-lg shadow-sm border border-gray-200 flex items-center justify-between">
                         <span class="font-medium text-gray-900">${escapeHtml(item.name)}</span>
-                        <a href="https://boardgamegeek.com/${tabName === 'categories' ? 'boardgamecategory' : tabName === 'mechanics' ? 'boardgamemechanic' : 'boardgamefamily'}/${encodeURIComponent(item.id)}" 
+                        <a href="https://boardgamegeek.com/${linkType}/${encodeURIComponent(item.id)}" 
                            target="_blank" 
                            rel="noopener noreferrer" 
                            class="text-indigo-600 hover:text-indigo-800 text-xs flex items-center gap-1"
@@ -1315,7 +1322,7 @@
                 content.innerHTML = notFoundGames.map((g, idx) => `
                     <div class="bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3">
                         <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative">
-                            <img src="${escapeHtml(g.thumb || '')}" loading="lazy" class="w-full h-full object-cover" onerror="this.src='data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>'">
+                            <img src="${escapeHtml(g.thumb || '')}" loading="lazy" class="w-full h-full object-cover" alt="${escapeHtml(g.name)}">
                             <div class="absolute top-0 left-0 bg-black/50 text-white text-[10px] font-bold px-1.5 py-0.5 rounded-br-lg backdrop-blur-sm">
                                 #${idx + 1}
                             </div>
@@ -1363,6 +1370,42 @@
                 setTimeout(() => { btn.innerHTML = original; lucide.createIcons(); }, 2000);
             });
         }
+
+        // Event delegation for game card clicks
+        document.getElementById('gameList').addEventListener('click', (e) => {
+            // Check if clicked on thumbnail to open BGG
+            const thumb = e.target.closest('.game-card-thumb');
+            if (thumb) {
+                const bggUrl = thumb.dataset.bggUrl;
+                if (bggUrl) {
+                    window.open(bggUrl, '_blank');
+                    return;
+                }
+            }
+            
+            // Check if clicked on clickable game card to show details
+            const card = e.target.closest('.game-card-clickable');
+            if (card) {
+                const gameId = card.dataset.gameId;
+                const gameName = card.dataset.gameName;
+                if (gameId && gameName) {
+                    showGameDetails(gameId, gameName);
+                }
+            }
+        });
+
+        // Add image error handling via event delegation
+        document.getElementById('gameList').addEventListener('error', (e) => {
+            if (e.target.tagName === 'IMG') {
+                e.target.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>';
+            }
+        }, true);
+        
+        document.getElementById('notFoundInBGGContent').addEventListener('error', (e) => {
+            if (e.target.tagName === 'IMG') {
+                e.target.src = 'data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 1 1%22 fill=%22%23f3f4f6%22><rect width=%221%22 height=%221%22/></svg>';
+            }
+        }, true);
 
         // --- Initialization ---
         function startApp() {
