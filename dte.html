@@ -610,7 +610,12 @@
                                 <tr>
                                     <th class="px-3 py-2 text-left font-bold text-gray-700">Game Name</th>
                                     <th class="px-3 py-2 text-left font-bold text-gray-700">Shelf Location</th>
-                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Status</th>
+                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Year</th>
+                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Rating</th>
+                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Rank</th>
+                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Players</th>
+                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Time</th>
+                                    <th class="px-3 py-2 text-center font-bold text-gray-700">Plays</th>
                                 </tr>
                             </thead>
                             <tbody id="csvDataTable" class="divide-y divide-gray-200">
@@ -624,7 +629,7 @@
 
             <!-- Duplicates Tab -->
             <div id="csvAnalysisTabDuplicates" class="csvAnalysisTabContent hidden space-y-3">
-                <p class="text-sm text-gray-600 bg-yellow-50 border border-yellow-200 px-3 py-2 rounded">Games that appear on the same shelf (complete duplicates - same name and location):</p>
+                <p class="text-sm text-gray-600 bg-yellow-50 border border-yellow-200 px-3 py-2 rounded">Games that appear on multiple shelves (same game in different physical locations):</p>
                 <div id="csvDuplicatesList" class="space-y-2">
                     <!-- Duplicates injected here -->
                 </div>
@@ -3669,21 +3674,25 @@
         let csvAnalysisShowDupOnly = false;
 
         function renderCSVAnalysis() {
-            if (!dteRows.length) return;
+            if (!allGames.length) return;
 
-            // Calculate stats from dteRows only
-            const uniqueGames = new Set(dteRows.map(r => r.name)).size;
-            const totalRecords = dteRows.length;
-            const shelves = new Set(dteRows.map(r => r.shelf));
+            // Calculate stats from allGames (enriched with BGG data)
+            const uniqueGames = allGames.length;
+            
+            // Calculate total physical copies (sum of all locations across all games)
+            const totalRecords = allGames.reduce((sum, g) => sum + (g.locations?.length || 1), 0);
+            
+            // Get unique shelves from all game locations
+            const shelves = new Set();
+            allGames.forEach(g => {
+                if (g.locations) {
+                    g.locations.forEach(loc => shelves.add(loc.label));
+                }
+            });
             const uniqueShelves = shelves.size;
 
-            // Find complete duplicates (same name and same shelf)
-            const duplicateMap = {};
-            dteRows.forEach(row => {
-                const key = `${row.name}|||${row.shelf}`;
-                duplicateMap[key] = (duplicateMap[key] || 0) + 1;
-            });
-            const duplicateCount = Object.keys(duplicateMap).filter(k => duplicateMap[k] > 1).length;
+            // Find games with multiple copies (same game on multiple shelves)
+            const duplicateCount = allGames.filter(g => (g.copies || 1) > 1).length;
 
             // Update stats display
             document.getElementById('csvTotalRecords').textContent = totalRecords;
@@ -3695,7 +3704,7 @@
             renderCSVDataTable();
             
             // Render duplicates
-            renderCSVDuplicates(duplicateMap);
+            renderCSVDuplicates();
             
             // Render shelf breakdown
             renderCSVShelfBreakdown(shelves);
@@ -3708,128 +3717,277 @@
             const table = document.getElementById('csvDataTable');
             const searchVal = (document.getElementById('csvAnalysisSearch')?.value || '').toLowerCase();
             
-            // Build duplicate map from raw dteRows
-            const duplicateMap = {};
-            dteRows.forEach(row => {
-                const key = `${row.name}|||${row.shelf}`;
-                duplicateMap[key] = (duplicateMap[key] || 0) + 1;
+            // Expand allGames into individual shelf entries for display
+            let expandedRows = [];
+            allGames.forEach(game => {
+                if (game.locations && game.locations.length > 0) {
+                    game.locations.forEach(loc => {
+                        expandedRows.push({
+                            name: game.name,
+                            shelf: loc.label,
+                            year: game.year || '-',
+                            rating: game.bggRating || '-',
+                            rank: game.rank === 999999 ? '-' : game.rank,
+                            players: game.minP && game.maxP ? `${game.minP}-${game.maxP}` : '-',
+                            time: game.time ? `${game.time}m` : '-',
+                            plays: game.plays || 0,
+                            matchStatus: game.matchStatus || 'direct',
+                            hasBGA: game.hasBGA || false,
+                            isDuplicate: (game.copies || 1) > 1
+                        });
+                    });
+                }
             });
 
-            // Filter and render dteRows
-            let rows = dteRows.filter(row => {
-                const key = `${row.name}|||${row.shelf}`;
-                const isDuplicate = duplicateMap[key] > 1;
-                
-                if (csvAnalysisShowDupOnly && !isDuplicate) return false;
+            // Filter rows
+            let filteredRows = expandedRows.filter(row => {
+                if (csvAnalysisShowDupOnly && !row.isDuplicate) return false;
                 if (searchVal && !row.name.toLowerCase().includes(searchVal) && !row.shelf.toLowerCase().includes(searchVal)) return false;
-                
                 return true;
-            }).map(row => {
-                const key = `${row.name}|||${row.shelf}`;
-                return {
-                    name: row.name,
-                    shelf: row.shelf,
-                    isDuplicate: duplicateMap[key] > 1
-                };
             });
 
-            table.innerHTML = rows.map((row, idx) => `
+            // Render table with enriched data
+            table.innerHTML = filteredRows.map((row, idx) => {
+                const matchBadge = row.matchStatus === 'miss' 
+                    ? '<span class="bg-red-100 text-red-700 px-1.5 py-0.5 rounded text-[10px]">Not in BGG</span>'
+                    : row.matchStatus === 'partial'
+                    ? '<span class="bg-yellow-100 text-yellow-700 px-1.5 py-0.5 rounded text-[10px]">Fuzzy Match</span>'
+                    : row.matchStatus === 'normalized'
+                    ? '<span class="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded text-[10px]">Normalized</span>'
+                    : '<span class="bg-green-100 text-green-700 px-1.5 py-0.5 rounded text-[10px]">✓ Direct</span>';
+                
+                const bgaBadge = row.hasBGA ? '<span class="bg-purple-100 text-purple-700 px-1.5 py-0.5 rounded text-[10px]">🎮 BGA</span>' : '';
+                const dupBadge = row.isDuplicate ? '<span class="bg-red-200 text-red-800 px-1.5 py-0.5 rounded text-[10px]">⚠️ Multi-Copy</span>' : '';
+                
+                return `
                 <tr class="${row.isDuplicate ? 'bg-red-50' : 'hover:bg-gray-50'}">
-                    <td class="px-3 py-2">${row.name}</td>
+                    <td class="px-3 py-2">
+                        <div class="font-medium">${row.name}</div>
+                        <div class="flex gap-1 mt-1">
+                            ${matchBadge}
+                            ${bgaBadge}
+                            ${dupBadge}
+                        </div>
+                    </td>
                     <td class="px-3 py-2"><span class="bg-blue-100 text-blue-800 px-2 py-1 rounded text-xs font-bold">${row.shelf}</span></td>
-                    <td class="px-3 py-2 text-center">${row.isDuplicate ? '<span class="bg-red-200 text-red-800 px-2 py-1 rounded text-xs font-bold">⚠️ DUPLICATE</span>' : '<span class="bg-green-100 text-green-800 px-2 py-1 rounded text-xs font-bold">✓ OK</span>'}</td>
+                    <td class="px-3 py-2 text-center text-sm">${row.year}</td>
+                    <td class="px-3 py-2 text-center text-sm">${row.rating}</td>
+                    <td class="px-3 py-2 text-center text-sm">${row.rank}</td>
+                    <td class="px-3 py-2 text-center text-sm">${row.players}</td>
+                    <td class="px-3 py-2 text-center text-sm">${row.time}</td>
+                    <td class="px-3 py-2 text-center text-sm">${row.plays}</td>
                 </tr>
-            `).join('');
+            `;
+            }).join('');
 
-            document.getElementById('csvDataShowing').textContent = `Showing ${rows.length} of ${dteRows.length} records`;
+            const totalPhysicalItems = expandedRows.length;
+            document.getElementById('csvDataShowing').textContent = `Showing ${filteredRows.length} of ${totalPhysicalItems} physical items (${allGames.length} unique games)`;
         }
 
-        function renderCSVDuplicates(duplicateMap) {
+        function renderCSVDuplicates() {
             const dupDiv = document.getElementById('csvDuplicatesList');
-            const dups = Object.entries(duplicateMap).filter(([, count]) => count > 1).map(([key]) => {
-                const [name, shelf] = key.split('|||');
-                return { name, shelf };
-            });
+            const duplicateGames = allGames.filter(g => (g.copies || 1) > 1);
 
-            if (dups.length === 0) {
-                dupDiv.innerHTML = '<div class="bg-green-50 border border-green-200 p-4 rounded text-green-800 text-sm">✓ No duplicate records found! Your CSV is clean.</div>';
+            if (duplicateGames.length === 0) {
+                dupDiv.innerHTML = '<div class="bg-green-50 border border-green-200 p-4 rounded text-green-800 text-sm">✓ No duplicate games found! Each game appears on only one shelf.</div>';
             } else {
-                dupDiv.innerHTML = dups.map(d => `
-                    <div class="bg-red-50 border border-red-200 p-3 rounded">
-                        <strong class="text-red-900">${d.name}</strong> on shelf <span class="bg-red-200 px-2 py-1 rounded text-xs font-bold">${d.shelf}</span>
+                dupDiv.innerHTML = duplicateGames.map(g => {
+                    const shelves = g.locations.map(loc => loc.label).join(', ');
+                    return `
+                    <div class="bg-red-50 border border-red-200 p-4 rounded">
+                        <div class="flex items-start justify-between mb-2">
+                            <div class="flex-1">
+                                <strong class="text-red-900 text-lg">${g.name}</strong>
+                                <div class="text-xs text-gray-600 mt-1">${g.year || 'Year unknown'} • Rating: ${g.bggRating} • Rank: ${g.rank === 999999 ? 'Unranked' : g.rank}</div>
+                            </div>
+                            <span class="bg-red-200 text-red-900 px-2 py-1 rounded text-xs font-bold">${g.copies} copies</span>
+                        </div>
+                        <div class="text-sm text-gray-700">
+                            <strong>Shelf Locations:</strong> ${g.locations.map(loc => `<span class="bg-red-200 px-2 py-1 rounded text-xs font-bold ml-1">${loc.label}</span>`).join('')}
+                        </div>
+                        ${g.matchStatus === 'miss' ? '<div class="text-xs text-red-600 mt-2">⚠️ Not found in BGG collection</div>' : ''}
                     </div>
-                `).join('');
+                `;
+                }).join('');
             }
         }
 
         function renderCSVShelfBreakdown(shelves) {
             const shelfDiv = document.getElementById('csvShelfBreakdown');
-            const shelfCounts = {};
+            const shelfStats = {};
             
-            // Count from raw dteRows
-            dteRows.forEach(row => {
-                shelfCounts[row.shelf] = (shelfCounts[row.shelf] || 0) + 1;
+            // Build shelf statistics from allGames
+            allGames.forEach(game => {
+                if (game.locations) {
+                    game.locations.forEach(loc => {
+                        const shelf = loc.label;
+                        if (!shelfStats[shelf]) {
+                            shelfStats[shelf] = {
+                                count: 0,
+                                totalRating: 0,
+                                ratedCount: 0,
+                                totalTime: 0,
+                                timeCount: 0,
+                                totalPlays: 0,
+                                bgaCount: 0
+                            };
+                        }
+                        shelfStats[shelf].count++;
+                        
+                        // Aggregate ratings (only count valid ratings)
+                        if (game.average && game.average > 0) {
+                            shelfStats[shelf].totalRating += game.average;
+                            shelfStats[shelf].ratedCount++;
+                        }
+                        
+                        // Aggregate playing time
+                        if (game.time && game.time > 0) {
+                            shelfStats[shelf].totalTime += game.time;
+                            shelfStats[shelf].timeCount++;
+                        }
+                        
+                        // Aggregate plays
+                        shelfStats[shelf].totalPlays += (game.plays || 0);
+                        
+                        // Count BGA games
+                        if (game.hasBGA) {
+                            shelfStats[shelf].bgaCount++;
+                        }
+                    });
+                }
             });
 
-            const sorted = Object.entries(shelfCounts).sort((a, b) => b[1] - a[1]);
+            const sorted = Object.entries(shelfStats).sort((a, b) => b[1].count - a[1].count);
             
-            shelfDiv.innerHTML = sorted.map(([shelf, count]) => `
-                <div class="bg-white border border-gray-200 p-3 rounded flex justify-between items-center">
-                    <span class="font-bold"><span class="bg-indigo-100 text-indigo-800 px-2 py-1 rounded text-xs font-bold">${shelf}</span></span>
-                    <span class="text-lg font-bold text-gray-900">${count} ${count === 1 ? 'game' : 'games'}</span>
+            shelfDiv.innerHTML = sorted.map(([shelf, stats]) => {
+                const avgRating = stats.ratedCount > 0 ? (stats.totalRating / stats.ratedCount).toFixed(1) : '-';
+                const avgTime = stats.timeCount > 0 ? Math.round(stats.totalTime / stats.timeCount) : '-';
+                
+                return `
+                <div class="bg-white border border-gray-200 p-4 rounded">
+                    <div class="flex justify-between items-start mb-3">
+                        <span class="font-bold"><span class="bg-indigo-100 text-indigo-800 px-3 py-1.5 rounded text-sm font-bold">${shelf}</span></span>
+                        <span class="text-2xl font-bold text-gray-900">${stats.count} ${stats.count === 1 ? 'game' : 'games'}</span>
+                    </div>
+                    <div class="grid grid-cols-2 gap-2 text-xs">
+                        <div class="bg-gray-50 p-2 rounded">
+                            <div class="text-gray-500">Avg Rating</div>
+                            <div class="font-bold text-gray-900">${avgRating === '-' ? '-' : '⭐ ' + avgRating}</div>
+                        </div>
+                        <div class="bg-gray-50 p-2 rounded">
+                            <div class="text-gray-500">Avg Time</div>
+                            <div class="font-bold text-gray-900">${avgTime === '-' ? '-' : avgTime + 'm'}</div>
+                        </div>
+                        <div class="bg-gray-50 p-2 rounded">
+                            <div class="text-gray-500">Total Plays</div>
+                            <div class="font-bold text-gray-900">${stats.totalPlays}</div>
+                        </div>
+                        <div class="bg-gray-50 p-2 rounded">
+                            <div class="text-gray-500">BGA Games</div>
+                            <div class="font-bold text-gray-900">🎮 ${stats.bgaCount}</div>
+                        </div>
+                    </div>
                 </div>
-            `).join('');
+            `;
+            }).join('');
         }
 
         function renderCSVHealthCheck() {
             const healthDiv = document.getElementById('csvHealthReport');
             const issues = [];
 
-            // Check for duplicate entries (same name + shelf)
-            const duplicateMap = {};
-            dteRows.forEach(row => {
-                const key = `${row.name}|||${row.shelf}`;
-                duplicateMap[key] = (duplicateMap[key] || 0) + 1;
-            });
-            const duplicates = Object.keys(duplicateMap).filter(k => duplicateMap[k] > 1).length;
+            // Check for games with multiple copies (duplicates on different shelves)
+            const duplicates = allGames.filter(g => (g.copies || 1) > 1).length;
             if (duplicates > 0) {
-                issues.push(`⚠️ <strong>${duplicates}</strong> duplicate entries found (same game on same shelf)`);
+                issues.push(`ℹ️ <strong>${duplicates}</strong> games appear on multiple shelves (multi-copy games)`);
             }
 
-            // Check for empty game names
-            const emptyNames = dteRows.filter(r => !r.name || r.name.trim() === '').length;
-            if (emptyNames > 0) {
-                issues.push(`⚠️ <strong>${emptyNames}</strong> rows with missing game names`);
+            // Check for games not found in BGG
+            const notInBGG = allGames.filter(g => g.matchStatus === 'miss').length;
+            if (notInBGG > 0) {
+                issues.push(`⚠️ <strong>${notInBGG}</strong> games not found in your BGG collection`);
             }
 
-            // Check for empty shelf locations
-            const emptyShelves = dteRows.filter(r => !r.shelf || r.shelf.trim() === '').length;
-            if (emptyShelves > 0) {
-                issues.push(`⚠️ <strong>${emptyShelves}</strong> rows with missing shelf locations`);
+            // Check for fuzzy/partial matches
+            const fuzzyMatches = allGames.filter(g => g.matchStatus === 'partial' || g.matchStatus === 'normalized').length;
+            if (fuzzyMatches > 0) {
+                issues.push(`ℹ️ <strong>${fuzzyMatches}</strong> games matched with fuzzy/normalized matching (may need verification)`);
             }
 
-            // Check for shelf naming inconsistencies
-            const shelfSet = new Set();
-            const shelfIssues = [];
-            dteRows.forEach(row => {
-                const shelf = row.shelf;
-                if (shelf.match(/\d+ [a-z]/) && !shelf.match(/\d+ [A-Z]/)) {
-                    shelfIssues.push(shelf);
-                }
-            });
-            const uniqueShelfIssues = new Set(shelfIssues);
-            if (uniqueShelfIssues.size > 0) {
-                issues.push(`ℹ️ <strong>${uniqueShelfIssues.size}</strong> shelves with lowercase letters (e.g., "6 c" instead of "6 C")`);
+            // Check for games with missing ratings
+            const noRating = allGames.filter(g => !g.average || g.average === 0).length;
+            if (noRating > 0) {
+                issues.push(`ℹ️ <strong>${noRating}</strong> games have no BGG rating`);
             }
 
-            if (issues.length === 0) {
+            // Check for unranked games
+            const unranked = allGames.filter(g => !g.rank || g.rank === 999999).length;
+            if (unranked > 0) {
+                issues.push(`ℹ️ <strong>${unranked}</strong> games are unranked on BGG`);
+            }
+
+            // Check for games never played
+            const neverPlayed = allGames.filter(g => !g.plays || g.plays === 0).length;
+            if (neverPlayed > 0) {
+                issues.push(`ℹ️ <strong>${neverPlayed}</strong> games have never been played (according to BGG)`);
+            }
+
+            // Check for games with missing player counts
+            const missingPlayers = allGames.filter(g => !g.minP || !g.maxP || g.minP === 0).length;
+            if (missingPlayers > 0) {
+                issues.push(`ℹ️ <strong>${missingPlayers}</strong> games have missing player count information`);
+            }
+
+            // Check for games with missing time
+            const missingTime = allGames.filter(g => !g.time || g.time === 0).length;
+            if (missingTime > 0) {
+                issues.push(`ℹ️ <strong>${missingTime}</strong> games have missing playing time information`);
+            }
+
+            // Positive findings
+            const positiveFindings = [];
+            
+            // Count BGA games
+            const bgaGames = allGames.filter(g => g.hasBGA).length;
+            if (bgaGames > 0) {
+                positiveFindings.push(`✅ <strong>${bgaGames}</strong> games available on Board Game Arena`);
+            }
+
+            // Count highly rated games (8.0+)
+            const highlyRated = allGames.filter(g => g.average && g.average >= 8.0).length;
+            if (highlyRated > 0) {
+                positiveFindings.push(`⭐ <strong>${highlyRated}</strong> highly rated games (8.0+ rating)`);
+            }
+
+            // Count top 1000 ranked games
+            const topRanked = allGames.filter(g => g.rank && g.rank <= 1000).length;
+            if (topRanked > 0) {
+                positiveFindings.push(`🏆 <strong>${topRanked}</strong> games in BGG Top 1000`);
+            }
+
+            if (issues.length === 0 && positiveFindings.length === 0) {
                 healthDiv.innerHTML = '<div class="bg-green-50 border border-green-200 p-4 rounded text-green-800 text-sm"><strong>✓ All Checks Passed!</strong><p class="mt-2">Your collection data is in excellent condition.</p></div>';
             } else {
-                healthDiv.innerHTML = '<div class="space-y-2">' + issues.map(issue => `
+                let html = '<div class="space-y-2">';
+                
+                // Show positive findings first
+                if (positiveFindings.length > 0) {
+                    html += positiveFindings.map(finding => `
+                        <div class="bg-green-50 border border-green-200 p-3 rounded text-green-800 text-sm">
+                            ${finding}
+                        </div>
+                    `).join('');
+                }
+                
+                // Then show issues/informational items
+                html += issues.map(issue => `
                     <div class="bg-yellow-50 border border-yellow-200 p-3 rounded text-yellow-800 text-sm">
                         ${issue}
                     </div>
-                `).join('') + '</div>';
+                `).join('');
+                
+                html += '</div>';
+                healthDiv.innerHTML = html;
             }
         }
 
