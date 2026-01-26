@@ -65,9 +65,68 @@
 
         .game-card img {
             max-width: 100%;
-            max-height: 100%;
+            max-height: 80%; /* Leave room for name */
             object-fit: contain;
             padding: 0.5rem;
+        }
+
+        .game-name-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(15, 23, 42, 0.8);
+            backdrop-filter: blur(2px);
+            padding: 0.25rem 0.5rem;
+            text-align: center;
+        }
+
+        .game-name-text {
+            color: #f8fafc;
+            font-size: 0.6rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.025em;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+        }
+
+        .channel-guide {
+            position: absolute;
+            inset: 0;
+            background: #0f172a;
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            justify-content: center;
+            z-index: 40;
+            transition: opacity 0.3s ease;
+        }
+
+        .guide-item {
+            padding: 0.75rem 2rem;
+            font-weight: 800;
+            text-transform: uppercase;
+            letter-spacing: 0.1em;
+            color: rgba(255, 255, 255, 0.3);
+            transition: all 0.3s ease;
+            font-size: 1.25rem;
+        }
+
+        .guide-item.active {
+            color: #6366f1;
+            transform: scale(1.2);
+        }
+
+        .guide-item.past {
+            color: rgba(255, 255, 255, 0.1);
+            font-size: 0.875rem;
+        }
+
+        .guide-item.next {
+            color: rgba(255, 255, 255, 0.6);
+            font-size: 1rem;
         }
 
         .game-rank {
@@ -162,6 +221,9 @@
     </header>
 
     <main class="dashboard-container">
+        <div id="channel-guide" class="channel-guide hidden">
+            <!-- Channel items will be injected here -->
+        </div>
         <div id="game-grid" class="grid-layout">
             <!-- Game cards will be injected here -->
         </div>
@@ -173,19 +235,23 @@
 
     <script>
         const USERNAME = 'sportomax';
-        const ROTATION_INTERVAL = 10000; // 10 seconds
-        const DASHBOARDS = ['PLAYS', 'HOT', 'RANKED'];
+        const ROTATION_INTERVAL = 12000; // 12 seconds total (10s view + 2s guide)
+        const GUIDE_DURATION = 2000;
+        const DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED'];
         let currentIdx = 0;
         let timerStart = Date.now();
         let cache = {
             PLAYS: [],
             HOT: [],
-            RANKED: []
+            RANKED: [],
+            TOP_RATED: [],
+            MOST_PLAYED: []
         };
 
         const els = {
             title: document.getElementById('dashboard-title'),
             grid: document.getElementById('game-grid'),
+            guide: document.getElementById('channel-guide'),
             timerBar: document.getElementById('timer-bar'),
             loading: document.getElementById('loading')
         };
@@ -208,7 +274,7 @@
         async function loadData() {
             console.log('Fetching all dashboard data...');
             
-            // 1. Fetch Hot Games (Easiest)
+            // 1. Fetch Hot Games
             const hotXml = await fetchAPI('hot', '&type=boardgame');
             if (hotXml) {
                 const doc = new DOMParser().parseFromString(hotXml, 'text/xml');
@@ -227,7 +293,6 @@
                 const playItems = Array.from(doc.querySelectorAll('play')).slice(0, 10);
                 const playIds = playItems.map(p => p.querySelector('item').getAttribute('objectid'));
                 
-                // Need thumbnails for plays
                 const thingXml = await fetchAPI('thing', `&id=${playIds.join(',')}`);
                 if (thingXml) {
                     const tDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
@@ -249,7 +314,6 @@
                 while ((match = idRegex.exec(browseHtml)) !== null && rankedIds.length < 10) {
                     if (!rankedIds.includes(match[1])) rankedIds.push(match[1]);
                 }
-                
                 if (rankedIds.length > 0) {
                     const thingXml = await fetchAPI('thing', `&id=${rankedIds.join(',')}`);
                     if (thingXml) {
@@ -264,6 +328,44 @@
                 }
             }
 
+            // 4. Fetch Collection for TOP_RATED and MOST_PLAYED
+            const collXml = await fetchAPI('collection', `&username=${USERNAME}&stats=1&own=1`);
+            if (collXml) {
+                const doc = new DOMParser().parseFromString(collXml, 'text/xml');
+                const items = Array.from(doc.querySelectorAll('item'));
+                
+                // TOP_RATED
+                cache.TOP_RATED = items
+                    .filter(it => it.querySelector('stats')?.querySelector('rating')?.getAttribute('value') !== 'N/A')
+                    .sort((a, b) => {
+                        const ra = parseFloat(a.querySelector('stats')?.querySelector('rating')?.getAttribute('value') || 0);
+                        const rb = parseFloat(b.querySelector('stats')?.querySelector('rating')?.getAttribute('value') || 0);
+                        return rb - ra;
+                    })
+                    .slice(0, 10)
+                    .map((item, idx) => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+
+                // MOST_PLAYED
+                cache.MOST_PLAYED = items
+                    .sort((a, b) => {
+                        const pa = parseInt(a.querySelector('numplays')?.textContent || 0);
+                        const pb = parseInt(b.querySelector('numplays')?.textContent || 0);
+                        return pb - pa;
+                    })
+                    .slice(0, 10)
+                    .map((item, idx) => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+            }
+
             els.loading.style.opacity = '0';
             setTimeout(() => els.loading.style.display = 'none', 500);
             
@@ -271,17 +373,48 @@
             setInterval(updateTimer, 50);
         }
 
-        function rotate() {
+        async function rotate() {
+            // SHOW CHANNEL GUIDE
             const type = DASHBOARDS[currentIdx];
+            els.guide.innerHTML = DASHBOARDS.map((d, i) => {
+                let cls = 'guide-item';
+                if (i === currentIdx) cls += ' active';
+                else if (i === (currentIdx - 1 + DASHBOARDS.length) % DASHBOARDS.length) cls += ' past';
+                else if (i === (currentIdx + 1) % DASHBOARDS.length) cls += ' next';
+                return `<div class="${cls}">${getShortTitle(d)}</div>`;
+            }).join('');
+            
+            els.guide.classList.remove('hidden');
+            els.guide.style.opacity = '1';
+            els.grid.style.opacity = '0.3';
+            els.title.innerText = 'SELECTING CHANNEL...';
+            
+            timerStart = Date.now();
+            await new Promise(r => setTimeout(r, GUIDE_DURATION));
+
+            // SHOW DASHBOARD
             const data = cache[type] || [];
+            els.guide.style.opacity = '0';
+            setTimeout(() => els.guide.classList.add('hidden'), 300);
+            els.grid.style.opacity = '1';
             
             els.title.innerText = getTitle(type);
             renderGrid(data);
 
             currentIdx = (currentIdx + 1) % DASHBOARDS.length;
-            timerStart = Date.now();
             
-            setTimeout(rotate, ROTATION_INTERVAL);
+            setTimeout(rotate, ROTATION_INTERVAL - GUIDE_DURATION);
+        }
+
+        function getShortTitle(type) {
+            switch(type) {
+                case 'PLAYS': return 'RECENT PLAYS';
+                case 'HOT': return 'HOT GAMES';
+                case 'RANKED': return 'TOP RANKED';
+                case 'TOP_RATED': return 'YOUR TOP RATED';
+                case 'MOST_PLAYED': return 'MOST PLAYED';
+                default: return type;
+            }
         }
 
         function getTitle(type) {
@@ -289,6 +422,8 @@
                 case 'PLAYS': return `LAST 10 PLAYS: ${USERNAME.toUpperCase()}`;
                 case 'HOT': return 'TOP 10 HOT GAMES';
                 case 'RANKED': return 'TOP 10 RANKED GAMES';
+                case 'TOP_RATED': return 'TOP 10 RATED BY YOU';
+                case 'MOST_PLAYED': return 'TOP 10 MOST PLAYED';
                 default: return 'BGG DASHBOARD';
             }
         }
@@ -305,6 +440,9 @@
                 card.innerHTML = `
                     <img src="${proxiedThumb}" alt="${item.name}" onerror="this.src='https://via.placeholder.com/300?text=Error'">
                     <div class="game-rank">#${item.rank}</div>
+                    <div class="game-name-overlay">
+                        <div class="game-name-text">${item.name}</div>
+                    </div>
                 `;
                 els.grid.appendChild(card);
             });
