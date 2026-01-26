@@ -124,9 +124,68 @@
             font-size: 0.875rem;
         }
 
-        .guide-item.next {
-            color: rgba(255, 255, 255, 0.6);
-            font-size: 1rem;
+        .guide-item:hover {
+            color: white;
+            cursor: pointer;
+            background: rgba(255, 255, 255, 0.05);
+            border-radius: 0.5rem;
+        }
+
+        .controls-overlay {
+            position: absolute;
+            bottom: 4rem;
+            left: 50%;
+            transform: translateX(-50%);
+            display: flex;
+            gap: 1.5rem;
+            background: rgba(15, 23, 42, 0.6);
+            backdrop-filter: blur(8px);
+            padding: 0.75rem 1.5rem;
+            border-radius: 9999px;
+            z-index: 60;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            opacity: 0;
+            transition: opacity 0.3s ease;
+        }
+
+        body:hover .controls-overlay {
+            opacity: 1;
+        }
+
+        .control-btn {
+            color: #f8fafc;
+            font-size: 1.25rem;
+            transition: all 0.2s;
+            cursor: pointer;
+        }
+
+        .control-btn:hover {
+            color: #6366f1;
+            transform: scale(1.1);
+        }
+
+        .username-input-container {
+            position: relative;
+            display: flex;
+            align-items: center;
+        }
+
+        .username-input {
+            background: rgba(15, 23, 42, 0.4);
+            border: 1px solid rgba(255, 255, 255, 0.1);
+            border-radius: 0.5rem;
+            padding: 0.25rem 0.5rem;
+            color: #f8fafc;
+            font-size: 0.75rem;
+            font-weight: 700;
+            width: 120px;
+            outline: none;
+            transition: all 0.2s;
+        }
+
+        .username-input:focus {
+            border-color: #6366f1;
+            background: rgba(15, 23, 42, 0.8);
         }
 
         .game-rank {
@@ -211,12 +270,19 @@
             </div>
             <div>
                 <h1 id="dashboard-title" class="text-xl font-black tracking-tight">LOADING...</h1>
-                <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Live BGG Feed</p>
+                <div class="flex items-center gap-2">
+                    <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Live BGG Feed for</p>
+                    <div class="username-input-container">
+                        <input type="text" id="username-field" class="username-input" value="sportomax" onchange="updateUsername(this.value)">
+                    </div>
+                </div>
             </div>
         </div>
-        <div id="dashboard-status" class="status-badge flex items-center gap-2">
-            <span class="w-2 h-2 bg-indigo-500 rounded-full animate-ping"></span>
-            UPDATING
+        <div class="flex items-center gap-4">
+            <div id="dashboard-status" class="status-badge flex items-center gap-2">
+                <span id="status-dot" class="w-2 h-2 bg-indigo-500 rounded-full animate-ping"></span>
+                <span id="status-text">UPDATING</span>
+            </div>
         </div>
     </header>
 
@@ -227,6 +293,12 @@
         <div id="game-grid" class="grid-layout">
             <!-- Game cards will be injected here -->
         </div>
+
+        <div class="controls-overlay">
+            <button class="control-btn" onclick="prevSlide()"><i class="fa-solid fa-backward"></i></button>
+            <button class="control-btn" id="play-pause-btn" onclick="togglePause()"><i class="fa-solid fa-pause"></i></button>
+            <button class="control-btn" onclick="nextSlide()"><i class="fa-solid fa-forward"></i></button>
+        </div>
     </main>
 
     <footer class="p-4 text-center text-[10px] text-slate-600 font-bold uppercase tracking-[0.2em] border-t border-slate-800">
@@ -234,18 +306,27 @@
     </footer>
 
     <script>
-        const USERNAME = 'sportomax';
-        const ROTATION_INTERVAL = 12000; // 12 seconds total (10s view + 2s guide)
+        let USERNAME = localStorage.getItem('bgg_dashboard_user') || 'sportomax';
+        const ROTATION_INTERVAL = 12000; 
         const GUIDE_DURATION = 2000;
-        const DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED'];
+        const DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED', 'SHELF_OF_SHAME', 'HIDDEN_GEMS', 'ON_THE_RADAR', 'THE_HIT_LIST'];
+        
         let currentIdx = 0;
         let timerStart = Date.now();
+        let isPaused = false;
+        let rotationTimeout = null;
+        let remainingTime = ROTATION_INTERVAL;
+
         let cache = {
             PLAYS: [],
             HOT: [],
             RANKED: [],
             TOP_RATED: [],
-            MOST_PLAYED: []
+            MOST_PLAYED: [],
+            SHELF_OF_SHAME: [],
+            HIDDEN_GEMS: [],
+            ON_THE_RADAR: [],
+            THE_HIT_LIST: []
         };
 
         const els = {
@@ -253,8 +334,57 @@
             grid: document.getElementById('game-grid'),
             guide: document.getElementById('channel-guide'),
             timerBar: document.getElementById('timer-bar'),
-            loading: document.getElementById('loading')
+            loading: document.getElementById('loading'),
+            usernameField: document.getElementById('username-field'),
+            playPauseBtn: document.getElementById('play-pause-btn'),
+            statusText: document.getElementById('status-text'),
+            statusDot: document.getElementById('status-dot')
         };
+
+        els.usernameField.value = USERNAME;
+
+        function updateUsername(newVal) {
+            if (!newVal) return;
+            USERNAME = newVal.trim();
+            localStorage.setItem('bgg_dashboard_user', USERNAME);
+            location.reload(); // Quickest way to refetch all user-specific data
+        }
+
+        function togglePause() {
+            isPaused = !isPaused;
+            if (isPaused) {
+                clearTimeout(rotationTimeout);
+                remainingTime -= (Date.now() - timerStart);
+                els.playPauseBtn.innerHTML = '<i class="fa-solid fa-play"></i>';
+                els.statusText.innerText = 'PAUSED';
+                els.statusDot.classList.remove('animate-ping');
+            } else {
+                timerStart = Date.now() - (ROTATION_INTERVAL - remainingTime);
+                rotationTimeout = setTimeout(rotate, remainingTime);
+                els.playPauseBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
+                els.statusText.innerText = 'UPDATING';
+                els.statusDot.classList.add('animate-ping');
+            }
+        }
+
+        function nextSlide() {
+            clearTimeout(rotationTimeout);
+            currentIdx = (currentIdx + 0) % DASHBOARDS.length; // currentIdx is already incremented in rotate()
+            rotate();
+        }
+
+        function prevSlide() {
+            clearTimeout(rotationTimeout);
+            // We need to go back 2 steps because rotate() increments by 1
+            currentIdx = (currentIdx - 2 + DASHBOARDS.length) % DASHBOARDS.length;
+            rotate();
+        }
+
+        function jumpToSlide(idx) {
+            clearTimeout(rotationTimeout);
+            currentIdx = idx;
+            rotate();
+        }
 
         async function fetchAPI(endpoint, params = '') {
             const url = `/api/bgg-helper?endpoint=${endpoint}${params}`;
@@ -328,14 +458,15 @@
                 }
             }
 
-            // 4. Fetch Collection for TOP_RATED and MOST_PLAYED
-            const collXml = await fetchAPI('collection', `&username=${USERNAME}&stats=1&own=1`);
+            // 4. Fetch Collection for Collection-based Slides
+            const collXml = await fetchAPI('collection', `&username=${USERNAME}&stats=1`);
             if (collXml) {
                 const doc = new DOMParser().parseFromString(collXml, 'text/xml');
                 const items = Array.from(doc.querySelectorAll('item'));
                 
-                // TOP_RATED
+                // TOP_RATED (Owned only)
                 cache.TOP_RATED = items
+                    .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
                     .filter(it => it.querySelector('stats')?.querySelector('rating')?.getAttribute('value') !== 'N/A')
                     .sort((a, b) => {
                         const ra = parseFloat(a.querySelector('stats')?.querySelector('rating')?.getAttribute('value') || 0);
@@ -350,12 +481,80 @@
                         rank: idx + 1
                     }));
 
-                // MOST_PLAYED
+                // MOST_PLAYED (Owned only)
                 cache.MOST_PLAYED = items
+                    .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
                     .sort((a, b) => {
                         const pa = parseInt(a.querySelector('numplays')?.textContent || 0);
                         const pb = parseInt(b.querySelector('numplays')?.textContent || 0);
                         return pb - pa;
+                    })
+                    .slice(0, 10)
+                    .map((item, idx) => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+
+                // SHELF OF SHAME (Owned, Plays = 0, Sort by BGG Rating)
+                cache.SHELF_OF_SHAME = items
+                    .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
+                    .filter(it => parseInt(it.querySelector('numplays')?.textContent || 0) === 0)
+                    .sort((a, b) => {
+                        const ra = parseFloat(a.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
+                        const rb = parseFloat(b.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
+                        return rb - ra;
+                    })
+                    .slice(0, 10)
+                    .map((item, idx) => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+
+                // HIDDEN GEMS (Sort by Average minus Bayesian Average)
+                cache.HIDDEN_GEMS = items
+                    .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
+                    .sort((a, b) => {
+                        const ra_avg = parseFloat(a.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
+                        const ra_bayes = parseFloat(a.querySelector('stats')?.querySelector('rating')?.querySelector('bayesaverage')?.getAttribute('value') || 0);
+                        const rb_avg = parseFloat(b.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
+                        const rb_bayes = parseFloat(b.querySelector('stats')?.querySelector('rating')?.querySelector('bayesaverage')?.getAttribute('value') || 0);
+                        return (rb_avg - rb_bayes) - (ra_avg - ra_bayes);
+                    })
+                    .slice(0, 10)
+                    .map((item, idx) => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+
+                // ON THE RADAR (Want to Play + Wishlist)
+                cache.ON_THE_RADAR = items
+                    .filter(it => it.querySelector('status')?.getAttribute('wanttoplay') === '1' || it.querySelector('status')?.getAttribute('wishlist') === '1')
+                    .sort((a, b) => {
+                        const pa = parseInt(a.querySelector('status')?.getAttribute('wishlistpriority') || 5);
+                        const pb = parseInt(b.querySelector('status')?.getAttribute('wishlistpriority') || 5);
+                        return pa - pb;
+                    })
+                    .slice(0, 10)
+                    .map((item, idx) => ({
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name')?.textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+
+                // THE HIT LIST (Want to Buy)
+                cache.THE_HIT_LIST = items
+                    .filter(it => it.querySelector('status')?.getAttribute('want') === '1' || it.querySelector('status')?.getAttribute('wanttobuy') === '1')
+                    .sort((a, b) => {
+                        const pa = parseInt(a.querySelector('status')?.getAttribute('wishlistpriority') || 5);
+                        const pb = parseInt(b.querySelector('status')?.getAttribute('wishlistpriority') || 5);
+                        return pa - pb;
                     })
                     .slice(0, 10)
                     .map((item, idx) => ({
@@ -374,6 +573,8 @@
         }
 
         async function rotate() {
+            if (isPaused) return;
+
             // SHOW CHANNEL GUIDE
             const type = DASHBOARDS[currentIdx];
             els.guide.innerHTML = DASHBOARDS.map((d, i) => {
@@ -381,7 +582,7 @@
                 if (i === currentIdx) cls += ' active';
                 else if (i === (currentIdx - 1 + DASHBOARDS.length) % DASHBOARDS.length) cls += ' past';
                 else if (i === (currentIdx + 1) % DASHBOARDS.length) cls += ' next';
-                return `<div class="${cls}">${getShortTitle(d)}</div>`;
+                return `<div class="${cls}" onclick="jumpToSlide(${i}); event.stopPropagation();">${getShortTitle(d)}</div>`;
             }).join('');
             
             els.guide.classList.remove('hidden');
@@ -390,7 +591,9 @@
             els.title.innerText = 'SELECTING CHANNEL...';
             
             timerStart = Date.now();
-            await new Promise(r => setTimeout(r, GUIDE_DURATION));
+            remainingTime = ROTATION_INTERVAL;
+
+            await new Promise(r => rotationTimeout = setTimeout(r, GUIDE_DURATION));
 
             // SHOW DASHBOARD
             const data = cache[type] || [];
@@ -403,7 +606,7 @@
 
             currentIdx = (currentIdx + 1) % DASHBOARDS.length;
             
-            setTimeout(rotate, ROTATION_INTERVAL - GUIDE_DURATION);
+            rotationTimeout = setTimeout(rotate, ROTATION_INTERVAL - GUIDE_DURATION);
         }
 
         function getShortTitle(type) {
@@ -413,7 +616,11 @@
                 case 'RANKED': return 'TOP RANKED';
                 case 'TOP_RATED': return 'YOUR TOP RATED';
                 case 'MOST_PLAYED': return 'MOST PLAYED';
-                default: return type;
+                case 'SHELF_OF_SHAME': return 'SHELF OF SHAME';
+                case 'HIDDEN_GEMS': return 'HIDDEN GEMS';
+                case 'ON_THE_RADAR': return 'ON THE RADAR';
+                case 'THE_HIT_LIST': return 'THE HIT LIST';
+                default: return type.replace('_', ' ');
             }
         }
 
@@ -424,7 +631,11 @@
                 case 'RANKED': return 'TOP 10 RANKED GAMES';
                 case 'TOP_RATED': return 'TOP 10 RATED BY YOU';
                 case 'MOST_PLAYED': return 'TOP 10 MOST PLAYED';
-                default: return 'BGG DASHBOARD';
+                case 'SHELF_OF_SHAME': return 'SHELF OF SHAME (UNPLAYED)';
+                case 'HIDDEN_GEMS': return 'HIDDEN GEMS (RATING VS RANK)';
+                case 'ON_THE_RADAR': return 'ON THE RADAR (TO PLAY)';
+                case 'THE_HIT_LIST': return 'THE HIT LIST (TO BUY)';
+                default: return type.replace('_', ' ');
             }
         }
 
@@ -449,6 +660,7 @@
         }
 
         function updateTimer() {
+            if (isPaused) return;
             const elapsed = Date.now() - timerStart;
             const percent = Math.min((elapsed / ROTATION_INTERVAL) * 100, 100);
             els.timerBar.style.width = `${percent}%`;
