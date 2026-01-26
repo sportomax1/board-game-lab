@@ -131,37 +131,32 @@
             border-radius: 0.5rem;
         }
 
-        .controls-overlay {
-            position: absolute;
-            bottom: 4rem;
-            left: 50%;
-            transform: translateX(-50%);
+        .header-controls {
             display: flex;
-            gap: 1.5rem;
-            background: rgba(15, 23, 42, 0.6);
-            backdrop-filter: blur(8px);
-            padding: 0.75rem 1.5rem;
+            gap: 1rem;
+            align-items: center;
+            background: rgba(255, 255, 255, 0.05);
+            padding: 0.25rem 0.75rem;
             border-radius: 9999px;
-            z-index: 60;
             border: 1px solid rgba(255, 255, 255, 0.1);
-            opacity: 0;
-            transition: opacity 0.3s ease;
-        }
-
-        body:hover .controls-overlay {
-            opacity: 1;
         }
 
         .control-btn {
-            color: #f8fafc;
-            font-size: 1.25rem;
+            color: #94a3b8;
+            font-size: 1rem;
             transition: all 0.2s;
             cursor: pointer;
+            width: 32px;
+            height: 32px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            border-radius: 50%;
         }
 
         .control-btn:hover {
-            color: #6366f1;
-            transform: scale(1.1);
+            color: #f8fafc;
+            background: rgba(99, 102, 241, 0.2);
         }
 
         .username-input-container {
@@ -279,6 +274,11 @@
             </div>
         </div>
         <div class="flex items-center gap-4">
+            <div class="header-controls">
+                <button class="control-btn" onclick="prevSlide()"><i class="fa-solid fa-backward"></i></button>
+                <button class="control-btn" id="play-pause-btn" onclick="togglePause()"><i class="fa-solid fa-pause"></i></button>
+                <button class="control-btn" onclick="nextSlide()"><i class="fa-solid fa-forward"></i></button>
+            </div>
             <div id="dashboard-status" class="status-badge flex items-center gap-2">
                 <span id="status-dot" class="w-2 h-2 bg-indigo-500 rounded-full animate-ping"></span>
                 <span id="status-text">UPDATING</span>
@@ -292,12 +292,6 @@
         </div>
         <div id="game-grid" class="grid-layout">
             <!-- Game cards will be injected here -->
-        </div>
-
-        <div class="controls-overlay">
-            <button class="control-btn" onclick="prevSlide()"><i class="fa-solid fa-backward"></i></button>
-            <button class="control-btn" id="play-pause-btn" onclick="togglePause()"><i class="fa-solid fa-pause"></i></button>
-            <button class="control-btn" onclick="nextSlide()"><i class="fa-solid fa-forward"></i></button>
         </div>
     </main>
 
@@ -369,13 +363,13 @@
 
         function nextSlide() {
             clearTimeout(rotationTimeout);
-            currentIdx = (currentIdx + 0) % DASHBOARDS.length; // currentIdx is already incremented in rotate()
             rotate();
         }
 
         function prevSlide() {
             clearTimeout(rotationTimeout);
-            // We need to go back 2 steps because rotate() increments by 1
+            // currentIdx usually points to the NEXT slide to show.
+            // To go back, we need to go back 2 steps from where it's pointing.
             currentIdx = (currentIdx - 2 + DASHBOARDS.length) % DASHBOARDS.length;
             rotate();
         }
@@ -462,75 +456,80 @@
             const collXml = await fetchAPI('collection', `&username=${USERNAME}&stats=1`);
             if (collXml) {
                 const doc = new DOMParser().parseFromString(collXml, 'text/xml');
-                const items = Array.from(doc.querySelectorAll('item'));
+                const items = Array.from(doc.querySelectorAll('items > item'));
+                console.log(`Found ${items.length} items in collection`);
                 
-                // TOP_RATED (Owned only)
+                // Helper to get personal rating
+                const getPersonalRating = (it) => {
+                    const val = it.querySelector('stats > rating')?.getAttribute('value');
+                    return (val && val !== 'N/A') ? parseFloat(val) : 0;
+                };
+
+                // Helper to get BGG average rating
+                const getBGGAverage = (it) => {
+                    const val = it.querySelector('stats > rating > average')?.getAttribute('value');
+                    return val ? parseFloat(val) : 0;
+                };
+
+                // Helper to get BGG bayesian average
+                const getBGGBayes = (it) => {
+                    const val = it.querySelector('stats > rating > bayesaverage')?.getAttribute('value');
+                    return val ? parseFloat(val) : 0;
+                };
+
+                // TOP_RATED (Owned only, sorted by personal rating, fallback to BGG average)
                 cache.TOP_RATED = items
                     .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
-                    .filter(it => it.querySelector('stats')?.querySelector('rating')?.getAttribute('value') !== 'N/A')
-                    .sort((a, b) => {
-                        const ra = parseFloat(a.querySelector('stats')?.querySelector('rating')?.getAttribute('value') || 0);
-                        const rb = parseFloat(b.querySelector('stats')?.querySelector('rating')?.getAttribute('value') || 0);
-                        return rb - ra;
-                    })
+                    .map(it => ({
+                        id: it.getAttribute('objectid'),
+                        name: it.querySelector('name')?.textContent,
+                        thumb: it.querySelector('thumbnail')?.textContent,
+                        rating: getPersonalRating(it),
+                        bggRating: getBGGAverage(it)
+                    }))
+                    .sort((a, b) => b.rating - a.rating || b.bggRating - a.bggRating)
                     .slice(0, 10)
-                    .map((item, idx) => ({
-                        id: item.getAttribute('objectid'),
-                        name: item.querySelector('name')?.textContent,
-                        thumb: item.querySelector('thumbnail')?.textContent,
-                        rank: idx + 1
-                    }));
+                    .map((it, idx) => ({ ...it, rank: idx + 1 }));
 
                 // MOST_PLAYED (Owned only)
                 cache.MOST_PLAYED = items
                     .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
-                    .sort((a, b) => {
-                        const pa = parseInt(a.querySelector('numplays')?.textContent || 0);
-                        const pb = parseInt(b.querySelector('numplays')?.textContent || 0);
-                        return pb - pa;
-                    })
+                    .map(it => ({
+                        id: it.getAttribute('objectid'),
+                        name: it.querySelector('name')?.textContent,
+                        thumb: it.querySelector('thumbnail')?.textContent,
+                        plays: parseInt(it.querySelector('numplays')?.textContent || 0)
+                    }))
+                    .sort((a, b) => b.plays - a.plays)
                     .slice(0, 10)
-                    .map((item, idx) => ({
-                        id: item.getAttribute('objectid'),
-                        name: item.querySelector('name')?.textContent,
-                        thumb: item.querySelector('thumbnail')?.textContent,
-                        rank: idx + 1
-                    }));
+                    .map((it, idx) => ({ ...it, rank: idx + 1 }));
 
                 // SHELF OF SHAME (Owned, Plays = 0, Sort by BGG Rating)
                 cache.SHELF_OF_SHAME = items
                     .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
                     .filter(it => parseInt(it.querySelector('numplays')?.textContent || 0) === 0)
-                    .sort((a, b) => {
-                        const ra = parseFloat(a.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
-                        const rb = parseFloat(b.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
-                        return rb - ra;
-                    })
+                    .map(it => ({
+                        id: it.getAttribute('objectid'),
+                        name: it.querySelector('name')?.textContent,
+                        thumb: it.querySelector('thumbnail')?.textContent,
+                        bggRating: getBGGAverage(it)
+                    }))
+                    .sort((a, b) => b.bggRating - a.bggRating)
                     .slice(0, 10)
-                    .map((item, idx) => ({
-                        id: item.getAttribute('objectid'),
-                        name: item.querySelector('name')?.textContent,
-                        thumb: item.querySelector('thumbnail')?.textContent,
-                        rank: idx + 1
-                    }));
+                    .map((it, idx) => ({ ...it, rank: idx + 1 }));
 
-                // HIDDEN GEMS (Sort by Average minus Bayesian Average)
+                // HIDDEN GEMS (Owned, Sort by Average minus Bayesian Average)
                 cache.HIDDEN_GEMS = items
                     .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
-                    .sort((a, b) => {
-                        const ra_avg = parseFloat(a.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
-                        const ra_bayes = parseFloat(a.querySelector('stats')?.querySelector('rating')?.querySelector('bayesaverage')?.getAttribute('value') || 0);
-                        const rb_avg = parseFloat(b.querySelector('stats')?.querySelector('rating')?.querySelector('average')?.getAttribute('value') || 0);
-                        const rb_bayes = parseFloat(b.querySelector('stats')?.querySelector('rating')?.querySelector('bayesaverage')?.getAttribute('value') || 0);
-                        return (rb_avg - rb_bayes) - (ra_avg - ra_bayes);
-                    })
+                    .map(it => ({
+                        id: it.getAttribute('objectid'),
+                        name: it.querySelector('name')?.textContent,
+                        thumb: it.querySelector('thumbnail')?.textContent,
+                        gemScore: getBGGAverage(it) - getBGGBayes(it)
+                    }))
+                    .sort((a, b) => b.gemScore - a.gemScore)
                     .slice(0, 10)
-                    .map((item, idx) => ({
-                        id: item.getAttribute('objectid'),
-                        name: item.querySelector('name')?.textContent,
-                        thumb: item.querySelector('thumbnail')?.textContent,
-                        rank: idx + 1
-                    }));
+                    .map((it, idx) => ({ ...it, rank: idx + 1 }));
 
                 // ON THE RADAR (Want to Play + Wishlist)
                 cache.ON_THE_RADAR = items
