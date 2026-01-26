@@ -260,9 +260,9 @@
 
     <header class="p-6 md:px-12 flex justify-between items-center border-b border-slate-800 bg-slate-900/50 backdrop-blur-md">
         <div class="flex items-center gap-3">
-            <div class="bg-indigo-600 p-2 rounded-lg">
-                <i class="fa-solid fa-chart-line text-white"></i>
-            </div>
+            <button onclick="toggleGuide()" class="bg-indigo-600 p-2 rounded-lg hover:bg-indigo-500 transition-colors">
+                <i class="fa-solid fa-house text-white"></i>
+            </button>
             <div>
                 <h1 id="dashboard-title" class="text-xl font-black tracking-tight">LOADING...</h1>
                 <div class="flex items-center gap-2">
@@ -275,9 +275,9 @@
         </div>
         <div class="flex items-center gap-4">
             <div class="header-controls">
-                <button class="control-btn" onclick="prevSlide()"><i class="fa-solid fa-backward"></i></button>
-                <button class="control-btn" id="play-pause-btn" onclick="togglePause()"><i class="fa-solid fa-pause"></i></button>
-                <button class="control-btn" onclick="nextSlide()"><i class="fa-solid fa-forward"></i></button>
+                <button class="control-btn" title="Previous Slide" onclick="prevSlide()"><i class="fa-solid fa-backward"></i></button>
+                <button class="control-btn" id="play-pause-btn" title="Play/Pause" onclick="togglePause()"><i class="fa-solid fa-pause"></i></button>
+                <button class="control-btn" title="Next Slide" onclick="nextSlide()"><i class="fa-solid fa-forward"></i></button>
             </div>
             <div id="dashboard-status" class="status-badge flex items-center gap-2">
                 <span id="status-dot" class="w-2 h-2 bg-indigo-500 rounded-full animate-ping"></span>
@@ -303,8 +303,13 @@
         let USERNAME = localStorage.getItem('bgg_dashboard_user') || 'sportomax';
         const ROTATION_INTERVAL = 12000; 
         const GUIDE_DURATION = 2000;
-        const DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED', 'SHELF_OF_SHAME', 'HIDDEN_GEMS', 'ON_THE_RADAR', 'THE_HIT_LIST'];
+        let DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED', 'SHELF_OF_SHAME', 'HIDDEN_GEMS', 'ON_THE_RADAR', 'THE_HIT_LIST'];
         
+        // Add Random Kevin slide if sportomax
+        if (USERNAME.toLowerCase() === 'sportomax') {
+            DASHBOARDS.push('RANDOM_KEVIN');
+        }
+
         let currentIdx = 0;
         let timerStart = Date.now();
         let isPaused = false;
@@ -320,7 +325,8 @@
             SHELF_OF_SHAME: [],
             HIDDEN_GEMS: [],
             ON_THE_RADAR: [],
-            THE_HIT_LIST: []
+            THE_HIT_LIST: [],
+            RANDOM_KEVIN: []
         };
 
         const els = {
@@ -354,7 +360,7 @@
                 els.statusDot.classList.remove('animate-ping');
             } else {
                 timerStart = Date.now() - (ROTATION_INTERVAL - remainingTime);
-                rotationTimeout = setTimeout(rotate, remainingTime);
+                rotationTimeout = setTimeout(() => rotate(), Math.max(0, remainingTime));
                 els.playPauseBtn.innerHTML = '<i class="fa-solid fa-pause"></i>';
                 els.statusText.innerText = 'UPDATING';
                 els.statusDot.classList.add('animate-ping');
@@ -363,21 +369,43 @@
 
         function nextSlide() {
             clearTimeout(rotationTimeout);
-            rotate();
+            rotate(true);
         }
 
         function prevSlide() {
             clearTimeout(rotationTimeout);
-            // currentIdx usually points to the NEXT slide to show.
-            // To go back, we need to go back 2 steps from where it's pointing.
+            // Go back 2 steps because rotate() increments by 1
             currentIdx = (currentIdx - 2 + DASHBOARDS.length) % DASHBOARDS.length;
-            rotate();
+            rotate(true);
+        }
+
+        function toggleGuide() {
+            if (!els.guide.classList.contains('hidden')) {
+                els.guide.classList.add('hidden');
+                els.guide.style.opacity = '0';
+            } else {
+                updateGuideUI();
+                els.guide.classList.remove('hidden');
+                els.guide.style.opacity = '1';
+            }
         }
 
         function jumpToSlide(idx) {
             clearTimeout(rotationTimeout);
             currentIdx = idx;
-            rotate();
+            rotate(true);
+        }
+
+        function updateGuideUI() {
+            els.guide.innerHTML = DASHBOARDS.map((d, i) => {
+                let cls = 'guide-item';
+                // Successor logic: rotate() increments currentIdx *after* setting the slide.
+                // So if we are currently viewing index 0, currentIdx is 1.
+                // We want the guide to show index 0 as active.
+                const viewingIdx = (currentIdx - 1 + DASHBOARDS.length) % DASHBOARDS.length;
+                if (i === viewingIdx) cls += ' active';
+                return `<div class="${cls}" onclick="jumpToSlide(${i}); event.stopPropagation();">${getShortTitle(d)}</div>`;
+            }).join('');
         }
 
         async function fetchAPI(endpoint, params = '') {
@@ -504,9 +532,10 @@
                     .slice(0, 10)
                     .map((it, idx) => ({ ...it, rank: idx + 1 }));
 
-                // SHELF OF SHAME (Owned, Plays = 0, Sort by BGG Rating)
+                // SHELF OF SHAME (Owned, Plays = 0, Sort by BGG Rating, NO EXPANSIONS)
                 cache.SHELF_OF_SHAME = items
                     .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
+                    .filter(it => it.getAttribute('subtype') !== 'boardgameexpansion')
                     .filter(it => parseInt(it.querySelector('numplays')?.textContent || 0) === 0)
                     .map(it => ({
                         id: it.getAttribute('objectid'),
@@ -518,9 +547,10 @@
                     .slice(0, 10)
                     .map((it, idx) => ({ ...it, rank: idx + 1 }));
 
-                // HIDDEN GEMS (Owned, Sort by Average minus Bayesian Average)
+                // HIDDEN GEMS (Owned, Sort by Average minus Bayesian Average, NO EXPANSIONS)
                 cache.HIDDEN_GEMS = items
                     .filter(it => it.querySelector('status')?.getAttribute('own') === '1')
+                    .filter(it => it.getAttribute('subtype') !== 'boardgameexpansion')
                     .map(it => ({
                         id: it.getAttribute('objectid'),
                         name: it.querySelector('name')?.textContent,
@@ -564,6 +594,62 @@
                     }));
             }
 
+            // 5. Fetch Random Kevin (if sportomax)
+            if (USERNAME.toLowerCase() === 'sportomax') {
+                try {
+                    const csvRes = await fetch('pubmeeple.csv');
+                    const csvText = await csvRes.text();
+                    const lines = csvText.split('\n').filter(l => l.trim());
+                    const allLists = {};
+                    
+                    // Simple CSV parser
+                    lines.forEach((line, i) => {
+                        if (i === 0) return;
+                        const parts = line.split(',');
+                        if (parts.length < 4) return;
+                        const listName = parts[0];
+                        if (listName.toLowerCase().includes('kevin')) {
+                            if (!allLists[listName]) allLists[listName] = [];
+                            allLists[listName].push({
+                                rank: parts[2],
+                                item: parts[3]?.replace(/"/g, '')
+                            });
+                        }
+                    });
+
+                    const listNames = Object.keys(allLists);
+                    if (listNames.length > 0) {
+                        const randomListName = listNames[Math.floor(Math.random() * listNames.length)];
+                        const top10 = allLists[randomListName].slice(0, 10);
+                        
+                        // Fetch thumbnails for these 10 items in parallel
+                        cache.RANDOM_KEVIN_TITLE = randomListName.toUpperCase();
+                        cache.RANDOM_KEVIN = await Promise.all(top10.map(async (row) => {
+                            const searchXml = await fetchAPI('search', '', `&query=${encodeURIComponent(row.item)}&type=boardgame&exact=1`);
+                            let thumb = null;
+                            if (searchXml) {
+                                const sDoc = new DOMParser().parseFromString(searchXml, 'text/xml');
+                                const id = sDoc.querySelector('item')?.getAttribute('id');
+                                if (id) {
+                                    const tXml = await fetchAPI('thing', `&id=${id}`);
+                                    if (tXml) {
+                                        const tDoc = new DOMParser().parseFromString(tXml, 'text/xml');
+                                        thumb = tDoc.querySelector('thumbnail')?.textContent;
+                                    }
+                                }
+                            }
+                            return {
+                                name: row.item,
+                                thumb: thumb,
+                                rank: row.rank
+                            };
+                        }));
+                    }
+                } catch (e) {
+                    console.error('Error loading pubmeeple data:', e);
+                }
+            }
+
             els.loading.style.opacity = '0';
             setTimeout(() => els.loading.style.display = 'none', 500);
             
@@ -571,28 +657,24 @@
             setInterval(updateTimer, 50);
         }
 
-        async function rotate() {
+        async function rotate(skipGuide = false) {
             if (isPaused) return;
 
-            // SHOW CHANNEL GUIDE
             const type = DASHBOARDS[currentIdx];
-            els.guide.innerHTML = DASHBOARDS.map((d, i) => {
-                let cls = 'guide-item';
-                if (i === currentIdx) cls += ' active';
-                else if (i === (currentIdx - 1 + DASHBOARDS.length) % DASHBOARDS.length) cls += ' past';
-                else if (i === (currentIdx + 1) % DASHBOARDS.length) cls += ' next';
-                return `<div class="${cls}" onclick="jumpToSlide(${i}); event.stopPropagation();">${getShortTitle(d)}</div>`;
-            }).join('');
             
-            els.guide.classList.remove('hidden');
-            els.guide.style.opacity = '1';
-            els.grid.style.opacity = '0.3';
-            els.title.innerText = 'SELECTING CHANNEL...';
-            
-            timerStart = Date.now();
-            remainingTime = ROTATION_INTERVAL;
+            if (!skipGuide) {
+                // SHOW CHANNEL GUIDE
+                updateGuideUI();
+                els.guide.classList.remove('hidden');
+                els.guide.style.opacity = '1';
+                els.grid.style.opacity = '0.3';
+                els.title.innerText = 'SELECTING CHANNEL...';
+                
+                timerStart = Date.now();
+                remainingTime = ROTATION_INTERVAL;
 
-            await new Promise(r => rotationTimeout = setTimeout(r, GUIDE_DURATION));
+                await new Promise(r => rotationTimeout = setTimeout(r, GUIDE_DURATION));
+            }
 
             // SHOW DASHBOARD
             const data = cache[type] || [];
@@ -605,7 +687,9 @@
 
             currentIdx = (currentIdx + 1) % DASHBOARDS.length;
             
-            rotationTimeout = setTimeout(rotate, ROTATION_INTERVAL - GUIDE_DURATION);
+            timerStart = Date.now();
+            remainingTime = ROTATION_INTERVAL;
+            rotationTimeout = setTimeout(() => rotate(), ROTATION_INTERVAL);
         }
 
         function getShortTitle(type) {
@@ -619,6 +703,7 @@
                 case 'HIDDEN_GEMS': return 'HIDDEN GEMS';
                 case 'ON_THE_RADAR': return 'ON THE RADAR';
                 case 'THE_HIT_LIST': return 'THE HIT LIST';
+                case 'RANDOM_KEVIN': return 'KEVIN LIST';
                 default: return type.replace('_', ' ');
             }
         }
@@ -634,6 +719,7 @@
                 case 'HIDDEN_GEMS': return 'HIDDEN GEMS (RATING VS RANK)';
                 case 'ON_THE_RADAR': return 'ON THE RADAR (TO PLAY)';
                 case 'THE_HIT_LIST': return 'THE HIT LIST (TO BUY)';
+                case 'RANDOM_KEVIN': return cache.RANDOM_KEVIN_TITLE || 'KEVIN\'S RANDOM LIST';
                 default: return type.replace('_', ' ');
             }
         }
