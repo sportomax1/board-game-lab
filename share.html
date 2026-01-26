@@ -92,7 +92,7 @@
 
       <div class="space-y-2">
         <label class="text-xs font-bold text-slate-500 uppercase">Game List</label>
-        <textarea id="csvInput" rows="4" class="w-full p-4 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm" placeholder="1, Wingspan&#10;2, Terraforming Mars"></textarea>
+        <textarea id="csvInput" rows="4" class="w-full p-4 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none font-mono text-sm" placeholder="1, Wingspan&#10;2, Terraforming Mars" onpaste="formatGameListPaste(event)"></textarea>
       </div>
 
       <button onclick="parseAndFetch()" class="mt-6 w-full bg-indigo-600 text-white py-4 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-100 flex items-center justify-center gap-2">
@@ -177,6 +177,46 @@ let thumbsMap = {};
 let draggedIndex = null;
 let auditLogs = { exact: 0, fuzzy: [], missed: [] };
 
+// Format pasted game list into neat columns (2 columns: rank and name)
+function formatGameListPaste(event) {
+  event.preventDefault();
+  
+  const textarea = event.target;
+  const pastedText = (event.clipboardData || window.clipboardData).getData('text');
+  
+  // Parse the pasted text
+  const lines = pastedText.split(/\r?\n/).map(l => l.trim()).filter(Boolean);
+  const formatted = [];
+  let maxRankWidth = 0;
+  
+  // First pass: parse and find max rank width for alignment
+  lines.forEach(line => {
+    const parts = line.split(/,|\t/).map(p => p.trim());
+    if (parts.length >= 2) {
+      const rank = parts[0];
+      maxRankWidth = Math.max(maxRankWidth, rank.length);
+    }
+  });
+  
+  // Second pass: format with padding
+  lines.forEach(line => {
+    const parts = line.split(/,|\t/).map(p => p.trim());
+    if (parts.length >= 2) {
+      const rank = parts[0];
+      const name = parts.slice(1).join(', ');
+      formatted.push(`${rank.padEnd(maxRankWidth)}, ${name}`);
+    } else if (parts.length === 1 && parts[0]) {
+      formatted.push(parts[0]);
+    }
+  });
+  
+  // Set the formatted text
+  textarea.value = formatted.join('\n');
+  
+  // Prevent default paste
+  return false;
+}
+
 // Advanced normalization: handles special characters/diacritics and filler words
 function normalize(str, removeFillers = false) {
   // 1. Remove diacritics (Orléans -> Orleans)
@@ -196,11 +236,26 @@ function normalize(str, removeFillers = false) {
 function parseCSV(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
   const out=[];
-  const headerKeywords = ['rank', 'name', 'id', 'title', 'game', 'thumbnail'];
-  for(const ln of lines){
-    const parts = ln.split(/,|\t/).map(p=>p.trim()).filter((v,i)=>v!=='' || i>0);
+  const headerKeywords = ['rank', 'name', 'id', 'title', 'game', 'thumbnail', 'item'];
+  let skipCount = 0;
+  
+  for(let i = 0; i < lines.length; i++){
+    const ln = lines[i];
+    const parts = ln.split(/,|\t/).map(p=>p.trim()).filter((v,idx)=>v!=='' || idx>0);
     if(parts.length===0) continue;
+    
+    // Check if this line looks like a header (has header keywords in first 2 columns)
+    if(i === 0 && parts.length >= 2){
+      const isHeader = headerKeywords.includes(parts[0].toLowerCase()) && 
+                       headerKeywords.includes(parts[1].toLowerCase());
+      if(isHeader) {
+        skipCount = 1; // Skip this header row
+        continue;
+      }
+    }
+    
     if (headerKeywords.includes(parts[0].toLowerCase())) continue;
+    
     let rank = null; let name = '';
     const firstVal = parts[0].replace(/[^0-9]/g,'');
     const maybeNum = parseInt(firstVal, 10);
@@ -540,12 +595,40 @@ async function composeAndCopy(){
     try {
         const canvas = await getComposedCanvas();
         canvas.toBlob(async (blob) => {
-            const item = new ClipboardItem({ "image/png": blob });
-            await navigator.clipboard.write([item]);
-            btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
-            setTimeout(() => btn.innerHTML = originalText, 2000);
+            try {
+                // Try Web Share API first (mobile friendly)
+                const file = new File([blob], `bgg_list_${Date.now()}.png`, { type: 'image/png' });
+                if (navigator.share && navigator.canShare && navigator.canShare({ files: [file] })) {
+                    await navigator.share({
+                        files: [file],
+                        title: 'My BGG Canvas',
+                        text: 'Check out my game collection!'
+                    });
+                    btn.innerHTML = '<i class="fa-solid fa-check"></i> Shared!';
+                    setTimeout(() => btn.innerHTML = originalText, 2000);
+                    return;
+                }
+            } catch (shareErr) {
+                // If share is cancelled or fails, fall through to clipboard
+                if (shareErr.name !== 'AbortError') console.error('Share error:', shareErr);
+            }
+            
+            // Fallback: Copy to clipboard
+            try {
+                const item = new ClipboardItem({ "image/png": blob });
+                await navigator.clipboard.write([item]);
+                btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
+                setTimeout(() => btn.innerHTML = originalText, 2000);
+            } catch (clipErr) {
+                btn.innerHTML = '<i class="fa-solid fa-xmark"></i> Failed';
+                setTimeout(() => btn.innerHTML = originalText, 2000);
+            }
         });
-    } catch (err) { btn.innerHTML = '<i class="fa-solid fa-xmark"></i> Fail'; setTimeout(() => btn.innerHTML = originalText, 2000); }
+    } catch (err) { 
+        console.error(err);
+        btn.innerHTML = '<i class="fa-solid fa-xmark"></i> Fail'; 
+        setTimeout(() => btn.innerHTML = originalText, 2000); 
+    }
 }
 
 function loadImage(src){ return new Promise(async (resolve)=>{ try{ const res = await fetch(src); const blob = await res.blob(); const url = URL.createObjectURL(blob); const img = new Image(); img.onload = ()=>{ URL.revokeObjectURL(url); resolve(img); }; img.onerror = ()=>resolve(null); img.src = url; }catch(e){ resolve(null); } }); }
