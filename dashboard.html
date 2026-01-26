@@ -1,0 +1,316 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGG Dashboard</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+        
+        body {
+            font-family: 'Plus Jakarta Sans', sans-serif;
+            background-color: #0f172a;
+            color: #f8fafc;
+            overflow: hidden;
+            height: 100vh;
+            display: flex;
+            flex-direction: column;
+        }
+
+        .dashboard-container {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 2rem;
+            position: relative;
+        }
+
+        .grid-layout {
+            display: grid;
+            gap: 1rem;
+            flex: 1;
+        }
+
+        /* Desktop: 5x2 */
+        @media (min-width: 1024px) {
+            .grid-layout {
+                grid-template-columns: repeat(5, 1fr);
+                grid-template-rows: repeat(2, 1fr);
+            }
+        }
+
+        /* Mobile: 2x5 */
+        @media (max-width: 1023px) {
+            .grid-layout {
+                grid-template-columns: repeat(2, 1fr);
+                grid-template-rows: repeat(5, 1fr);
+            }
+        }
+
+        .game-card {
+            position: relative;
+            border-radius: 1rem;
+            overflow: hidden;
+            background: #1e293b;
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+            transition: transform 0.3s ease;
+        }
+
+        .game-card img {
+            width: 100%;
+            height: 100%;
+            object-fit: cover;
+        }
+
+        .game-rank {
+            position: absolute;
+            top: 0.75rem;
+            left: 0.75rem;
+            background: rgba(0, 0, 0, 0.6);
+            backdrop-filter: blur(4px);
+            padding: 0.25rem 0.75rem;
+            border-radius: 9999px;
+            font-weight: 800;
+            font-size: 0.875rem;
+            border: 1px solid rgba(255, 255, 255, 0.1);
+        }
+
+        .timer-bar-container {
+            height: 4px;
+            background: rgba(255, 255, 255, 0.1);
+            width: 100%;
+            position: absolute;
+            top: 0;
+            left: 0;
+            z-index: 50;
+        }
+
+        #timer-bar {
+            height: 100%;
+            background: #6366f1;
+            width: 0%;
+        }
+
+        .fade-enter {
+            opacity: 0;
+            transform: translateY(10px);
+        }
+        .fade-exit {
+            opacity: 1;
+            transform: translateY(0);
+        }
+
+        .status-badge {
+            background: rgba(99, 102, 241, 0.1);
+            color: #818cf8;
+            padding: 0.5rem 1rem;
+            border-radius: 0.75rem;
+            font-weight: 700;
+            text-transform: uppercase;
+            letter-spacing: 0.05em;
+            font-size: 0.75rem;
+            border: 1px solid rgba(99, 102, 241, 0.2);
+        }
+
+        .loading-overlay {
+            position: absolute;
+            inset: 0;
+            background: #0f172a;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            z-index: 100;
+            transition: opacity 0.5s ease;
+        }
+    </style>
+</head>
+<body>
+
+    <div id="loading" class="loading-overlay">
+        <div class="flex flex-col items-center gap-4">
+            <div class="w-12 h-12 border-4 border-indigo-500/20 border-t-indigo-500 rounded-full animate-spin"></div>
+            <p class="text-indigo-400 font-bold animate-pulse">Initializing Dashboards...</p>
+        </div>
+    </div>
+
+    <div class="timer-bar-container">
+        <div id="timer-bar"></div>
+    </div>
+
+    <header class="p-6 md:px-12 flex justify-between items-center border-b border-slate-800 bg-slate-900/50 backdrop-blur-md">
+        <div class="flex items-center gap-3">
+            <div class="bg-indigo-600 p-2 rounded-lg">
+                <i class="fa-solid fa-chart-line text-white"></i>
+            </div>
+            <div>
+                <h1 id="dashboard-title" class="text-xl font-black tracking-tight">LOADING...</h1>
+                <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Live BGG Feed</p>
+            </div>
+        </div>
+        <div id="dashboard-status" class="status-badge flex items-center gap-2">
+            <span class="w-2 h-2 bg-indigo-500 rounded-full animate-ping"></span>
+            UPDATING
+        </div>
+    </header>
+
+    <main class="dashboard-container">
+        <div id="game-grid" class="grid-layout">
+            <!-- Game cards will be injected here -->
+        </div>
+    </main>
+
+    <footer class="p-4 text-center text-[10px] text-slate-600 font-bold uppercase tracking-[0.2em] border-t border-slate-800">
+        BoardGameGeek Dashboard &bull; sportomax1
+    </footer>
+
+    <script>
+        const USERNAME = 'sportomax';
+        const ROTATION_INTERVAL = 10000; // 10 seconds
+        const DASHBOARDS = ['PLAYS', 'HOT', 'RANKED'];
+        let currentIdx = 0;
+        let timerStart = Date.now();
+        let cache = {
+            PLAYS: [],
+            HOT: [],
+            RANKED: []
+        };
+
+        const els = {
+            title: document.getElementById('dashboard-title'),
+            grid: document.getElementById('game-grid'),
+            timerBar: document.getElementById('timer-bar'),
+            loading: document.getElementById('loading')
+        };
+
+        async function fetchAPI(endpoint, params = '') {
+            const url = `/api/bgg-helper?endpoint=${endpoint}${params}`;
+            try {
+                const res = await fetch(url);
+                if (res.status === 202) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    return fetchAPI(endpoint, params);
+                }
+                return await res.text();
+            } catch (e) {
+                console.error(`Fetch error for ${endpoint}:`, e);
+                return null;
+            }
+        }
+
+        async function loadData() {
+            console.log('Fetching all dashboard data...');
+            
+            // 1. Fetch Hot Games (Easiest)
+            const hotXml = await fetchAPI('hot', '&type=boardgame');
+            if (hotXml) {
+                const doc = new DOMParser().parseFromString(hotXml, 'text/xml');
+                cache.HOT = Array.from(doc.querySelectorAll('item')).slice(0, 10).map(item => ({
+                    id: item.getAttribute('id'),
+                    name: item.querySelector('name')?.getAttribute('value'),
+                    thumb: item.querySelector('thumbnail')?.getAttribute('value'),
+                    rank: item.getAttribute('rank')
+                }));
+            }
+
+            // 2. Fetch Last 10 Plays
+            const playsXml = await fetchAPI('plays', `&username=${USERNAME}`);
+            if (playsXml) {
+                const doc = new DOMParser().parseFromString(playsXml, 'text/xml');
+                const playItems = Array.from(doc.querySelectorAll('play')).slice(0, 10);
+                const playIds = playItems.map(p => p.querySelector('item').getAttribute('objectid'));
+                
+                // Need thumbnails for plays
+                const thingXml = await fetchAPI('thing', `&id=${playIds.join(',')}`);
+                if (thingXml) {
+                    const tDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                    cache.PLAYS = Array.from(tDoc.querySelectorAll('item')).map((item, idx) => ({
+                        id: item.getAttribute('id'),
+                        name: item.querySelector('name[type="primary"]')?.getAttribute('value'),
+                        thumb: item.querySelector('thumbnail')?.textContent,
+                        rank: idx + 1
+                    }));
+                }
+            }
+
+            // 3. Fetch Top 10 Ranked
+            const browseHtml = await fetchAPI('browse', '&page=1');
+            if (browseHtml) {
+                const idRegex = /href="\/boardgame\/(\d+)\/[^"]*"/g;
+                let match;
+                const rankedIds = [];
+                while ((match = idRegex.exec(browseHtml)) !== null && rankedIds.length < 10) {
+                    if (!rankedIds.includes(match[1])) rankedIds.push(match[1]);
+                }
+                
+                if (rankedIds.length > 0) {
+                    const thingXml = await fetchAPI('thing', `&id=${rankedIds.join(',')}`);
+                    if (thingXml) {
+                        const tDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                        cache.RANKED = Array.from(tDoc.querySelectorAll('item')).map((item, idx) => ({
+                            id: item.getAttribute('id'),
+                            name: item.querySelector('name[type="primary"]')?.getAttribute('value'),
+                            thumb: item.querySelector('thumbnail')?.textContent,
+                            rank: idx + 1
+                        }));
+                    }
+                }
+            }
+
+            els.loading.style.opacity = '0';
+            setTimeout(() => els.loading.style.display = 'none', 500);
+            
+            rotate();
+            setInterval(updateTimer, 50);
+        }
+
+        function rotate() {
+            const type = DASHBOARDS[currentIdx];
+            const data = cache[type] || [];
+            
+            els.title.innerText = getTitle(type);
+            renderGrid(data);
+
+            currentIdx = (currentIdx + 1) % DASHBOARDS.length;
+            timerStart = Date.now();
+            
+            setTimeout(rotate, ROTATION_INTERVAL);
+        }
+
+        function getTitle(type) {
+            switch(type) {
+                case 'PLAYS': return `LAST 10 PLAYS: ${USERNAME.toUpperCase()}`;
+                case 'HOT': return 'TOP 10 HOT GAMES';
+                case 'RANKED': return 'TOP 10 RANKED GAMES';
+                default: return 'BGG DASHBOARD';
+            }
+        }
+
+        function renderGrid(data) {
+            els.grid.innerHTML = '';
+            data.forEach(item => {
+                const card = document.createElement('div');
+                card.className = 'game-card animate-in fade-in zoom-in duration-500';
+                
+                const thumb = item.thumb || 'https://via.placeholder.com/300?text=No+Image';
+                const proxiedThumb = `/api/image-proxy?url=${encodeURIComponent(thumb)}`;
+                
+                card.innerHTML = `
+                    <img src="${proxiedThumb}" alt="${item.name}" onerror="this.src='https://via.placeholder.com/300?text=Error'">
+                    <div class="game-rank">#${item.rank}</div>
+                `;
+                els.grid.appendChild(card);
+            });
+        }
+
+        function updateTimer() {
+            const elapsed = Date.now() - timerStart;
+            const percent = Math.min((elapsed / ROTATION_INTERVAL) * 100, 100);
+            els.timerBar.style.width = `${percent}%`;
+        }
+
+        window.onload = loadData;
+    </script>
+</body>
+</html>
