@@ -38,6 +38,36 @@
             object-fit: contain;
             padding: 4px;
         }
+        /* Toggle Switch */
+        .switch {
+            position: relative;
+            display: inline-block;
+            width: 34px;
+            height: 20px;
+        }
+        .switch input { opacity: 0; width: 0; height: 0; }
+        .slider {
+            position: absolute;
+            cursor: pointer;
+            top: 0; left: 0; right: 0; bottom: 0;
+            background-color: #cbd5e1;
+            transition: .4s;
+            border-radius: 20px;
+        }
+        .slider:before {
+            position: absolute;
+            content: "";
+            height: 14px;
+            width: 14px;
+            left: 3px;
+            bottom: 3px;
+            background-color: white;
+            transition: .4s;
+            border-radius: 50%;
+        }
+        input:checked + .slider { background-color: #4f46e5; }
+        input:checked + .slider:before { transform: translateX(14px); }
+
         /* Custom scrollbar */
         ::-webkit-scrollbar { width: 8px; }
         ::-webkit-scrollbar-track { background: #f1f5f9; }
@@ -60,28 +90,36 @@
                 </div>
             </div>
 
-            <div class="flex items-center gap-3 w-full md:w-auto">
-                <select id="filterSporto" class="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900">
-                    <option value="all">All Games</option>
-                    <option value="sporto">Sportomax Only</option>
-                </select>
-                <select id="filterPlays" class="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900">
-                    <option value="all">Any Plays</option>
-                    <option value="unplayed">Unplayed (0)</option>
-                </select>
+            <div class="flex flex-wrap items-center gap-4 w-full md:w-auto">
+                <div class="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
+                    <span class="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Sportomax Only</span>
+                    <label class="switch">
+                        <input type="checkbox" id="toggleSporto" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+                
+                <div class="flex items-center gap-2 bg-slate-50 px-3 py-2 rounded-xl border border-slate-200">
+                    <span class="text-[10px] font-bold uppercase text-slate-500 tracking-wider">Unplayed Only</span>
+                    <label class="switch">
+                        <input type="checkbox" id="togglePlays" checked>
+                        <span class="slider"></span>
+                    </label>
+                </div>
+
                 <div class="relative flex-1 md:w-64">
                     <input type="text" id="searchInput" placeholder="Search library..." 
                         class="w-full pl-10 pr-4 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900">
                     <svg class="w-4 h-4 absolute left-3 top-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
                 </div>
                 <select id="sortSelect" class="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900">
+                    <option value="priority" selected>Sort: Desire (Asc)</option>
                     <option value="name">Sort: Name</option>
                     <option value="rating">Sort: Rating</option>
                     <option value="rank">Sort: Rank</option>
                     <option value="plays">Sort: Plays</option>
-                    <option value="weight">Sort: Weight</option>
+                    <option value="time">Sort: Play Time</option>
                     <option value="year">Sort: Year</option>
-                    <option value="priority">Sort: Desire (Asc)</option>
                 </select>
             </div>
         </div>
@@ -115,10 +153,10 @@
     <script>
         let games = [];
         let sportomaxData = new Map();
-        let currentSort = 'name';
+        let currentSort = 'priority';
         let searchQuery = '';
-        let sportoFilter = 'all';
-        let playFilter = 'all';
+        let sportoFilter = true;
+        let playFilter = true;
 
         async function fetchBGG(username, extraParams = '') {
             const url = `/api/bgg-helper?endpoint=collection&username=${username}${extraParams}`;
@@ -166,44 +204,55 @@
                 const dtwText = await fetchBGG('dtwlibrary', '&own=1&stats=1');
                 const dtwXml = parser.parseFromString(dtwText, 'text/xml');
 
-                games = Array.from(dtwXml.querySelectorAll('item')).map(item => {
+                const gamesMap = new Map();
+                
+                Array.from(dtwXml.querySelectorAll('item')).forEach(item => {
                     const id = item.getAttribute('objectid');
-                    const stats = item.querySelector('stats');
-                    const ratingNode = stats?.querySelector('rating');
-                    const ranks = ratingNode?.querySelectorAll('rank') || [];
+                    const comment = item.querySelector('comment')?.textContent || '';
                     
-                    let rank = 999999;
-                    ranks.forEach(r => {
-                        if (r.getAttribute('name') === 'boardgame') {
-                            const val = r.getAttribute('value');
-                            rank = (val === 'Not Ranked' || !val) ? 999999 : parseInt(val);
+                    if (gamesMap.has(id)) {
+                        const existing = gamesMap.get(id);
+                        if (comment && !existing.locations.includes(comment)) {
+                            existing.locations.push(comment);
                         }
-                    });
+                    } else {
+                        const stats = item.querySelector('stats');
+                        const ratingNode = stats?.querySelector('rating');
+                        const ranks = ratingNode?.querySelectorAll('rank') || [];
+                        
+                        let rank = 999999;
+                        ranks.forEach(r => {
+                            if (r.getAttribute('name') === 'boardgame') {
+                                const val = r.getAttribute('value');
+                                rank = (val === 'Not Ranked' || !val) ? 999999 : parseInt(val);
+                            }
+                        });
 
-                    const sporto = sportomaxData.get(id);
-                    
-                    let libPlays = item.getAttribute('numplays');
-                    if (!libPlays) {
-                        const libPlaysElem = item.querySelector('numplays');
-                        libPlays = libPlaysElem ? libPlaysElem.textContent : '0';
+                        const sporto = sportomaxData.get(id);
+                        let libPlays = item.getAttribute('numplays');
+                        if (!libPlays) {
+                            const libPlaysElem = item.querySelector('numplays');
+                            libPlays = libPlaysElem ? libPlaysElem.textContent : '0';
+                        }
+                        const sportoPlays = sporto ? sporto.plays : 0;
+
+                        gamesMap.set(id, {
+                            id,
+                            name: item.querySelector('name')?.textContent || 'Unknown Game',
+                            thumb: item.querySelector('thumbnail')?.textContent || '',
+                            year: item.querySelector('yearpublished')?.textContent || '',
+                            players: stats ? `${stats.getAttribute('minplayers')}-${stats.getAttribute('maxplayers')}` : '?-?',
+                            plays: sporto ? sportoPlays : (parseInt(libPlays) || 0),
+                            rating: ratingNode ? (parseFloat(ratingNode.querySelector('average')?.getAttribute('value')) || 0) : 0,
+                            playingtime: stats ? (parseInt(stats.getAttribute('playingtime')) || 0) : 0,
+                            rank: rank,
+                            locations: comment ? [comment] : [],
+                            sporto: sporto || null
+                        });
                     }
-                    const sportoPlays = sporto ? sporto.plays : 0;
-
-                    return {
-                        id,
-                        name: item.querySelector('name')?.textContent || 'Unknown Game',
-                        thumb: item.querySelector('thumbnail')?.textContent || '',
-                        year: item.querySelector('yearpublished')?.textContent || '',
-                        players: stats ? `${stats.getAttribute('minplayers')}-${stats.getAttribute('maxplayers')}` : '?-?',
-                        plays: sporto ? sportoPlays : (parseInt(libPlays) || 0),
-                        rating: ratingNode ? (parseFloat(ratingNode.querySelector('average')?.getAttribute('value')) || 0) : 0,
-                        weight: stats ? (parseFloat(stats.querySelector('avgweight')?.getAttribute('value')) || 0) : 0,
-                        rank: rank,
-                        location: item.querySelector('comment')?.textContent || '',
-                        sporto: sporto || null
-                    };
                 });
 
+                games = Array.from(gamesMap.values());
                 document.getElementById('loader').classList.add('opacity-0', 'pointer-events-none');
                 render();
 
@@ -219,8 +268,8 @@
             
             let filtered = games.filter(g => {
                 const matchesSearch = g.name.toLowerCase().includes(searchQuery.toLowerCase());
-                const matchesSporto = sportoFilter === 'all' || (sportoFilter === 'sporto' && g.sporto !== null);
-                const matchesPlays = playFilter === 'all' || (playFilter === 'unplayed' && g.plays === 0);
+                const matchesSporto = !sportoFilter || g.sporto !== null;
+                const matchesPlays = !playFilter || g.plays === 0;
                 return matchesSearch && matchesSporto && matchesPlays;
             });
 
@@ -229,7 +278,7 @@
                 if (currentSort === 'rating') return b.rating - a.rating;
                 if (currentSort === 'rank') return a.rank - b.rank;
                 if (currentSort === 'plays') return b.plays - a.plays;
-                if (currentSort === 'weight') return b.weight - a.weight;
+                if (currentSort === 'time') return b.playingtime - a.playingtime;
                 if (currentSort === 'year') return b.year - a.year;
                 if (currentSort === 'priority') {
                     const ap = a.sporto?.priority || 99;
@@ -248,15 +297,18 @@
                 
                 return `
                     <div class="game-card bg-white border border-slate-200 rounded-xl overflow-hidden flex h-24 shadow-sm">
-                        <div class="thumb-container">
+                        <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" class="thumb-container group relative">
                             <img src="${g.thumb || 'https://cf.geekdo-images.com/zx_9pDp6m60_q6r1uYf8uA__thumb/img/999999_thumb.png'}" loading="lazy">
-                        </div>
+                            <div class="absolute inset-0 bg-indigo-600/0 group-hover:bg-indigo-600/10 transition-colors flex items-center justify-center">
+                                <svg class="w-5 h-5 text-white opacity-0 group-hover:opacity-100 transition-opacity" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"></path></svg>
+                            </div>
+                        </a>
                         <div class="flex-grow p-3 flex flex-col justify-between overflow-hidden">
                             <div class="flex flex-col gap-0.5">
                                 <div class="flex items-center gap-1.5 flex-wrap">
                                     ${isSporto ? '<span class="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 text-[9px] font-bold rounded uppercase border border-emerald-100">Sportomax</span>' : ''}
                                     ${isWTP ? `<span class="px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[9px] font-bold rounded uppercase border border-amber-100">Desire = ${g.sporto.priority}</span>` : ''}
-                                    ${g.location ? `<span class="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[9px] font-bold rounded uppercase border border-indigo-100">${g.location}</span>` : ''}
+                                    ${g.locations.map(loc => `<span class="px-1.5 py-0.5 bg-indigo-50 text-indigo-600 text-[9px] font-bold rounded uppercase border border-indigo-100">${loc}</span>`).join('')}
                                 </div>
                                 <h3 class="font-bold text-sm leading-tight truncate text-slate-800" title="${g.name}">${g.name}</h3>
                                 <div class="text-[10px] text-slate-400 font-semibold">${g.year} • ${g.players}p</div>
@@ -279,8 +331,8 @@
                                 </div>
                                 <div class="w-px h-4 bg-slate-200"></div>
                                 <div class="flex flex-col items-center">
-                                    <span class="text-[10px] font-bold text-slate-700">${g.weight.toFixed(1)}</span>
-                                    <span class="text-[7px] text-slate-400 uppercase font-extrabold tracking-tighter">Weight</span>
+                                    <span class="text-[10px] font-bold text-slate-700">${g.playingtime}m</span>
+                                    <span class="text-[7px] text-slate-400 uppercase font-extrabold tracking-tighter">Time</span>
                                 </div>
                             </div>
                         </div>
@@ -300,13 +352,13 @@
             render();
         });
 
-        document.getElementById('filterSporto').addEventListener('change', e => {
-            sportoFilter = e.target.value;
+        document.getElementById('toggleSporto').addEventListener('change', e => {
+            sportoFilter = e.target.checked;
             render();
         });
 
-        document.getElementById('filterPlays').addEventListener('change', e => {
-            playFilter = e.target.value;
+        document.getElementById('togglePlays').addEventListener('change', e => {
+            playFilter = e.target.checked;
             render();
         });
 
