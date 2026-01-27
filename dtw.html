@@ -163,6 +163,16 @@
                             <span class="slider"></span>
                         </label>
                     </div>
+                    <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200" title="Ignore Expansions">
+                         <span class="text-[9px] font-bold uppercase text-slate-500 tracking-wider">No Exp</span>
+                         <label class="switch">
+                            <input type="checkbox" id="toggleExpansions" checked>
+                            <span class="slider"></span>
+                        </label>
+                    </div>
+                    <button id="openXmlViewer" class="hidden md:flex p-2 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-indigo-600 hover:border-indigo-200 transition-all" title="View Raw XML">
+                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"></path></svg>
+                    </button>
                     <button id="openShareDesktop" class="hidden md:flex p-2 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-indigo-600 hover:border-indigo-200 transition-all">
                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                     </button>
@@ -387,6 +397,33 @@
         </div>
     </div>
 
+    <!-- XML Viewer Modal -->
+    <div id="xmlViewerModal" class="fixed inset-0 bg-slate-900/80 backdrop-blur-sm z-[200] hidden flex items-center justify-center p-4">
+        <div class="bg-white rounded-3xl shadow-2xl w-full max-w-6xl max-h-[95vh] flex flex-col overflow-hidden animate-in fade-in zoom-in duration-200">
+            <div class="p-6 border-b border-slate-100 flex justify-between items-center bg-white z-10">
+                <div>
+                    <h2 class="text-xl font-800 text-slate-900">Raw XML Viewer</h2>
+                    <p class="text-xs text-slate-500 font-bold uppercase tracking-widest">DTW Library API Data</p>
+                </div>
+                <button id="closeXmlViewer" class="p-2 hover:bg-slate-100 rounded-full transition-colors">
+                    <svg class="w-6 h-6 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+                </button>
+            </div>
+            
+            <div class="p-4 bg-slate-50 border-b border-slate-200 flex gap-4 items-center">
+                <input type="text" id="xmlSearch" class="flex-1 px-4 py-2 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm" placeholder="Search XML content...">
+                <button id="downloadXml" class="px-4 py-2 bg-indigo-600 hover:bg-indigo-700 text-white font-bold rounded-xl transition-all text-sm flex items-center gap-2">
+                    <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a2 2 0 002 2h12a2 2 0 002-2v-1m-4-4l-4 4m0 0l-4-4m4 4V4"></path></svg>
+                    Download
+                </button>
+            </div>
+
+            <div class="flex-1 overflow-y-auto p-6 bg-slate-900">
+                <pre id="xmlContent" class="text-xs text-slate-300 font-mono whitespace-pre-wrap break-words">Loading XML...</pre>
+            </div>
+        </div>
+    </div>
+
     <div id="startupModal" class="fixed inset-0 bg-slate-900 z-[300] flex items-center justify-center p-4 transition-opacity duration-300">
         <div class="bg-white rounded-3xl shadow-2xl w-full max-w-sm p-8 text-center">
             <div class="w-16 h-16 bg-indigo-100 rounded-full flex items-center justify-center mx-auto mb-4">
@@ -420,8 +457,10 @@
         let sportoFilter = true;
         let playFilter = true;
         let hotFilter = false;
+        let expansionsFilter = true;
         let playerFilter = '';
         let compareUser = localStorage.getItem('dtwCompareUser') || 'sportomax';
+        let dtwRawXml = '';
 
         let exportColumns = [
             { id: 'id', label: 'BGG ID', enabled: true },
@@ -521,6 +560,7 @@
                 document.getElementById('loaderText').textContent = 'Fetching DTW Library...';
                 document.getElementById('loaderSub').textContent = 'BGG XMLAPI2';
                 const dtwText = await fetchBGG('dtwlibrary', '&own=1&stats=1');
+                dtwRawXml = dtwText;
                 const dtwXml = parser.parseFromString(dtwText, 'text/xml');
 
                 const gamesMap = new Map();
@@ -561,6 +601,7 @@
                         const sportoPlays = sporto ? sporto.plays : 0;
                         const minP = stats ? parseInt(stats.getAttribute('minplayers')) : 0;
                         const maxP = stats ? parseInt(stats.getAttribute('maxplayers')) : 0;
+                        const subtype = item.getAttribute('subtype') || 'boardgame';
 
                         gamesMap.set(id, {
                             id: id,
@@ -580,7 +621,8 @@
                             isHot: isHot,
                             sporto: sporto || null,
                             added: collId,
-                            modified: lastMod
+                            modified: lastMod,
+                            subtype: subtype
                         });
                     }
                 });
@@ -613,8 +655,9 @@
                 }
                 
                 const matchesHot = !hotFilter || g.isHot;
+                const matchesExpansion = !expansionsFilter || g.subtype !== 'boardgameexpansion';
 
-                return matchesSearch && matchesSporto && matchesPlays && matchesPlayers && matchesHot;
+                return matchesSearch && matchesSporto && matchesPlays && matchesPlayers && matchesHot && matchesExpansion;
             });
 
             filtered.sort((a, b) => {
@@ -1113,6 +1156,11 @@
             render();
         });
 
+        document.getElementById('toggleExpansions')?.addEventListener('change', e => {
+            expansionsFilter = e.target.checked;
+            render();
+        });
+
         document.getElementById('playerFilter')?.addEventListener('change', e => {
             playerFilter = e.target.value;
             render();
@@ -1150,6 +1198,49 @@
         closeBtn?.addEventListener('click', () => modal?.classList.add('hidden'));
         document.getElementById('downloadCSV')?.addEventListener('click', downloadCSV);
         document.getElementById('copyCSV')?.addEventListener('click', copyCSV);
+
+        // XML Viewer Modal
+        const xmlViewerModal = document.getElementById('xmlViewerModal');
+        const openXmlViewerBtn = document.getElementById('openXmlViewer');
+        const closeXmlViewerBtn = document.getElementById('closeXmlViewer');
+        const downloadXmlBtn = document.getElementById('downloadXml');
+        const xmlSearchInput = document.getElementById('xmlSearch');
+        const xmlContent = document.getElementById('xmlContent');
+        let fullXmlText = '';
+
+        openXmlViewerBtn?.addEventListener('click', () => {
+            if (dtwRawXml) {
+                fullXmlText = dtwRawXml;
+                xmlContent.textContent = fullXmlText;
+                xmlSearchInput.value = '';
+                xmlViewerModal?.classList.remove('hidden');
+            }
+        });
+
+        closeXmlViewerBtn?.addEventListener('click', () => xmlViewerModal?.classList.add('hidden'));
+
+        xmlSearchInput?.addEventListener('input', (e) => {
+            const searchTerm = e.target.value.toLowerCase();
+            if (!searchTerm) {
+                xmlContent.textContent = fullXmlText;
+            } else {
+                const lines = fullXmlText.split('\n');
+                const matchedLines = lines.filter(line => line.toLowerCase().includes(searchTerm));
+                xmlContent.textContent = matchedLines.length > 0 ? matchedLines.join('\n') : 'No matches found';
+            }
+        });
+
+        downloadXmlBtn?.addEventListener('click', () => {
+            const blob = new Blob([fullXmlText], { type: 'text/xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `dtw_library_${new Date().toISOString().split('T')[0]}.xml`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+        });
 
         // Missing Modal
         const missingModal = document.getElementById('missingModal');
@@ -1404,7 +1495,8 @@
                     implementations: [],
                     versions: [],
                     videos: [],
-                    description: ''
+                    description: '',
+                    playerPoll: {}
                 };
                 
                 // Categorical & Gameplay
@@ -1515,6 +1607,22 @@
                     }
                 });
                 
+                // Extract player poll data
+                const pollEl = item.querySelector('poll[name="suggested_numplayers"]');
+                if (pollEl) {
+                    const resultsElements = pollEl.querySelectorAll('results');
+                    Array.from(resultsElements).forEach(results => {
+                        const numPlayers = results.getAttribute('numplayers');
+                        const votes = {};
+                        Array.from(results.querySelectorAll('result')).forEach(result => {
+                            const value = result.getAttribute('value');
+                            const numvotes = parseInt(result.getAttribute('numvotes')) || 0;
+                            votes[value] = numvotes;
+                        });
+                        currentGameDetails.playerPoll[numPlayers] = votes;
+                    });
+                }
+                
                 // Description
                 const desc = item.querySelector('description')?.textContent || 'No description available.';
                 const txt = document.createElement("textarea");
@@ -1550,6 +1658,56 @@
             // Determine which data to show based on tab
             switch(tabName) {
                 case 'overview':
+                    // Build player poll display
+                    let pollHTML = '';
+                    if (currentGameDetails.playerPoll && Object.keys(currentGameDetails.playerPoll).length > 0) {
+                        const pollEntries = Object.entries(currentGameDetails.playerPoll).sort((a, b) => {
+                            const aNum = a[0].replace('+', '');
+                            const bNum = b[0].replace('+', '');
+                            return parseInt(aNum) - parseInt(bNum);
+                        });
+                        
+                        pollHTML = `
+                            <div class="bg-white p-4 rounded-xl border border-slate-100 shadow-sm">
+                                <h3 class="text-sm font-bold text-slate-700 mb-3">👥 Player Count Recommendations</h3>
+                                <div class="space-y-2">
+                                    ${pollEntries.map(([numPlayers, votes]) => {
+                                        const best = votes['Best'] || 0;
+                                        const recommended = votes['Recommended'] || 0;
+                                        const notRecommended = votes['Not Recommended'] || 0;
+                                        const total = best + recommended + notRecommended;
+                                        if (total === 0) return '';
+                                        
+                                        const bestPct = Math.round((best / total) * 100);
+                                        const recPct = Math.round((recommended / total) * 100);
+                                        const notRecPct = Math.round((notRecommended / total) * 100);
+                                        
+                                        return `
+                                            <div class="flex items-center gap-2">
+                                                <div class="w-12 text-xs font-bold text-slate-700 text-center">${numPlayers}p</div>
+                                                <div class="flex-1 flex gap-1 h-6 rounded overflow-hidden border border-slate-200">
+                                                    ${best > 0 ? `<div class="bg-emerald-500" style="width: ${bestPct}%" title="Best: ${best} votes (${bestPct}%)"></div>` : ''}
+                                                    ${recommended > 0 ? `<div class="bg-yellow-400" style="width: ${recPct}%" title="Recommended: ${recommended} votes (${recPct}%)"></div>` : ''}
+                                                    ${notRecommended > 0 ? `<div class="bg-red-400" style="width: ${notRecPct}%" title="Not Recommended: ${notRecommended} votes (${notRecPct}%)"></div>` : ''}
+                                                </div>
+                                                <div class="w-24 text-[10px] text-slate-500">
+                                                    ${best > 0 ? `<span class="text-emerald-600 font-bold">${bestPct}%</span>` : ''}
+                                                    ${best > 0 && recommended > 0 ? ' / ' : ''}
+                                                    ${recommended > 0 ? `<span class="text-yellow-600 font-bold">${recPct}%</span>` : ''}
+                                                </div>
+                                            </div>
+                                        `;
+                                    }).join('')}
+                                </div>
+                                <div class="mt-3 flex gap-3 text-[10px] text-slate-500">
+                                    <div class="flex items-center gap-1"><div class="w-3 h-3 rounded bg-emerald-500"></div><span>Best</span></div>
+                                    <div class="flex items-center gap-1"><div class="w-3 h-3 rounded bg-yellow-400"></div><span>Recommended</span></div>
+                                    <div class="flex items-center gap-1"><div class="w-3 h-3 rounded bg-red-400"></div><span>Not Recommended</span></div>
+                                </div>
+                            </div>
+                        `;
+                    }
+                    
                     content.innerHTML = `
                         <div class="flex flex-col md:flex-row gap-6">
                             <div class="w-full md:w-1/3 flex flex-col gap-4">
@@ -1579,6 +1737,7 @@
                                         `<span class="px-2 py-1 bg-slate-100 text-slate-600 text-xs font-bold rounded uppercase border border-slate-200 tracking-wider">${loc}</span>`
                                     ).join('')}
                                 </div>
+                                ${pollHTML}
                                 <div class="prose prose-sm max-w-none text-slate-600 bg-white p-4 rounded-xl border border-slate-100 shadow-sm">${currentGameDetails.description}</div>
                             </div>
                         </div>
