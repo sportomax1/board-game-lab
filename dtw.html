@@ -141,7 +141,25 @@
                         <option value="plays">Plays</option>
                         <option value="time">Play Time</option>
                         <option value="year">Year</option>
+                        <option value="added">Date Added</option>
+                        <option value="modified">Date Modified</option>
                     </select>
+                    <select id="playerFilter" class="flex-1 md:w-auto bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900 appearance-none">
+                        <option value="" selected>Any Count</option>
+                        <option value="1">1 Player</option>
+                        <option value="2">2 Players</option>
+                        <option value="3">3 Players</option>
+                        <option value="4">4 Players</option>
+                        <option value="5">5 Players</option>
+                        <option value="6">6+ Players</option>
+                    </select>
+                    <div class="flex items-center gap-2 bg-white px-3 py-2 rounded-xl border border-slate-200" title="Only show High Desire games">
+                         <span class="text-[9px] font-bold uppercase text-slate-500 tracking-wider">Hot</span>
+                         <label class="switch">
+                            <input type="checkbox" id="toggleHot">
+                            <span class="slider"></span>
+                        </label>
+                    </div>
                     <button id="openShareDesktop" class="hidden md:flex p-2 bg-white border border-slate-200 rounded-xl text-slate-500 hover:text-indigo-600 hover:border-indigo-200 transition-all">
                        <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z"></path></svg>
                     </button>
@@ -358,12 +376,12 @@
     </div>
 
     <script>
-        let games = [];
-        let sportomaxData = new Map();
         let currentSort = 'desire';
         let searchQuery = '';
         let sportoFilter = true;
         let playFilter = true;
+        let hotFilter = false;
+        let playerFilter = '';
         let compareUser = localStorage.getItem('dtwCompareUser') || 'sportomax';
 
         let exportColumns = [
@@ -375,7 +393,9 @@
             { id: 'plays', label: 'Plays', enabled: true },
             { id: 'time', label: 'Play Time', enabled: true },
             { id: 'desire', label: 'Desire', enabled: true },
-            { id: 'locations', label: 'Locations', enabled: true }
+            { id: 'locations', label: 'Locations', enabled: true },
+            { id: 'added', label: 'Date Added', enabled: false },
+            { id: 'modified', label: 'Date Modified', enabled: false }
         ];
 
         async function fetchBGG(username, extraParams = '') {
@@ -390,6 +410,16 @@
                 return await resp.text();
             }
             throw new Error('BGG Timeout');
+        }
+
+        function getPlayTimeColor(mins) {
+             if(mins === 0) return 'text-slate-700';
+             if(mins <= 30) return 'text-emerald-500';
+             if(mins <= 60) return 'text-emerald-600';
+             if(mins <= 90) return 'text-lime-600';
+             if(mins <= 120) return 'text-yellow-600';
+             if(mins <= 180) return 'text-orange-500';
+             return 'text-red-500';
         }
 
         async function init() {
@@ -447,6 +477,7 @@
                 Array.from(dtwXml.querySelectorAll('item')).forEach(item => {
                     const id = item.getAttribute('objectid');
                     const comment = item.querySelector('comment')?.textContent || '';
+                    const collId = parseInt(item.getAttribute('collid')) || 0;
                     
                     if (gamesMap.has(id)) {
                         const existing = gamesMap.get(id);
@@ -457,6 +488,8 @@
                         const stats = item.querySelector('stats');
                         const ratingNode = stats?.querySelector('rating');
                         const ranks = ratingNode?.querySelectorAll('rank') || [];
+                        const status = item.querySelector('status');
+                        const lastMod = status ? status.getAttribute('lastmodified') : '2000-01-01 00:00:00';
                         
                         let rank = 999999;
                         ranks.forEach(r => {
@@ -473,20 +506,26 @@
                             libPlays = libPlaysElem ? libPlaysElem.textContent : '0';
                         }
                         const sportoPlays = sporto ? sporto.plays : 0;
+                        const minP = stats ? parseInt(stats.getAttribute('minplayers')) : 0;
+                        const maxP = stats ? parseInt(stats.getAttribute('maxplayers')) : 0;
 
                         gamesMap.set(id, {
                             id: id,
                             name: item.querySelector('name')?.textContent || 'Unknown Game',
                             thumb: item.querySelector('thumbnail')?.textContent || '',
                             year: item.querySelector('yearpublished')?.textContent || '',
-                            players: stats ? (stats.getAttribute('minplayers') + '-' + stats.getAttribute('maxplayers')) : '?-?',
+                            players: minP + '-' + maxP,
+                            minPlayers: minP,
+                            maxPlayers: maxP,
                             plays: sporto ? sportoPlays : (parseInt(libPlays) || 0),
                             rating: ratingNode ? (parseFloat(ratingNode.querySelector('average')?.getAttribute('value')) || 0) : 0,
                             playingtime: stats ? (parseInt(stats.getAttribute('playingtime')) || 0) : 0,
                             rank: rank,
                             desire: sporto ? sporto.desire : 0,
                             locations: comment ? [comment] : [],
-                            sporto: sporto || null
+                            sporto: sporto || null,
+                            added: collId,
+                            modified: lastMod
                         });
                     }
                 });
@@ -510,7 +549,17 @@
                 const matchesSearch = g.name.toLowerCase().includes(searchQuery.toLowerCase());
                 const matchesSporto = !sportoFilter || g.sporto !== null;
                 const matchesPlays = !playFilter || g.plays === 0;
-                return matchesSearch && matchesSporto && matchesPlays;
+                
+                let matchesPlayers = true;
+                if(playerFilter) {
+                   const p = parseInt(playerFilter);
+                   if(p === 6) matchesPlayers = g.maxPlayers >= 6;
+                   else matchesPlayers = g.minPlayers <= p && g.maxPlayers >= p;
+                }
+                
+                const matchesHot = !hotFilter || (g.desire > 0);
+
+                return matchesSearch && matchesSporto && matchesPlays && matchesPlayers && matchesHot;
             });
 
             filtered.sort((a, b) => {
@@ -520,6 +569,8 @@
                 if (currentSort === 'plays') return b.plays - a.plays;
                 if (currentSort === 'time') return b.playingtime - a.playingtime;
                 if (currentSort === 'year') return b.year - a.year;
+                if (currentSort === 'added') return b.added - a.added;
+                if (currentSort === 'modified') return b.modified.localeCompare(a.modified);
                 if (currentSort === 'desire') {
                     if (b.desire !== a.desire) return b.desire - a.desire;
                     return a.name.localeCompare(b.name);
@@ -536,6 +587,8 @@
                     '<svg class="w-2 h-2 fill-current" viewBox="0 0 24 24"><path d="M12 21.35l-1.45-1.32C5.4 15.36 2 12.28 2 8.5 2 5.42 4.42 3 7.5 3c1.74 0 3.41.81 4.5 2.09C13.09 3.81 14.76 3 16.5 3 19.58 3 22 5.42 22 8.5c0 3.78-3.4 6.86-8.55 11.54L12 21.35z"/></svg> ' + g.desire + 
                     '</span>' : '';
                 const locTags = g.locations.map(loc => '<span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[8px] font-bold rounded uppercase border border-slate-200 tracking-wider">' + loc + '</span>').join('');
+                
+                const timeColorClass = getPlayTimeColor(g.playingtime);
                 
                 return '<div class="game-card bg-white border border-slate-200 rounded-2xl overflow-hidden flex shadow-sm hover:shadow-md transition-all">' +
                     '<a href="https://boardgamegeek.com/boardgame/' + g.id + '" target="_blank" class="thumb-container group relative bg-white border-r border-slate-100">' +
@@ -559,7 +612,7 @@
                     '<div class="flex flex-col items-center"><span class="text-[10px] font-800 text-slate-700">' + g.plays + '</span>' +
                     '<span class="text-[7px] text-slate-400 uppercase font-bold tracking-tighter">Plays</span></div>' +
                     '<div class="w-px h-3 bg-slate-200"></div>' +
-                    '<div class="flex flex-col items-center"><span class="text-[10px] font-800 text-slate-700">' + g.playingtime + 'm</span>' +
+                    '<div class="flex flex-col items-center"><span class="text-[10px] font-800 ' + timeColorClass + '">' + g.playingtime + 'm</span>' +
                     '<span class="text-[7px] text-slate-400 uppercase font-bold tracking-tighter">Time</span></div>' +
                     '</div></div></div>';
             }).join('');
@@ -870,12 +923,41 @@
                             ctx.restore();
                         }
                         
-                         // Draw Shelf Location
-                        if (game.locations && game.locations.length > 0 && !showNames) { // Prioritize name or loc?
-                             // Keep existing behavior but maybe adjust position
-                            const locText = game.locations.join(', ');
+                         // Draw Shelf Location (Always if space permits, or if essential)
+                        if (game.locations && game.locations.length > 0) {
+                            // If names are hidden, show large. If names shown, show small above? 
+                            // User "sharing grid must have shelf location" implies priority.
+                            
+                            const locText = game.locations[0]; // Just first loc
                             ctx.save();
-                            ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                            
+                            if (!showNames && layout !== 'grid100') {
+                                // Big Label at bottom
+                                ctx.fillStyle = 'rgba(0, 0, 0, 0.7)';
+                                ctx.fillRect(x, y + tile - 50, tile, 50);
+                                ctx.fillStyle = accentColor;
+                                ctx.font = 'bold 20px sans-serif';
+                                ctx.textAlign = 'center';
+                                ctx.textBaseline = 'middle';
+                                ctx.fillText(locText, x + tile / 2, y + tile - 25);
+                            } else if (showNames && layout !== 'grid100') {
+                                // Small Label above name? Or Top Right?
+                                ctx.fillStyle = accentColor; 
+                                ctx.font = 'bold 16px sans-serif'; 
+                                ctx.textAlign = 'right'; 
+                                ctx.textBaseline = 'top'; 
+                                // Background pill
+                                const txtWidth = ctx.measureText(locText).width;
+                                ctx.fillStyle = 'rgba(0,0,0,0.8)';
+                                ctx.beginPath();
+                                ctx.roundRect(x + tile - txtWidth - 30, y + 20, txtWidth + 20, 30, 8);
+                                ctx.fill();
+                                
+                                ctx.fillStyle = accentColor;
+                                ctx.fillText(locText, x + tile - 20, y + 27);
+                            }
+                            ctx.restore();
+                        }
                             ctx.fillRect(x, y + tile - 50, tile, 50);
                             ctx.fillStyle = '#ffffff';
                             ctx.font = 'bold 24px Inter, sans-serif';
@@ -956,6 +1038,16 @@
 
         document.getElementById('togglePlays')?.addEventListener('change', e => {
             playFilter = e.target.checked;
+            render();
+        });
+
+        document.getElementById('toggleHot')?.addEventListener('change', e => {
+            hotFilter = e.target.checked;
+            render();
+        });
+
+        document.getElementById('playerFilter')?.addEventListener('change', e => {
+            playerFilter = e.target.value;
             render();
         });
 
@@ -1081,19 +1173,22 @@
             container.innerHTML = '';
             
             const shelves = new Map();
-            // Filter first? Yes, respect filters
+            // Filter first? Yes, respect filters AND hot filter
             const filtered = games.filter(g => {
                 const matchesSearch = g.name.toLowerCase().includes(searchQuery.toLowerCase());
                 const matchesSporto = !sportoFilter || g.sporto !== null;
                 const matchesPlays = !playFilter || g.plays === 0;
-                return matchesSearch && matchesSporto && matchesPlays;
-            });
-
-            filtered.forEach(g => {
-                const locs = g.locations.length > 0 ? g.locations : ['Unsorted'];
-                locs.forEach(loc => {
-                    const shelfName = loc;
-                    if(!shelves.has(shelfName)) shelves.set(shelfName, []);
+                
+                let matchesPlayers = true;
+                if(playerFilter) {
+                   const p = parseInt(playerFilter);
+                   if(p === 6) matchesPlayers = g.maxPlayers >= 6;
+                   else matchesPlayers = g.minPlayers <= p && g.maxPlayers >= p;
+                }
+                
+                const matchesHot = !hotFilter || (g.desire > 0);
+                
+                return matchesSearch && matchesSporto && matchesPlays && matchesPlayers && matchesHot;
                     shelves.get(shelfName).push(g);
                 });
             });
