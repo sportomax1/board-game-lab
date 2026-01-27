@@ -235,50 +235,65 @@ function normalize(str, removeFillers = false) {
 
 function parseCSV(text){
   const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(Boolean);
-  const out=[];
   const headerKeywords = ['rank', 'name', 'id', 'title', 'game', 'thumbnail', 'item'];
-  let skipCount = 0;
-  
-  for(let i = 0; i < lines.length; i++){
-    const ln = lines[i];
-    const parts = ln.split(/,|\t/).map(p=>p.trim()).filter((v,idx)=>v!=='' || idx>0);
-    if(parts.length===0) continue;
-    
-    // Check if this line looks like a header (has header keywords in first 2 columns)
-    if(i === 0 && parts.length >= 2){
-      const isHeader = headerKeywords.includes(parts[0].toLowerCase()) && 
-                       headerKeywords.includes(parts[1].toLowerCase());
-      if(isHeader) {
-        skipCount = 1; // Skip this header row
-        continue;
-      }
-    }
-    
-    if (headerKeywords.includes(parts[0].toLowerCase())) continue;
-    
-    let rank = null; let name = '';
-    const firstVal = parts[0].trim();
-    const isNumeric = /^[0-9]+[.]?$/.test(firstVal);
-    
-    if(isNumeric && parts.length > 1){
-      rank = parseInt(firstVal, 10);
-      name = parts.slice(1).join(',').trim();
-    } else { 
-      // If it's the only part, or not numeric, it's the name (or rank + name in one)
-      if (parts.length === 1) {
-        // Check if name starts with "1. " or "1 "
-        const startsWithRankMatch = firstVal.match(/^(\d+)[.\s]+(.*)/);
-        if (startsWithRankMatch) {
-            rank = parseInt(startsWithRankMatch[1], 10);
-            name = startsWithRankMatch[2].trim();
-        } else {
-            name = firstVal;
-        }
+  const out = [];
+
+  // Determine if this is Vertical format (Rank \n Name \n Rank \n Name)
+  // Check if we have many single-line numbers alternating with text
+  let numericLines = 0;
+  for (let i = 0; i < Math.min(lines.length, 10); i++) {
+    if (/^\d+$/.test(lines[i])) numericLines++;
+  }
+  const isVertical = numericLines >= 2 && lines.some(l => !/^\d+$/.test(l) && !headerKeywords.includes(l.toLowerCase()));
+
+  if (isVertical) {
+    let currentRank = null;
+    for (let i = 0; i < lines.length; i++) {
+      const ln = lines[i];
+      const lowLn = ln.toLowerCase();
+      if (headerKeywords.includes(lowLn)) continue;
+
+      if (/^\d+$/.test(ln)) {
+        currentRank = parseInt(ln, 10);
       } else {
-        name = parts.join(',').trim(); 
+        // It's a name
+        out.push({ rank: currentRank, name: ln });
+        currentRank = null;
       }
     }
-    if(name) out.push({rank, name});
+  } else {
+    // Horizontal / CSV style
+    for (const ln of lines) {
+      // Split by comma or tab
+      const parts = ln.split(/,|\t/).map(p=>p.trim());
+      if (parts.length === 0) continue;
+      
+      const firstLow = parts[0].toLowerCase();
+      if (headerKeywords.includes(firstLow)) continue;
+
+      let rank = null; let name = '';
+      
+      // Strict numeric check for rank: MUST be ONLY numbers (no spaces, no "7 Wonders")
+      const isFirstPartRank = /^\d+$/.test(parts[0]);
+
+      if (isFirstPartRank && parts.length > 1) {
+        rank = parseInt(parts[0], 10);
+        name = parts.slice(1).join(',').trim();
+      } else {
+        // Check for "1. Game Name" pattern
+        const dotMatch = ln.match(/^(\d+)[.\s]+(.*)/);
+        if (dotMatch && !headerKeywords.includes(dotMatch[2].toLowerCase().split(' ')[0])) {
+          rank = parseInt(dotMatch[1], 10);
+          name = dotMatch[2].trim();
+        } else {
+          name = ln;
+        }
+      }
+      
+      if (name && !headerKeywords.includes(name.toLowerCase())) {
+        out.push({ rank, name });
+      }
+    }
   }
   return out;
 }
