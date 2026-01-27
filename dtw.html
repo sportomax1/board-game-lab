@@ -1,0 +1,275 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, viewport-fit=cover">
+    <title>DTW Library Explorer</title>
+    <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;600;700;800&display=swap" rel="stylesheet">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            font-family: 'Inter', sans-serif;
+            background: #f8fafc;
+            min-height: 100vh;
+        }
+        .container { max-width: 1400px; }
+        .game-card {
+            transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1);
+        }
+        .game-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 10px 15px -3px rgba(0, 0, 0, 0.1), 0 4px 6px -2px rgba(0, 0, 0, 0.05);
+        }
+        /* Fixed square thumbnail container */
+        .thumb-container {
+            width: 100px;
+            height: 100px;
+            min-width: 100px;
+            background: #fff;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            overflow: hidden;
+            border-radius: 8px 0 0 8px;
+        }
+        .thumb-container img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+            padding: 4px;
+        }
+        /* Custom scrollbar */
+        ::-webkit-scrollbar { width: 8px; }
+        ::-webkit-scrollbar-track { background: #f1f5f9; }
+        ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+        ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+    </style>
+</head>
+<body class="text-slate-900">
+
+    <!-- Header -->
+    <header class="bg-white border-b border-slate-200 sticky top-0 z-50">
+        <div class="container mx-auto px-4 py-4 flex flex-col md:flex-row justify-between items-center gap-4">
+            <div class="flex items-center gap-3">
+                <div class="bg-indigo-600 p-2 rounded-lg shadow-lg shadow-indigo-200">
+                    <svg class="w-6 h-6 text-white" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"></path></svg>
+                </div>
+                <div>
+                    <h1 class="text-xl font-800 tracking-tight leading-none">DTW Library</h1>
+                    <p class="text-xs text-slate-500 font-medium uppercase tracking-wider mt-1">Collection Explorer</p>
+                </div>
+            </div>
+
+            <div class="flex items-center gap-3 w-full md:w-auto">
+                <div class="relative flex-1 md:w-64">
+                    <input type="text" id="searchInput" placeholder="Search library..." 
+                        class="w-full pl-10 pr-4 py-2 bg-slate-100 border-none rounded-xl text-sm focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900">
+                    <svg class="w-4 h-4 absolute left-3 top-3 text-slate-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+                </div>
+                <select id="sortSelect" class="bg-white border border-slate-200 rounded-xl px-3 py-2 text-sm font-semibold outline-none focus:ring-2 focus:ring-indigo-500 transition-all text-slate-900">
+                    <option value="name">Sort: Name</option>
+                    <option value="rating">Sort: Rating</option>
+                    <option value="rank">Sort: Rank</option>
+                    <option value="plays">Sort: Plays</option>
+                    <option value="weight">Sort: Weight</option>
+                    <option value="year">Sort: Year</option>
+                    <option value="priority">Sort: Priority</option>
+                </select>
+            </div>
+        </div>
+    </header>
+
+    <main class="container mx-auto px-4 py-6">
+        <!-- Stats Bar -->
+        <div id="statsBar" class="flex flex-wrap gap-4 mb-6">
+            <div class="bg-white px-4 py-2 rounded-xl border border-slate-200 shadow-sm flex items-center gap-3">
+                <div class="w-2 h-2 rounded-full bg-indigo-500"></div>
+                <span id="gameCount" class="text-sm font-bold text-slate-700">Loading Games...</span>
+            </div>
+        </div>
+
+        <!-- Grid -->
+        <div id="gameGrid" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-2 xl:grid-cols-3 gap-4">
+            <!-- Cards injected here -->
+        </div>
+    </main>
+
+    <!-- Loader -->
+    <div id="loader" class="fixed inset-0 bg-white/95 backdrop-blur-sm z-[100] flex flex-col items-center justify-center transition-opacity duration-300">
+        <div class="relative w-16 h-16">
+            <div class="absolute inset-0 border-4 border-slate-100 rounded-full"></div>
+            <div class="absolute inset-0 border-4 border-indigo-600 rounded-full border-t-transparent animate-spin"></div>
+        </div>
+        <p class="mt-4 text-slate-900 font-bold tracking-tight" id="loaderText">Initializing...</p>
+        <p class="text-xs text-slate-400 mt-2 uppercase tracking-widest font-semibold" id="loaderSub">Fetching BGG Collection</p>
+    </div>
+
+    <script>
+        let games = [];
+        let sportomaxData = new Map();
+        let currentSort = 'name';
+        let searchQuery = '';
+
+        async function fetchBGG(username, extraParams = '') {
+            const url = `/api/bgg-helper?endpoint=collection&username=${username}${extraParams}`;
+            for (let i = 0; i < 5; i++) {
+                const resp = await fetch(url);
+                if (resp.status === 202) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    continue;
+                }
+                if (!resp.ok) throw new Error(`BGG Error: ${resp.status}`);
+                return await resp.text();
+            }
+            throw new Error('BGG Timeout');
+        }
+
+        async function init() {
+            try {
+                // 1. Fetch Sportomax first
+                document.getElementById('loaderText').textContent = 'Fetching Sportomax...';
+                const sportoText = await fetchBGG('sportomax');
+                const parser = new DOMParser();
+                const sportoXml = parser.parseFromString(sportoText, 'text/xml');
+                
+                Array.from(sportoXml.querySelectorAll('item')).forEach(item => {
+                    const id = item.getAttribute('objectid');
+                    const status = item.querySelector('status');
+                    sportomaxData.set(id, {
+                        wanttoplay: status.getAttribute('wanttoplay') === '1',
+                        priority: parseInt(status.getAttribute('wishlistpriority')) || 99
+                    });
+                });
+
+                // 2. Fetch DTW Library
+                document.getElementById('loaderText').textContent = 'Fetching DTW Library...';
+                document.getElementById('loaderSub').textContent = 'BGG XMLAPI2';
+                const dtwText = await fetchBGG('dtwlibrary', '&own=1&stats=1');
+                const dtwXml = parser.parseFromString(dtwText, 'text/xml');
+
+                games = Array.from(dtwXml.querySelectorAll('item')).map(item => {
+                    const id = item.getAttribute('objectid');
+                    const stats = item.querySelector('stats');
+                    const ratingNode = stats.querySelector('rating');
+                    const ranks = ratingNode.querySelectorAll('rank');
+                    
+                    let rank = 999999;
+                    ranks.forEach(r => {
+                        if (r.getAttribute('name') === 'boardgame') {
+                            const val = r.getAttribute('value');
+                            rank = (val === 'Not Ranked' || !val) ? 999999 : parseInt(val);
+                        }
+                    });
+
+                    const sporto = sportomaxData.get(id);
+
+                    return {
+                        id,
+                        name: item.querySelector('name').textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent || '',
+                        year: item.querySelector('yearpublished')?.textContent || '',
+                        players: `${stats.getAttribute('minplayers')}-${stats.getAttribute('maxplayers')}`,
+                        plays: parseInt(item.querySelector('numplays').textContent) || 0,
+                        rating: parseFloat(ratingNode.querySelector('average').getAttribute('value')) || 0,
+                        weight: parseFloat(stats.querySelector('avgweight').getAttribute('value')) || 0,
+                        rank: rank,
+                        sporto: sporto || null
+                    };
+                });
+
+                document.getElementById('loader').classList.add('opacity-0', 'pointer-events-none');
+                render();
+
+            } catch (err) {
+                console.error(err);
+                document.getElementById('loaderText').innerHTML = `<span class="text-red-600">Failed to Load</span>`;
+                document.getElementById('loaderSub').textContent = err.message;
+            }
+        }
+
+        function render() {
+            const container = document.getElementById('gameGrid');
+            
+            let filtered = games.filter(g => 
+                g.name.toLowerCase().includes(searchQuery.toLowerCase())
+            );
+
+            filtered.sort((a, b) => {
+                if (currentSort === 'name') return a.name.localeCompare(b.name);
+                if (currentSort === 'rating') return b.rating - a.rating;
+                if (currentSort === 'rank') return a.rank - b.rank;
+                if (currentSort === 'plays') return b.plays - a.plays;
+                if (currentSort === 'weight') return b.weight - a.weight;
+                if (currentSort === 'year') return b.year - a.year;
+                if (currentSort === 'priority') {
+                    const ap = a.sporto?.priority || 99;
+                    const bp = b.sporto?.priority || 99;
+                    if (ap !== bp) return ap - bp;
+                    return a.name.localeCompare(b.name);
+                }
+                return 0;
+            });
+
+            document.getElementById('gameCount').textContent = `${filtered.length} Games in Library`;
+
+            container.innerHTML = filtered.map(g => {
+                const isSporto = g.sporto !== null;
+                const isWTP = g.sporto?.wanttoplay;
+                
+                return `
+                    <div class="game-card bg-white border border-slate-200 rounded-xl overflow-hidden flex h-24 shadow-sm">
+                        <div class="thumb-container">
+                            <img src="${g.thumb || 'https://cf.geekdo-images.com/zx_9pDp6m60_q6r1uYf8uA__thumb/img/999999_thumb.png'}" loading="lazy">
+                        </div>
+                        <div class="flex-grow p-3 flex flex-col justify-between overflow-hidden">
+                            <div class="flex flex-col gap-0.5">
+                                <div class="flex items-center gap-1.5 flex-wrap">
+                                    ${isSporto ? '<span class="px-1.5 py-0.5 bg-emerald-50 text-emerald-600 text-[9px] font-bold rounded uppercase border border-emerald-100">Sportomax</span>' : ''}
+                                    ${isWTP ? `<span class="px-1.5 py-0.5 bg-amber-50 text-amber-600 text-[9px] font-bold rounded uppercase border border-amber-100">WTP Prio ${g.sporto.priority}</span>` : ''}
+                                </div>
+                                <h3 class="font-bold text-sm leading-tight truncate text-slate-800" title="${g.name}">${g.name}</h3>
+                                <div class="text-[10px] text-slate-400 font-semibold">${g.year} • ${g.players}p</div>
+                            </div>
+                            
+                            <div class="flex items-center justify-between bg-slate-50 px-2 py-1 rounded-lg border border-slate-100/50">
+                                <div class="flex flex-col items-center">
+                                    <span class="text-[10px] font-bold text-indigo-600">${g.rating.toFixed(1)}</span>
+                                    <span class="text-[7px] text-slate-400 uppercase font-extrabold tracking-tighter">Rating</span>
+                                </div>
+                                <div class="w-px h-4 bg-slate-200"></div>
+                                <div class="flex flex-col items-center">
+                                    <span class="text-[10px] font-bold text-slate-700">${g.rank < 99999 ? g.rank : '-'}</span>
+                                    <span class="text-[7px] text-slate-400 uppercase font-extrabold tracking-tighter">Rank</span>
+                                </div>
+                                <div class="w-px h-4 bg-slate-200"></div>
+                                <div class="flex flex-col items-center">
+                                    <span class="text-[10px] font-bold text-slate-700">${g.plays}</span>
+                                    <span class="text-[7px] text-slate-400 uppercase font-extrabold tracking-tighter">Plays</span>
+                                </div>
+                                <div class="w-px h-4 bg-slate-200"></div>
+                                <div class="flex flex-col items-center">
+                                    <span class="text-[10px] font-bold text-slate-700">${g.weight.toFixed(1)}</span>
+                                    <span class="text-[7px] text-slate-400 uppercase font-extrabold tracking-tighter">Weight</span>
+                                </div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            }).join('');
+        }
+
+        // Listeners
+        document.getElementById('searchInput').addEventListener('input', e => {
+            searchQuery = e.target.value;
+            render();
+        });
+
+        document.getElementById('sortSelect').addEventListener('change', e => {
+            currentSort = e.target.value;
+            render();
+        });
+
+        init();
+    </script>
+</body>
+</html>
