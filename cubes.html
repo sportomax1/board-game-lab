@@ -319,20 +319,6 @@
             padding: 4px;
         }
 
-        .card-dimensions-overlay {
-            position: absolute;
-            bottom: 0;
-            left: 0;
-            right: 0;
-            background: rgba(0,0,0,0.75);
-            color: white;
-            padding: 0.1rem;
-            font-size: 0.65rem;
-            font-weight: 700;
-            text-align: center;
-            backdrop-filter: blur(2px);
-        }
-
         .card-content {
             padding: 0.5rem;
             flex-grow: 1;
@@ -342,6 +328,38 @@
             gap: 0.2rem;
         }
 
+        .card-dims-row {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+            margin-top: 0.1rem;
+        }
+
+        .card-dims {
+            font-size: 0.85rem;
+            font-weight: 800;
+            color: #333;
+            background: #f0f4ff;
+            padding: 0.1rem 0.4rem;
+            border-radius: 4px;
+            white-space: nowrap;
+        }
+
+        .card-dims.zero {
+            background: #fff5f5;
+            color: #ff6b6b;
+            font-weight: 700;
+        }
+
+        .records-badge {
+            font-size: 0.65rem;
+            background: #667eea;
+            color: white;
+            padding: 0.1rem 0.3rem;
+            border-radius: 10px;
+            font-weight: 700;
+        }
+
         .game-name {
             font-size: 0.8rem;
             font-weight: 700;
@@ -349,6 +367,7 @@
             line-height: 1.1;
             display: -webkit-box;
             -webkit-line-clamp: 2;
+            line-clamp: 2;
             -webkit-box-orient: vertical;
             overflow: hidden;
         }
@@ -1091,29 +1110,36 @@
         <div class="tabs-container" id="tabsContainer">
             <button class="tab-button active" onclick="switchTab('all')">📋 All Measurements</button>
             <button class="tab-button" onclick="switchTab('popular')">⭐ Most Popular</button>
+            <button class="tab-button" onclick="switchTab('invalid')">⚠️ Missing/Invalid</button>
         </div>
 
         <div class="main-content">
             <!-- All Measurements Tab -->
             <div class="tab-content active" id="allTab">
-                <div class="table-wrapper">
-                    <div id="allTableContainer">
-                        <div class="empty-state">
-                            <div class="empty-state-icon">📏</div>
-                            <p>Enter a username and click Fetch Data to see all measurements</p>
-                        </div>
+                <div id="allTableContainer" class="table-wrapper">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">📏</div>
+                        <p>Enter a username and click Fetch Data to see all measurements</p>
                     </div>
                 </div>
             </div>
 
             <!-- Most Popular Tab -->
             <div class="tab-content" id="popularTab">
-                <div class="table-wrapper">
-                    <div id="popularTableContainer">
-                        <div class="empty-state">
-                            <div class="empty-state-icon">⭐</div>
-                            <p>Enter a username and click Fetch Data to see most popular measurements</p>
-                        </div>
+                <div id="popularTableContainer" class="table-wrapper">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⭐</div>
+                        <p>Enter a username and click Fetch Data to see most popular measurements</p>
+                    </div>
+                </div>
+            </div>
+
+            <!-- Missing/Invalid Tab -->
+            <div class="tab-content" id="invalidTab">
+                <div id="invalidTableContainer" class="table-wrapper">
+                    <div class="empty-state">
+                        <div class="empty-state-icon">⚠️</div>
+                        <p>Games with missing or invalid measurements will appear here</p>
                     </div>
                 </div>
             </div>
@@ -1203,11 +1229,13 @@
 
         let allMeasurements = [];
         let popularMeasurements = [];
+        let invalidMeasurements = [];
         let filteredAllData = [];
         let filteredPopularData = [];
+        let filteredInvalidData = [];
         let currentSortColumn = 'name';
         let currentSortDirection = 'asc';
-        let currentPopularSort = 'name';
+        let currentPopularSort = 'count'; // Default to count for popular
         let currentTab = 'all';
         let allTabSorts = ['name', 'versionName']; // Primary, Secondary sort
         let hideZeroMeasurements = true;
@@ -1312,7 +1340,8 @@
 
                 const gameIds = items.map(item => item.getAttribute('objectid'));
                 allMeasurements = [];
-                const batchSize = 20; // Reduced batch size to avoid 502 Bad Gateway errors
+                const allGamesFound = {}; // Track every game found to detect missing versions
+                const batchSize = 20; 
 
                 for (let i = 0; i < gameIds.length; i += batchSize) {
                     const batch = gameIds.slice(i, i + batchSize);
@@ -1327,13 +1356,13 @@
                     const thingXml = parser.parseFromString(thingText, 'text/xml');
                     
                     // Build lookup for game info from the batch
-                    const gameInfo = {};
                     Array.from(thingXml.querySelectorAll('item[type="boardgame"]')).forEach(item => {
                         const id = item.getAttribute('id');
-                        gameInfo[id] = {
+                        const info = {
                             name: item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown',
                             thumbnail: item.querySelector('thumbnail')?.textContent || ''
                         };
+                        allGamesFound[id] = info;
                     });
 
                     // Get all version items
@@ -1344,7 +1373,7 @@
                         if (!gameLink) return;
                         
                         const gameId = gameLink.getAttribute('id');
-                        const game = gameInfo[gameId];
+                        const game = allGamesFound[gameId];
                         if (!game) return;
 
                         const widthAttr = version.querySelector('width')?.getAttribute('value');
@@ -1397,32 +1426,57 @@
 
                 console.log(`[measure.html] 🎯 Grouped measurements into ${Object.keys(gameGrouped).length} unique games`);
 
-                popularMeasurements = Object.values(gameGrouped).map(g => {
-                    const measurementKey = m => `${m.width}x${m.height}x${m.length}`;
-                    const measurementCounts = {};
-                    const measurementList = {}; // list of versions for each key
+                popularMeasurements = [];
+                invalidMeasurements = [];
 
-                    // Filter out zero measurements and count frequencies
-                    g.versions.forEach(v => {
-                        if (v.width === 0 || v.height === 0 || v.length === 0) return;
-                        
+                // Detect games with NO versions found at all
+                Object.keys(allGamesFound).forEach(gameId => {
+                    if (!gameGrouped[gameId]) {
+                        invalidMeasurements.push({
+                            name: allGamesFound[gameId].name,
+                            gameId: gameId,
+                            thumbnail: allGamesFound[gameId].thumbnail,
+                            totalVersions: 0,
+                            reason: "No version data returned by BGG",
+                            versions: []
+                        });
+                    }
+                });
+
+                Object.values(gameGrouped).forEach(g => {
+                    const measurementKey = m => `${m.width}x${m.height}x${m.length}`;
+                    
+                    // Separate versions into valid (non-zero + Neutral/English) and others
+                    const versionsWithDims = g.versions.filter(v => v.width > 0 && v.height > 0 && v.length > 0);
+                    const engNeutralVersions = versionsWithDims.filter(v => 
+                        v.languages.length === 0 || v.languages.includes('English')
+                    );
+
+                    // If no English/Neutral version with measurements, it's invalid for "Popular"
+                    if (engNeutralVersions.length === 0) {
+                        invalidMeasurements.push({
+                            name: g.name,
+                            gameId: g.gameId,
+                            thumbnail: g.thumbnail,
+                            totalVersions: g.versions.length,
+                            reason: versionsWithDims.length === 0 ? "No measurements found (all 0s or missing)" : "No English/Neutral versions with measurements",
+                            versions: g.versions
+                        });
+                        return;
+                    }
+
+                    // Calculate popular version from English/Neutral set only
+                    const measurementCounts = {};
+                    const measurementList = {};
+
+                    engNeutralVersions.forEach(v => {
                         const key = measurementKey(v);
                         measurementCounts[key] = (measurementCounts[key] || 0) + 1;
                         if (!measurementList[key]) measurementList[key] = [];
                         measurementList[key].push(v);
                     });
 
-                    // If all versions had zeros, use them anyway so the game isn't lost
-                    if (Object.keys(measurementCounts).length === 0 && g.versions.length > 0) {
-                        g.versions.forEach(v => {
-                            const key = measurementKey(v);
-                            measurementCounts[key] = (measurementCounts[key] || 0) + 1;
-                            if (!measurementList[key]) measurementList[key] = [];
-                            measurementList[key].push(v);
-                        });
-                    }
-
-                    // Find max count
+                    // Find max count among English/Neutral versions
                     const maxCount = Math.max(...Object.values(measurementCounts));
                     const tiedKeys = Object.keys(measurementCounts).filter(k => measurementCounts[k] === maxCount);
 
@@ -1430,7 +1484,7 @@
                     if (tiedKeys.length === 1) {
                         bestKey = tiedKeys[0];
                     } else {
-                        // Tiebreaking: Prefer English > No Language > Volumes
+                        // Tiebreaking among English/Neutral: Prefer English > Neutral > Volumes
                         const keyScores = tiedKeys.map(key => {
                             const versions = measurementList[key];
                             const hasEnglish = versions.some(v => v.languages.includes('English'));
@@ -1446,23 +1500,25 @@
                             return { key, priority, volume };
                         });
 
-                        // Sort by priority (desc) then volume (median-ish)
                         keyScores.sort((a, b) => {
                             if (b.priority !== a.priority) return b.priority - a.priority;
-                            return b.volume - a.volume; // Default to larger if volume tie
+                            return b.volume - a.volume;
                         });
-                        bestKey = keyScores[Math.floor(keyScores.length / 2)].key; // Median of ties
+                        bestKey = keyScores[Math.floor(keyScores.length / 2)].key;
                     }
 
                     const mostPopularMeasure = measurementList[bestKey][0];
                     const differentMeasures = Object.keys(measurementCounts).length;
+                    
+                    // Index in the ORIGINAL versions list
                     const mostPopularIndex = g.versions.findIndex(v => 
                         v.width === mostPopularMeasure.width && 
                         v.height === mostPopularMeasure.height && 
-                        v.length === mostPopularMeasure.length
+                        v.length === mostPopularMeasure.length &&
+                        (v.languages.length === 0 || v.languages.includes('English'))
                     );
 
-                    return {
+                    popularMeasurements.push({
                         name: g.name,
                         gameId: g.gameId,
                         thumbnail: g.thumbnail,
@@ -1476,10 +1532,10 @@
                         versionsMatchingSpec: maxCount,
                         versions: g.versions,
                         mostPopularIndex: mostPopularIndex
-                    };
+                    });
                 });
 
-                console.log(`[measure.html] ⭐ Created ${popularMeasurements.length} popular measurement entries`);
+                console.log(`[measure.html] ⭐ Created ${popularMeasurements.length} popular entries, ⚠️ ${invalidMeasurements.length} invalid entries`);
 
                 // Initialize selectedMeasurements with the most popular index for each game
                 selectedMeasurements = {};
@@ -1489,12 +1545,14 @@
 
                 filteredAllData = [...allMeasurements];
                 filteredPopularData = [...popularMeasurements];
+                filteredInvalidData = [...invalidMeasurements];
 
-                const successMessage = `Successfully loaded ${allMeasurements.length} measurements from ${popularMeasurements.length} games`;
+                const successMessage = `Loaded ${allMeasurements.length} measurements: ${popularMeasurements.length} valid, ${invalidMeasurements.length} missing/invalid`;
                 console.log(`[measure.html] ✅ ${successMessage}`);
                 showStatus(successMessage, 'success');
                 renderAllTab();
                 renderPopularTab();
+                renderInvalidTab();
 
             } catch (error) {
                 console.error(`[measure.html] ❌ Error occurred:`, error);
@@ -1599,14 +1657,15 @@
                     <div class="version-card">
                         <div class="card-thumb">
                             <img src="${m.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" loading="lazy" alt="">
-                            <div class="card-dimensions-overlay">
-                                ${isZero ? '<span class="zero-warning">⚠️ No Dims</span>' : 
-                                `${m.width.toFixed(decimalPlaces)}"×${m.height.toFixed(decimalPlaces)}"×${m.length.toFixed(decimalPlaces)}"`}
-                            </div>
                         </div>
                         <div class="card-content">
                             <div class="game-name">${m.name}</div>
                             <div class="version-name">${m.versionName}</div>
+                            <div class="card-dims-row">
+                                <span class="card-dims ${isZero ? 'zero' : ''}">
+                                    ${isZero ? '⚠️ No Dimensions' : `${m.width.toFixed(decimalPlaces)}"×${m.height.toFixed(decimalPlaces)}"×${m.length.toFixed(decimalPlaces)}"`}
+                                </span>
+                            </div>
                             <div class="card-meta">
                                 <div>${m.yearPublished || ''}</div>
                                 <div style="display: flex; gap: 0.2rem; overflow: hidden;">
@@ -1709,9 +1768,6 @@
                     <div class="version-card">
                         <div class="card-thumb" style="cursor: pointer;" onclick="showMeasurementVariants('${g.gameId}', \`${g.name.replace(/'/g, "\\'")}\`)">
                             <img src="${g.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" loading="lazy" alt="">
-                            <div class="card-dimensions-overlay">
-                                ${m.width.toFixed(decimalPlaces)}"×${m.height.toFixed(decimalPlaces)}"×${m.length.toFixed(decimalPlaces)}"
-                            </div>
                         </div>
                         <div class="card-content">
                             <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
@@ -1719,6 +1775,13 @@
                                 <div class="game-name" style="cursor: pointer; color: #667eea;" onclick="showMeasurementVariants('${g.gameId}', \`${g.name.replace(/'/g, "\\'")}\`)">${g.name}</div>
                             </div>
                             
+                            <div class="card-dims-row">
+                                <span class="card-dims">
+                                    ${m.width.toFixed(decimalPlaces)}"×${m.height.toFixed(decimalPlaces)}"×${m.length.toFixed(decimalPlaces)}"
+                                </span>
+                                <span class="records-badge" title="${g.count} records share this size">${g.count} records</span>
+                            </div>
+
                             <div class="metrics-grid">
                                 <div class="metric-item">
                                     <span class="metric-value">${g.count}</span>
@@ -1838,19 +1901,72 @@
             document.getElementById('measurementVariantsModal').style.display = 'none';
         }
 
+        function renderInvalidTab() {
+            const container = document.getElementById('invalidTableContainer');
+            if (!container) return;
+
+            if (invalidMeasurements.length === 0) {
+                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><p>No games with missing or invalid measurements found</p></div>';
+                return;
+            }
+
+            // Apply filter
+            let displayData = invalidMeasurements.filter(g => g.name.toLowerCase().includes(searchTerm.toLowerCase()));
+            
+            displayData.sort((a, b) => a.name.toLowerCase().localeCompare(b.name.toLowerCase()));
+
+            let html = `
+                <div class="filter-bar">
+                    <div class="filter-group">
+                        <input type="text" class="filter-select" placeholder="Search missing..." value="${searchTerm}" 
+                            oninput="searchTerm = this.value; renderInvalidTab()" style="width: 200px;">
+                    </div>
+                    <div style="margin-left: auto; font-size: 0.75rem; color: #666; font-weight: 700;">
+                        ${displayData.length} Games
+                    </div>
+                </div>
+                <div class="card-grid">
+            `;
+
+            displayData.forEach(g => {
+                html += `
+                    <div class="version-card">
+                        <div class="card-thumb">
+                            <img src="${g.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" loading="lazy" alt="">
+                        </div>
+                        <div class="card-content">
+                            <div class="game-name">${g.name}</div>
+                            <div style="font-size: 0.7rem; color: #e74c3c; font-weight: 700; background: #fff5f5; padding: 0.3rem; border-radius: 4px; border-left: 3px solid #e74c3c; margin-top: 0.2rem;">
+                                ${g.reason}
+                            </div>
+                            <div class="card-meta">
+                                <div>${g.totalVersions} Versions on BGG</div>
+                            </div>
+                        </div>
+                    </div>
+                `;
+            });
+
+            html += `</div>`;
+            container.innerHTML = html;
+        }
+
         function switchTab(tab) {
             currentTab = tab;
             document.querySelectorAll('.tab-button').forEach((btn, i) => {
-                btn.classList.toggle('active', (i === 0 && tab === 'all') || (i === 1 && tab === 'popular'));
+                btn.classList.toggle('active', (i === 0 && tab === 'all') || (i === 1 && tab === 'popular') || (i === 2 && tab === 'invalid'));
             });
 
             document.getElementById('allTab').classList.toggle('active', tab === 'all');
             document.getElementById('popularTab').classList.toggle('active', tab === 'popular');
+            document.getElementById('invalidTab').classList.toggle('active', tab === 'invalid');
 
             if (tab === 'all') {
                 renderAllTab();
-            } else {
+            } else if (tab === 'popular') {
                 renderPopularTab();
+            } else {
+                renderInvalidTab();
             }
         }
 
