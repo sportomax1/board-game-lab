@@ -373,6 +373,39 @@
             border-top: 1px solid #f0f0f0;
         }
 
+        .metrics-grid {
+            display: grid;
+            grid-template-columns: repeat(4, 1fr);
+            gap: 0.3rem;
+            margin-top: 0.2rem;
+            background: #f8f9ff;
+            padding: 0.3rem;
+            border-radius: 4px;
+        }
+
+        .metric-item {
+            display: flex;
+            flex-direction: column;
+            align-items: center;
+            font-size: 0.6rem;
+            color: #666;
+            line-height: 1;
+        }
+
+        .metric-value {
+            font-weight: 700;
+            color: #667eea;
+            font-size: 0.75rem;
+            margin-bottom: 1px;
+        }
+
+        .metric-label {
+            font-size: 0.55rem;
+            text-transform: uppercase;
+            letter-spacing: 0.02em;
+            opacity: 0.8;
+        }
+
         .lang-tag {
             background: #f0f4ff;
             color: #667eea;
@@ -1174,6 +1207,7 @@
         let filteredPopularData = [];
         let currentSortColumn = 'name';
         let currentSortDirection = 'asc';
+        let currentPopularSort = 'name';
         let currentTab = 'all';
         let allTabSorts = ['name', 'versionName']; // Primary, Secondary sort
         let hideZeroMeasurements = true;
@@ -1364,54 +1398,64 @@
                 console.log(`[measure.html] 🎯 Grouped measurements into ${Object.keys(gameGrouped).length} unique games`);
 
                 popularMeasurements = Object.values(gameGrouped).map(g => {
-                    // ALGORITHM: Select measurement with HIGHEST SHARED count (most frequent occurrence)
-                    // Example: If a game has versions: 8.7x2.7x12.5" (4x), 10.3x3.3x10.3" (3x), 10.5x1.5x10.5" (3x)
-                    // => SELECT 8.7x2.7x12.5" because it has the HIGHEST SHARED count of 4
-                    // If there's a tie in count, use median cubic volume as tiebreaker only
-                    
                     const measurementKey = m => `${m.width}x${m.height}x${m.length}`;
                     const measurementCounts = {};
-                    const measurementByKey = {};
+                    const measurementList = {}; // list of versions for each key
 
-                    // Count how many times each measurement appears (SHARED count)
+                    // Filter out zero measurements and count frequencies
                     g.versions.forEach(v => {
+                        if (v.width === 0 || v.height === 0 || v.length === 0) return;
+                        
                         const key = measurementKey(v);
                         measurementCounts[key] = (measurementCounts[key] || 0) + 1;
-                        if (!measurementByKey[key]) {
-                            measurementByKey[key] = v;
-                        }
+                        if (!measurementList[key]) measurementList[key] = [];
+                        measurementList[key].push(v);
                     });
 
-                    // Find the maximum SHARED count (highest occurrence)
-                    const maxCount = Math.max(...Object.values(measurementCounts));
-
-                    // Get all measurements that have this maximum count
-                    const maxCountMeasures = Object.entries(measurementCounts)
-                        .filter(([key, count]) => count === maxCount)
-                        .map(([key]) => measurementByKey[key]);
-
-                    let mostPopularMeasure;
-
-                    // If only one measurement has the max count, use it directly (MOST POPULAR = HIGHEST SHARED)
-                    if (maxCountMeasures.length === 1) {
-                        mostPopularMeasure = maxCountMeasures[0];
-                    } else {
-                        // Rare case: Multiple measurements tied with same highest count - use median cubic volume as final tiebreaker
-                        const cubicVolumes = maxCountMeasures
-                            .map(m => ({
-                                measure: m,
-                                cubic: m.width * m.height * m.length
-                            }))
-                            .sort((a, b) => a.cubic - b.cubic);
-
-                        // Get median cubic volume as the final tiebreaker
-                        const medianIndex = Math.floor(cubicVolumes.length / 2);
-                        mostPopularMeasure = cubicVolumes[medianIndex].measure;
+                    // If all versions had zeros, use them anyway so the game isn't lost
+                    if (Object.keys(measurementCounts).length === 0 && g.versions.length > 0) {
+                        g.versions.forEach(v => {
+                            const key = measurementKey(v);
+                            measurementCounts[key] = (measurementCounts[key] || 0) + 1;
+                            if (!measurementList[key]) measurementList[key] = [];
+                            measurementList[key].push(v);
+                        });
                     }
 
-                    const differentMeasures = Object.keys(measurementCounts).length;
+                    // Find max count
+                    const maxCount = Math.max(...Object.values(measurementCounts));
+                    const tiedKeys = Object.keys(measurementCounts).filter(k => measurementCounts[k] === maxCount);
 
-                    // Find the index of mostPopularMeasure in the versions array
+                    let bestKey;
+                    if (tiedKeys.length === 1) {
+                        bestKey = tiedKeys[0];
+                    } else {
+                        // Tiebreaking: Prefer English > No Language > Volumes
+                        const keyScores = tiedKeys.map(key => {
+                            const versions = measurementList[key];
+                            const hasEnglish = versions.some(v => v.languages.includes('English'));
+                            const hasNeutral = versions.some(v => v.languages.length === 0);
+                            
+                            let priority = 0;
+                            if (hasEnglish) priority = 2;
+                            else if (hasNeutral) priority = 1;
+
+                            const firstMatch = versions[0];
+                            const volume = firstMatch.width * firstMatch.height * firstMatch.length;
+                            
+                            return { key, priority, volume };
+                        });
+
+                        // Sort by priority (desc) then volume (median-ish)
+                        keyScores.sort((a, b) => {
+                            if (b.priority !== a.priority) return b.priority - a.priority;
+                            return b.volume - a.volume; // Default to larger if volume tie
+                        });
+                        bestKey = keyScores[Math.floor(keyScores.length / 2)].key; // Median of ties
+                    }
+
+                    const mostPopularMeasure = measurementList[bestKey][0];
+                    const differentMeasures = Object.keys(measurementCounts).length;
                     const mostPopularIndex = g.versions.findIndex(v => 
                         v.width === mostPopularMeasure.width && 
                         v.height === mostPopularMeasure.height && 
@@ -1431,7 +1475,7 @@
                         totalVersions: g.versions.length,
                         versionsMatchingSpec: maxCount,
                         versions: g.versions,
-                        mostPopularIndex: mostPopularIndex // Store the index of the most popular measurement
+                        mostPopularIndex: mostPopularIndex
                     };
                 });
 
@@ -1593,14 +1637,45 @@
                 return;
             }
 
-            // Apply filter
-            filteredPopularData = popularMeasurements.filter(g => g.name.toLowerCase().includes(searchTerm.toLowerCase()));
+            // Apply filter and sort
+            let displayData = popularMeasurements.filter(g => g.name.toLowerCase().includes(searchTerm.toLowerCase()));
+            
+            displayData.sort((a, b) => {
+                let aVal, bVal;
+                const col = currentPopularSort;
+                
+                if (col === 'percentage') {
+                    aVal = (a.count / a.totalVersions);
+                    bVal = (b.count / b.totalVersions);
+                } else {
+                    aVal = a[col];
+                    bVal = b[col];
+                }
+
+                if (typeof aVal === 'string') {
+                    return aVal.toLowerCase().localeCompare(bVal.toLowerCase());
+                }
+                return bVal - aVal; // Default numeric sort is descending for metrics (best/most first)
+            });
+            // Flip if it was name sort to be asc by default
+            if (currentPopularSort === 'name') displayData.reverse();
 
             let html = `
                 <div class="filter-bar">
                     <div class="filter-group">
-                        <input type="text" class="filter-select" placeholder="Search..." value="${searchTerm}" 
+                        <input type="text" class="filter-select" placeholder="Search games..." value="${searchTerm}" 
                             oninput="searchTerm = this.value; renderPopularTab()" style="width: 150px;">
+                    </div>
+                    <div class="filter-group">
+                        <label>Sort:</label>
+                        <select class="filter-select" onchange="currentPopularSort = this.value; renderPopularTab()">
+                            <option value="name" ${currentPopularSort === 'name' ? 'selected' : ''}>Name</option>
+                            <option value="count" ${currentPopularSort === 'count' ? 'selected' : ''}>Frequency</option>
+                            <option value="percentage" ${currentPopularSort === 'percentage' ? 'selected' : ''}>Shared %</option>
+                            <option value="differentMeasures" ${currentPopularSort === 'differentMeasures' ? 'selected' : ''}>Variant Count</option>
+                            <option value="totalVersions" ${currentPopularSort === 'totalVersions' ? 'selected' : ''}>Total Versions</option>
+                            <option value="width" ${currentPopularSort === 'width' ? 'selected' : ''}>Width</option>
+                        </select>
                     </div>
                     <div class="filter-group">
                         <label>Decimals:</label>
@@ -1608,114 +1683,79 @@
                             <option value="0" ${decimalPlaces === 0 ? 'selected' : ''}>0</option>
                             <option value="1" ${decimalPlaces === 1 ? 'selected' : ''}>1</option>
                             <option value="2" ${decimalPlaces === 2 ? 'selected' : ''}>2</option>
-                            <option value="3" ${decimalPlaces === 3 ? 'selected' : ''}>3</option>
                         </select>
                     </div>
-                    <div style="display: flex; gap: 0.5rem; align-items: center;">
+                    <div style="display: flex; gap: 0.4rem; align-items: center;">
                         <button class="btn btn-sm" onclick="copyPopularTableAsText()">📋 Copy</button>
                         <button class="btn btn-sm" onclick="openCopySettings()" title="Settings">⚙️</button>
                         <button class="btn btn-sm" onclick="openShelfTimeModal()" style="background: #e67e22;">📦 Shelf Time</button>
                     </div>
                     <div style="margin-left: auto; font-size: 0.75rem; color: #666; font-weight: 700;">
-                        ${filteredPopularData.length} Games
+                        ${displayData.length} Games
                     </div>
                 </div>
-                <div class="table-header">
-                    <div class="table-header-cell" style="text-align: center; font-weight: 600; color: #ff9800;">Set</div>
-                    <div class="table-header-cell" style="text-align: center;">Thumb</div>
-                    <div class="table-header-cell" onclick="sortTable('popular', 'name')">Game Name ${currentTab === 'popular' && currentSortColumn === 'name' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell" style="text-align: center;" onclick="sortTable('popular', 'width')">W ${currentTab === 'popular' && currentSortColumn === 'width' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell" style="text-align: center;" onclick="sortTable('popular', 'height')">H ${currentTab === 'popular' && currentSortColumn === 'height' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell" style="text-align: center;" onclick="sortTable('popular', 'length')">L ${currentTab === 'popular' && currentSortColumn === 'length' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell desktop-only" style="text-align: center;" onclick="sortTable('popular', 'middle')">Mid ${currentTab === 'popular' && currentSortColumn === 'middle' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell desktop-only" style="text-align: center;" onclick="sortTable('popular', 'short')">Short ${currentTab === 'popular' && currentSortColumn === 'short' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell desktop-only" style="text-align: center; font-size: 0.7rem;">Shared</div>
-                    <div class="table-header-cell desktop-only" style="text-align: center; font-size: 0.7rem;">Types</div>
-                    <div class="table-header-cell desktop-only" style="text-align: center; font-size: 0.7rem;">Total</div>
-                    <div class="table-header-cell desktop-only" style="text-align: center; font-size: 0.75rem;">%</div>
-                    <div class="table-header-cell" style="text-align: center;">Pick</div>
-                </div>
+                <div class="card-grid">
             `;
 
-            filteredPopularData.forEach(g => {
+            displayData.forEach(g => {
                 const selectedVariant = selectedMeasurements[g.gameId] || 0;
-                const selectedMeasure = g.versions && g.versions[selectedVariant] ? g.versions[selectedVariant] : {
-                    width: g.width,
-                    height: g.height,
-                    length: g.length
+                const m = g.versions && g.versions[selectedVariant] ? g.versions[selectedVariant] : {
+                    width: g.width, height: g.height, length: g.length
                 };
                 
-                let countForSelected = 1;
-                if (g.versions && Array.isArray(g.versions)) {
-                    const selectedRounded = `${selectedMeasure.width.toFixed(decimalPlaces)}x${selectedMeasure.height.toFixed(decimalPlaces)}x${selectedMeasure.length.toFixed(decimalPlaces)}`;
-                    countForSelected = g.versions.filter(v => {
-                        const vRounded = `${v.width.toFixed(decimalPlaces)}x${v.height.toFixed(decimalPlaces)}x${v.length.toFixed(decimalPlaces)}`;
-                        return vRounded === selectedRounded;
-                    }).length;
-                }
-
-                const middleMeasure = getMiddleMeasurement(selectedMeasure.width, selectedMeasure.height, selectedMeasure.length);
-                const shortestMeasure = getShortestMeasurement(selectedMeasure.width, selectedMeasure.height, selectedMeasure.length);
-                const percentageOfVersions = (countForSelected / g.totalVersions) * 100;
-                const percentageColor = getGradientColor(percentageOfVersions);
+                const percentageOfVersions = (g.count / g.totalVersions) * 100;
                 
-                let changeDropdown = '';
-                if (g.versions && g.versions.length > 1) {
-                    const variantsWithCounts = g.versions.map((v, idx) => {
-                        const count = g.versions.filter(x => 
-                            x.width === v.width && x.height === v.height && x.length === v.length
-                        ).length;
-                        const cubicFootage = v.width * v.height * v.length;
-                        return { variant: v, index: idx, count, cubicFootage };
-                    });
-                    
-                    const seen = new Set();
-                    const uniqueVariants = variantsWithCounts.filter(item => {
-                        const key = `${item.variant.width}x${item.variant.height}x${item.variant.length}`;
-                        if (seen.has(key)) return false;
-                        seen.add(key);
-                        return true;
-                    });
-                    
-                    uniqueVariants.sort((a, b) => {
-                        if (a.count !== b.count) return b.count - a.count;
-                        return b.cubicFootage - a.cubicFootage;
-                    });
-                    
-                    changeDropdown = `<select class="dimension-select" onchange="swapMeasurementVariant('${g.gameId}', this.value); renderPopularTab()" style="width: 100%; font-size: 0.75rem; padding: 0.2rem;">`;
-                    uniqueVariants.forEach(item => {
-                        const isSelected = selectedVariant === item.index ? 'selected' : '';
-                        const v = item.variant;
-                        changeDropdown += `<option value="${item.index}" ${isSelected}>${v.width.toFixed(decimalPlaces)}"×${v.height.toFixed(decimalPlaces)}"×${v.length.toFixed(decimalPlaces)}" (${item.count})</option>`;
-                    });
-                    changeDropdown += `</select>`;
-                } else {
-                    changeDropdown = `<div style="font-size: 0.75rem; color: #999;">—</div>`;
-                }
-
                 html += `
-                    <div class="table-row">
-                        <div style="text-align: center;">
-                            <input type="checkbox" ${ignoredGames.has(g.gameId) ? 'checked' : ''} onchange="toggleIgnoreGame('${g.gameId}')" style="width: 18px; height: 18px; cursor: pointer;">
+                    <div class="version-card">
+                        <div class="card-thumb" style="cursor: pointer;" onclick="showMeasurementVariants('${g.gameId}', \`${g.name.replace(/'/g, "\\'")}\`)">
+                            <img src="${g.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" loading="lazy" alt="">
+                            <div class="card-dimensions-overlay">
+                                ${m.width.toFixed(decimalPlaces)}"×${m.height.toFixed(decimalPlaces)}"×${m.length.toFixed(decimalPlaces)}"
+                            </div>
                         </div>
-                        <div class="thumbnail-cell" style="width: 45px; height: 45px;">
-                            <img src="${g.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'" alt="">
+                        <div class="card-content">
+                            <div style="display: flex; gap: 0.5rem; align-items: flex-start;">
+                                <input type="checkbox" ${ignoredGames.has(g.gameId) ? 'checked' : ''} onchange="toggleIgnoreGame('${g.gameId}')" style="width: 16px; height: 16px; margin-top: 2px;">
+                                <div class="game-name" style="cursor: pointer; color: #667eea;" onclick="showMeasurementVariants('${g.gameId}', \`${g.name.replace(/'/g, "\\'")}\`)">${g.name}</div>
+                            </div>
+                            
+                            <div class="metrics-grid">
+                                <div class="metric-item">
+                                    <span class="metric-value">${g.count}</span>
+                                    <span class="metric-label">Shared</span>
+                                </div>
+                                <div class="metric-item">
+                                    <span class="metric-value">${g.differentMeasures}</span>
+                                    <span class="metric-label">Types</span>
+                                </div>
+                                <div class="metric-item">
+                                    <span class="metric-value">${g.totalVersions}</span>
+                                    <span class="metric-label">Total</span>
+                                </div>
+                                <div class="metric-item">
+                                    <span class="metric-value">${percentageOfVersions.toFixed(0)}%</span>
+                                    <span class="metric-label">Freq</span>
+                                </div>
+                            </div>
+
+                            <div style="margin-top: auto; display: flex; align-items: center; gap: 0.5rem;">
+                                ${g.versions.length > 1 ? `
+                                    <select class="filter-select" onchange="swapMeasurementVariant('${g.gameId}', this.value); renderPopularTab()" style="flex: 1; padding: 0.1rem; font-size: 0.65rem;">
+                                        ${[...new Set(g.versions.map(v => `${v.width}x${v.height}x${v.length}`))].map(key => {
+                                            const v = g.versions.find(x => `${x.width}x${x.height}x${x.length}` === key);
+                                            const idx = g.versions.indexOf(v);
+                                            const isSel = selectedVariant === idx ? 'selected' : '';
+                                            return `<option value="${idx}" ${isSel}>${v.width.toFixed(decimalPlaces)}"x${v.height.toFixed(decimalPlaces)}"x${v.length.toFixed(decimalPlaces)}"</option>`;
+                                        }).join('')}
+                                    </select>
+                                ` : '<div style="font-size: 0.65rem; color: #999;">Standard Version</div>'}
+                            </div>
                         </div>
-                        <div class="name-cell" title="${g.name}" style="cursor: pointer; color: #667eea;" onclick="showMeasurementVariants('${g.gameId}', '${g.name}')">${g.name}</div>
-                        <div class="dimension-cell" style="text-align: center;">${selectedMeasure.width.toFixed(decimalPlaces)}"</div>
-                        <div class="dimension-cell" style="text-align: center;">${selectedMeasure.height.toFixed(decimalPlaces)}"</div>
-                        <div class="dimension-cell" style="text-align: center;">${selectedMeasure.length.toFixed(decimalPlaces)}"</div>
-                        <div class="dimension-cell desktop-only" style="text-align: center;">${middleMeasure.toFixed(decimalPlaces)}"</div>
-                        <div class="dimension-cell desktop-only" style="text-align: center;">${shortestMeasure.toFixed(decimalPlaces)}"</div>
-                        <div class="desktop-only" style="text-align: center; font-size: 0.85rem; font-weight: 600; color: #27ae60;">★ ${countForSelected}</div>
-                        <div class="desktop-only" style="text-align: center; font-size: 0.85rem;">${g.differentMeasures}</div>
-                        <div class="desktop-only" style="text-align: center; font-size: 0.85rem;">${g.totalVersions}</div>
-                        <div class="desktop-only" style="text-align: center; font-size: 0.85rem; font-weight: 600; color: ${percentageColor.textColor}; background: ${percentageColor.background}; padding: 0.2rem; border-radius: 4px;">${percentageOfVersions.toFixed(0)}%</div>
-                        <div style="text-align: center;">${changeDropdown}</div>
                     </div>
                 `;
             });
 
+            html += `</div>`;
             container.innerHTML = html;
         }
 
