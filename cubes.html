@@ -274,16 +274,137 @@
             flex: 1;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
+            padding: 0.5rem;
         }
 
-        /* Tab Table Grid Definitions */
-        #allTab .table-header, 
-        #allTab .table-row {
+        /* Card Layout for All Measurements */
+        .card-grid {
             display: grid;
-            grid-template-columns: 50px 1fr 60px 60px 60px;
-            gap: 0.5rem;
-            padding: 0.75rem;
+            grid-template-columns: repeat(auto-fill, minmax(280px, 1fr));
+            gap: 1rem;
+            padding: 0.5rem;
+        }
+
+        .version-card {
+            background: white;
+            border-radius: 12px;
+            box-shadow: 0 4px 6px rgba(0,0,0,0.05);
+            border: 1px solid #eee;
+            overflow: hidden;
+            display: flex;
+            flex-direction: column;
+            transition: transform 0.2s, box-shadow 0.2s;
+        }
+
+        .version-card:hover {
+            transform: translateY(-3px);
+            box-shadow: 0 8px 15px rgba(0,0,0,0.1);
+        }
+
+        .card-thumb {
+            width: 100%;
+            aspect-ratio: 1/1;
+            background: #f9f9f9;
+            position: relative;
+        }
+
+        .card-thumb img {
+            width: 100%;
+            height: 100%;
+            object-fit: contain;
+        }
+
+        .card-dimensions-overlay {
+            position: absolute;
+            bottom: 0;
+            left: 0;
+            right: 0;
+            background: rgba(0,0,0,0.7);
+            color: white;
+            padding: 0.5rem;
+            font-size: 0.9rem;
+            font-weight: 700;
+            text-align: center;
+            backdrop-filter: blur(4px);
+        }
+
+        .card-content {
+            padding: 1rem;
+            flex-grow: 1;
+            display: flex;
+            flex-direction: column;
+            gap: 0.4rem;
+        }
+
+        .game-name {
+            font-size: 1rem;
+            font-weight: 700;
+            color: #333;
+            line-height: 1.2;
+        }
+
+        .version-name {
+            font-size: 0.85rem;
+            color: #667eea;
+            font-weight: 600;
+        }
+
+        .card-meta {
+            margin-top: auto;
+            display: flex;
+            justify-content: space-between;
             align-items: center;
+            font-size: 0.75rem;
+            color: #888;
+            padding-top: 0.5rem;
+            border-top: 1px solid #f0f0f0;
+        }
+
+        .lang-tag {
+            background: #f0f4ff;
+            color: #667eea;
+            padding: 0.2rem 0.5rem;
+            border-radius: 4px;
+            font-weight: 600;
+        }
+
+        .zero-warning {
+            color: #e74c3c;
+            font-weight: 700;
+            display: flex;
+            align-items: center;
+            gap: 0.3rem;
+        }
+
+        /* Filter Bar Styles */
+        .filter-bar {
+            background: #fff;
+            padding: 0.75rem 1rem;
+            border-bottom: 1px solid #eee;
+            display: flex;
+            gap: 1rem;
+            flex-wrap: wrap;
+            align-items: center;
+        }
+
+        .filter-group {
+            display: flex;
+            align-items: center;
+            gap: 0.5rem;
+        }
+
+        .filter-group label {
+            font-size: 0.85rem;
+            font-weight: 700;
+            color: #555;
+        }
+
+        .filter-select {
+            padding: 0.4rem 0.8rem;
+            border: 1px solid #ddd;
+            border-radius: 6px;
+            font-size: 0.85rem;
+            background: white;
         }
 
         #allTab .table-header {
@@ -1078,6 +1199,9 @@
         let currentSortColumn = 'name';
         let currentSortDirection = 'asc';
         let currentTab = 'all';
+        let allTabSorts = ['name', 'versionName']; // Primary, Secondary sort
+        let hideZeroMeasurements = true;
+        let languageFilter = 'all';
         let selectedMeasurements = {}; // Track which measurement variant to show for each game
         let ignoredGames = new Set(); // Track games to ignore from cubing
         let shelfPackingMode = 'basic-vertical'; // 'basic-vertical', 'smart-vertical', 'expert-vertical', 'basic-horizontal', 'smart-horizontal', 'expert-horizontal'
@@ -1232,17 +1356,23 @@
                         const length = lengthAttr ? parseFloat(lengthAttr) : null;
                         const depth = depthAttr ? parseFloat(depthAttr) : null;
 
-                        if (width && length && depth) {
-                            allMeasurements.push({
-                                name: game.name,
-                                gameId: gameId,
-                                versionId: version.getAttribute('id'),
-                                width: width,
-                                height: depth,
-                                length: length,
-                                thumbnail: game.thumbnail,
-                            });
-                        }
+                        const versionName = version.querySelector('name[type="primary"]')?.getAttribute('value') || 'Standard Version';
+                        const versionThumb = version.querySelector('thumbnail')?.textContent || game.thumbnail;
+                        const languages = Array.from(version.querySelectorAll('link[type="language"]'))
+                            .map(l => l.getAttribute('value'));
+
+                        allMeasurements.push({
+                            name: game.name,
+                            versionName: versionName,
+                            gameId: gameId,
+                            versionId: version.getAttribute('id'),
+                            width: width || 0,
+                            height: depth || 0,
+                            length: length || 0,
+                            thumbnail: versionThumb,
+                            languages: languages,
+                            yearPublished: version.querySelector('yearpublished')?.getAttribute('value') || ''
+                        });
                     });
 
                     // Short pause between batches
@@ -1369,42 +1499,110 @@
 
         function renderAllTab() {
             const container = document.getElementById('allTableContainer');
+            const decimalPlaces = parseInt(document.getElementById('decimalPlaces').value) || 1;
             
-            if (filteredAllData.length === 0) {
-                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📏</div><p>No measurements found</p></div>';
+            // Filter data
+            let displayData = allMeasurements.filter(m => {
+                const searchMatch = !document.getElementById('searchAll').value || 
+                                   m.name.toLowerCase().includes(document.getElementById('searchAll').value.toLowerCase()) ||
+                                   m.versionName.toLowerCase().includes(document.getElementById('searchAll').value.toLowerCase());
+                
+                const zeroMatch = !hideZeroMeasurements || (m.width > 0 && m.height > 0 && m.length > 0);
+                
+                const langMatch = languageFilter === 'all' || m.languages.includes(languageFilter);
+                
+                return searchMatch && zeroMatch && langMatch;
+            });
+
+            // Sort data
+            displayData.sort((a, b) => {
+                for (let col of allTabSorts) {
+                    let aVal = a[col] || '';
+                    let bVal = b[col] || '';
+                    
+                    if (typeof aVal === 'number' && typeof bVal === 'number') {
+                        if (aVal !== bVal) return aVal - bVal;
+                    } else {
+                        const cmp = String(aVal).toLowerCase().localeCompare(String(bVal).toLowerCase());
+                        if (cmp !== 0) return cmp;
+                    }
+                }
+                return 0;
+            });
+
+            if (displayData.length === 0) {
+                container.innerHTML = '<div class="empty-state"><div class="empty-state-icon">📏</div><p>No measurements found matching filters</p></div>';
                 return;
             }
 
+            // Get unique languages for filter
+            const langs = new Set();
+            allMeasurements.forEach(m => m.languages.forEach(l => langs.add(l)));
+            const sortedLangs = Array.from(langs).sort();
+
             let html = `
-                <div class="table-header">
-                    <div class="table-header-cell" onclick="sortTable('all', 'thumbnail')">Thumb</div>
-                    <div class="table-header-cell" onclick="sortTable('all', 'name')">Game Name ${currentTab === 'all' && currentSortColumn === 'name' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell desktop-only" onclick="sortTable('all', 'yearPublished')">Year ${currentTab === 'all' && currentSortColumn === 'yearPublished' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell desktop-only" onclick="sortTable('all', 'mostPopular')">Most Popular ${currentTab === 'all' && currentSortColumn === 'mostPopular' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</div>
-                    <div class="table-header-cell desktop-only" onclick="sortTable('all', 'versionId')">Version <span class="sort-indicator">${currentTab === 'all' && currentSortColumn === 'versionId' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</span></div>
-                    <div class="table-header-cell" onclick="sortTable('all', 'width')">W<span class="sort-indicator">${currentTab === 'all' && currentSortColumn === 'width' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</span></div>
-                    <div class="table-header-cell" onclick="sortTable('all', 'height')">H<span class="sort-indicator">${currentTab === 'all' && currentSortColumn === 'height' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</span></div>
-                    <div class="table-header-cell" onclick="sortTable('all', 'length')">L<span class="sort-indicator">${currentTab === 'all' && currentSortColumn === 'length' ? (currentSortDirection === 'asc' ? '▲' : '▼') : ''}</span></div>
+                <div class="filter-bar">
+                    <div class="filter-group">
+                        <label>Sort By:</label>
+                        <select class="filter-select" onchange="allTabSorts[0] = this.value; renderAllTab()">
+                            <option value="name" ${allTabSorts[0] === 'name' ? 'selected' : ''}>Game Name</option>
+                            <option value="versionName" ${allTabSorts[0] === 'versionName' ? 'selected' : ''}>Version Name</option>
+                            <option value="width" ${allTabSorts[0] === 'width' ? 'selected' : ''}>Width</option>
+                            <option value="height" ${allTabSorts[0] === 'height' ? 'selected' : ''}>Height</option>
+                            <option value="length" ${allTabSorts[0] === 'length' ? 'selected' : ''}>Length</option>
+                        </select>
+                        <select class="filter-select" onchange="allTabSorts[1] = this.value; renderAllTab()">
+                            <option value="versionName" ${allTabSorts[1] === 'versionName' ? 'selected' : ''}>Version Name</option>
+                            <option value="name" ${allTabSorts[1] === 'name' ? 'selected' : ''}>Game Name</option>
+                            <option value="yearPublished" ${allTabSorts[1] === 'yearPublished' ? 'selected' : ''}>Year</option>
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label>Language:</label>
+                        <select class="filter-select" onchange="languageFilter = this.value; renderAllTab()">
+                            <option value="all">All Languages</option>
+                            ${sortedLangs.map(l => `<option value="${l}" ${languageFilter === l ? 'selected' : ''}>${l}</option>`).join('')}
+                        </select>
+                    </div>
+                    <div class="filter-group">
+                        <label style="cursor: pointer; display: flex; align-items: center; gap: 0.4rem;">
+                            <input type="checkbox" ${hideZeroMeasurements ? 'checked' : ''} onchange="hideZeroMeasurements = this.checked; renderAllTab()"> 
+                            Hide Zeros
+                        </label>
+                    </div>
+                    <div style="margin-left: auto; font-size: 0.85rem; color: #666; font-weight: 600;">
+                        Showing ${displayData.length} cards
+                    </div>
                 </div>
+                <div class="card-grid">
             `;
 
-            filteredAllData.forEach(m => {
+            displayData.forEach(m => {
+                const isZero = m.width === 0 || m.height === 0 || m.length === 0;
                 html += `
-                    <div class="table-row all-tab">
-                        <div class="thumbnail-cell">
-                            <img src="${m.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'" alt="">
+                    <div class="version-card">
+                        <div class="card-thumb">
+                            <img src="${m.thumbnail || 'data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'}" loading="lazy" alt="">
+                            <div class="card-dimensions-overlay">
+                                ${isZero ? '<span class="zero-warning">⚠️ No Dimensions</span>' : 
+                                `${m.width.toFixed(decimalPlaces)}" × ${m.height.toFixed(decimalPlaces)}" × ${m.length.toFixed(decimalPlaces)}"`}
+                            </div>
                         </div>
-                        <div class="name-cell" title="${m.name}">${m.name}</div>
-                        <div class="dimension-cell desktop-only" style="text-align: center;">${m.yearPublished || '—'}</div>
-                        <div class="dimension-cell desktop-only" style="text-align: center;">${m.mostPopular || '—'}</div>
-                        <div class="id-cell desktop-only" title="${m.versionId}">${m.versionId}</div>
-                        <div class="dimension-cell">${m.width}"</div>
-                        <div class="dimension-cell">${m.height}"</div>
-                        <div class="dimension-cell">${m.length}"</div>
+                        <div class="card-content">
+                            <div class="game-name">${m.name}</div>
+                            <div class="version-name">${m.versionName}</div>
+                            <div class="card-meta">
+                                <div>${m.yearPublished || 'no year'}</div>
+                                <div style="display: flex; gap: 0.3rem;">
+                                    ${m.languages.map(l => `<span class="lang-tag">${l}</span>`).join('')}
+                                </div>
+                            </div>
+                        </div>
                     </div>
                 `;
             });
 
+            html += `</div>`;
             container.innerHTML = html;
         }
 
@@ -1722,13 +1920,11 @@
         }
 
         function filterTable(tab) {
-            const searchInput = tab === 'all' ? document.getElementById('searchAll') : document.getElementById('searchPopular');
-            const searchTerm = searchInput.value.toLowerCase();
-
             if (tab === 'all') {
-                filteredAllData = allMeasurements.filter(m => m.name.toLowerCase().includes(searchTerm));
                 renderAllTab();
             } else {
+                const searchInput = document.getElementById('searchPopular');
+                const searchTerm = searchInput.value.toLowerCase();
                 filteredPopularData = popularMeasurements.filter(g => g.name.toLowerCase().includes(searchTerm));
                 renderPopularTab();
             }
