@@ -329,6 +329,10 @@
             RANDOM_KEVIN: []
         };
 
+        const collMap = {};
+        const normMapBasic = {};
+        const normMapStrict = {};
+
         const els = {
             title: document.getElementById('dashboard-title'),
             grid: document.getElementById('game-grid'),
@@ -485,8 +489,19 @@
             if (collXml) {
                 const doc = new DOMParser().parseFromString(collXml, 'text/xml');
                 const items = Array.from(doc.querySelectorAll('items > item'));
-                console.log(`Found ${items.length} items in collection`);
                 
+                // Build maps for fast lookups (same lookup logic as pubmeeple.html)
+                items.forEach(it => {
+                    const name = it.querySelector('name')?.textContent?.trim();
+                    const thumb = it.querySelector('thumbnail')?.textContent || '';
+                    if (name) {
+                        const entry = { thumb, original: name };
+                        collMap[name.toLowerCase()] = entry;
+                        normMapBasic[normalize(name, false)] = entry;
+                        normMapStrict[normalize(name, true)] = entry;
+                    }
+                });
+
                 // Helper to get personal rating
                 const getPersonalRating = (it) => {
                     const val = it.querySelector('stats > rating')?.getAttribute('value');
@@ -622,24 +637,55 @@
                         const randomListName = listNames[Math.floor(Math.random() * listNames.length)];
                         const top10 = allLists[randomListName].slice(0, 10);
                         
-                        // Fetch thumbnails for these 10 items in parallel
+                        // Fetch thumbnails using pubmeeple lookup logic + BGG fallback
                         cache.RANDOM_KEVIN_TITLE = randomListName.toUpperCase();
                         cache.RANDOM_KEVIN = await Promise.all(top10.map(async (row) => {
-                            const searchXml = await fetchAPI('search', '', `&query=${encodeURIComponent(row.item)}&type=boardgame&exact=1`);
+                            const n = row.item.trim();
+                            const key = n.toLowerCase();
+                            const normBasic = normalize(n, false);
+                            const normStrict = normalize(n, true);
+                            
                             let thumb = null;
-                            if (searchXml) {
-                                const sDoc = new DOMParser().parseFromString(searchXml, 'text/xml');
-                                const id = sDoc.querySelector('item')?.getAttribute('id');
-                                if (id) {
-                                    const tXml = await fetchAPI('thing', `&id=${id}`);
-                                    if (tXml) {
-                                        const tDoc = new DOMParser().parseFromString(tXml, 'text/xml');
-                                        thumb = tDoc.querySelector('thumbnail')?.textContent;
+
+                            // 1. Exact Match
+                            if (collMap[key]) {
+                                thumb = collMap[key].thumb;
+                            }
+                            // 2. Normalized Match
+                            else if (normMapBasic[normBasic]) {
+                                thumb = normMapBasic[normBasic].thumb;
+                            }
+                            // 3. Keyword Match
+                            else if (normMapStrict[normStrict]) {
+                                thumb = normMapStrict[normStrict].thumb;
+                            }
+                            // 4. Substring Match
+                            else {
+                                const foundKey = Object.keys(collMap).find(k => k.includes(key) || key.includes(k));
+                                if (foundKey) {
+                                    thumb = collMap[foundKey].thumb;
+                                }
+                            }
+
+                            // 5. Fallback BGG Search (if still not found in collection)
+                            if (!thumb) {
+                                const searchXml = await fetchAPI('search', '', `&query=${encodeURIComponent(n)}&type=boardgame&exact=1`);
+                                if (searchXml) {
+                                    const sDoc = new DOMParser().parseFromString(searchXml, 'text/xml');
+                                    const firstItem = sDoc.querySelector('item');
+                                    if (firstItem) {
+                                        const id = firstItem.getAttribute('id');
+                                        const tXml = await fetchAPI('thing', `&id=${id}`);
+                                        if (tXml) {
+                                            const tDoc = new DOMParser().parseFromString(tXml, 'text/xml');
+                                            thumb = tDoc.querySelector('thumbnail')?.textContent;
+                                        }
                                     }
                                 }
                             }
+
                             return {
-                                name: row.item,
+                                name: n,
                                 thumb: thumb,
                                 rank: row.rank
                             };
@@ -706,6 +752,17 @@
                 case 'RANDOM_KEVIN': return 'KEVIN LIST';
                 default: return type.replace('_', ' ');
             }
+        }
+
+        function normalize(str, removeFillers = false) {
+            let s = str.normalize("NFD").replace(/[\u0300-\u036f]/g, "");
+            s = s.toLowerCase().replace(/&/g, 'and'); 
+            if (removeFillers) {
+                const fillers = ['a', 'the', 'and', 'of', 'in', 'on', 'with', 'by', 'an'];
+                const words = s.split(/[^a-z0-9]/).filter(w => w && !fillers.includes(w));
+                return words.join('');
+            }
+            return s.replace(/[^a-z0-9]/g, '');
         }
 
         function getTitle(type) {
