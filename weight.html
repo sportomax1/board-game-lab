@@ -139,12 +139,42 @@
       <!-- Games will be populated here -->
     </div>
 
+    <!-- Debug Console -->
+    <div id="debugConsole" class="hidden bg-slate-900 text-green-400 rounded-2xl shadow-sm border border-slate-700 p-4 font-mono text-xs max-h-96 overflow-y-auto">
+      <div class="flex items-center justify-between mb-2">
+        <span class="font-bold text-green-300">Debug Console</span>
+        <button onclick="clearDebug()" class="text-slate-400 hover:text-white text-[10px]">
+          <i class="fa-solid fa-trash"></i> Clear
+        </button>
+      </div>
+      <div id="debugOutput"></div>
+    </div>
+
   </main>
 
 <script>
 let allGames = [];
 let displayedGames = [];
 let isLoading = false;
+
+function debugLog(msg, type = 'info') {
+  const debugConsole = document.getElementById('debugConsole');
+  const debugOutput = document.getElementById('debugOutput');
+  debugConsole.classList.remove('hidden');
+  
+  const color = type === 'error' ? 'text-red-400' : type === 'success' ? 'text-green-400' : type === 'warn' ? 'text-yellow-400' : 'text-blue-400';
+  const timestamp = new Date().toLocaleTimeString();
+  const line = document.createElement('div');
+  line.className = color;
+  line.textContent = `[${timestamp}] ${msg}`;
+  debugOutput.appendChild(line);
+  debugOutput.scrollTop = debugOutput.scrollHeight;
+  console.log(msg);
+}
+
+function clearDebug() {
+  document.getElementById('debugOutput').innerHTML = '';
+}
 
 async function fetchCollection() {
   const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -193,11 +223,13 @@ async function fetchCollection() {
     
     // Fetch thing API in batches of 20, with parallel processing
     const batchSize = 20;
-    const parallelBatches = 4; // Process 4 batches at once
+    const parallelBatches = 2; // Reduced from 4 to 2 to avoid rate limiting
     const batches = [];
     for (let i = 0; i < allGames.length; i += batchSize) {
       batches.push(allGames.slice(i, i + batchSize));
     }
+    
+    debugLog(`Processing ${batches.length} batches in groups of ${parallelBatches}`, 'info');
     
     // Process batches in parallel groups
     for (let i = 0; i < batches.length; i += parallelBatches) {
@@ -205,13 +237,20 @@ async function fetchCollection() {
       updateLoadingStatus(`Loading weights ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`);
       updateProgress((Math.min(i + parallelBatches, batches.length) / batches.length) * 100);
       
-      await Promise.all(batchGroup.map(async (batch) => {
+      await Promise.all(batchGroup.map(async (batch, batchIndex) => {
         const ids = batch.map(g => g.objectid).join(',');
+        const actualBatchNum = i + batchIndex + 1;
+        
+        debugLog(`Batch ${actualBatchNum}: Fetching ${batch.length} games (IDs: ${ids.substring(0, 30)}...)`, 'info');
         
         try {
           const thingXml = await fetchAPI('thing', ids, '&stats=1');
+          debugLog(`Batch ${actualBatchNum}: Received ${thingXml.length} chars of XML`, 'success');
+          
           const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
           const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+          
+          debugLog(`Batch ${actualBatchNum}: Parsed ${thingItems.length} items`, 'success');
           
           thingItems.forEach(thingItem => {
             const id = thingItem.getAttribute('id');
@@ -223,10 +262,13 @@ async function fetchCollection() {
               game.averageweight = weight;
               game.numweights = numVotes;
               game.loaded = true;
+              
+              debugLog(`  ${game.name}: weight=${weight}, votes=${numVotes}`, 'success');
             }
           });
           
         } catch (e) {
+          debugLog(`Batch ${actualBatchNum} ERROR: ${e.message}`, 'error');
           console.error('Batch error:', e);
         }
       }));
@@ -234,7 +276,7 @@ async function fetchCollection() {
       // Update display after each parallel group
       sortGames();
       
-      await wait(200); // Reduced throttle
+      await wait(800); // Increased throttle to avoid rate limiting
     }
     
     updateLoadingStatus('Complete!');
@@ -350,15 +392,21 @@ async function fetchAPI(endpoint, user, queryParams = '') {
       try {
         res = await fetch(url);
       } catch (e) {
-        await wait(1000 * Math.pow(2, attempt));
+        debugLog(`Thing API attempt ${attempt + 1} fetch error: ${e.message}`, 'warn');
+        await wait(1500 * Math.pow(2, attempt));
         continue;
       }
       if (res.status === 202) {
-        await wait(2000);
+        debugLog(`Thing API attempt ${attempt + 1}: 202 - waiting...`, 'warn');
+        await wait(3000);
         continue;
       }
-      if (res.ok) return await res.text();
-      await wait(1500);
+      if (res.ok) {
+        debugLog(`Thing API success on attempt ${attempt + 1}`, 'success');
+        return await res.text();
+      }
+      debugLog(`Thing API attempt ${attempt + 1}: status ${res.status}`, 'warn');
+      await wait(2000);
     }
     throw new Error('Failed to fetch from BGG API');
   } else {
@@ -371,10 +419,12 @@ async function fetchAPI(endpoint, user, queryParams = '') {
       try {
         res = await fetch(url);
       } catch (e) {
+        debugLog(`Collection API attempt ${attempt + 1} fetch error: ${e.message}`, 'warn');
         await wait(1000 * Math.pow(2, attempt));
         continue;
       }
       if (res.status === 202) {
+        debugLog(`Collection API attempt ${attempt + 1}: 202 - waiting...`, 'warn');
         await wait(2000);
         continue;
       }
