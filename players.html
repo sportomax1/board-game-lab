@@ -102,24 +102,42 @@
 
     <!-- Filters and Sort -->
     <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
-      <div class="flex flex-col sm:flex-row gap-3">
-        <input 
-          type="text" 
-          id="searchInput" 
-          placeholder="Search games..." 
-          oninput="filterGames()"
-          class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
-        >
-        <select 
-          id="sortSelect" 
-          onchange="sortGames()" 
-          class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all bg-white font-medium text-sm"
-        >
-          <option value="name">Name: A-Z</option>
-          <option value="rating">User Rating</option>
-          <option value="minplayers">Min Players</option>
-          <option value="maxplayers">Max Players</option>
-        </select>
+      <div class="flex flex-col gap-3">
+        <div class="flex flex-col sm:flex-row gap-3">
+          <input 
+            type="text" 
+            id="searchInput" 
+            placeholder="Search games..." 
+            oninput="filterGames()"
+            class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
+          >
+          <select 
+            id="sortSelect" 
+            onchange="sortGames()" 
+            class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all bg-white font-medium text-sm"
+          >
+            <option value="name">Name: A-Z</option>
+            <option value="rating">User Rating</option>
+            <option value="minplayers">Min Players</option>
+            <option value="maxplayers">Max Players</option>
+          </select>
+        </div>
+        <div class="flex flex-col sm:flex-row gap-3">
+          <select 
+            id="bestWithFilter" 
+            onchange="filterGames()" 
+            class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-green-500 outline-none transition-all bg-white font-medium text-sm"
+          >
+            <option value="">Best With: Any</option>
+          </select>
+          <select 
+            id="recommendedWithFilter" 
+            onchange="filterGames()" 
+            class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none transition-all bg-white font-medium text-sm"
+          >
+            <option value="">Recommended With: Any</option>
+          </select>
+        </div>
       </div>
     </div>
 
@@ -247,6 +265,9 @@ async function fetchCollection() {
     updateProgress(100);
     isLoading = false;
     
+    // Populate player count filters
+    populatePlayerFilters();
+    
     // Hide loading indicator
     setTimeout(() => {
       loadingSection.classList.add('hidden');
@@ -268,9 +289,85 @@ function updateProgress(percent) {
   document.getElementById('progressBar').style.width = percent + '%';
 }
 
+function populatePlayerFilters() {
+  // Collect all unique player counts
+  const playerCountSet = new Set();
+  allGames.forEach(game => {
+    if (game.playerCounts && game.playerCounts.length > 0) {
+      game.playerCounts.forEach(pc => {
+        if (pc.numplayers && pc.numplayers !== '') {
+          playerCountSet.add(pc.numplayers);
+        }
+      });
+    }
+  });
+  
+  // Sort player counts numerically
+  const playerCounts = Array.from(playerCountSet).sort((a, b) => {
+    const numA = a.includes('+') ? parseInt(a) : parseInt(a);
+    const numB = b.includes('+') ? parseInt(b) : parseInt(b);
+    return numA - numB;
+  });
+  
+  // Populate Best With dropdown
+  const bestWithSelect = document.getElementById('bestWithFilter');
+  bestWithSelect.innerHTML = '<option value="">Best With: Any</option>';
+  playerCounts.forEach(count => {
+    const option = document.createElement('option');
+    option.value = count;
+    option.textContent = `Best With: ${count}p`;
+    bestWithSelect.appendChild(option);
+  });
+  
+  // Populate Recommended With dropdown
+  const recommendedWithSelect = document.getElementById('recommendedWithFilter');
+  recommendedWithSelect.innerHTML = '<option value="">Recommended With: Any</option>';
+  playerCounts.forEach(count => {
+    const option = document.createElement('option');
+    option.value = count;
+    option.textContent = `Recommended With: ${count}p`;
+    recommendedWithSelect.appendChild(option);
+  });
+}
+
 function filterGames() {
   const search = document.getElementById('searchInput').value.toLowerCase();
-  displayedGames = allGames.filter(game => game.name.toLowerCase().includes(search));
+  const bestWith = document.getElementById('bestWithFilter').value;
+  const recommendedWith = document.getElementById('recommendedWithFilter').value;
+  
+  displayedGames = allGames.filter(game => {
+    // Search filter
+    if (!game.name.toLowerCase().includes(search)) return false;
+    
+    // Best With filter
+    if (bestWith && game.loaded) {
+      const hasBestWith = game.playerCounts.some(pc => {
+        const best = pc.votes['Best'] || 0;
+        const recommended = pc.votes['Recommended'] || 0;
+        const notRecommended = pc.votes['Not Recommended'] || 0;
+        const total = best + recommended + notRecommended;
+        return pc.numplayers === bestWith && total > 0 && (best / total) >= 0.5;
+      });
+      if (!hasBestWith) return false;
+    }
+    
+    // Recommended With filter
+    if (recommendedWith && game.loaded) {
+      const hasRecommended = game.playerCounts.some(pc => {
+        const best = pc.votes['Best'] || 0;
+        const recommended = pc.votes['Recommended'] || 0;
+        const notRecommended = pc.votes['Not Recommended'] || 0;
+        const total = best + recommended + notRecommended;
+        const bestPercent = total > 0 ? (best / total) : 0;
+        const recPercent = total > 0 ? ((best + recommended) / total) : 0;
+        return pc.numplayers === recommendedWith && recPercent >= 0.5 && bestPercent < 0.5;
+      });
+      if (!hasRecommended) return false;
+    }
+    
+    return true;
+  });
+  
   sortGames();
 }
 
@@ -338,7 +435,6 @@ function renderGames() {
             ${game.year ? game.year + ' • ' : ''}
             ${game.rating > 0 ? 'Rating: ' + game.rating.toFixed(1) + ' • ' : ''}
             ${game.minplayers}-${game.maxplayers} players
-            ${game.batchNum > 0 ? ' • Batch ' + game.batchNum : ''}
           </div>
           
           ${!isLoaded ? `
