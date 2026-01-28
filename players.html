@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Player Count</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #f8fafc;
+    }
+
+    .game-card {
+      transition: all 0.2s ease;
+    }
+
+    .game-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+    }
+
+    .skeleton {
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
+    }
+
+    .player-badge {
+      transition: all 0.2s ease;
+    }
+
+    .player-badge:hover {
+      transform: scale(1.05);
+    }
+  </style>
+</head>
+<body class="pb-20">
+
+  <header class="sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-4 shadow-sm">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-purple-600 text-white p-2 rounded-lg">
+          <i class="fa-solid fa-users"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Player Counts</h1>
+          <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Best & Recommended</p>
+        </div>
+      </div>
+      <div id="statsBox" class="text-right hidden">
+        <div class="text-2xl font-bold text-purple-600" id="gameCount">0</div>
+        <div class="text-[10px] text-slate-500 uppercase font-bold">Games</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto p-4 space-y-6">
+    
+    <!-- Fetch Section -->
+    <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+      <h2 class="text-xl font-bold mb-4">Load Collection</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">BGG Username</label>
+          <input 
+            id="username" 
+            type="text" 
+            value="sportomax" 
+            class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
+          >
+        </div>
+        <button 
+          onclick="fetchCollection()" 
+          id="fetchBtn"
+          class="w-full bg-purple-600 text-white py-4 rounded-xl font-bold hover:bg-purple-700 shadow-lg shadow-purple-100 flex items-center justify-center gap-2"
+        >
+          <i class="fa-solid fa-download"></i> Load Games
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading Section -->
+    <div id="loadingSection" class="hidden">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <i class="fa-solid fa-circle-notch fa-spin text-purple-600 text-2xl"></i>
+          <span class="font-bold text-slate-700">Loading collection...</span>
+        </div>
+        <div class="text-sm text-slate-500 text-center" id="loadingStatus">Fetching games...</div>
+        <div class="mt-4 bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div id="progressBar" class="bg-purple-600 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters and Sort -->
+    <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input 
+          type="text" 
+          id="searchInput" 
+          placeholder="Search games..." 
+          oninput="filterGames()"
+          class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
+        >
+        <select 
+          id="sortSelect" 
+          onchange="sortGames()" 
+          class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all bg-white font-medium text-sm"
+        >
+          <option value="name">Name: A-Z</option>
+          <option value="rating">User Rating</option>
+          <option value="minplayers">Min Players</option>
+          <option value="maxplayers">Max Players</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Games List -->
+    <div id="gamesSection" class="hidden space-y-3">
+      <!-- Games will be populated here -->
+    </div>
+
+  </main>
+
+<script>
+let allGames = [];
+let displayedGames = [];
+let isLoading = false;
+
+async function fetchCollection() {
+  const username = document.getElementById('username').value.trim() || 'sportomax';
+  const fetchBtn = document.getElementById('fetchBtn');
+  const fetchSection = document.getElementById('fetchSection');
+  const loadingSection = document.getElementById('loadingSection');
+  const controlsSection = document.getElementById('controlsSection');
+  const gamesSection = document.getElementById('gamesSection');
+  const statsBox = document.getElementById('statsBox');
+  
+  fetchBtn.disabled = true;
+  loadingSection.classList.remove('hidden');
+  
+  try {
+    isLoading = true;
+    
+    // Fetch collection with stats and own=1
+    updateLoadingStatus('Fetching collection...');
+    const collXml = await fetchAPI('collection', username, '&stats=1&own=1');
+    const doc = new DOMParser().parseFromString(collXml, 'text/xml');
+    const items = Array.from(doc.querySelectorAll('item'));
+    
+    allGames = items.map(item => {
+      const objectid = item.getAttribute('objectid');
+      const name = item.querySelector('name')?.textContent?.trim() || '';
+      const thumb = item.querySelector('thumbnail')?.textContent || '';
+      const year = item.querySelector('yearpublished')?.textContent || '';
+      const rating = parseFloat(item.querySelector('stats rating[value]')?.getAttribute('value') || '0');
+      const minplayers = parseInt(item.querySelector('stats')?.getAttribute('minplayers') || '0');
+      const maxplayers = parseInt(item.querySelector('stats')?.getAttribute('maxplayers') || '0');
+      const playerCounts = []; // Will be populated from thing API
+      const batchNum = 0;
+      
+      return { objectid, name, thumb, year, rating, minplayers, maxplayers, playerCounts, loaded: false, batchNum };
+    }).filter(game => game.name);
+    
+    updateLoadingStatus(`Found ${allGames.length} games. Loading player data...`);
+    
+    // Show UI immediately
+    loadingSection.classList.remove('hidden');
+    fetchSection.classList.add('hidden');
+    controlsSection.classList.remove('hidden');
+    gamesSection.classList.remove('hidden');
+    statsBox.classList.remove('hidden');
+    document.getElementById('gameCount').textContent = allGames.length;
+    displayedGames = [...allGames];
+    renderGames();
+    
+    // Fetch thing API in batches of 20, with parallel processing
+    const batchSize = 20;
+    const parallelBatches = 10; // Process 10 batches in parallel for faster loading
+    const batches = [];
+    for (let i = 0; i < allGames.length; i += batchSize) {
+      batches.push(allGames.slice(i, i + batchSize));
+    }
+    
+    // Process batches in parallel groups
+    for (let i = 0; i < batches.length; i += parallelBatches) {
+      const batchGroup = batches.slice(i, i + parallelBatches);
+      updateLoadingStatus(`Loading player data ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`);
+      updateProgress((Math.min(i + parallelBatches, batches.length) / batches.length) * 100);
+      
+      await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+        const ids = batch.map(g => g.objectid).join(',');
+        const batchNumber = i + batchIndex + 1;
+        
+        try {
+          const thingXml = await fetchAPI('thing', ids, '&stats=1');
+          
+          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+          const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+          
+          thingItems.forEach(thingItem => {
+            const id = thingItem.getAttribute('id');
+            const game = allGames.find(g => g.objectid === id);
+            if (game) {
+              // Parse player count recommendations
+              const polls = Array.from(thingItem.querySelectorAll('poll'));
+              const playerPoll = polls.find(p => p.getAttribute('name') === 'suggested_numplayers');
+              
+              if (playerPoll) {
+                const results = Array.from(playerPoll.querySelectorAll('results'));
+                game.playerCounts = results.map(result => {
+                  const numplayers = result.getAttribute('numplayers');
+                  const voteElements = Array.from(result.querySelectorAll('result'));
+                  const votes = {};
+                  voteElements.forEach(v => {
+                    votes[v.getAttribute('value')] = parseInt(v.getAttribute('numvotes') || '0');
+                  });
+                  return { numplayers, votes };
+                }).filter(pc => pc.numplayers);
+              }
+              
+              game.loaded = true;
+              game.batchNum = batchNumber;
+            }
+          });
+          
+        } catch (e) {
+          console.error('Batch error:', e);
+        }
+      }));
+      
+      // Update display after each parallel group
+      sortGames();
+      
+      await wait(500);
+    }
+    
+    updateLoadingStatus('Complete!');
+    updateProgress(100);
+    isLoading = false;
+    
+    // Hide loading indicator
+    setTimeout(() => {
+      loadingSection.classList.add('hidden');
+    }, 500);
+    
+  } catch (e) {
+    console.error(e);
+    alert('Failed to fetch collection. Please try again.');
+    fetchBtn.disabled = false;
+    loadingSection.classList.add('hidden');
+  }
+}
+
+function updateLoadingStatus(msg) {
+  document.getElementById('loadingStatus').textContent = msg;
+}
+
+function updateProgress(percent) {
+  document.getElementById('progressBar').style.width = percent + '%';
+}
+
+function filterGames() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  displayedGames = allGames.filter(game => game.name.toLowerCase().includes(search));
+  sortGames();
+}
+
+function sortGames() {
+  const sortBy = document.getElementById('sortSelect').value;
+  
+  if (sortBy === 'name') {
+    displayedGames.sort((a, b) => a.name.localeCompare(b.name));
+  } else if (sortBy === 'rating') {
+    displayedGames.sort((a, b) => b.rating - a.rating);
+  } else if (sortBy === 'minplayers') {
+    displayedGames.sort((a, b) => a.minplayers - b.minplayers);
+  } else if (sortBy === 'maxplayers') {
+    displayedGames.sort((a, b) => b.maxplayers - a.maxplayers);
+  }
+  
+  renderGames();
+}
+
+function renderGames() {
+  const container = document.getElementById('gamesSection');
+  container.innerHTML = '';
+  
+  displayedGames.forEach(game => {
+    const card = document.createElement('div');
+    card.className = 'game-card bg-white rounded-xl shadow-sm border border-slate-100 p-4';
+    
+    const isLoaded = game.loaded || !isLoading;
+    
+    // Calculate best and recommended player counts
+    let bestCounts = [];
+    let recommendedCounts = [];
+    
+    if (game.playerCounts && game.playerCounts.length > 0) {
+      game.playerCounts.forEach(pc => {
+        const best = pc.votes['Best'] || 0;
+        const recommended = pc.votes['Recommended'] || 0;
+        const notRecommended = pc.votes['Not Recommended'] || 0;
+        const total = best + recommended + notRecommended;
+        
+        if (total > 0) {
+          const bestPercent = (best / total) * 100;
+          const recPercent = ((best + recommended) / total) * 100;
+          
+          if (bestPercent >= 50) {
+            bestCounts.push({ num: pc.numplayers, votes: pc.votes, total });
+          } else if (recPercent >= 50) {
+            recommendedCounts.push({ num: pc.numplayers, votes: pc.votes, total });
+          }
+        }
+      });
+    }
+    
+    card.innerHTML = `
+      <div class="flex gap-4 cursor-pointer" onclick="window.open('https://boardgamegeek.com/boardgame/${game.objectid}', '_blank')">
+        <img 
+          src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" 
+          alt="${game.name}"
+          class="w-20 h-20 rounded-lg object-cover bg-slate-200 flex-shrink-0"
+          onerror="this.style.display='none'"
+        >
+        <div class="flex-1 min-w-0">
+          <h3 class="font-bold text-slate-900 mb-1">${game.name}</h3>
+          <div class="text-xs text-slate-500 mb-3">
+            ${game.year ? game.year + ' • ' : ''}
+            ${game.rating > 0 ? 'Rating: ' + game.rating.toFixed(1) + ' • ' : ''}
+            ${game.minplayers}-${game.maxplayers} players
+            ${game.batchNum > 0 ? ' • Batch ' + game.batchNum : ''}
+          </div>
+          
+          ${!isLoaded ? `
+            <div class="flex gap-2">
+              <div class="skeleton bg-slate-200 h-8 w-16 rounded"></div>
+              <div class="skeleton bg-slate-200 h-8 w-16 rounded"></div>
+              <div class="skeleton bg-slate-200 h-8 w-16 rounded"></div>
+            </div>
+          ` : `
+            ${bestCounts.length === 0 && recommendedCounts.length === 0 ? `
+              <div class="text-xs text-slate-400 italic">No player count data</div>
+            ` : `
+              <div class="space-y-2">
+                ${bestCounts.length > 0 ? `
+                  <div>
+                    <div class="text-[10px] font-bold text-green-600 uppercase mb-1">Best With</div>
+                    <div class="flex flex-wrap gap-1">
+                      ${bestCounts.map(pc => {
+                        const best = pc.votes['Best'] || 0;
+                        const recommended = pc.votes['Recommended'] || 0;
+                        const notRec = pc.votes['Not Recommended'] || 0;
+                        return `
+                          <div class="player-badge bg-green-50 border border-green-200 px-2 py-1 rounded text-xs font-bold text-green-700">
+                            ${pc.num}p
+                            <span class="text-[9px] text-green-600 ml-1">(${best}/${recommended}/${notRec})</span>
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+                
+                ${recommendedCounts.length > 0 ? `
+                  <div>
+                    <div class="text-[10px] font-bold text-blue-600 uppercase mb-1">Recommended</div>
+                    <div class="flex flex-wrap gap-1">
+                      ${recommendedCounts.map(pc => {
+                        const best = pc.votes['Best'] || 0;
+                        const recommended = pc.votes['Recommended'] || 0;
+                        const notRec = pc.votes['Not Recommended'] || 0;
+                        return `
+                          <div class="player-badge bg-blue-50 border border-blue-200 px-2 py-1 rounded text-xs font-bold text-blue-700">
+                            ${pc.num}p
+                            <span class="text-[9px] text-blue-600 ml-1">(${best}/${recommended}/${notRec})</span>
+                          </div>
+                        `;
+                      }).join('')}
+                    </div>
+                  </div>
+                ` : ''}
+              </div>
+            `}
+          `}
+        </div>
+      </div>
+    `;
+    
+    container.appendChild(card);
+  });
+}
+
+async function fetchAPI(endpoint, user, queryParams = '') {
+  if (endpoint === 'thing') {
+    let url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(user)}${queryParams}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        await wait(1500 * Math.pow(2, attempt));
+        continue;
+      }
+      if (res.status === 202) {
+        await wait(3000);
+        continue;
+      }
+      if (res.ok) {
+        return await res.text();
+      }
+      await wait(2000);
+    }
+    throw new Error('Failed to fetch from BGG API');
+  } else {
+    if (!user || user.trim() === '') {
+      throw new Error('Username is required');
+    }
+    let url = `/api/bgg-helper?endpoint=${endpoint}&username=${encodeURIComponent(user)}${queryParams}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        await wait(1000 * Math.pow(2, attempt));
+        continue;
+      }
+      if (res.status === 202) {
+        await wait(2000);
+        continue;
+      }
+      if (res.ok) return await res.text();
+      await wait(1500);
+    }
+    throw new Error('Failed to fetch from BGG API');
+  }
+}
+
+function wait(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+</script>
+</body>
+</html>
