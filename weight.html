@@ -174,8 +174,9 @@ async function fetchCollection() {
       const year = item.querySelector('yearpublished')?.textContent || '';
       const rating = parseFloat(item.querySelector('stats rating[value]')?.getAttribute('value') || '0');
       const averageweight = 0; // Will be populated from thing API
+      const numweights = 0; // Number of weight votes
       
-      return { objectid, name, thumb, year, rating, averageweight, loaded: false };
+      return { objectid, name, thumb, year, rating, averageweight, numweights, loaded: false };
     }).filter(game => game.name);
     
     updateLoadingStatus(`Found ${allGames.length} games. Loading weights...`);
@@ -190,43 +191,50 @@ async function fetchCollection() {
     displayedGames = [...allGames];
     renderGames();
     
-    // Fetch thing API in batches of 20
+    // Fetch thing API in batches of 20, with parallel processing
     const batchSize = 20;
+    const parallelBatches = 4; // Process 4 batches at once
     const batches = [];
     for (let i = 0; i < allGames.length; i += batchSize) {
       batches.push(allGames.slice(i, i + batchSize));
     }
     
-    for (let i = 0; i < batches.length; i++) {
-      const batch = batches[i];
-      const ids = batch.map(g => g.objectid).join(',');
-      updateLoadingStatus(`Loading weights ${i + 1}/${batches.length}...`);
-      updateProgress(((i + 1) / batches.length) * 100);
+    // Process batches in parallel groups
+    for (let i = 0; i < batches.length; i += parallelBatches) {
+      const batchGroup = batches.slice(i, i + parallelBatches);
+      updateLoadingStatus(`Loading weights ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`);
+      updateProgress((Math.min(i + parallelBatches, batches.length) / batches.length) * 100);
       
-      try {
-        const thingXml = await fetchAPI('thing', ids, '&stats=1');
-        const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
-        const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+      await Promise.all(batchGroup.map(async (batch) => {
+        const ids = batch.map(g => g.objectid).join(',');
         
-        thingItems.forEach(thingItem => {
-          const id = thingItem.getAttribute('id');
-          const game = allGames.find(g => g.objectid === id);
-          if (game) {
-            // Parse from statistics > ratings > averageweight
-            const weight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
-            game.averageweight = weight;
-            game.loaded = true;
-          }
-        });
-        
-        // Update display after each batch
-        sortGames();
-        
-      } catch (e) {
-        console.error('Batch error:', e);
-      }
+        try {
+          const thingXml = await fetchAPI('thing', ids, '&stats=1');
+          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+          const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+          
+          thingItems.forEach(thingItem => {
+            const id = thingItem.getAttribute('id');
+            const game = allGames.find(g => g.objectid === id);
+            if (game) {
+              // Parse from statistics > ratings > averageweight and numweights
+              const weight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
+              const numVotes = parseInt(thingItem.querySelector('statistics ratings numweights')?.getAttribute('value') || '0');
+              game.averageweight = weight;
+              game.numweights = numVotes;
+              game.loaded = true;
+            }
+          });
+          
+        } catch (e) {
+          console.error('Batch error:', e);
+        }
+      }));
       
-      await wait(300); // Reduced throttle for faster loading
+      // Update display after each parallel group
+      sortGames();
+      
+      await wait(200); // Reduced throttle
     }
     
     updateLoadingStatus('Complete!');
@@ -290,6 +298,7 @@ function renderGames() {
     const weightLabel = !isLoaded ? '...' : game.averageweight === 0 ? '?' : game.averageweight.toFixed(2);
     const weightColor = game.averageweight < 2 ? 'text-green-600' : game.averageweight < 3.5 ? 'text-amber-600' : 'text-red-600';
     const weightDesc = game.averageweight === 0 ? '' : game.averageweight < 2 ? 'Light' : game.averageweight < 3 ? 'Medium Light' : game.averageweight < 3.5 ? 'Medium' : game.averageweight < 4 ? 'Medium Heavy' : 'Heavy';
+    const numVotesText = !isLoaded ? '' : game.numweights === 0 ? 'No votes' : `${game.numweights} vote${game.numweights !== 1 ? 's' : ''}`;
     
     card.innerHTML = `
       <div class="flex gap-4">
@@ -314,6 +323,7 @@ function renderGames() {
             <div class="text-right flex-shrink-0">
               <div class="font-bold ${isLoaded ? weightColor : 'text-slate-300 skeleton'} text-lg">${weightLabel}</div>
               <div class="text-[10px] text-slate-400 uppercase font-bold">${isLoaded && weightDesc ? weightDesc : ''}</div>
+              <div class="text-[9px] text-slate-400 mt-0.5">${numVotesText}</div>
             </div>
           </div>
         </div>
