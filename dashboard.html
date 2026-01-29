@@ -707,9 +707,9 @@
                 const ownedItems = items.filter(it => it.querySelector('status')?.getAttribute('own') === '1');
                 const ownedIds = ownedItems.map(it => it.getAttribute('objectid'));
                 
-                // Fetch thing data in batches of 20 with parallel processing (up to 100 batches in parallel)
+                // Fetch thing data in batches of 20 with parallel processing (up to 10 batches in parallel)
                 const batchSize = 20;
-                const parallelBatches = 100;
+                const parallelBatches = 10; // Reduced from 100 to avoid overwhelming BGG API
                 const thingDataMap = {};
                 const batches = [];
                 
@@ -756,7 +756,8 @@
                                             const recommended = votes['Recommended'] || 0;
                                             const notRecommended = votes['Not Recommended'] || 0;
                                             const total = best + recommended + notRecommended;
-                                            if (total > 0 && (best / total) >= 0.5) {
+                                            // Use more inclusive threshold: best + recommended votes
+                                            if (total >= 5 && ((best + recommended) / total) >= 0.5) {
                                                 playerCounts[numplayers] = { best, recommended, notRecommended, total };
                                             }
                                         });
@@ -780,12 +781,29 @@
                 }
                 
                 // Now build the new slides using the thingDataMap
-                const gamesWithDetails = ownedItems.map(it => ({
-                    id: it.getAttribute('objectid'),
-                    name: it.querySelector('name')?.textContent,
-                    thumb: it.querySelector('thumbnail')?.textContent,
-                    ...thingDataMap[it.getAttribute('objectid')]
-                })).filter(g => g.playingtime !== undefined);
+                const gamesWithDetails = ownedItems.map(it => {
+                    const id = it.getAttribute('objectid');
+                    const baseData = {
+                        id: id,
+                        name: it.querySelector('name')?.textContent,
+                        thumb: it.querySelector('thumbnail')?.textContent
+                    };
+                    // Safely merge thingData if it exists
+                    if (thingDataMap[id]) {
+                        return { ...baseData, ...thingDataMap[id] };
+                    }
+                    // Return base data with default values if thingData is missing
+                    return {
+                        ...baseData,
+                        playingtime: 0,
+                        minplaytime: 0,
+                        maxplaytime: 0,
+                        averageweight: 0,
+                        average: 0,
+                        yearpublished: 0,
+                        playerCounts: {}
+                    };
+                }).filter(g => g.name); // Only filter out games without names
                 
                 // QUICKEST GAMES (shortest playing time, excluding 0)
                 cache.QUICKEST_GAMES = gamesWithDetails
@@ -844,7 +862,14 @@
                         .sort((a, b) => {
                             const aVotes = a.playerCounts[pc.toString()];
                             const bVotes = b.playerCounts[pc.toString()];
-                            return (bVotes.best / bVotes.total) - (aVotes.best / aVotes.total);
+                            // Primary sort: ratio of (best + recommended) votes
+                            const aRatio = (aVotes.best + aVotes.recommended) / aVotes.total;
+                            const bRatio = (bVotes.best + bVotes.recommended) / bVotes.total;
+                            if (Math.abs(aRatio - bRatio) > 0.01) {
+                                return bRatio - aRatio;
+                            }
+                            // Secondary sort: total vote count (more votes = higher rank)
+                            return bVotes.total - aVotes.total;
                         })
                         .slice(0, 10)
                         .map((g, idx) => ({ ...g, rank: idx + 1 }));
