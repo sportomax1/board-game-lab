@@ -1,7 +1,373 @@
-<!DOCTYPE html>
+<!doctype html>
 <html lang="en">
 <head>
-    <meta charset="UTF-8">
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Geeklist Viewer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #f8fafc;
+    }
+
+    .game-card {
+      transition: all 0.2s ease;
+    }
+
+    .game-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+    }
+
+    .skeleton {
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
+    }
+  </style>
+</head>
+<body class="pb-20">
+
+  <header class="sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-4 shadow-sm">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-purple-600 text-white p-2 rounded-lg">
+          <i class="fa-solid fa-list"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Geeklist Viewer</h1>
+          <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">BGG Collections</p>
+        </div>
+      </div>
+      <div id="statsBox" class="text-right hidden">
+        <div class="text-2xl font-bold text-purple-600" id="gameCount">0</div>
+        <div class="text-[10px] text-slate-500 uppercase font-bold">Items</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto p-4 space-y-6">
+    
+    <!-- Fetch Section -->
+    <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+      <h2 class="text-xl font-bold mb-4">Load Geeklist</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">Geeklist ID</label>
+          <input 
+            id="geeklistId" 
+            type="text" 
+            value="140673" 
+            class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
+            placeholder="e.g. 140673"
+          >
+        </div>
+        <button 
+          onclick="fetchGeeklist()" 
+          id="fetchBtn"
+          class="w-full bg-purple-600 text-white py-4 rounded-xl font-bold hover:bg-purple-700 shadow-lg shadow-purple-100 flex items-center justify-center gap-2"
+        >
+          <i class="fa-solid fa-download"></i> Load Geeklist
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading Section -->
+    <div id="loadingSection" class="hidden">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <i class="fa-solid fa-circle-notch fa-spin text-purple-600 text-2xl"></i>
+          <span class="font-bold text-slate-700">Loading geeklist...</span>
+        </div>
+        <div class="text-sm text-slate-500 text-center" id="loadingStatus">Fetching items...</div>
+        <div class="mt-4 bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div id="progressBar" class="bg-purple-600 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters and Sort -->
+    <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input 
+          type="text" 
+          id="searchInput" 
+          placeholder="Search items..." 
+          oninput="filterItems()"
+          class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all"
+        >
+        <select 
+          id="sortSelect" 
+          onchange="sortItems()" 
+          class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none transition-all bg-white font-medium text-sm"
+        >
+          <option value="postdate-desc">Newest First</option>
+          <option value="postdate-asc">Oldest First</option>
+          <option value="name">Name: A-Z</option>
+          <option value="rating-desc">Rating: High to Low</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Items List -->
+    <div id="itemsSection" class="hidden space-y-3">
+      <!-- Items will be populated here -->
+    </div>
+
+  </main>
+
+<script>
+let allItems = [];
+let displayedItems = [];
+let isLoading = false;
+
+async function fetchGeeklist() {
+  const fetchBtn = document.getElementById('fetchBtn');
+  const fetchSection = document.getElementById('fetchSection');
+  const loadingSection = document.getElementById('loadingSection');
+  const controlsSection = document.getElementById('controlsSection');
+  const itemsSection = document.getElementById('itemsSection');
+  const statsBox = document.getElementById('statsBox');
+  const geeklistId = document.getElementById('geeklistId').value.trim();
+  
+  if (!geeklistId) {
+    alert('Please enter a Geeklist ID');
+    return;
+  }
+  
+  fetchBtn.disabled = true;
+  loadingSection.classList.remove('hidden');
+  
+  try {
+    isLoading = true;
+    
+    updateLoadingStatus('Fetching geeklist...');
+    const geeklistXml = await fetchAPI('geeklist', geeklistId);
+    const doc = new DOMParser().parseFromString(geeklistXml, 'text/xml');
+    const items = Array.from(doc.querySelectorAll('item'));
+    
+    if (items.length === 0) {
+      throw new Error('No items found in this geeklist');
+    }
+    
+    allItems = items.map((item, idx) => ({
+      index: idx,
+      id: item.getAttribute('id') || '',
+      objectid: item.getAttribute('objectid') || '',
+      objecttype: item.getAttribute('objecttype') || '',
+      objectname: item.getAttribute('objectname') || 'Unknown',
+      username: item.getAttribute('username') || '',
+      postdate: item.getAttribute('postdate') || '',
+      body: item.querySelector('body')?.textContent || '',
+      thumb: '',
+      rating: 0,
+      year: '',
+      loaded: false
+    }));
+    
+    updateLoadingStatus(`Found ${allItems.length} items. Loading details...`);
+    document.getElementById('gameCount').textContent = allItems.length;
+    
+    // Show UI
+    fetchSection.classList.add('hidden');
+    controlsSection.classList.remove('hidden');
+    itemsSection.classList.remove('hidden');
+    statsBox.classList.remove('hidden');
+    displayedItems = [...allItems];
+    renderItems();
+    
+    // Fetch thing API in batches with 100x parallel processing
+    const batchSize = 20;
+    const parallelBatches = 100;
+    const batches = [];
+    
+    for (let i = 0; i < allItems.length; i += batchSize) {
+      batches.push(allItems.slice(i, i + batchSize));
+    }
+    
+    for (let i = 0; i < batches.length; i += parallelBatches) {
+      const batchGroup = batches.slice(i, i + parallelBatches);
+      updateLoadingStatus(`Loading details ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`);
+      updateProgress((Math.min(i + parallelBatches, batches.length) / batches.length) * 100);
+      
+      await Promise.all(batchGroup.map(async (batch) => {
+        const ids = batch.map(g => g.objectid).join(',');
+        
+        try {
+          const thingXml = await fetchAPI('thing', ids, '&stats=1');
+          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+          const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+          
+          thingItems.forEach(thingItem => {
+            const id = thingItem.getAttribute('id');
+            const item = allItems.find(g => g.objectid === id);
+            if (!item) return;
+            
+            item.thumb = thingItem.querySelector('thumbnail')?.textContent || '';
+            item.year = thingItem.querySelector('yearpublished')?.textContent || '';
+            
+            const avgElement = thingItem.querySelector('statistics ratings average');
+            if (avgElement) {
+              item.rating = parseFloat(avgElement.getAttribute('value') || '0');
+            }
+            
+            item.loaded = true;
+          });
+          
+        } catch (e) {
+          console.error('Batch error:', e);
+        }
+      }));
+      
+      sortItems();
+      await wait(500);
+    }
+    
+    updateLoadingStatus('Complete!');
+    updateProgress(100);
+    isLoading = false;
+    
+    setTimeout(() => {
+      loadingSection.classList.add('hidden');
+    }, 500);
+    
+  } catch (e) {
+    console.error(e);
+    alert('Failed to fetch geeklist: ' + e.message);
+    fetchBtn.disabled = false;
+    loadingSection.classList.add('hidden');
+    fetchSection.classList.remove('hidden');
+  }
+}
+
+function updateLoadingStatus(msg) {
+  document.getElementById('loadingStatus').textContent = msg;
+}
+
+function updateProgress(percent) {
+  document.getElementById('progressBar').style.width = percent + '%';
+}
+
+function filterItems() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  displayedItems = allItems.filter(item => 
+    item.objectname.toLowerCase().includes(search) ||
+    item.body.toLowerCase().includes(search)
+  );
+  sortItems();
+}
+
+function sortItems() {
+  const sortBy = document.getElementById('sortSelect').value;
+  
+  if (sortBy === 'postdate-desc') {
+    displayedItems.sort((a, b) => new Date(b.postdate) - new Date(a.postdate));
+  } else if (sortBy === 'postdate-asc') {
+    displayedItems.sort((a, b) => new Date(a.postdate) - new Date(b.postdate));
+  } else if (sortBy === 'name') {
+    displayedItems.sort((a, b) => a.objectname.localeCompare(b.objectname));
+  } else if (sortBy === 'rating-desc') {
+    displayedItems.sort((a, b) => b.rating - a.rating);
+  }
+  
+  renderItems();
+}
+
+function renderItems() {
+  const container = document.getElementById('itemsSection');
+  container.innerHTML = '';
+  
+  displayedItems.forEach(item => {
+    const card = document.createElement('div');
+    card.className = 'game-card bg-white rounded-xl shadow-sm border border-slate-100 p-4 cursor-pointer';
+    card.onclick = () => window.open(`https://boardgamegeek.com/boardgame/${item.objectid}`, '_blank');
+    
+    const isLoaded = item.loaded || !isLoading;
+    const dateStr = item.postdate ? new Date(item.postdate).toLocaleDateString() : 'N/A';
+    
+    card.innerHTML = `
+      <div class="flex gap-4">
+        <img 
+          src="/api/image-proxy?url=${encodeURIComponent(item.thumb)}" 
+          alt="${item.objectname}"
+          class="w-20 h-20 rounded-lg object-cover bg-slate-200 flex-shrink-0"
+          onerror="this.style.display='none'"
+        >
+        <div class="flex-1 min-w-0">
+          <h3 class="font-bold text-slate-900 mb-1">${item.objectname}</h3>
+          <div class="text-xs text-slate-500 mb-2 space-y-0.5">
+            <div><span class="font-semibold">Type:</span> ${item.objecttype}</div>
+            <div><span class="font-semibold">Added by:</span> ${item.username}</div>
+            <div><span class="font-semibold">Date:</span> ${dateStr}</div>
+            ${item.year ? `<div><span class="font-semibold">Year:</span> ${item.year}</div>` : ''}
+          </div>
+          <div class="flex flex-wrap gap-2">
+            ${isLoaded ? `
+              ${item.rating > 0 ? `
+                <div class="bg-amber-50 border border-amber-200 text-amber-700 px-2 py-1 rounded text-xs font-bold">
+                  ⭐ ${item.rating.toFixed(1)}
+                </div>
+              ` : ''}
+              ${item.body ? `
+                <div class="bg-blue-50 border border-blue-200 text-blue-700 px-2 py-1 rounded text-xs font-bold">
+                  📝 ${item.body.substring(0, 50)}${item.body.length > 50 ? '...' : ''}
+                </div>
+              ` : ''}
+            ` : `
+              <div class="skeleton bg-slate-200 h-6 w-16 rounded"></div>
+            `}
+          </div>
+        </div>
+      </div>
+    `;
+    
+    container.appendChild(card);
+  });
+}
+
+async function fetchAPI(endpoint, id, queryParams = '') {
+  let url;
+  if (endpoint === 'geeklist') {
+    url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${queryParams}`;
+  } else {
+    url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${queryParams}`;
+  }
+  
+  for (let attempt = 0; attempt < 5; attempt++) {
+    let res;
+    try {
+      res = await fetch(url);
+    } catch (e) {
+      await wait(1500 * Math.pow(2, attempt));
+      continue;
+    }
+    if (res.status === 202) {
+      await wait(3000);
+      continue;
+    }
+    if (res.ok) {
+      return await res.text();
+    }
+    await wait(2000);
+  }
+  throw new Error('Failed to fetch from BGG API');
+}
+
+function wait(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+</script>
+<!-- Vercel Web Analytics -->
+<script type="module" src="analytics-init.js"></script>
+</body>
+</html>
     <meta name="viewport" content="width=device-width, initial-scale=1.0, user-scalable=no, maximum-scale=1.0, viewport-fit=cover">
     <meta name="apple-mobile-web-app-capable" content="yes">
     <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
