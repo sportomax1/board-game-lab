@@ -1,0 +1,872 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Dice Duel</title>
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>🎲</text></svg>">
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        body {
+            background: linear-gradient(135deg, #667eea 0%, #764ba2 100%);
+            min-height: 100vh;
+            font-family: system-ui, -apple-system, sans-serif;
+        }
+
+        /* Dice Animation */
+        @keyframes roll {
+            0% { transform: rotate(0deg) scale(1); }
+            25% { transform: rotate(90deg) scale(1.1); }
+            50% { transform: rotate(180deg) scale(1); }
+            75% { transform: rotate(270deg) scale(1.1); }
+            100% { transform: rotate(360deg) scale(1); }
+        }
+
+        @keyframes bounce {
+            0%, 100% { transform: translateY(0); }
+            50% { transform: translateY(-20px); }
+        }
+
+        .rolling {
+            animation: roll 0.5s ease-in-out, bounce 0.5s ease-in-out;
+        }
+
+        /* Dice faces */
+        .dice {
+            width: 100px;
+            height: 100px;
+            background: white;
+            border-radius: 15px;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            font-size: 48px;
+            font-weight: bold;
+            box-shadow: 0 4px 6px rgba(0, 0, 0, 0.3);
+            cursor: pointer;
+            transition: all 0.3s ease;
+        }
+
+        .dice:hover {
+            transform: scale(1.05);
+            box-shadow: 0 6px 12px rgba(0, 0, 0, 0.4);
+        }
+
+        .dice.disabled {
+            opacity: 0.5;
+            cursor: not-allowed;
+        }
+
+        /* Player card animation */
+        @keyframes slideIn {
+            from {
+                opacity: 0;
+                transform: translateX(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateX(0);
+            }
+        }
+
+        .player-card {
+            animation: slideIn 0.3s ease-out;
+        }
+
+        /* Turn indicator pulse */
+        @keyframes pulse {
+            0%, 100% { opacity: 1; }
+            50% { opacity: 0.5; }
+        }
+
+        .turn-indicator {
+            animation: pulse 1.5s ease-in-out infinite;
+        }
+
+        /* Lobby pulse */
+        @keyframes lobbyPulse {
+            0%, 100% { box-shadow: 0 0 0 0 rgba(99, 102, 241, 0.4); }
+            50% { box-shadow: 0 0 0 10px rgba(99, 102, 241, 0); }
+        }
+
+        .lobby-available {
+            animation: lobbyPulse 2s infinite;
+        }
+
+        /* History fade in */
+        @keyframes fadeIn {
+            from { opacity: 0; }
+            to { opacity: 1; }
+        }
+
+        .history-item {
+            animation: fadeIn 0.5s ease-out;
+        }
+
+        /* Scroll animations */
+        .scroll-container {
+            max-height: 400px;
+            overflow-y: auto;
+        }
+
+        .scroll-container::-webkit-scrollbar {
+            width: 8px;
+        }
+
+        .scroll-container::-webkit-scrollbar-track {
+            background: rgba(255, 255, 255, 0.1);
+            border-radius: 4px;
+        }
+
+        .scroll-container::-webkit-scrollbar-thumb {
+            background: rgba(255, 255, 255, 0.3);
+            border-radius: 4px;
+        }
+
+        .scroll-container::-webkit-scrollbar-thumb:hover {
+            background: rgba(255, 255, 255, 0.5);
+        }
+
+        /* Modal backdrop */
+        .modal-backdrop {
+            background: rgba(0, 0, 0, 0.5);
+            backdrop-filter: blur(4px);
+        }
+    </style>
+</head>
+<body class="p-4">
+    <div class="max-w-md mx-auto">
+        <!-- Password Screen -->
+        <div id="passwordScreen" class="bg-white rounded-lg shadow-2xl p-6">
+            <div class="text-center mb-6">
+                <div class="text-6xl mb-4">🎲</div>
+                <h1 class="text-3xl font-bold text-gray-800 mb-2">Dice Duel</h1>
+                <p class="text-gray-600">Enter password to start playing</p>
+            </div>
+            <div class="space-y-4">
+                <input 
+                    type="password" 
+                    id="appPassword" 
+                    placeholder="Password"
+                    class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onkeypress="if(event.key==='Enter') unlockApp()"
+                >
+                <input 
+                    type="text" 
+                    id="playerNameInput" 
+                    placeholder="Your Name"
+                    class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onkeypress="if(event.key==='Enter') unlockApp()"
+                >
+                <button 
+                    onclick="unlockApp()" 
+                    class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
+                >
+                    Enter Game
+                </button>
+                <p id="passwordError" class="text-red-600 text-sm text-center hidden">Incorrect password</p>
+            </div>
+        </div>
+
+        <!-- Main App -->
+        <div id="app" class="hidden">
+            <!-- Header -->
+            <div class="bg-white rounded-lg shadow-lg p-4 mb-4">
+                <div class="flex items-center justify-between">
+                    <div class="flex items-center space-x-3">
+                        <div class="text-4xl">🎲</div>
+                        <div>
+                            <h1 class="text-2xl font-bold text-gray-800">Dice Duel</h1>
+                            <p class="text-sm text-gray-600">Player: <span id="playerNameDisplay" class="font-semibold"></span></p>
+                        </div>
+                    </div>
+                    <button onclick="logout()" class="text-gray-600 hover:text-gray-800 px-3 py-1 rounded">
+                        Logout
+                    </button>
+                </div>
+            </div>
+
+            <!-- View Container -->
+            <div id="viewContainer">
+                <!-- Lobby List View -->
+                <div id="lobbyListView" class="space-y-4">
+                    <div class="bg-white rounded-lg shadow-lg p-4">
+                        <h2 class="text-xl font-bold text-gray-800 mb-4">Game Lobbies</h2>
+                        <button 
+                            onclick="showCreateLobby()" 
+                            class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition-colors mb-4"
+                        >
+                            + Create New Lobby
+                        </button>
+                        <div id="lobbyList" class="space-y-2 scroll-container">
+                            <p class="text-gray-500 text-center py-4">Loading lobbies...</p>
+                        </div>
+                    </div>
+                    
+                    <button 
+                        onclick="refreshLobbies()" 
+                        class="w-full bg-gray-600 hover:bg-gray-700 text-white font-bold py-2 px-4 rounded-lg transition-colors"
+                    >
+                        🔄 Refresh
+                    </button>
+                </div>
+
+                <!-- Create Lobby View -->
+                <div id="createLobbyView" class="hidden bg-white rounded-lg shadow-lg p-4">
+                    <h2 class="text-xl font-bold text-gray-800 mb-4">Create Lobby</h2>
+                    <div class="space-y-4">
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Lobby Name</label>
+                            <input 
+                                type="text" 
+                                id="lobbyName" 
+                                placeholder="Enter lobby name"
+                                class="w-full px-4 py-2 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                            >
+                        </div>
+                        <div>
+                            <label class="block text-sm font-medium text-gray-700 mb-2">Play to Score</label>
+                            <div class="grid grid-cols-3 gap-2">
+                                <button onclick="selectWinScore(10)" class="score-btn py-2 px-4 bg-gray-200 hover:bg-purple-500 hover:text-white rounded-lg transition-colors" data-score="10">10</button>
+                                <button onclick="selectWinScore(21)" class="score-btn py-2 px-4 bg-purple-500 text-white rounded-lg" data-score="21">21</button>
+                                <button onclick="selectWinScore(50)" class="score-btn py-2 px-4 bg-gray-200 hover:bg-purple-500 hover:text-white rounded-lg transition-colors" data-score="50">50</button>
+                            </div>
+                        </div>
+                        <div class="flex space-x-2">
+                            <button 
+                                onclick="createLobby()" 
+                                class="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
+                            >
+                                Create
+                            </button>
+                            <button 
+                                onclick="cancelCreateLobby()" 
+                                class="flex-1 bg-gray-600 hover:bg-gray-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
+                            >
+                                Cancel
+                            </button>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Game View -->
+                <div id="gameView" class="hidden space-y-4">
+                    <!-- Game Info -->
+                    <div class="bg-white rounded-lg shadow-lg p-4">
+                        <div class="flex justify-between items-center mb-4">
+                            <h2 class="text-xl font-bold text-gray-800" id="gameLobbyName"></h2>
+                            <button onclick="leaveLobby()" class="text-sm text-red-600 hover:text-red-800">Leave</button>
+                        </div>
+                        <div class="flex justify-between items-center text-sm text-gray-600">
+                            <span>Play to: <span id="gameWinScore" class="font-bold"></span></span>
+                            <span id="gameStatus" class="font-semibold"></span>
+                        </div>
+                    </div>
+
+                    <!-- Players -->
+                    <div class="bg-white rounded-lg shadow-lg p-4">
+                        <h3 class="text-lg font-bold text-gray-800 mb-3">Players</h3>
+                        <div id="playersList" class="space-y-2"></div>
+                        <div id="waitingMessage" class="hidden mt-4 text-center text-gray-600">
+                            <p class="mb-2">Waiting for players...</p>
+                            <button onclick="startGame()" id="startGameBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">
+                                Start Game
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- Dice Area -->
+                    <div id="diceArea" class="hidden bg-white rounded-lg shadow-lg p-6">
+                        <div class="text-center mb-4">
+                            <h3 class="text-lg font-bold text-gray-800 mb-2">Your Turn</h3>
+                            <p class="text-sm text-gray-600">Rerolls left: <span id="rerollsLeft" class="font-bold text-purple-600">2</span></p>
+                        </div>
+                        <div class="flex justify-center mb-6">
+                            <div id="diceDisplay" class="dice">?</div>
+                        </div>
+                        <div class="space-y-2">
+                            <button 
+                                id="rollBtn"
+                                onclick="rollDice()" 
+                                class="w-full bg-purple-600 hover:bg-purple-700 text-white font-bold py-3 px-4 rounded-lg transition-colors"
+                            >
+                                🎲 Roll Dice
+                            </button>
+                            <button 
+                                id="stopBtn"
+                                onclick="stopRolling()" 
+                                class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors hidden"
+                            >
+                                ✓ Keep Score
+                            </button>
+                        </div>
+                    </div>
+
+                    <!-- History -->
+                    <div class="bg-white rounded-lg shadow-lg p-4">
+                        <h3 class="text-lg font-bold text-gray-800 mb-3">Game History</h3>
+                        <div id="gameHistory" class="space-y-2 scroll-container text-sm">
+                            <p class="text-gray-500 text-center py-2">No moves yet</p>
+                        </div>
+                    </div>
+
+                    <!-- Winner Display -->
+                    <div id="winnerDisplay" class="hidden bg-gradient-to-r from-yellow-400 to-orange-500 rounded-lg shadow-lg p-6 text-center">
+                        <div class="text-6xl mb-4">🏆</div>
+                        <h2 class="text-2xl font-bold text-white mb-2">Winner!</h2>
+                        <p class="text-xl text-white mb-4"><span id="winnerName"></span></p>
+                        <p class="text-white mb-4">Final Score: <span id="winnerScore" class="font-bold"></span></p>
+                        <button onclick="leaveLobby()" class="bg-white text-orange-600 font-bold py-2 px-6 rounded-lg hover:bg-gray-100 transition-colors">
+                            Return to Lobbies
+                        </button>
+                    </div>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script type="module">
+        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
+        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, where, onSnapshot, Timestamp, arrayUnion, arrayRemove, getDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+
+        let db;
+        let playerName = '';
+        let currentLobbyId = null;
+        let currentGameState = null;
+        let selectedWinScore = 21;
+        let unsubscribeLobby = null;
+        let currentRoll = 0;
+        let rerollsRemaining = 2;
+
+        // Initialize Firebase
+        async function initFirebase() {
+            try {
+                const configResponse = await fetch('/api/firebase-config');
+                if (!configResponse.ok) throw new Error('Failed to fetch Firebase config');
+                
+                const firebaseConfig = await configResponse.json();
+                
+                if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
+                    throw new Error('Invalid Firebase config');
+                }
+                
+                const app = initializeApp(firebaseConfig);
+                db = getFirestore(app);
+                console.log('✅ Firebase initialized successfully');
+                return true;
+            } catch (error) {
+                console.error('Firebase init error:', error);
+                alert('Failed to initialize database. Please check Firebase configuration.');
+                return false;
+            }
+        }
+
+        // Unlock app
+        window.unlockApp = async () => {
+            const password = document.getElementById('appPassword').value;
+            const name = document.getElementById('playerNameInput').value.trim();
+            
+            if (!name) {
+                alert('Please enter your name');
+                return;
+            }
+            
+            const correctPassword = await fetch('/api/get-password').then(r => r.text()).catch(() => '');
+            
+            if (password !== correctPassword) {
+                document.getElementById('passwordError').classList.remove('hidden');
+                return;
+            }
+            
+            playerName = name;
+            localStorage.setItem('diceduel_player_name', playerName);
+            
+            const firebaseReady = await initFirebase();
+            if (!firebaseReady) return;
+            
+            document.getElementById('playerNameDisplay').textContent = playerName;
+            document.getElementById('passwordScreen').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            
+            await loadLobbies();
+            startLobbyListener();
+        };
+
+        // Logout
+        window.logout = () => {
+            if (currentLobbyId) {
+                leaveLobby();
+            }
+            localStorage.removeItem('diceduel_player_name');
+            location.reload();
+        };
+
+        // Win score selection
+        window.selectWinScore = (score) => {
+            selectedWinScore = score;
+            document.querySelectorAll('.score-btn').forEach(btn => {
+                if (parseInt(btn.dataset.score) === score) {
+                    btn.classList.remove('bg-gray-200');
+                    btn.classList.add('bg-purple-500', 'text-white');
+                } else {
+                    btn.classList.remove('bg-purple-500', 'text-white');
+                    btn.classList.add('bg-gray-200');
+                }
+            });
+        };
+
+        // Show/hide views
+        window.showCreateLobby = () => {
+            document.getElementById('lobbyListView').classList.add('hidden');
+            document.getElementById('createLobbyView').classList.remove('hidden');
+        };
+
+        window.cancelCreateLobby = () => {
+            document.getElementById('createLobbyView').classList.add('hidden');
+            document.getElementById('lobbyListView').classList.remove('hidden');
+        };
+
+        // Create lobby
+        window.createLobby = async () => {
+            const lobbyName = document.getElementById('lobbyName').value.trim();
+            if (!lobbyName) {
+                alert('Please enter a lobby name');
+                return;
+            }
+
+            try {
+                const lobbyData = {
+                    name: lobbyName,
+                    creator: playerName,
+                    winScore: selectedWinScore,
+                    players: [playerName],
+                    status: 'waiting', // waiting, playing, finished
+                    currentTurn: 0,
+                    gameStarted: false,
+                    createdAt: Timestamp.now(),
+                    playerScores: { [playerName]: 0 },
+                    history: []
+                };
+
+                const docRef = await addDoc(collection(db, 'diceduel_lobbies'), lobbyData);
+                currentLobbyId = docRef.id;
+                
+                document.getElementById('lobbyName').value = '';
+                document.getElementById('createLobbyView').classList.add('hidden');
+                
+                await joinLobbyView(docRef.id);
+            } catch (error) {
+                console.error('Error creating lobby:', error);
+                alert('Failed to create lobby: ' + error.message);
+            }
+        };
+
+        // Load lobbies
+        async function loadLobbies() {
+            try {
+                const lobbiesRef = collection(db, 'diceduel_lobbies');
+                const q = query(lobbiesRef, where('status', 'in', ['waiting', 'playing']), orderBy('createdAt', 'desc'));
+                const snapshot = await getDocs(q);
+                
+                const lobbyList = document.getElementById('lobbyList');
+                if (snapshot.empty) {
+                    lobbyList.innerHTML = '<p class="text-gray-500 text-center py-4">No active lobbies. Create one!</p>';
+                    return;
+                }
+
+                lobbyList.innerHTML = '';
+                snapshot.forEach(doc => {
+                    const lobby = doc.data();
+                    const lobbyElement = createLobbyElement(doc.id, lobby);
+                    lobbyList.appendChild(lobbyElement);
+                });
+            } catch (error) {
+                console.error('Error loading lobbies:', error);
+                document.getElementById('lobbyList').innerHTML = '<p class="text-red-500 text-center py-4">Error loading lobbies</p>';
+            }
+        }
+
+        // Create lobby element
+        function createLobbyElement(id, lobby) {
+            const div = document.createElement('div');
+            const canJoin = lobby.players.length < 4 && lobby.status === 'waiting' && !lobby.players.includes(playerName);
+            const isInLobby = lobby.players.includes(playerName);
+            
+            div.className = `p-4 rounded-lg border-2 transition-all ${
+                canJoin ? 'border-purple-300 bg-purple-50 lobby-available cursor-pointer hover:border-purple-500' :
+                isInLobby ? 'border-green-300 bg-green-50' :
+                'border-gray-200 bg-gray-50'
+            }`;
+            
+            div.innerHTML = `
+                <div class="flex justify-between items-start mb-2">
+                    <div>
+                        <h3 class="font-bold text-gray-800">${lobby.name}</h3>
+                        <p class="text-sm text-gray-600">Host: ${lobby.creator}</p>
+                    </div>
+                    <span class="px-2 py-1 text-xs font-semibold rounded ${
+                        lobby.status === 'waiting' ? 'bg-yellow-200 text-yellow-800' :
+                        lobby.status === 'playing' ? 'bg-green-200 text-green-800' :
+                        'bg-gray-200 text-gray-800'
+                    }">
+                        ${lobby.status.toUpperCase()}
+                    </span>
+                </div>
+                <div class="flex justify-between items-center text-sm">
+                    <span class="text-gray-600">Players: ${lobby.players.length}/4</span>
+                    <span class="text-gray-600">Win: ${lobby.winScore}</span>
+                </div>
+            `;
+            
+            if (canJoin) {
+                div.onclick = () => joinLobby(id);
+            } else if (isInLobby) {
+                div.onclick = () => joinLobbyView(id);
+            }
+            
+            return div;
+        }
+
+        // Refresh lobbies
+        window.refreshLobbies = loadLobbies;
+
+        // Start lobby listener for real-time updates
+        function startLobbyListener() {
+            const lobbiesRef = collection(db, 'diceduel_lobbies');
+            const q = query(lobbiesRef, where('status', 'in', ['waiting', 'playing']));
+            
+            onSnapshot(q, (snapshot) => {
+                if (document.getElementById('lobbyListView').classList.contains('hidden')) return;
+                
+                const lobbyList = document.getElementById('lobbyList');
+                if (snapshot.empty) {
+                    lobbyList.innerHTML = '<p class="text-gray-500 text-center py-4">No active lobbies. Create one!</p>';
+                    return;
+                }
+
+                lobbyList.innerHTML = '';
+                snapshot.forEach(doc => {
+                    const lobby = doc.data();
+                    const lobbyElement = createLobbyElement(doc.id, lobby);
+                    lobbyList.appendChild(lobbyElement);
+                });
+            });
+        }
+
+        // Join lobby
+        window.joinLobby = async (lobbyId) => {
+            try {
+                const lobbyRef = doc(db, 'diceduel_lobbies', lobbyId);
+                const lobbySnap = await getDoc(lobbyRef);
+                
+                if (!lobbySnap.exists()) {
+                    alert('Lobby not found');
+                    return;
+                }
+                
+                const lobby = lobbySnap.data();
+                
+                if (lobby.players.length >= 4) {
+                    alert('Lobby is full');
+                    return;
+                }
+                
+                if (lobby.players.includes(playerName)) {
+                    await joinLobbyView(lobbyId);
+                    return;
+                }
+                
+                await updateDoc(lobbyRef, {
+                    players: arrayUnion(playerName),
+                    [`playerScores.${playerName}`]: 0
+                });
+                
+                currentLobbyId = lobbyId;
+                await joinLobbyView(lobbyId);
+            } catch (error) {
+                console.error('Error joining lobby:', error);
+                alert('Failed to join lobby: ' + error.message);
+            }
+        };
+
+        // Join lobby view and set up real-time listener
+        async function joinLobbyView(lobbyId) {
+            currentLobbyId = lobbyId;
+            
+            document.getElementById('lobbyListView').classList.add('hidden');
+            document.getElementById('gameView').classList.remove('hidden');
+            
+            // Set up real-time listener for this lobby
+            const lobbyRef = doc(db, 'diceduel_lobbies', lobbyId);
+            
+            if (unsubscribeLobby) {
+                unsubscribeLobby();
+            }
+            
+            unsubscribeLobby = onSnapshot(lobbyRef, (doc) => {
+                if (!doc.exists()) {
+                    alert('Lobby was deleted');
+                    leaveLobby();
+                    return;
+                }
+                
+                currentGameState = doc.data();
+                updateGameView(currentGameState);
+            });
+        }
+
+        // Update game view
+        function updateGameView(gameState) {
+            // Update header
+            document.getElementById('gameLobbyName').textContent = gameState.name;
+            document.getElementById('gameWinScore').textContent = gameState.winScore;
+            
+            // Update players list
+            const playersList = document.getElementById('playersList');
+            playersList.innerHTML = '';
+            
+            const currentTurnPlayer = gameState.players[gameState.currentTurn];
+            const isMyTurn = currentTurnPlayer === playerName && gameState.gameStarted;
+            
+            gameState.players.forEach((player, index) => {
+                const isCurrentTurn = index === gameState.currentTurn && gameState.gameStarted;
+                const score = gameState.playerScores[player] || 0;
+                
+                const playerCard = document.createElement('div');
+                playerCard.className = `player-card flex justify-between items-center p-3 rounded-lg ${
+                    isCurrentTurn ? 'bg-purple-100 border-2 border-purple-500' : 'bg-gray-50'
+                }`;
+                
+                playerCard.innerHTML = `
+                    <div class="flex items-center space-x-2">
+                        ${isCurrentTurn ? '<span class="turn-indicator text-2xl">👉</span>' : '<span class="text-2xl">👤</span>'}
+                        <span class="font-semibold ${player === playerName ? 'text-purple-600' : 'text-gray-800'}">${player}</span>
+                    </div>
+                    <span class="text-xl font-bold text-gray-800">${score}</span>
+                `;
+                
+                playersList.appendChild(playerCard);
+            });
+            
+            // Update game status
+            if (!gameState.gameStarted) {
+                document.getElementById('gameStatus').textContent = 'Waiting to start';
+                document.getElementById('waitingMessage').classList.remove('hidden');
+                document.getElementById('diceArea').classList.add('hidden');
+                document.getElementById('winnerDisplay').classList.add('hidden');
+                
+                // Only show start button to creator
+                const startBtn = document.getElementById('startGameBtn');
+                if (gameState.creator === playerName && gameState.players.length >= 2) {
+                    startBtn.classList.remove('hidden');
+                } else {
+                    startBtn.classList.add('hidden');
+                }
+            } else if (gameState.status === 'finished') {
+                document.getElementById('gameStatus').textContent = 'Game Over';
+                document.getElementById('waitingMessage').classList.add('hidden');
+                document.getElementById('diceArea').classList.add('hidden');
+                
+                // Show winner
+                const winner = Object.entries(gameState.playerScores)
+                    .sort((a, b) => b[1] - a[1])[0];
+                document.getElementById('winnerName').textContent = winner[0];
+                document.getElementById('winnerScore').textContent = winner[1];
+                document.getElementById('winnerDisplay').classList.remove('hidden');
+            } else {
+                document.getElementById('gameStatus').textContent = gameState.status === 'playing' ? 'In Progress' : '';
+                document.getElementById('waitingMessage').classList.add('hidden');
+                document.getElementById('winnerDisplay').classList.add('hidden');
+                
+                // Show dice area only if it's my turn
+                if (isMyTurn) {
+                    document.getElementById('diceArea').classList.remove('hidden');
+                } else {
+                    document.getElementById('diceArea').classList.add('hidden');
+                }
+            }
+            
+            // Update history
+            updateHistory(gameState.history || []);
+        }
+
+        // Update history
+        function updateHistory(history) {
+            const historyDiv = document.getElementById('gameHistory');
+            
+            if (!history || history.length === 0) {
+                historyDiv.innerHTML = '<p class="text-gray-500 text-center py-2">No moves yet</p>';
+                return;
+            }
+            
+            historyDiv.innerHTML = '';
+            history.slice().reverse().forEach(entry => {
+                const item = document.createElement('div');
+                item.className = 'history-item p-2 bg-gray-50 rounded border border-gray-200';
+                item.innerHTML = `
+                    <span class="font-semibold text-gray-800">${entry.player}</span>
+                    <span class="text-gray-600"> rolled </span>
+                    <span class="font-bold text-purple-600">${entry.roll}</span>
+                    <span class="text-gray-600"> (${entry.rerolls} rerolls)</span>
+                    <span class="text-xs text-gray-500 float-right">${entry.score} pts</span>
+                `;
+                historyDiv.appendChild(item);
+            });
+        }
+
+        // Start game
+        window.startGame = async () => {
+            if (!currentLobbyId) return;
+            
+            try {
+                const lobbyRef = doc(db, 'diceduel_lobbies', currentLobbyId);
+                await updateDoc(lobbyRef, {
+                    gameStarted: true,
+                    status: 'playing'
+                });
+            } catch (error) {
+                console.error('Error starting game:', error);
+                alert('Failed to start game: ' + error.message);
+            }
+        };
+
+        // Roll dice
+        window.rollDice = async () => {
+            if (!currentGameState) return;
+            
+            const diceDisplay = document.getElementById('diceDisplay');
+            const rollBtn = document.getElementById('rollBtn');
+            const stopBtn = document.getElementById('stopBtn');
+            
+            // Disable button during animation
+            rollBtn.disabled = true;
+            diceDisplay.classList.add('rolling');
+            
+            // Simulate rolling animation
+            let animationCount = 0;
+            const animationInterval = setInterval(() => {
+                currentRoll = Math.floor(Math.random() * 6) + 1;
+                diceDisplay.textContent = currentRoll;
+                animationCount++;
+                
+                if (animationCount >= 10) {
+                    clearInterval(animationInterval);
+                    diceDisplay.classList.remove('rolling');
+                    
+                    // Update rerolls
+                    rerollsRemaining--;
+                    document.getElementById('rerollsLeft').textContent = rerollsRemaining;
+                    
+                    // Show/hide buttons based on rerolls
+                    if (rerollsRemaining > 0) {
+                        rollBtn.disabled = false;
+                        stopBtn.classList.remove('hidden');
+                    } else {
+                        rollBtn.classList.add('hidden');
+                        stopBtn.classList.remove('hidden');
+                        stopBtn.textContent = '✓ Finish Turn';
+                    }
+                }
+            }, 100);
+        };
+
+        // Stop rolling and lock in score
+        window.stopRolling = async () => {
+            if (!currentGameState || currentRoll === 0) return;
+            
+            try {
+                const lobbyRef = doc(db, 'diceduel_lobbies', currentLobbyId);
+                const currentPlayer = currentGameState.players[currentGameState.currentTurn];
+                const newScore = (currentGameState.playerScores[currentPlayer] || 0) + currentRoll;
+                const usedRerolls = 2 - rerollsRemaining;
+                
+                // Create history entry
+                const historyEntry = {
+                    player: currentPlayer,
+                    roll: currentRoll,
+                    rerolls: usedRerolls,
+                    score: newScore,
+                    timestamp: Timestamp.now()
+                };
+                
+                // Check for winner
+                const isWinner = newScore >= currentGameState.winScore;
+                
+                // Update game state
+                const nextTurn = (currentGameState.currentTurn + 1) % currentGameState.players.length;
+                const updateData = {
+                    [`playerScores.${currentPlayer}`]: newScore,
+                    currentTurn: nextTurn,
+                    history: arrayUnion(historyEntry)
+                };
+                
+                if (isWinner) {
+                    updateData.status = 'finished';
+                }
+                
+                await updateDoc(lobbyRef, updateData);
+                
+                // Reset for next turn
+                currentRoll = 0;
+                rerollsRemaining = 2;
+                document.getElementById('diceDisplay').textContent = '?';
+                document.getElementById('rerollsLeft').textContent = '2';
+                document.getElementById('rollBtn').disabled = false;
+                document.getElementById('rollBtn').classList.remove('hidden');
+                document.getElementById('stopBtn').classList.add('hidden');
+            } catch (error) {
+                console.error('Error finishing turn:', error);
+                alert('Failed to finish turn: ' + error.message);
+            }
+        };
+
+        // Leave lobby
+        window.leaveLobby = async () => {
+            if (!currentLobbyId) return;
+            
+            try {
+                if (unsubscribeLobby) {
+                    unsubscribeLobby();
+                    unsubscribeLobby = null;
+                }
+                
+                const lobbyRef = doc(db, 'diceduel_lobbies', currentLobbyId);
+                const lobbySnap = await getDoc(lobbyRef);
+                
+                if (lobbySnap.exists()) {
+                    const lobby = lobbySnap.data();
+                    
+                    // Remove player
+                    await updateDoc(lobbyRef, {
+                        players: arrayRemove(playerName)
+                    });
+                    
+                    // If no players left or creator left, delete lobby
+                    if (lobby.players.length <= 1 || lobby.creator === playerName) {
+                        await deleteDoc(lobbyRef);
+                    }
+                }
+                
+                currentLobbyId = null;
+                currentGameState = null;
+                currentRoll = 0;
+                rerollsRemaining = 2;
+                
+                document.getElementById('gameView').classList.add('hidden');
+                document.getElementById('lobbyListView').classList.remove('hidden');
+                
+                await loadLobbies();
+            } catch (error) {
+                console.error('Error leaving lobby:', error);
+                alert('Failed to leave lobby: ' + error.message);
+            }
+        };
+
+        // Initialize on load
+        const savedName = localStorage.getItem('diceduel_player_name');
+        if (savedName) {
+            document.getElementById('playerNameInput').value = savedName;
+        }
+    </script>
+</body>
+</html>
