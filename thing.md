@@ -56,8 +56,8 @@ Apps with parallel processing follow this pattern:
 
 ```javascript
 // Create batches
-const batchSize = 10-20;
-const parallelBatches = 50-100;
+const batchSize = 20; // Typical range: 10-20 items per batch
+const parallelBatches = 50; // Typical range: 50-100 batches processed in parallel
 const batches = [];
 for (let i = 0; i < items.length; i += batchSize) {
     batches.push(items.slice(i, i + batchSize));
@@ -77,8 +77,8 @@ for (let i = 0; i < batches.length; i += parallelBatches) {
         }
     }));
     
-    // Small delay between groups
-    await wait(300-500);
+    // Small delay between groups (typical range: 300-500ms)
+    await wait(300);
 }
 ```
 
