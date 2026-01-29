@@ -253,7 +253,8 @@
     <script>
     // Constants
     const GEEKLIST_ID = 370282;
-    const PARALLEL_FETCH_LIMIT = 20; // Reduced to be respectful to BGG API
+    const BATCH_SIZE = 20;
+    const PARALLEL_BATCHES = 100; // Process 100 batches in parallel like weight.html
     
     // State
     let userCollection = new Set();
@@ -265,8 +266,23 @@
     let geeklistData = [];
     let gameDetails = new Map();
     let currentFilter = 'all';
-    let currentSort = 'original';
+    let currentSort = 'postdate-desc'; // Default to posting date descending
     let searchQuery = '';
+    
+    // Console logging
+    function logToConsole(message) {
+        const consoleLog = document.getElementById('consoleLog');
+        const timestamp = new Date().toLocaleTimeString();
+        const logEntry = document.createElement('div');
+        logEntry.textContent = `[${timestamp}] ${message}`;
+        consoleLog.appendChild(logEntry);
+        // Auto-scroll to bottom
+        consoleLog.parentElement.scrollTop = consoleLog.parentElement.scrollHeight;
+        // Keep only last 50 entries
+        while (consoleLog.children.length > 50) {
+            consoleLog.removeChild(consoleLog.firstChild);
+        }
+    }
     
     // Utility Functions
     function escapeHtml(unsafe) {
@@ -279,31 +295,42 @@
             .replace(/'/g, "&#039;");
     }
     
-    async function fetchWithRetry(url, maxRetries = 3) {
+    async function fetchWithRetry(url, maxRetries = 5) {
+        logToConsole(`API CALL: ${url}`);
         for (let attempt = 1; attempt <= maxRetries; attempt++) {
             try {
                 const resp = await fetch(url);
-                if (resp.status === 502 || resp.status === 503) {
+                
+                if (resp.status === 202) {
+                    // BGG queue response, exponential backoff
+                    const delay = Math.min(2000 * Math.pow(2, attempt - 1), 10000); // 2s, 4s, 8s, 10s max
+                    logToConsole(`  → 202 Queue, retry ${attempt}/${maxRetries} in ${delay}ms`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                
+                if (resp.status === 502 || resp.status === 503 || resp.status === 504) {
                     if (attempt < maxRetries) {
-                        const delay = 1000 * attempt;
-                        console.log(`${resp.status} error, retrying in ${delay}ms...`);
+                        const delay = 1000 * Math.pow(2, attempt - 1); // Exponential backoff: 1s, 2s, 4s, 8s, 16s
+                        logToConsole(`  → ${resp.status} Error, retry ${attempt}/${maxRetries} in ${delay}ms`);
                         await new Promise(r => setTimeout(r, delay));
                         continue;
                     }
                 }
-                if (resp.status === 202) {
-                    // BGG queue response, wait longer and retry more times
-                    if (attempt < maxRetries) {
-                        await new Promise(r => setTimeout(r, 3000 * attempt)); // 3s, 6s, 9s
-                        continue;
-                    }
+                
+                if (!resp.ok) {
+                    throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
                 }
-                if (!resp.ok) throw new Error(`HTTP ${resp.status}: ${resp.statusText}`);
+                
+                logToConsole(`  ✓ Success (${resp.status})`);
                 return resp;
-            } catch (error) {
-                if (attempt === maxRetries) throw error;
-                const delay = 1000 * attempt;
-                console.log(`Fetch failed: ${error.message}, retrying in ${delay}ms...`);
+            } catch (e) {
+                if (attempt === maxRetries) {
+                    logToConsole(`  ✗ Failed: ${e.message}`);
+                    throw e;
+                }
+                const delay = 1000 * Math.pow(2, attempt - 1);
+                logToConsole(`  ✗ Error: ${e.message}, retry ${attempt}/${maxRetries} in ${delay}ms`);
                 await new Promise(r => setTimeout(r, delay));
             }
         }
@@ -397,23 +424,65 @@
     }
 
     async function batchFetchDetails(objectIds) {
+        logToConsole(`Starting parallel fetch for ${objectIds.length} games (100x batches)...`);
+        
+        // Create batches of 20 IDs
         const batches = [];
-        for (let i = 0; i < objectIds.length; i += PARALLEL_FETCH_LIMIT) {
-            batches.push(objectIds.slice(i, i + PARALLEL_FETCH_LIMIT));
+        for (let i = 0; i < objectIds.length; i += BATCH_SIZE) {
+            batches.push(objectIds.slice(i, i + BATCH_SIZE));
         }
         
-        for (let batchIndex = 0; batchIndex < batches.length; batchIndex++) {
-            const batch = batches[batchIndex];
-            const promises = batch.map(id => fetchThingDetails(id));
-            await Promise.all(promises);
+        logToConsole(`Total batches: ${batches.length}`);
+        
+        // Process batches in parallel groups of 100
+        for (let i = 0; i < batches.length; i += PARALLEL_BATCHES) {
+            const batchGroup = batches.slice(i, i + PARALLEL_BATCHES);
+            const batchProgress = Math.min(i + PARALLEL_BATCHES, batches.length);
             
-            // Update progress
-            const progress = ((batchIndex + 1) / batches.length) * 100;
-            updateProgress(progress, `Loading details: ${batchIndex + 1}/${batches.length} batches`);
+            logToConsole(`Processing batch group ${Math.floor(i / PARALLEL_BATCHES) + 1}: batches ${i + 1}-${batchProgress}/${batches.length}`);
+            updateProgress((batchProgress / batches.length) * 100, `Loading details: ${batchProgress}/${batches.length} batches`);
             
-            // Update thumbnails as they load
+            await Promise.all(batchGroup.map(async (batch) => {
+                const ids = batch.join(',');
+                try {
+                    const resp = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
+                    const xml = await resp.text();
+                    const parser = new DOMParser();
+                    const doc = parser.parseFromString(xml, 'text/xml');
+                    const items = Array.from(doc.querySelectorAll('item'));
+                    
+                    items.forEach(item => {
+                        const objectId = item.getAttribute('id');
+                        if (!gameDetails.has(objectId)) {
+                            const details = {
+                                name: item.querySelector('name[type="primary"]')?.getAttribute('value') || '',
+                                year: item.querySelector('yearpublished')?.getAttribute('value') || '',
+                                thumbnail: item.querySelector('thumbnail')?.textContent || '', // Use thumbnail
+                                rating: item.querySelector('statistics ratings average')?.getAttribute('value') || '',
+                                minPlayers: item.querySelector('minplayers')?.getAttribute('value') || '',
+                                maxPlayers: item.querySelector('maxplayers')?.getAttribute('value') || '',
+                                playingTime: item.querySelector('playingtime')?.getAttribute('value') || '',
+                                minAge: item.querySelector('minage')?.getAttribute('value') || '',
+                                description: item.querySelector('description')?.textContent || ''
+                            };
+                            gameDetails.set(objectId, details);
+                        }
+                    });
+                } catch (e) {
+                    console.error('Batch error:', e);
+                }
+            }));
+            
+            // Update display after each parallel group
             renderGames();
+            
+            // Small delay between groups to avoid overwhelming the API
+            if (i + PARALLEL_BATCHES < batches.length) {
+                await new Promise(r => setTimeout(r, 100));
+            }
         }
+        
+        logToConsole(`✓ Completed loading ${objectIds.length} games`);
     }
 
     function updateProgress(percent, text) {
@@ -594,8 +663,8 @@
         let html = `
             <div class="space-y-4">
                 ${safeThumbnail ? `
-                    <div class="rounded-lg overflow-hidden">
-                        <img src="${safeThumbnail}" alt="${safeName}" class="w-full">
+                    <div class="rounded-lg overflow-hidden flex justify-center">
+                        <img src="${safeThumbnail}" alt="${safeName}" class="max-w-xs rounded-lg shadow-md">
                     </div>
                 ` : ''}
                 
