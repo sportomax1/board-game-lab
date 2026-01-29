@@ -732,43 +732,57 @@
                 const gameIds = games.map(g => g.id);
                 const measurementsMap = {};
                 const batchSize = 20;
+                const parallelBatches = 100; // Process 100 batches in parallel for faster loading
 
+                // Create batches
+                const batches = [];
                 for (let i = 0; i < gameIds.length; i += batchSize) {
-                    const batch = gameIds.slice(i, i + batchSize);
-                    const progress = Math.round(((i + batchSize) / gameIds.length) * 100);
-                    showStatus(`Fetching measurements... ${Math.min(progress, 100)}%`, 'loading');
+                    batches.push(gameIds.slice(i, i + batchSize));
+                }
 
-                    const ids = batch.join(',');
-                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`;
-                    const thingText = await fetchWithRetry(thingUrl);
-                    const thingXml = parser.parseFromString(thingText, 'text/xml');
+                // Process batches in parallel groups
+                for (let i = 0; i < batches.length; i += parallelBatches) {
+                    const batchGroup = batches.slice(i, i + parallelBatches);
+                    
+                    await Promise.all(batchGroup.map(async (batch) => {
+                        const progress = Math.round(((i * batchSize + batch.length) / gameIds.length) * 100);
+                        showStatus(`Fetching measurements... ${Math.min(progress, 100)}%`, 'loading');
 
-                    // Build game info lookup
-                    const gameInfo = {};
-                    Array.from(thingXml.querySelectorAll('item[type="boardgame"]')).forEach(item => {
-                        const id = item.getAttribute('id');
-                        gameInfo[id] = {
-                            name: item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown'
-                        };
-                    });
+                        const ids = batch.join(',');
+                        const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`;
+                        const thingText = await fetchWithRetry(thingUrl);
+                        const thingXml = parser.parseFromString(thingText, 'text/xml');
 
-                    // Process version items for measurements
-                    Array.from(thingXml.querySelectorAll('item[type="boardgameversion"]')).forEach(version => {
-                        const gameLink = version.querySelector('link[type="boardgameversion"][inbound="true"]');
-                        if (!gameLink) return;
+                        // Build game info lookup
+                        const gameInfo = {};
+                        Array.from(thingXml.querySelectorAll('item[type="boardgame"]')).forEach(item => {
+                            const id = item.getAttribute('id');
+                            gameInfo[id] = {
+                                name: item.querySelector('name[type="primary"]')?.getAttribute('value') || 'Unknown'
+                            };
+                        });
 
-                        const gameId = gameLink.getAttribute('id');
-                        const width = parseFloat(version.querySelector('width')?.getAttribute('value') || '0');
-                        const length = parseFloat(version.querySelector('length')?.getAttribute('value') || '0');
-                        const depth = parseFloat(version.querySelector('depth')?.getAttribute('value') || '0');
+                        // Process version items for measurements
+                        Array.from(thingXml.querySelectorAll('item[type="boardgameversion"]')).forEach(version => {
+                            const gameLink = version.querySelector('link[type="boardgameversion"][inbound="true"]');
+                            if (!gameLink) return;
 
-                        if (width > 0 && length > 0 && depth > 0) {
-                            const cubic = width * length * depth;
-                            if (!measurementsMap[gameId] || cubic < measurementsMap[gameId].cubic) {
-                                measurementsMap[gameId] = { width, length, depth, cubic };
+                            const gameId = gameLink.getAttribute('id');
+                            const width = parseFloat(version.querySelector('width')?.getAttribute('value') || '0');
+                            const length = parseFloat(version.querySelector('length')?.getAttribute('value') || '0');
+                            const depth = parseFloat(version.querySelector('depth')?.getAttribute('value') || '0');
+
+                            if (width > 0 && length > 0 && depth > 0) {
+                                const cubic = width * length * depth;
+                                if (!measurementsMap[gameId] || cubic < measurementsMap[gameId].cubic) {
+                                    measurementsMap[gameId] = { width, length, depth, cubic };
+                                }
                             }
-                        }
-                    });
+                        });
+                    }));
+                    
+                    // Throttle between parallel groups
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
 
                 // Calculate value scores using cubic size formula

@@ -929,75 +929,88 @@
             }
         }
 
-        // Process games in batches
+        // Process games in batches with parallel processing (100x faster like weight.html)
         async function processGameBatches() {
             const batchSize = 20;
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             let processed = 0;
             gameListings = {};
 
+            // Create batches
+            const batches = [];
             for (let i = 0; i < allGames.length; i += batchSize) {
-                const batch = allGames.slice(i, i + batchSize);
-                const ids = batch.map(g => g.id).join(',');
+                batches.push(allGames.slice(i, i + batchSize));
+            }
 
-                try {
-                    processingStatus.textContent = `💰 Processing ${Math.min(processed + batch.length, allGames.length)}/${allGames.length} games...`;
-                    console.log(`\n🔄 Batch ${Math.ceil((i + 1) / batchSize)}/${Math.ceil(allGames.length / batchSize)}: Fetching ${batch.length} games (IDs: ${ids})`);
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                processingStatus.textContent = `💰 Processing ${Math.min(i + parallelBatches, batches.length)}/${batches.length} batches...`;
 
-                    const url = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&marketplace=1`;
-                    const response = await fetchWithRetry(url);
-                    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                    const items = xml.querySelectorAll('item');
+                await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                    const ids = batch.map(g => g.id).join(',');
 
-                    let batchListings = 0;
-                    Array.from(items).forEach(item => {
-                        const gameId = item.getAttribute('id');
-                        const game = allGames.find(g => g.id === gameId);
-                        if (!game) return;
+                    try {
+                        const url = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&marketplace=1`;
+                        const response = await fetchWithRetry(url);
+                        const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                        const items = xml.querySelectorAll('item');
 
-                        // Correct: Use marketplacelistings (plural) not marketplace
-                        const marketplaceEl = item.querySelector('marketplacelistings');
-                        if (marketplaceEl) {
-                            const listingCount = marketplaceEl.querySelectorAll('listing').length;
-                            console.log(`✅ Found marketplacelistings for game ${gameId} (${game.name}): ${listingCount} listings`);
-                            
-                            const listings = Array.from(marketplaceEl.querySelectorAll('listing')).map(l => {
-                                const listdate = l.querySelector('listdate');
-                                const price = l.querySelector('price');
-                                const condition = l.querySelector('condition');
-                                const notes = l.querySelector('notes');
-                                const link = l.querySelector('link');
+                        let batchListings = 0;
+                        Array.from(items).forEach(item => {
+                            const gameId = item.getAttribute('id');
+                            const game = allGames.find(g => g.id === gameId);
+                            if (!game) return;
+
+                            // Correct: Use marketplacelistings (plural) not marketplace
+                            const marketplaceEl = item.querySelector('marketplacelistings');
+                            if (marketplaceEl) {
+                                const listingCount = marketplaceEl.querySelectorAll('listing').length;
+                                console.log(`✅ Found marketplacelistings for game ${gameId} (${game.name}): ${listingCount} listings`);
                                 
-                                return {
-                                    date: listdate?.getAttribute('value') || listdate?.textContent || '',
-                                    price: parseFloat(price?.getAttribute('value') || price?.textContent || 0),
-                                    currency: price?.getAttribute('currency') || 'USD',
-                                    condition: condition?.getAttribute('value') || condition?.textContent || 'unknown',
-                                    notes: notes?.getAttribute('value') || notes?.textContent || '',
-                                    link: link?.getAttribute('href') || link?.textContent || ''
-                                };
-                            });
+                                const listings = Array.from(marketplaceEl.querySelectorAll('listing')).map(l => {
+                                    const listdate = l.querySelector('listdate');
+                                    const price = l.querySelector('price');
+                                    const condition = l.querySelector('condition');
+                                    const notes = l.querySelector('notes');
+                                    const link = l.querySelector('link');
+                                    
+                                    return {
+                                        date: listdate?.getAttribute('value') || listdate?.textContent || '',
+                                        price: parseFloat(price?.getAttribute('value') || price?.textContent || 0),
+                                        currency: price?.getAttribute('currency') || 'USD',
+                                        condition: condition?.getAttribute('value') || condition?.textContent || 'unknown',
+                                        notes: notes?.getAttribute('value') || notes?.textContent || '',
+                                        link: link?.getAttribute('href') || link?.textContent || ''
+                                    };
+                                });
 
-                            if (listings.length > 0) {
-                                gameListings[gameId] = {
-                                    name: game.name,
-                                    image: game.image,
-                                    listings: listings,
-                                    stats: calculateListingStats(listings)
-                                };
-                                batchListings++;
-                                console.log(`  ✅ ${game.name}: ${listings.length} listings parsed`);
+                                if (listings.length > 0) {
+                                    gameListings[gameId] = {
+                                        name: game.name,
+                                        image: game.image,
+                                        listings: listings,
+                                        stats: calculateListingStats(listings)
+                                    };
+                                    batchListings++;
+                                    console.log(`  ✅ ${game.name}: ${listings.length} listings parsed`);
+                                }
+                            } else {
+                                console.log(`⚠️ No <marketplacelistings> element found for game ${gameId} (${game.name})`);
                             }
-                        } else {
-                            console.log(`⚠️ No <marketplacelistings> element found for game ${gameId} (${game.name})`);
-                        }
-                    });
+                        });
 
-                    console.log(`📊 Batch result: ${batchListings}/${batch.length} games had listings\n`);
-                    processed += batch.length;
-                    updateProgress(processed, allGames.length);
-                    statusMetric.textContent = `Batch ${Math.ceil(processed / 20)}/${Math.ceil(allGames.length / 20)}`;
-                    updateMetrics();
-                    renderGames();
+                        console.log(`📊 Batch result: ${batchListings}/${batch.length} games had listings\n`);
+                    } catch (error) {
+                        console.error(`Error processing batch:`, error);
+                    }
+                }));
+
+                processed += batchGroup.reduce((sum, batch) => sum + batch.length, 0);
+                updateProgress(processed, allGames.length);
+                statusMetric.textContent = `Batch ${Math.min(i + parallelBatches, batches.length)}/${batches.length}`;
+                updateMetrics();
+                renderGames();
 
                 } catch (error) {
                     console.error(`❌ Error processing batch at ${i}:`, error);

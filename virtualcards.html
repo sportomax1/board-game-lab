@@ -1219,106 +1219,122 @@
         // Load batches asynchronously - start card view after first batch
         async function loadBatchesAsync(items, gameIds, batchSize, batchDelay, isFirstBatch) {
             try {
+                const parallelBatches = 100; // Process 100 batches in parallel for faster loading
+                
+                // Create batches
+                const batches = [];
                 for (let i = 0; i < items.length; i += batchSize) {
-                    const batch = Array.from(items).slice(i, i + batchSize);
-                    const batchIds = gameIds.slice(i, i + batchSize);
+                    batches.push({
+                        items: Array.from(items).slice(i, i + batchSize),
+                        ids: gameIds.slice(i, i + batchSize),
+                        index: i
+                    });
+                }
+                
+                // Process batches in parallel groups
+                for (let i = 0; i < batches.length; i += parallelBatches) {
+                    const batchGroup = batches.slice(i, i + parallelBatches);
                     
-                    // Update loading message with progress (only if still loading)
-                    if (document.getElementById('loadingDiv').style.display !== 'none') {
-                        const loadingDiv = document.getElementById('loadingDiv');
-                        const progress = Math.round(((i + batch.length) / items.length) * 100);
-                        loadingDiv.innerHTML = `
-                            <div>🎯 Loading your owned games...</div>
-                            <div style="font-size: 0.8em; color: #888;">Processing batch ${Math.floor(i/batchSize) + 1} of ${Math.ceil(items.length/batchSize)} (${progress}%)</div>
-                            <div style="font-size: 0.7em; color: #666;">Fetching ${batch.length} games in this batch...</div>
-                        `;
-                    }
-                    
-                    // Get detailed info for entire batch in one API call
-                    const batchDetails = await fetchGameDetailsBatch(batchIds);
-                    
-                    // Process current batch with the fetched details
-                    const batchGames = [];
-                    for (let j = 0; j < batch.length; j++) {
-                        const item = batch[j];
-                        const objectid = item.getAttribute('objectid');
-                        const name = item.querySelector('name')?.textContent;
-                        const thumbnail = item.querySelector('thumbnail')?.textContent;
-                        const yearpublished = item.querySelector('yearpublished')?.textContent;
+                    await Promise.all(batchGroup.map(async (batchData) => {
+                        const { items: batch, ids: batchIds, index: batchIndex } = batchData;
                         
-                        const stats = item.querySelector('stats');
-                        const rating = stats?.querySelector('rating')?.getAttribute('value');
-                        const usersrated = stats?.querySelector('usersrated')?.getAttribute('value');
-                        const rank = stats?.querySelector('ranks rank[name="boardgame"]')?.getAttribute('value');
+                        // Update loading message with progress (only if still loading)
+                        if (document.getElementById('loadingDiv').style.display !== 'none') {
+                            const loadingDiv = document.getElementById('loadingDiv');
+                            const progress = Math.round(((batchIndex + batch.length) / items.length) * 100);
+                            loadingDiv.innerHTML = `
+                                <div>🎯 Loading your owned games...</div>
+                                <div style="font-size: 0.8em; color: #888;">Processing batch ${Math.floor(batchIndex/batchSize) + 1} of ${batches.length} (${progress}%)</div>
+                                <div style="font-size: 0.7em; color: #666;">Fetching ${batch.length} games in this batch...</div>
+                            `;
+                        }
                         
-                        // Additional collection data
-                        const myrating = item.querySelector('rating')?.getAttribute('value');
-                        const numplays = parseInt(item.querySelector('numplays')?.textContent || '0');
+                        // Get detailed info for entire batch in one API call
+                        const batchDetails = await fetchGameDetailsBatch(batchIds);
                         
-                        // Get player count and additional details from batch details
-                        const gameDetails = batchDetails[objectid] || { 
-                            minplayers: 0, 
-                            maxplayers: 0,
-                            minage: 0,
-                            playingtime: 0,
-                            minplaytime: 0,
-                            maxplaytime: 0,
-                            averageweight: 0,
-                            average: 0,
-                            numweights: 0,
-                            playerRecommendations: {},
-                            designer: '',
-                            publisher: '',
-                            category: '',
-                            mechanic: '',
-                            owned: 0,
-                            wanting: 0,
-                            wishing: 0,
-                            trading: 0
-                        };
+                        // Process current batch with the fetched details
+                        const batchGames = [];
+                        for (let j = 0; j < batch.length; j++) {
+                            const item = batch[j];
+                            const objectid = item.getAttribute('objectid');
+                            const name = item.querySelector('name')?.textContent;
+                            const thumbnail = item.querySelector('thumbnail')?.textContent;
+                            const yearpublished = item.querySelector('yearpublished')?.textContent;
+                            
+                            const stats = item.querySelector('stats');
+                            const rating = stats?.querySelector('rating')?.getAttribute('value');
+                            const usersrated = stats?.querySelector('usersrated')?.getAttribute('value');
+                            const rank = stats?.querySelector('ranks rank[name="boardgame"]')?.getAttribute('value');
+                            
+                            // Additional collection data
+                            const myrating = item.querySelector('rating')?.getAttribute('value');
+                            const numplays = parseInt(item.querySelector('numplays')?.textContent || '0');
+                            
+                            // Get player count and additional details from batch details
+                            const gameDetails = batchDetails[objectid] || { 
+                                minplayers: 0, 
+                                maxplayers: 0,
+                                minage: 0,
+                                playingtime: 0,
+                                minplaytime: 0,
+                                maxplaytime: 0,
+                                averageweight: 0,
+                                average: 0,
+                                numweights: 0,
+                                playerRecommendations: {},
+                                designer: '',
+                                publisher: '',
+                                category: '',
+                                mechanic: '',
+                                owned: 0,
+                                wanting: 0,
+                                wishing: 0,
+                                trading: 0
+                            };
+                            
+                            batchGames.push({
+                                id: objectid,
+                                name: name,
+                                thumbnail: thumbnail,
+                                year: yearpublished,
+                                rating: parseFloat(rating) || 0,
+                                usersrated: parseInt(usersrated) || 0,
+                                rank: rank === 'Not Ranked' ? 999999 : parseInt(rank) || 999999,
+                                minplayers: gameDetails.minplayers,
+                                maxplayers: gameDetails.maxplayers,
+                                myrating: parseFloat(myrating) || 0,
+                                numplays: numplays,
+                                minage: gameDetails.minage,
+                                playingtime: gameDetails.playingtime,
+                                minplaytime: gameDetails.minplaytime,
+                                maxplaytime: gameDetails.maxplaytime,
+                                averageweight: gameDetails.averageweight,
+                                average: gameDetails.average,
+                                numweights: gameDetails.numweights,
+                                playerRecommendations: gameDetails.playerRecommendations,
+                                designer: gameDetails.designer,
+                                publisher: gameDetails.publisher,
+                                category: gameDetails.category,
+                                mechanic: gameDetails.mechanic,
+                                allDesigners: gameDetails.allDesigners,
+                                allPublishers: gameDetails.allPublishers,
+                                allCategories: gameDetails.allCategories,
+                                allMechanics: gameDetails.allMechanics,
+                                owned: gameDetails.owned,
+                                wanting: gameDetails.wanting,
+                                wishing: gameDetails.wishing,
+                                trading: gameDetails.trading
+                            });
+                        }
                         
-                        batchGames.push({
-                            id: objectid,
-                            name: name,
-                            thumbnail: thumbnail,
-                            year: yearpublished,
-                            rating: parseFloat(rating) || 0,
-                            usersrated: parseInt(usersrated) || 0,
-                            rank: rank === 'Not Ranked' ? 999999 : parseInt(rank) || 999999,
-                            minplayers: gameDetails.minplayers,
-                            maxplayers: gameDetails.maxplayers,
-                            myrating: parseFloat(myrating) || 0,
-                            numplays: numplays,
-                            minage: gameDetails.minage,
-                            playingtime: gameDetails.playingtime,
-                            minplaytime: gameDetails.minplaytime,
-                            maxplaytime: gameDetails.maxplaytime,
-                            averageweight: gameDetails.averageweight,
-                            average: gameDetails.average,
-                            numweights: gameDetails.numweights,
-                            playerRecommendations: gameDetails.playerRecommendations,
-                            designer: gameDetails.designer,
-                            publisher: gameDetails.publisher,
-                            category: gameDetails.category,
-                            mechanic: gameDetails.mechanic,
-                            allDesigners: gameDetails.allDesigners,
-                            allPublishers: gameDetails.allPublishers,
-                            allCategories: gameDetails.allCategories,
-                            allMechanics: gameDetails.allMechanics,
-                            owned: gameDetails.owned,
-                            wanting: gameDetails.wanting,
-                            wishing: gameDetails.wishing,
-                            trading: gameDetails.trading
-                        });
-                    }
+                        // Add batch games to main array
+                        allGames.push(...batchGames.filter(game => game.name));
+                        
+                        // Update progress counter
+                        gamesLoadedSoFar = Math.min(batchIndex + batchSize, items.length);
+                    }));
                     
-                    // Add batch games to main array
-                    allGames.push(...batchGames.filter(game => game.name));
-                    
-                    // Update progress counter
-                    gamesLoadedSoFar = Math.min(i + batchSize, items.length);
-                    
-                    // After first batch, start showing cards!
+                    // After first batch group, start showing cards!
                     if (isFirstBatch && allGames.length > 0) {
                         isFirstBatch = false;
                         isDataLoaded = true;
@@ -1330,7 +1346,7 @@
                         startCardView();
                         
                         // Continue loading remaining batches in background
-                        if (i + batchSize < items.length) {
+                        if (i + parallelBatches < batches.length) {
                             console.log('Continuing to load remaining batches in background...');
                             // Show subtle indicator that more games are loading
                             showBackgroundLoadingIndicator();
@@ -1347,10 +1363,11 @@
                         updateLoadingProgress();
                     }
                     
-                    // Delay between batches (except for the last batch)
-                    if (i + batchSize < items.length) {
-                        await new Promise(resolve => setTimeout(resolve, batchDelay));
-                    } else {
+                    // Throttle between parallel groups
+                    await new Promise(resolve => setTimeout(resolve, 500));
+                    
+                    // Check if all batches complete
+                    if (i + parallelBatches >= batches.length) {
                         // All batches complete
                         hideBackgroundLoadingIndicator();
                         console.log(`All batches complete! Total games loaded: ${allGames.length}`);

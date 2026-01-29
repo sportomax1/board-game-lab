@@ -601,71 +601,82 @@
         async function fetchGameDetails(objectIds, startTime, initialGames, username, playerCount) {
             const details = {};
             const batchSize = 20; // Increased batch size for thing API calls
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             
+            // Create batches
+            const batches = [];
             for (let i = 0; i < objectIds.length; i += batchSize) {
-                const batch = objectIds.slice(i, i + batchSize);
-                const idsParam = batch.join(',');
+                batches.push(objectIds.slice(i, i + batchSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
                 
-                // Update progress with timer
-                const resultsDiv = document.getElementById('results');
-                const progress = Math.round((i / objectIds.length) * 100);
-                const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
-                const estimatedTotal = objectIds.length > 0 ? (elapsedTime / (i + batchSize)) * objectIds.length : 0;
-                const eta = estimatedTotal > elapsedTime ? (estimatedTotal - elapsedTime).toFixed(1) : '0.0';
+                await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                    const actualIndex = (i + batchIndex) * batchSize;
+                    const idsParam = batch.join(',');
                 
-                // Update the existing basic results with progress info
-                const existingStats = resultsDiv.querySelector('.stats');
-                if (existingStats) {
-                    const progressDiv = resultsDiv.querySelector('.progress-info') || document.createElement('div');
-                    progressDiv.className = 'progress-info';
-                    progressDiv.style.cssText = 'background:#fff3e0; border-radius:8px; padding:0.8em; margin:0.5em 0; font-size:0.9em; border-left:4px solid #ff9800;';
-                    progressDiv.innerHTML = `
-                        <strong>🔄 Enhancing with detailed data...</strong><br>
-                        Progress: ${progress}% (${i}/${objectIds.length}) - Batches of ${batchSize}<br>
-                        Elapsed: ${elapsedTime}s | ETA: ${eta}s
-                    `;
+                    // Update progress with timer
+                    const resultsDiv = document.getElementById('results');
+                    const progress = Math.round((actualIndex / objectIds.length) * 100);
+                    const elapsedTime = ((Date.now() - startTime) / 1000).toFixed(1);
+                    const estimatedTotal = objectIds.length > 0 ? (elapsedTime / (actualIndex + batchSize)) * objectIds.length : 0;
+                    const eta = estimatedTotal > elapsedTime ? (estimatedTotal - elapsedTime).toFixed(1) : '0.0';
                     
-                    if (!resultsDiv.querySelector('.progress-info')) {
-                        existingStats.insertAdjacentElement('afterend', progressDiv);
+                    // Update the existing basic results with progress info
+                    const existingStats = resultsDiv.querySelector('.stats');
+                    if (existingStats) {
+                        const progressDiv = resultsDiv.querySelector('.progress-info') || document.createElement('div');
+                        progressDiv.className = 'progress-info';
+                        progressDiv.style.cssText = 'background:#fff3e0; border-radius:8px; padding:0.8em; margin:0.5em 0; font-size:0.9em; border-left:4px solid #ff9800;';
+                        progressDiv.innerHTML = `
+                            <strong>🔄 Enhancing with detailed data...</strong><br>
+                            Progress: ${progress}% (${actualIndex}/${objectIds.length}) - Batches of ${batchSize}<br>
+                            Elapsed: ${elapsedTime}s | ETA: ${eta}s
+                        `;
+                        
+                        if (!resultsDiv.querySelector('.progress-info')) {
+                            existingStats.insertAdjacentElement('afterend', progressDiv);
+                        }
                     }
-                }
-                
-                let retryCount = 0;
-                const maxRetries = 3;
-                let success = false;
-                
-                while (retryCount < maxRetries && !success) {
-                    try {
-                        const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&stats=1`);
-                        
-                        if (response.status === 429) {
-                            // Rate limited - wait longer and retry
-                            const waitTime = Math.min(5000 * (retryCount + 1), 15000); // Exponential backoff up to 15 seconds
-                            console.warn(`Rate limited for batch starting at ${i}, waiting ${waitTime/1000} seconds... (attempt ${retryCount + 1}/${maxRetries})`);
-                            await new Promise(resolve => setTimeout(resolve, waitTime));
-                            retryCount++;
-                            continue;
-                        }
-                        
-                        if (!response.ok) {
-                            console.warn(`Failed to fetch details for batch starting at ${i}: ${response.status}`);
-                            break;
-                        }
-                        
-                        success = true;
-                        
-                        const xml = await response.text();
-                        const parser = new DOMParser();
-                        const doc = parser.parseFromString(xml, 'text/xml');
-                        
-                        const items = Array.from(doc.querySelectorAll('item'));
-                        items.forEach(item => {
-                            const objectId = item.getAttribute('id');
+                    
+                    let retryCount = 0;
+                    const maxRetries = 3;
+                    let success = false;
+                    
+                    while (retryCount < maxRetries && !success) {
+                        try {
+                            const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&stats=1`);
                             
-                            // Get player count polls
-                            const playerCountPoll = item.querySelector('poll[name="suggested_numplayers"]');
-                            const playerCountData = {};
-                            const playerVotesArray = []; // Array format for print view
+                            if (response.status === 429) {
+                                // Rate limited - wait longer and retry
+                                const waitTime = Math.min(5000 * (retryCount + 1), 15000); // Exponential backoff up to 15 seconds
+                                console.warn(`Rate limited for batch starting at ${actualIndex}, waiting ${waitTime/1000} seconds... (attempt ${retryCount + 1}/${maxRetries})`);
+                                await new Promise(resolve => setTimeout(resolve, waitTime));
+                                retryCount++;
+                                continue;
+                            }
+                            
+                            if (!response.ok) {
+                                console.warn(`Failed to fetch details for batch starting at ${actualIndex}: ${response.status}`);
+                                break;
+                            }
+                            
+                            success = true;
+                            
+                            const xml = await response.text();
+                            const parser = new DOMParser();
+                            const doc = parser.parseFromString(xml, 'text/xml');
+                            
+                            const items = Array.from(doc.querySelectorAll('item'));
+                            items.forEach(item => {
+                                const objectId = item.getAttribute('id');
+                                
+                                // Get player count polls
+                                const playerCountPoll = item.querySelector('poll[name="suggested_numplayers"]');
+                                const playerCountData = {};
+                                const playerVotesArray = []; // Array format for print view
                             
                             if (playerCountPoll) {
                                 const results = Array.from(playerCountPoll.querySelectorAll('results'));
@@ -722,7 +733,7 @@
                         });
                         
                         // Progressive re-sort and update display after each batch
-                        if (i % (batchSize * 2) === 0 || i + batchSize >= objectIds.length) {
+                        if (actualIndex % (batchSize * 2) === 0 || actualIndex + batchSize >= objectIds.length) {
                             // Re-categorize games with current details
                             const updatedGames = initialGames.map(game => ({
                                 ...game,
@@ -738,7 +749,7 @@
                         }
                         
                     } catch (error) {
-                        console.error(`Error fetching details for batch starting at ${i} (attempt ${retryCount + 1}):`, error);
+                        console.error(`Error fetching details for batch starting at ${actualIndex} (attempt ${retryCount + 1}):`, error);
                         retryCount++;
                         if (retryCount < maxRetries) {
                             const waitTime = 3000 * (retryCount + 1); // Progressive delay
@@ -746,11 +757,10 @@
                         }
                     }
                 } // End retry loop
+                })); // End Promise.all
                 
-                // Add longer delay between batches to be more respectful to BGG API
-                if (i + batchSize < objectIds.length) {
-                    await new Promise(resolve => setTimeout(resolve, 2500)); // Increased from 1000ms to 2500ms
-                }
+                // Throttle between parallel groups
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
             
             return details;

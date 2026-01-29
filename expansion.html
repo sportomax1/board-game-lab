@@ -210,58 +210,66 @@
         let expansionCountsCache = {};
         
         async function loadExpansionCountsLazy(games) {
-            // Load in batches with delays to avoid 502s
+            // Load in batches with parallel processing (100x faster like weight.html)
             const batchSize = 3;
-            const delay = 800; // 800ms between batches
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
+            const delay = 800; // 800ms between parallel groups
             
+            // Create batches
+            const batches = [];
             for (let i = 0; i < games.length; i += batchSize) {
-                const batch = games.slice(i, i + batchSize);
+                batches.push(games.slice(i, i + batchSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
                 
-                const promises = batch.map(async game => {
-                    // Skip if already cached
-                    if (expansionCountsCache[game.id]) {
-                        updateExpansionCountDisplay(game.id, expansionCountsCache[game.id]);
-                        return;
-                    }
-                    
-                    try {
-                        const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
-                        if (!response.ok) throw new Error(`API error: ${response.status}`);
+                await Promise.all(batchGroup.map(async (batch) => {
+                    await Promise.all(batch.map(async game => {
+                        // Skip if already cached
+                        if (expansionCountsCache[game.id]) {
+                            updateExpansionCountDisplay(game.id, expansionCountsCache[game.id]);
+                            return;
+                        }
                         
-                        const text = await response.text();
-                        const parser = new DOMParser();
-                        const xml = parser.parseFromString(text, 'text/xml');
-                        
-                        if (xml.documentElement.tagName === 'parsererror') throw new Error('Parse error');
-                        
-                        const expansions = Array.from(xml.querySelectorAll('link[type="boardgameexpansion"]'));
-                        let ownedCount = 0;
-                        let totalCount = 0;
-                        
-                        expansions.forEach(link => {
-                            const isInbound = link.getAttribute('inbound') === 'true';
-                            if (!isInbound) {
-                                totalCount++;
-                                const expId = link.getAttribute('id');
-                                if (ownedGameIds.has(expId)) {
-                                    ownedCount++;
+                        try {
+                            const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}`);
+                            if (!response.ok) throw new Error(`API error: ${response.status}`);
+                            
+                            const text = await response.text();
+                            const parser = new DOMParser();
+                            const xml = parser.parseFromString(text, 'text/xml');
+                            
+                            if (xml.documentElement.tagName === 'parsererror') throw new Error('Parse error');
+                            
+                            const expansions = Array.from(xml.querySelectorAll('link[type="boardgameexpansion"]'));
+                            let ownedCount = 0;
+                            let totalCount = 0;
+                            
+                            expansions.forEach(link => {
+                                const isInbound = link.getAttribute('inbound') === 'true';
+                                if (!isInbound) {
+                                    totalCount++;
+                                    const expId = link.getAttribute('id');
+                                    if (ownedGameIds.has(expId)) {
+                                        ownedCount++;
+                                    }
                                 }
-                            }
-                        });
-                        
-                        const counts = { ownedCount, totalCount };
-                        expansionCountsCache[game.id] = counts;
-                        updateExpansionCountDisplay(game.id, counts);
-                    } catch (e) {
-                        console.error('Error loading expansions for ' + game.name, e);
-                        updateExpansionCountDisplay(game.id, { ownedCount: 0, totalCount: 0 });
-                    }
-                });
+                            });
+                            
+                            const counts = { ownedCount, totalCount };
+                            expansionCountsCache[game.id] = counts;
+                            updateExpansionCountDisplay(game.id, counts);
+                        } catch (e) {
+                            console.error('Error loading expansions for ' + game.name, e);
+                            updateExpansionCountDisplay(game.id, { ownedCount: 0, totalCount: 0 });
+                        }
+                    }));
+                }));
                 
-                await Promise.all(promises);
-                
-                // Delay between batches
-                if (i + batchSize < games.length) {
+                // Delay between parallel groups
+                if (i + parallelBatches < batches.length) {
                     await new Promise(resolve => setTimeout(resolve, delay));
                 }
             }
