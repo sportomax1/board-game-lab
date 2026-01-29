@@ -1133,51 +1133,75 @@
         async function fetchThingStats(ids) {
             // Chunk IDs for performance (reduce to lower pressure on BGG)
             const chunkSize = 10;
+            const parallelBatches = 50; // Process 50 batches in parallel for faster loading
             state.statsMap = {};
             
+            // Create batches
+            const batches = [];
             for (let i = 0; i < ids.length; i += chunkSize) {
-                const chunk = ids.slice(i, i + chunkSize).join(',');
-                // Ensure stats=1 is passed to get rankings
-                const xml = await fetchAPI('thing', '', `&id=${chunk}&stats=1`);
-                const doc = new DOMParser().parseFromString(xml, "text/xml");
+                batches.push(ids.slice(i, i + chunkSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                const progress = Math.min(i + parallelBatches, batches.length);
+                updateLoadingMsg(`Fetching game data ${progress}/${batches.length} batches...`);
                 
-                doc.querySelectorAll("item").forEach(item => {
-                    const id = item.getAttribute("id");
-                    const thumb = item.querySelector("thumbnail")?.textContent || "";
-                    const yearText = item.querySelector("yearpublished")?.textContent || item.querySelector("yearpublished")?.getAttribute('value') || null;
-                    const yearPublished = parseYearValue(yearText);
-                    
-                    const ratings = item.querySelector("statistics ratings");
-                    const avg = ratings?.querySelector("average")?.getAttribute("value");
-                    const bayes = ratings?.querySelector("bayesaverage")?.getAttribute("value");
-                    const usersRated = ratings?.querySelector("usersrated")?.getAttribute("value");
-                    const weight = ratings?.querySelector("averageweight")?.getAttribute("value");
-                    const time = item.querySelector("maxplaytime")?.getAttribute("value");
+                await Promise.all(batchGroup.map(async (batch) => {
+                    try {
+                        const chunk = batch.join(',');
+                        // Ensure stats=1 is passed to get rankings
+                        const xml = await fetchAPI('thing', '', `&id=${chunk}&stats=1`);
+                        const doc = new DOMParser().parseFromString(xml, "text/xml");
+                        
+                        doc.querySelectorAll("item").forEach(item => {
+                            const id = item.getAttribute("id");
+                            const thumb = item.querySelector("thumbnail")?.textContent || "";
+                            const yearText = item.querySelector("yearpublished")?.textContent || item.querySelector("yearpublished")?.getAttribute('value') || null;
+                            const yearPublished = parseYearValue(yearText);
+                            
+                            const ratings = item.querySelector("statistics ratings");
+                            const avg = ratings?.querySelector("average")?.getAttribute("value");
+                            const bayes = ratings?.querySelector("bayesaverage")?.getAttribute("value");
+                            const usersRated = ratings?.querySelector("usersrated")?.getAttribute("value");
+                            const weight = ratings?.querySelector("averageweight")?.getAttribute("value");
+                            const time = item.querySelector("maxplaytime")?.getAttribute("value");
 
-                    // Parse Rank (Look for type="subtype" name="boardgame")
-                    let rankVal = 999999;
-                    let rankDisp = "-";
-                    const rankNode = item.querySelector('rank[name="boardgame"]');
-                    if(rankNode) {
-                        const val = rankNode.getAttribute("value");
-                        if(val && val !== "Not Ranked") {
-                            rankVal = parseInt(val);
-                            rankDisp = "#" + val;
-                        }
+                            // Parse Rank (Look for type="subtype" name="boardgame")
+                            let rankVal = 999999;
+                            let rankDisp = "-";
+                            const rankNode = item.querySelector('rank[name="boardgame"]');
+                            if(rankNode) {
+                                const val = rankNode.getAttribute("value");
+                                if(val && val !== "Not Ranked") {
+                                    rankVal = parseInt(val);
+                                    rankDisp = "#" + val;
+                                }
+                            }
+
+                            state.statsMap[id] = state.statsMap[id] || {};
+                            // merge without overwriting yearPublished if already set by collection
+                            state.statsMap[id].thumb = state.statsMap[id].thumb || thumb;
+                            state.statsMap[id].yearPublished = state.statsMap[id].yearPublished || yearPublished;
+                            state.statsMap[id].avg = state.statsMap[id].avg || (avg ? parseFloat(avg).toFixed(1) : "-");
+                            state.statsMap[id].bayes = state.statsMap[id].bayes || (bayes ? parseFloat(bayes).toFixed(2) : "-");
+                            state.statsMap[id].usersRated = state.statsMap[id].usersRated || (usersRated ? parseInt(usersRated) : 0);
+                            state.statsMap[id].rankVal = state.statsMap[id].rankVal || rankVal;
+                            state.statsMap[id].rankDisp = state.statsMap[id].rankDisp || rankDisp;
+                            state.statsMap[id].weight = state.statsMap[id].weight || (weight ? parseFloat(weight).toFixed(2) : "-");
+                            state.statsMap[id].time = state.statsMap[id].time || time;
+                        });
+                    } catch (e) {
+                        console.error('Batch error:', e);
                     }
-
-                    state.statsMap[id] = state.statsMap[id] || {};
-                    // merge without overwriting yearPublished if already set by collection
-                    state.statsMap[id].thumb = state.statsMap[id].thumb || thumb;
-                    state.statsMap[id].yearPublished = state.statsMap[id].yearPublished || yearPublished;
-                    state.statsMap[id].avg = state.statsMap[id].avg || (avg ? parseFloat(avg).toFixed(1) : "-");
-                    state.statsMap[id].bayes = state.statsMap[id].bayes || (bayes ? parseFloat(bayes).toFixed(2) : "-");
-                    state.statsMap[id].usersRated = state.statsMap[id].usersRated || (usersRated ? parseInt(usersRated) : 0);
-                    state.statsMap[id].rankVal = state.statsMap[id].rankVal || rankVal;
-                    state.statsMap[id].rankDisp = state.statsMap[id].rankDisp || rankDisp;
-                    state.statsMap[id].weight = state.statsMap[id].weight || (weight ? parseFloat(weight).toFixed(2) : "-");
-                    state.statsMap[id].time = state.statsMap[id].time || time;
-                });
+                }));
+                
+                // Update display after each parallel group
+                render();
+                
+                // Small delay between parallel groups to avoid overwhelming the API
+                await wait(300);
             }
         }
 
@@ -2104,6 +2128,10 @@
             document.getElementById('specificYear').style.display = (t === 'year') ? 'block' : 'none';
         }
         function escapeHtml(t) { return t ? t.replace(/&/g, "&amp;").replace(/</g, "&lt;") : ''; }
+
+        function wait(ms) {
+            return new Promise(r => setTimeout(r, ms));
+        }
 
     </script>
     <!-- Vercel Web Analytics -->
