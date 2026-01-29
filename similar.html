@@ -1306,52 +1306,64 @@
 
         async function fetchGameDetails() {
             const batchSize = 20;
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
 
+            // Create batches
+            const batches = [];
             for (let i = 0; i < allGames.length; i += batchSize) {
-                const batch = allGames.slice(i, i + batchSize);
-                const ids = batch.map(g => g.id).join(',');
-                const batchNum = Math.ceil((i + 1) / batchSize);
-                const totalBatches = Math.ceil(allGames.length / batchSize);
+                batches.push(allGames.slice(i, i + batchSize));
+            }
 
-                console.log(`[similar.html] 📦 Batch ${batchNum}/${totalBatches}: ${batch.length} games`);
-                updateStatus(`Fetching details... Batch ${batchNum}/${totalBatches}`, 'loading');
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                
+                await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                    const ids = batch.map(g => g.id).join(',');
+                    const batchNum = i + batchIndex + 1;
+                    const totalBatches = batches.length;
 
-                try {
-                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`;
-                    const thingText = await fetchWithRetry(thingUrl);
+                    console.log(`[similar.html] 📦 Batch ${batchNum}/${totalBatches}: ${batch.length} games`);
+                    updateStatus(`Fetching details... Batch ${Math.min(i + parallelBatches, totalBatches)}/${totalBatches}`, 'loading');
 
-                    const thingXml = new DOMParser().parseFromString(thingText, 'text/xml');
-                    Array.from(thingXml.querySelectorAll('item')).forEach(item => {
-                        const id = item.getAttribute('id');
-                        const game = allGames.find(g => g.id === id);
-                        if (game) {
-                            gameDetails[id] = {
-                                id: id,
-                                name: item.querySelector('name')?.getAttribute('value') || game.name,
-                                yearPublished: parseInt(item.querySelector('yearpublished')?.getAttribute('value')) || 0,
-                                minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value')) || 0,
-                                maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value')) || 0,
-                                minPlaytime: parseInt(item.querySelector('minplaytime')?.getAttribute('value')) || 0,
-                                maxPlaytime: parseInt(item.querySelector('maxplaytime')?.getAttribute('value')) || 0,
-                                playingTime: parseInt(item.querySelector('playingtime')?.getAttribute('value')) || 0,
-                                minAge: parseInt(item.querySelector('minage')?.getAttribute('value')) || 0,
-                                thumbnail: item.querySelector('thumbnail')?.textContent,
-                                image: item.querySelector('image')?.textContent,
-                                categories: Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')),
-                                mechanics: Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')),
-                                designers: Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')),
-                                publishers: Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')),
-                                artists: Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value')),
-                                types: Array.from(item.querySelectorAll('link[type="boardgametype"]')).map(l => l.getAttribute('value')),
-                                rating: parseFloat(item.querySelector('statistics > ratings > average')?.getAttribute('value')) || 0
-                            };
-                        }
-                    });
+                    try {
+                        const thingUrl = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`;
+                        const thingText = await fetchWithRetry(thingUrl);
 
-                    await new Promise(r => setTimeout(r, 500));
-                } catch (error) {
-                    console.error(`[similar.html] ❌ Batch error:`, error);
-                }
+                        const thingXml = new DOMParser().parseFromString(thingText, 'text/xml');
+                        Array.from(thingXml.querySelectorAll('item')).forEach(item => {
+                            const id = item.getAttribute('id');
+                            const game = allGames.find(g => g.id === id);
+                            if (game) {
+                                gameDetails[id] = {
+                                    id: id,
+                                    name: item.querySelector('name')?.getAttribute('value') || game.name,
+                                    yearPublished: parseInt(item.querySelector('yearpublished')?.getAttribute('value')) || 0,
+                                    minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value')) || 0,
+                                    maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value')) || 0,
+                                    minPlaytime: parseInt(item.querySelector('minplaytime')?.getAttribute('value')) || 0,
+                                    maxPlaytime: parseInt(item.querySelector('maxplaytime')?.getAttribute('value')) || 0,
+                                    playingTime: parseInt(item.querySelector('playingtime')?.getAttribute('value')) || 0,
+                                    minAge: parseInt(item.querySelector('minage')?.getAttribute('value')) || 0,
+                                    thumbnail: item.querySelector('thumbnail')?.textContent,
+                                    image: item.querySelector('image')?.textContent,
+                                    categories: Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')),
+                                    mechanics: Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')),
+                                    designers: Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')),
+                                    publishers: Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')),
+                                    artists: Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value')),
+                                    types: Array.from(item.querySelectorAll('link[type="boardgametype"]')).map(l => l.getAttribute('value')),
+                                    rating: parseFloat(item.querySelector('statistics > ratings > average')?.getAttribute('value')) || 0
+                                };
+                            }
+                        });
+                    } catch (error) {
+                        console.error(`[similar.html] ❌ Batch error:`, error);
+                    }
+                }));
+                
+                // Throttle between parallel groups
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
 
             console.log(`[similar.html] ✓ Fetched details for ${Object.keys(gameDetails).length} games`);

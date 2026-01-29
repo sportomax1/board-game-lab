@@ -284,6 +284,7 @@
                 
                 // Fetch details in chunks of 20
                 const chunkSize = 20;
+                const parallelBatches = 100; // Process 100 batches in parallel for faster loading
                 const chunks = [];
                 for (let i = 0; i < ids.length; i += chunkSize) {
                     chunks.push(ids.slice(i, i + chunkSize));
@@ -297,67 +298,76 @@
                 gamesData = [];
                 let processed = 0;
 
-                for (let batchIdx = 0; batchIdx < chunks.length; batchIdx++) {
-                    const chunk = chunks[batchIdx];
-                    console.log(`📦 [THING API] Batch ${batchIdx + 1}/${chunks.length}`);
+                // Process batches in parallel groups
+                for (let i = 0; i < chunks.length; i += parallelBatches) {
+                    const batchGroup = chunks.slice(i, i + parallelBatches);
                     
-                    const thingUrl = `/api/bgg-helper?endpoint=thing&id=${chunk.join(',')}&stats=1`;
-                    console.log('   ├─ API Request URL:', thingUrl);
-                    console.log('   ├─ Game IDs in Batch:', chunk.join(', '));
-                    console.log('   ├─ Request Timestamp:', new Date().toISOString());
-                    
-                    const res = await fetch(thingUrl);
-                    console.log('   ├─ Response Status:', res.status, res.statusText);
-                    
-                    const text = await res.text();
-                    console.log('   ├─ Response Size:', text.length, 'bytes');
-                    
-                    const xml = new DOMParser().parseFromString(text, 'text/xml');
-                    const batchItems = Array.from(xml.querySelectorAll('item'));
-                    console.log('   ├─ Parsed Items:', batchItems.length);
-
-                    // Process this batch's items - no collection tags yet
-                    const batchGames = batchItems.map((item, idx) => {
-                        const stats = item.querySelector('statistics ratings');
-                        const rankObj = stats.querySelector('rank[name="boardgame"]');
-                        const rank = rankObj ? parseInt(rankObj.getAttribute('value')) : 999999;
-                        const gameId = item.getAttribute('id');
-                        const gameName = item.querySelector('name[type="primary"]').getAttribute('value');
-                        const gameRating = parseFloat(stats.querySelector('average').getAttribute('value')).toFixed(1);
+                    await Promise.all(batchGroup.map(async (chunk, batchIndex) => {
+                        const batchIdx = i + batchIndex;
+                        console.log(`📦 [THING API] Batch ${batchIdx + 1}/${chunks.length}`);
                         
-                        if (idx < 3) {
-                            console.log(`      └─ Game ${gameId}: "${gameName}" (Rating: ${gameRating}, Rank: ${rank})`);
-                        }
+                        const thingUrl = `/api/bgg-helper?endpoint=thing&id=${chunk.join(',')}&stats=1`;
+                        console.log('   ├─ API Request URL:', thingUrl);
+                        console.log('   ├─ Game IDs in Batch:', chunk.join(', '));
+                        console.log('   ├─ Request Timestamp:', new Date().toISOString());
                         
-                        return {
-                            id: gameId,
-                            name: gameName,
-                            year: item.querySelector('yearpublished')?.getAttribute('value') || '?',
-                            image: item.querySelector('thumbnail')?.textContent || '',
-                            rating: gameRating,
-                            rank: isNaN(rank) ? 999999 : rank,
-                            weight: parseFloat(stats.querySelector('averageweight').getAttribute('value')).toFixed(2),
-                            voters: parseInt(stats.querySelector('usersrated').getAttribute('value')),
-                            description: item.querySelector('description')?.textContent || '',
-                            statusTags: {},
-                            owned: false,
-                            prevOwned: false
-                        };
-                    });
+                        const res = await fetch(thingUrl);
+                        console.log('   ├─ Response Status:', res.status, res.statusText);
+                        
+                        const text = await res.text();
+                        console.log('   ├─ Response Size:', text.length, 'bytes');
+                        
+                        const xml = new DOMParser().parseFromString(text, 'text/xml');
+                        const batchItems = Array.from(xml.querySelectorAll('item'));
+                        console.log('   ├─ Parsed Items:', batchItems.length);
 
-                    gamesData = gamesData.concat(batchGames);
-                    processed += chunk.length;
+                        // Process this batch's items - no collection tags yet
+                        const batchGames = batchItems.map((item, idx) => {
+                            const stats = item.querySelector('statistics ratings');
+                            const rankObj = stats.querySelector('rank[name="boardgame"]');
+                            const rank = rankObj ? parseInt(rankObj.getAttribute('value')) : 999999;
+                            const gameId = item.getAttribute('id');
+                            const gameName = item.querySelector('name[type="primary"]').getAttribute('value');
+                            const gameRating = parseFloat(stats.querySelector('average').getAttribute('value')).toFixed(1);
+                            
+                            if (idx < 3) {
+                                console.log(`      └─ Game ${gameId}: "${gameName}" (Rating: ${gameRating}, Rank: ${rank})`);
+                            }
+                            
+                            return {
+                                id: gameId,
+                                name: gameName,
+                                year: item.querySelector('yearpublished')?.getAttribute('value') || '?',
+                                image: item.querySelector('thumbnail')?.textContent || '',
+                                rating: gameRating,
+                                rank: isNaN(rank) ? 999999 : rank,
+                                weight: parseFloat(stats.querySelector('averageweight').getAttribute('value')).toFixed(2),
+                                voters: parseInt(stats.querySelector('usersrated').getAttribute('value')),
+                                description: item.querySelector('description')?.textContent || '',
+                                statusTags: {},
+                                owned: false,
+                                prevOwned: false
+                            };
+                        });
+
+                        gamesData = gamesData.concat(batchGames);
+                        processed += chunk.length;
+                        
+                        console.log(`✓ [THING API] Batch ${batchIdx + 1} complete`);
+                        console.log('   ├─ Batch Items Processed:', batchGames.length);
+                        console.log('   ├─ Total Processed:', processed + '/' + ids.length);
+                        console.log('   ├─ Progress %:', Math.round((processed/ids.length)*100));
+                    }));
                     
                     // Sort current data and render immediately (WITHOUT collection tags)
                     gamesData.sort((a, b) => a.rank - b.rank);
                     renderGames();
                     
                     const progressPercent = 25 + (processed / ids.length) * 60;
-                    console.log(`✓ [THING API] Batch ${batchIdx + 1} complete`);
-                    console.log('   ├─ Batch Items Processed:', batchGames.length);
-                    console.log('   ├─ Total Processed:', processed + '/' + ids.length);
-                    console.log('   ├─ Progress %:', Math.round((processed/ids.length)*100));
-                    updateProgress(progressPercent, `Loaded batch ${batchIdx + 1}/${chunks.length}...`, `${processed} / ${ids.length} games`);
+                    updateProgress(progressPercent, `Loaded batch ${Math.min(i + parallelBatches, chunks.length)}/${chunks.length}...`, `${processed} / ${ids.length} games`);
+                    
+                    // Throttle between parallel groups
+                    await new Promise(resolve => setTimeout(resolve, 500));
                 }
 
                 console.log('✅ [THING API] All batches complete!');

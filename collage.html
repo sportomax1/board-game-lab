@@ -597,42 +597,53 @@
         }
 
         async function fetchThumbnailsForResults() {
-            // Fetch thumbnails in batches of 5 to avoid rate limiting
+            // Fetch thumbnails in batches with parallel processing (100x faster like weight.html)
             const batchSize = 5;
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             let loadedCount = 0;
             
+            // Create batches
+            const batches = [];
             for (let i = 0; i < searchResults.length; i += batchSize) {
-                const batch = searchResults.slice(i, i + batchSize);
-                const ids = batch.map(g => g.id).join(',');
+                batches.push(searchResults.slice(i, i + batchSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
                 
-                try {
-                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
-                    if (!response.ok) continue;
+                await Promise.all(batchGroup.map(async (batch) => {
+                    const ids = batch.map(g => g.id).join(',');
                     
-                    const xmlText = await response.text();
-                    const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
-                    
-                    xml.querySelectorAll('item').forEach(item => {
-                        const itemId = item.getAttribute('id');
-                        const thumbnail = item.querySelector('thumbnail')?.textContent?.trim() || 
-                                        item.querySelector('image')?.textContent?.trim() || '';
+                    try {
+                        const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
+                        if (!response.ok) return;
                         
-                        const game = searchResults.find(g => g.id === itemId);
-                        if (game && thumbnail) {
-                            game.thumbnail = thumbnail;
-                            loadedCount++;
-                            console.log(`✅ Got thumbnail for ${game.name}`);
-                        }
-                    });
-                    
-                    // Update display after each batch
-                    displaySearchResults();
-                    searchStatus.innerHTML = `<div class="spinner"></div> Loading thumbnails... (${loadedCount}/${searchResults.length})`;
-                } catch (err) {
-                    console.warn('Error fetching batch:', err);
-                }
+                        const xmlText = await response.text();
+                        const xml = new DOMParser().parseFromString(xmlText, 'text/xml');
+                        
+                        xml.querySelectorAll('item').forEach(item => {
+                            const itemId = item.getAttribute('id');
+                            const thumbnail = item.querySelector('thumbnail')?.textContent?.trim() || 
+                                            item.querySelector('image')?.textContent?.trim() || '';
+                            
+                            const game = searchResults.find(g => g.id === itemId);
+                            if (game && thumbnail) {
+                                game.thumbnail = thumbnail;
+                                loadedCount++;
+                                console.log(`✅ Got thumbnail for ${game.name}`);
+                            }
+                        });
+                    } catch (err) {
+                        console.warn('Error fetching batch:', err);
+                    }
+                }));
                 
-                // Small delay between batches to avoid rate limiting
+                // Update display after each parallel group
+                displaySearchResults();
+                searchStatus.innerHTML = `<div class="spinner"></div> Loading thumbnails... (${loadedCount}/${searchResults.length})`;
+                
+                // Small delay between parallel groups to avoid rate limiting
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
             

@@ -945,69 +945,84 @@
         // Process games in batches
         async function processGameBatches() {
             const batchSize = 20;
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             let processed = 0;
             gameVideos = {};
 
+            // Create batches
+            const batches = [];
             for (let i = 0; i < allGames.length; i += batchSize) {
-                const batch = allGames.slice(i, i + batchSize);
-                const ids = batch.map(g => g.id).join(',');
+                batches.push(allGames.slice(i, i + batchSize));
+            }
 
-                try {
-                    processingStatus.textContent = `🎬 Processing ${Math.min(processed + batch.length, allGames.length)}/${allGames.length} games...`;
-                    console.log(`\n🔄 Batch ${Math.ceil((i + 1) / batchSize)}/${Math.ceil(allGames.length / batchSize)}: Fetching ${batch.length} games (IDs: ${ids})`);
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                
+                await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                    const ids = batch.map(g => g.id).join(',');
 
-                    const url = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&videos=1`;
-                    const response = await fetchWithRetry(url);
-                    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                    const items = xml.querySelectorAll('item');
+                    try {
+                        processingStatus.textContent = `🎬 Processing ${Math.min(processed + batch.length, allGames.length)}/${allGames.length} games...`;
+                        console.log(`\n🔄 Batch ${i + batchIndex + 1}/${batches.length}: Fetching ${batch.length} games (IDs: ${ids})`);
 
-                    let batchVideos = 0;
-                    Array.from(items).forEach(item => {
-                        const gameId = item.getAttribute('id');
-                        const game = allGames.find(g => g.id === gameId);
-                        if (!game) return;
+                        const url = `/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&videos=1`;
+                        const response = await fetchWithRetry(url);
+                        const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                        const items = xml.querySelectorAll('item');
 
-                        const videosEl = item.querySelector('videos');
-                        if (videosEl) {
-                            const videos = Array.from(videosEl.querySelectorAll('video')).map(v => ({
-                                id: v.getAttribute('id'),
-                                title: v.getAttribute('title'),
-                                category: v.getAttribute('category') || 'other',
-                                language: v.getAttribute('language') || 'Unknown',
-                                link: v.getAttribute('link'),
-                                username: v.getAttribute('username'),
-                                postdate: v.getAttribute('postdate'),
-                                thumbnail: v.getAttribute('thumbnail') || ''
-                            }));
+                        let batchVideos = 0;
+                        Array.from(items).forEach(item => {
+                            const gameId = item.getAttribute('id');
+                            const game = allGames.find(g => g.id === gameId);
+                            if (!game) return;
 
-                            if (videos.length > 0) {
-                                gameVideos[gameId] = {
-                                    name: game.name,
-                                    image: game.image,
-                                    videos: videos
-                                };
-                                batchVideos++;
-                                console.log(`  ✅ Found videos for game ${gameId} (${game.name}): ${videos.length} videos`);
+                            const videosEl = item.querySelector('videos');
+                            if (videosEl) {
+                                const videos = Array.from(videosEl.querySelectorAll('video')).map(v => ({
+                                    id: v.getAttribute('id'),
+                                    title: v.getAttribute('title'),
+                                    category: v.getAttribute('category') || 'other',
+                                    language: v.getAttribute('language') || 'Unknown',
+                                    link: v.getAttribute('link'),
+                                    username: v.getAttribute('username'),
+                                    postdate: v.getAttribute('postdate'),
+                                    thumbnail: v.getAttribute('thumbnail') || ''
+                                }));
+
+                                if (videos.length > 0) {
+                                    gameVideos[gameId] = {
+                                        name: game.name,
+                                        image: game.image,
+                                        videos: videos
+                                    };
+                                    batchVideos++;
+                                    console.log(`  ✅ Found videos for game ${gameId} (${game.name}): ${videos.length} videos`);
+                                } else {
+                                    console.log(`  ⚠️ Empty videos element for game ${gameId} (${game.name})`);
+                                }
                             } else {
-                                console.log(`  ⚠️ Empty videos element for game ${gameId} (${game.name})`);
+                                console.log(`  ⚠️ No <videos> element found for game ${gameId} (${game.name})`);
                             }
-                        } else {
-                            console.log(`  ⚠️ No <videos> element found for game ${gameId} (${game.name})`);
-                        }
-                    });
+                        });
 
-                    console.log(`📊 Batch result: ${batchVideos}/${batch.length} games had videos\n`);
-                    processed += batch.length;
-                    updateProgress(processed, allGames.length);
-                    statusMetric.textContent = `Batch ${Math.ceil(processed / 20)}/${Math.ceil(allGames.length / 20)}`;
-                    updateMetrics();
-                    renderGames();
+                        console.log(`📊 Batch result: ${batchVideos}/${batch.length} games had videos\n`);
+                        processed += batch.length;
 
-                } catch (error) {
-                    console.error(`❌ Error processing batch at ${i}:`, error);
-                    processingStatus.textContent = `⚠️ Error in batch: ${error.message}`;
-                }
+                    } catch (error) {
+                        console.error(`❌ Error processing batch:`, error);
+                        processingStatus.textContent = `⚠️ Error in batch: ${error.message}`;
+                    }
+                }));
 
+                updateProgress(processed, allGames.length);
+                statusMetric.textContent = `Batch ${Math.min(i + parallelBatches, batches.length)}/${batches.length}`;
+                updateMetrics();
+                renderGames();
+                
+                // Throttle between parallel groups
+                await new Promise(resolve => setTimeout(resolve, 500));
+            }
                 await new Promise(resolve => setTimeout(resolve, 200));
             }
 
