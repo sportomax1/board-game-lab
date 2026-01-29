@@ -792,21 +792,28 @@
             }
         }
 
-        // Process games in batches (20 at a time like videos.html)
+        // Process games in batches with parallel processing (100x faster like weight.html)
         async function processGameBatches() {
             const batchSize = 20;
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             let processed = 0;
             gameForums = {};
 
+            // Create batches
+            const batches = [];
             for (let i = 0; i < allGames.length; i += batchSize) {
-                const batch = allGames.slice(i, i + batchSize);
+                batches.push(allGames.slice(i, i + batchSize));
+            }
 
-                try {
-                    processingStatus.textContent = `💬 Fetching forums for ${Math.min(processed + batch.length, allGames.length)}/${allGames.length} games...`;
-                    console.log(`\n🔄 Batch ${Math.ceil((i + 1) / batchSize)}/${Math.ceil(allGames.length / batchSize)}: Fetching forums for ${batch.length} games`);
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                processingStatus.textContent = `💬 Fetching forums ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`;
+                console.log(`\n🔄 Parallel group ${Math.floor(i / parallelBatches) + 1}/${Math.ceil(batches.length / parallelBatches)}: Processing ${batchGroup.length} batches in parallel`);
 
-                    // Fetch forums for each game in the batch
-                    for (const game of batch) {
+                await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                    // Fetch forums for each game in the batch in parallel
+                    await Promise.all(batch.map(async (game) => {
                         try {
                             const url = `/api/bgg-helper?endpoint=forumlist&type=thing&id=${game.id}`;
                             const response = await fetchWithRetry(url);
@@ -833,23 +840,17 @@
                         } catch (e) {
                             console.error(`  ⚠️ Error fetching forums for ${game.name}:`, e.message);
                         }
-                        
-                        // Small delay between individual requests
-                        await new Promise(resolve => setTimeout(resolve, 100));
-                    }
+                    }));
+                }));
 
-                    processed += batch.length;
-                    updateProgress(processed, allGames.length);
-                    statusMetric.textContent = `Batch ${Math.ceil(processed / batchSize)}/${Math.ceil(allGames.length / batchSize)}`;
-                    updateMetrics();
-                    renderGames();
+                processed += batchGroup.reduce((sum, batch) => sum + batch.length, 0);
+                updateProgress(processed, allGames.length);
+                statusMetric.textContent = `Batch ${Math.min(i + parallelBatches, batches.length)}/${batches.length}`;
+                updateMetrics();
+                renderGames();
 
-                } catch (error) {
-                    console.error(`❌ Error processing batch at ${i}:`, error);
-                    processingStatus.textContent = `⚠️ Error in batch: ${error.message}`;
-                }
-
-                await new Promise(resolve => setTimeout(resolve, 200));
+                // Throttle between parallel groups
+                await new Promise(resolve => setTimeout(resolve, 500));
             }
 
             // Now fetch thread details in batches

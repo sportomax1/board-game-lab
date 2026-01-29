@@ -511,45 +511,55 @@
 
         async function processGameBatches() {
             const batchSize = 15;  // Reduced from 20 to respect rate limits
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             let processed = 0;
 
+            // Create batches
+            const batches = [];
             for (let i = 0; i < allGames.length; i += batchSize) {
-                const batch = allGames.slice(i, i + batchSize);
-                const ids = batch.map(g => g.id).join(',');
+                batches.push(allGames.slice(i, i + batchSize));
+            }
 
-                try {
-                    processingStatus.textContent = `🔗 Processing ${processed + batch.length}/${allGames.length} games...`;
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                processingStatus.textContent = `🔗 Processing ${Math.min(i + parallelBatches, batches.length)}/${batches.length} batches...`;
 
-                    const response = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`);
-                    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
-                    const items = xml.querySelectorAll('item');
+                await Promise.all(batchGroup.map(async (batch) => {
+                    const ids = batch.map(g => g.id).join(',');
 
-                    Array.from(items).forEach(item => {
-                        const gameId = item.getAttribute('id');
-                        const game = allGames.find(g => g.id === gameId);
-                        if (!game) return;
+                    try {
+                        const response = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame`);
+                        const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+                        const items = xml.querySelectorAll('item');
 
-                        Object.entries(TYPE_MAP).forEach(([key, type]) => {
-                            const links = item.querySelectorAll(`link[type="${type}"]`);
-                            Array.from(links).forEach(link => {
-                                const id = link.getAttribute('id');
-                                const name = link.getAttribute('value');
-                                if (!typeData[key][id]) {
-                                    typeData[key][id] = { name, games: [] };
-                                }
-                                typeData[key][id].games.push(game);
+                        Array.from(items).forEach(item => {
+                            const gameId = item.getAttribute('id');
+                            const game = allGames.find(g => g.id === gameId);
+                            if (!game) return;
+
+                            Object.entries(TYPE_MAP).forEach(([key, type]) => {
+                                const links = item.querySelectorAll(`link[type="${type}"]`);
+                                Array.from(links).forEach(link => {
+                                    const id = link.getAttribute('id');
+                                    const name = link.getAttribute('value');
+                                    if (!typeData[key][id]) {
+                                        typeData[key][id] = { name, games: [] };
+                                    }
+                                    typeData[key][id].games.push(game);
+                                });
                             });
                         });
-                    });
 
-                    processed += batch.length;
+                    } catch (error) {
+                        console.error(`Error processing batch:`, error);
+                        processingStatus.textContent = `⚠️ Error processing batch, retrying...`;
+                    }
+                }));
 
-                } catch (error) {
-                    console.error(`Error processing batch at ${i}:`, error);
-                    processingStatus.textContent = `⚠️ Error processing batch, retrying...`;
-                }
+                processed += batchGroup.reduce((sum, batch) => sum + batch.length, 0);
 
-                // Longer delay between batches
+                // Longer delay between parallel groups
                 const delayMs = 2000 + Math.random() * 2000;
                 await new Promise(resolve => setTimeout(resolve, delayMs));
             }
