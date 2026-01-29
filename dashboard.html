@@ -97,27 +97,27 @@
         }
 
         .game-card img {
-            max-width: 98%;
-            max-height: 94%;
+            max-width: 100%;
+            max-height: 100%;
             object-fit: contain;
-            padding: 0.2rem;
+            padding: 0.15rem;
         }
 
         /* Maximize on larger screens (laptop/monitor) */
         @media (min-width: 1024px) {
             .game-card img {
-                max-width: 99%;
-                max-height: 95%;
-                padding: 0.15rem;
+                max-width: 100%;
+                max-height: 100%;
+                padding: 0.1rem;
             }
         }
 
         /* Maximum fill on TV/large monitors */
         @media (min-width: 1920px) {
             .game-card img {
-                max-width: 99.5%;
-                max-height: 96%;
-                padding: 0.1rem;
+                max-width: 100%;
+                max-height: 100%;
+                padding: 0.05rem;
             }
         }
 
@@ -380,7 +380,9 @@
         let USERNAME = localStorage.getItem('bgg_dashboard_user') || 'sportomax';
         const ROTATION_INTERVAL = 12000; 
         const GUIDE_DURATION = 2000;
-        let DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED', 'SHELF_OF_SHAME', 'HIDDEN_GEMS', 'ON_THE_RADAR', 'THE_HIT_LIST'];
+        let DASHBOARDS = ['PLAYS', 'HOT', 'RANKED', 'TOP_RATED', 'MOST_PLAYED', 'SHELF_OF_SHAME', 'HIDDEN_GEMS', 'ON_THE_RADAR', 'THE_HIT_LIST', 
+            'QUICKEST_GAMES', 'LONGEST_GAMES', 'LIGHTEST_GAMES', 'HEAVIEST_GAMES', 'NEWEST_GAMES', 'OLDEST_GAMES', 'TOP_BGG_AVERAGE',
+            'BEST_1P', 'BEST_2P', 'BEST_3P', 'BEST_4P', 'BEST_5P', 'BEST_6P', 'BEST_7P', 'BEST_8P'];
         
         // Add Random Kevin slide if sportomax
         if (USERNAME.toLowerCase() === 'sportomax') {
@@ -403,6 +405,21 @@
             HIDDEN_GEMS: [],
             ON_THE_RADAR: [],
             THE_HIT_LIST: [],
+            QUICKEST_GAMES: [],
+            LONGEST_GAMES: [],
+            LIGHTEST_GAMES: [],
+            HEAVIEST_GAMES: [],
+            NEWEST_GAMES: [],
+            OLDEST_GAMES: [],
+            TOP_BGG_AVERAGE: [],
+            BEST_1P: [],
+            BEST_2P: [],
+            BEST_3P: [],
+            BEST_4P: [],
+            BEST_5P: [],
+            BEST_6P: [],
+            BEST_7P: [],
+            BEST_8P: [],
             RANDOM_KEVIN: []
         };
 
@@ -686,7 +703,155 @@
                     }));
             }
 
-            // 5. Fetch Random Kevin (if sportomax)
+            // 5. Fetch detailed stats for new slides using Thing API with batches
+            // Collect all owned game IDs
+            const ownedItems = items.filter(it => it.querySelector('status')?.getAttribute('own') === '1');
+            const ownedIds = ownedItems.map(it => it.getAttribute('objectid'));
+            
+            // Fetch thing data in batches of 20 with parallel processing (up to 100 batches in parallel)
+            const batchSize = 20;
+            const parallelBatches = 100;
+            const thingDataMap = {};
+            const batches = [];
+            
+            for (let i = 0; i < ownedIds.length; i += batchSize) {
+                batches.push(ownedIds.slice(i, i + batchSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                
+                await Promise.all(batchGroup.map(async (batch) => {
+                    const ids = batch.join(',');
+                    try {
+                        const thingXml = await fetchAPI('thing', `&id=${ids}&stats=1`);
+                        if (thingXml) {
+                            const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                            const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+                            
+                            thingItems.forEach(thingItem => {
+                                const id = thingItem.getAttribute('id');
+                                const playingtime = parseInt(thingItem.querySelector('playingtime')?.getAttribute('value') || '0');
+                                const minplaytime = parseInt(thingItem.querySelector('minplaytime')?.getAttribute('value') || '0');
+                                const maxplaytime = parseInt(thingItem.querySelector('maxplaytime')?.getAttribute('value') || '0');
+                                const averageweight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
+                                const average = parseFloat(thingItem.querySelector('statistics ratings average')?.getAttribute('value') || '0');
+                                const yearpublished = parseInt(thingItem.querySelector('yearpublished')?.getAttribute('value') || '0');
+                                
+                                // Parse player count recommendations
+                                const polls = Array.from(thingItem.querySelectorAll('poll'));
+                                const playerPoll = polls.find(p => p.getAttribute('name') === 'suggested_numplayers');
+                                const playerCounts = {};
+                                
+                                if (playerPoll) {
+                                    const results = Array.from(playerPoll.querySelectorAll('results'));
+                                    results.forEach(result => {
+                                        const numplayers = result.getAttribute('numplayers');
+                                        const voteElements = Array.from(result.querySelectorAll('result'));
+                                        const votes = {};
+                                        voteElements.forEach(v => {
+                                            votes[v.getAttribute('value')] = parseInt(v.getAttribute('numvotes') || '0');
+                                        });
+                                        const best = votes['Best'] || 0;
+                                        const recommended = votes['Recommended'] || 0;
+                                        const notRecommended = votes['Not Recommended'] || 0;
+                                        const total = best + recommended + notRecommended;
+                                        if (total > 0 && (best / total) >= 0.5) {
+                                            playerCounts[numplayers] = { best, recommended, notRecommended, total };
+                                        }
+                                    });
+                                }
+                                
+                                thingDataMap[id] = {
+                                    playingtime,
+                                    minplaytime,
+                                    maxplaytime,
+                                    averageweight,
+                                    average,
+                                    yearpublished,
+                                    playerCounts
+                                };
+                            });
+                        }
+                    } catch (e) {
+                        console.error('Batch error:', e);
+                    }
+                }));
+            }
+            
+            // Now build the new slides using the thingDataMap
+            const gamesWithDetails = ownedItems.map(it => ({
+                id: it.getAttribute('objectid'),
+                name: it.querySelector('name')?.textContent,
+                thumb: it.querySelector('thumbnail')?.textContent,
+                ...thingDataMap[it.getAttribute('objectid')]
+            })).filter(g => g.playingtime !== undefined);
+            
+            // QUICKEST GAMES (shortest playing time, excluding 0)
+            cache.QUICKEST_GAMES = gamesWithDetails
+                .filter(g => g.playingtime > 0)
+                .sort((a, b) => a.playingtime - b.playingtime)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // LONGEST GAMES (longest playing time)
+            cache.LONGEST_GAMES = gamesWithDetails
+                .filter(g => g.playingtime > 0)
+                .sort((a, b) => b.playingtime - a.playingtime)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // LIGHTEST GAMES (lowest weight, excluding 0)
+            cache.LIGHTEST_GAMES = gamesWithDetails
+                .filter(g => g.averageweight > 0)
+                .sort((a, b) => a.averageweight - b.averageweight)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // HEAVIEST GAMES (highest weight)
+            cache.HEAVIEST_GAMES = gamesWithDetails
+                .filter(g => g.averageweight > 0)
+                .sort((a, b) => b.averageweight - a.averageweight)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // NEWEST GAMES (year published desc)
+            cache.NEWEST_GAMES = gamesWithDetails
+                .filter(g => g.yearpublished > 0)
+                .sort((a, b) => b.yearpublished - a.yearpublished)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // OLDEST GAMES (year published asc)
+            cache.OLDEST_GAMES = gamesWithDetails
+                .filter(g => g.yearpublished > 0)
+                .sort((a, b) => a.yearpublished - b.yearpublished)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // TOP BGG AVERAGE (by BGG average rating)
+            cache.TOP_BGG_AVERAGE = gamesWithDetails
+                .filter(g => g.average > 0)
+                .sort((a, b) => b.average - a.average)
+                .slice(0, 10)
+                .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            
+            // BEST BY PLAYER COUNT (1-8)
+            for (let pc = 1; pc <= 8; pc++) {
+                const pcKey = `BEST_${pc}P`;
+                cache[pcKey] = gamesWithDetails
+                    .filter(g => g.playerCounts && g.playerCounts[pc.toString()])
+                    .sort((a, b) => {
+                        const aVotes = a.playerCounts[pc.toString()];
+                        const bVotes = b.playerCounts[pc.toString()];
+                        return (bVotes.best / bVotes.total) - (aVotes.best / aVotes.total);
+                    })
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+            }
+
+            // 6. Fetch Random Kevin (if sportomax)
             if (USERNAME.toLowerCase() === 'sportomax') {
                 try {
                     const csvRes = await fetch('pubmeeple.csv');
@@ -826,6 +991,21 @@
                 case 'HIDDEN_GEMS': return 'HIDDEN GEMS';
                 case 'ON_THE_RADAR': return 'ON THE RADAR';
                 case 'THE_HIT_LIST': return 'THE HIT LIST';
+                case 'QUICKEST_GAMES': return 'QUICKEST GAMES';
+                case 'LONGEST_GAMES': return 'LONGEST GAMES';
+                case 'LIGHTEST_GAMES': return 'LIGHTEST GAMES';
+                case 'HEAVIEST_GAMES': return 'HEAVIEST GAMES';
+                case 'NEWEST_GAMES': return 'NEWEST GAMES';
+                case 'OLDEST_GAMES': return 'OLDEST GAMES';
+                case 'TOP_BGG_AVERAGE': return 'TOP BGG AVERAGE';
+                case 'BEST_1P': return 'BEST 1 PLAYER';
+                case 'BEST_2P': return 'BEST 2 PLAYERS';
+                case 'BEST_3P': return 'BEST 3 PLAYERS';
+                case 'BEST_4P': return 'BEST 4 PLAYERS';
+                case 'BEST_5P': return 'BEST 5 PLAYERS';
+                case 'BEST_6P': return 'BEST 6 PLAYERS';
+                case 'BEST_7P': return 'BEST 7 PLAYERS';
+                case 'BEST_8P': return 'BEST 8 PLAYERS';
                 case 'RANDOM_KEVIN': return 'KEVIN LIST';
                 default: return type.replace('_', ' ');
             }
@@ -853,6 +1033,21 @@
                 case 'HIDDEN_GEMS': return 'HIDDEN GEMS (RATING VS RANK)';
                 case 'ON_THE_RADAR': return 'ON THE RADAR (TO PLAY)';
                 case 'THE_HIT_LIST': return 'THE HIT LIST (TO BUY)';
+                case 'QUICKEST_GAMES': return 'TOP 10 QUICKEST GAMES (SHORTEST PLAYING TIME)';
+                case 'LONGEST_GAMES': return 'TOP 10 LONGEST GAMES (LONGEST PLAYING TIME)';
+                case 'LIGHTEST_GAMES': return 'TOP 10 LIGHTEST GAMES (BY WEIGHT)';
+                case 'HEAVIEST_GAMES': return 'TOP 10 HEAVIEST GAMES (BY WEIGHT)';
+                case 'NEWEST_GAMES': return 'TOP 10 NEWEST GAMES (BY YEAR)';
+                case 'OLDEST_GAMES': return 'TOP 10 OLDEST GAMES (BY YEAR)';
+                case 'TOP_BGG_AVERAGE': return 'TOP 10 BY BGG AVERAGE RATING';
+                case 'BEST_1P': return 'TOP 10 BEST GAMES FOR 1 PLAYER';
+                case 'BEST_2P': return 'TOP 10 BEST GAMES FOR 2 PLAYERS';
+                case 'BEST_3P': return 'TOP 10 BEST GAMES FOR 3 PLAYERS';
+                case 'BEST_4P': return 'TOP 10 BEST GAMES FOR 4 PLAYERS';
+                case 'BEST_5P': return 'TOP 10 BEST GAMES FOR 5 PLAYERS';
+                case 'BEST_6P': return 'TOP 10 BEST GAMES FOR 6 PLAYERS';
+                case 'BEST_7P': return 'TOP 10 BEST GAMES FOR 7 PLAYERS';
+                case 'BEST_8P': return 'TOP 10 BEST GAMES FOR 8 PLAYERS';
                 case 'RANDOM_KEVIN': return cache.RANDOM_KEVIN_TITLE || 'KEVIN\'S RANDOM LIST';
                 default: return type.replace('_', ' ');
             }
