@@ -68,7 +68,17 @@
     <div class="absolute inset-4 sm:inset-auto sm:top-10 sm:bottom-10 sm:left-1/2 sm:-translate-x-1/2 sm:w-[600px] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
       <!-- Modal Header -->
       <div class="p-4 border-b flex items-center justify-between bg-white z-10">
-        <h2 class="font-bold text-lg">Games Not on BGA</h2>
+        <div>
+          <h2 class="font-bold text-lg" id="modalTitle">Games Not on BGA</h2>
+          <div class="flex gap-2 mt-2">
+            <button onclick="setModalFilter('missing')" id="filterMissingBtn" class="px-3 py-1 rounded-lg text-xs font-bold bg-red-100 text-red-700 border border-red-200">
+              Missing
+            </button>
+            <button onclick="setModalFilter('onbga')" id="filterOnBgaBtn" class="px-3 py-1 rounded-lg text-xs font-bold bg-slate-200 text-slate-600 border border-slate-300 hover:bg-slate-300">
+              On BGA
+            </button>
+          </div>
+        </div>
         <button onclick="closeCollectionModal()" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors">
           <i class="fa-solid fa-xmark"></i>
         </button>
@@ -103,6 +113,9 @@
         <div class="text-center text-slate-500 py-10">
           Enter a username to find games in their collection<br>that are NOT on Board Game Arena.
         </div>
+      </div>
+      <div id="modalLoadingStatus" class="text-center text-slate-500 text-xs p-2 hidden">
+        Loading additional data...
       </div>
     </div>
   </div>
@@ -176,9 +189,40 @@
 
 <script>
 const FAMILY_ID = 70360; // Board Game Arena family ID
+const GEEKLIST_ID = 140673; // BGA geeklist
 let allGames = [];
 let displayedGames = [];
 let isLoading = false;
+let bgaGeeklistMap = new Map(); // Map of game ID to BGA URL
+let collectionFilter = 'missing'; // 'missing' or 'onbga'
+let allCollectionGames = []; // All games from user collection
+let missingGames = []; // Games not on BGA
+let onBgaGames = []; // Games already on BGA
+
+async function fetchGeeklistUrls() {
+  try {
+    const geeklistXml = await fetchAPI('geeklist', GEEKLIST_ID.toString());
+    const doc = new DOMParser().parseFromString(geeklistXml, 'text/xml');
+    const items = doc.querySelectorAll('item');
+    
+    items.forEach(item => {
+      const id = item.getAttribute('id');
+      const links = item.querySelectorAll('link');
+      links.forEach(link => {
+        if (link.getAttribute('type') === 'boardgamearena') {
+          const url = link.getAttribute('href');
+          if (url) {
+            bgaGeeklistMap.set(id, url);
+          }
+        }
+      });
+    });
+    
+    console.log('BGA Geeklist loaded:', bgaGeeklistMap.size, 'games');
+  } catch (e) {
+    console.error('Error fetching geeklist:', e);
+  }
+}
 
 async function fetchCollection() {
   const loadingSection = document.getElementById('loadingSection');
@@ -205,15 +249,20 @@ async function fetchCollection() {
     updateLoadingStatus(`Found ${gameIds.length} games. Loading details...`);
     document.getElementById('gameCount').textContent = gameIds.length;
     
-    // Initialize games array
+    // Initialize games array with bgaUrl field
     allGames = gameIds.map(id => ({
       objectid: id,
       name: '',
       thumb: '',
       rating: 0,
       rank: 999999,
-      loaded: false
+      loaded: false,
+      bgaUrl: null
     }));
+    
+    // Fetch geeklist 140673 to get BGA URLs
+    updateLoadingStatus('Fetching BGA geeklist...');
+    await fetchGeeklistUrls();
     
     // Show UI
     controlsSection.classList.remove('hidden');
@@ -272,6 +321,7 @@ async function fetchCollection() {
             }
             
             game.loaded = true;
+            game.bgaUrl = bgaGeeklistMap.get(id) || null;
           });
           
         } catch (e) {
@@ -374,7 +424,10 @@ function renderGames() {
           onerror="this.style.display='none'"
         >
         <div class="flex-1 min-w-0">
-          <h3 class="font-bold text-slate-900 mb-2">${game.name || '...'}</h3>
+          <div class="flex items-start justify-between gap-2">
+            <h3 class="font-bold text-slate-900 mb-2">${game.name || '...'}</h3>
+            ${game.bgaUrl ? `<a href="${game.bgaUrl}" target="_blank" class="bg-green-500 hover:bg-green-600 text-white px-2 py-1 rounded text-xs font-bold flex-shrink-0 whitespace-nowrap transition-colors"><i class="fa-solid fa-arrow-up-right"></i> BGA</a>` : ''}
+          </div>
           <div class="flex flex-wrap gap-2">
             ${isLoaded ? `
               <div class="rank-badge ${rankColor} px-2 py-1 rounded text-xs font-bold border">
@@ -412,6 +465,7 @@ async function checkCollection() {
   const username = document.getElementById('collectionUsername').value;
   const content = document.getElementById('modalContent');
   const stats = document.getElementById('modalStats');
+  const loadingStatus = document.getElementById('modalLoadingStatus');
   
   if (!username) return;
   
@@ -422,6 +476,212 @@ async function checkCollection() {
     </div>
   `;
   stats.classList.add('hidden');
+  loadingStatus.classList.add('hidden');
+  
+  try {
+    // Corrected to use stats=1 to get ratings and ranks
+    const xml = await fetchAPI('collection', username, '&own=1&stats=1');
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    
+    // Check for errors in BGG response
+    const errors = doc.querySelector('errors');
+    if (errors) {
+       throw new Error(errors.textContent || 'BGG Error');
+    }
+
+    const items = Array.from(doc.querySelectorAll('item'));
+    
+    // Create a Set of BGA game IDs for O(1) lookup
+    const bgaIds = new Set(allGames.map(g => g.objectid));
+    
+    // Separate into missing and onBGA
+    allCollectionGames = items.map(item => {
+      const id = item.getAttribute('objectid');
+      let rank = 999999;
+      const rankNode = item.querySelector('stats rating ranks rank[name="boardgame"]');
+      if (rankNode) {
+          const val = rankNode.getAttribute('value');
+          if (val && val !== 'Not Ranked') {
+              rank = parseInt(val);
+          }
+      }
+      return {
+        id: id,
+        name: item.querySelector('name')?.textContent || 'Unknown',
+        thumb: item.querySelector('thumbnail')?.textContent || '',
+        rating: parseFloat(item.querySelector('stats rating')?.getAttribute('value') || '0'),
+        rank: rank,
+        averageweight: null,
+        playingtime: null,
+        onBga: bgaIds.has(id)
+      };
+    });
+    
+    missingGames = allCollectionGames.filter(g => !g.onBga);
+    onBgaGames = allCollectionGames.filter(g => g.onBga);
+    
+    // Fetch thing API data for all games with status update
+    loadingStatus.classList.remove('hidden');
+    loadingStatus.textContent = 'Loading weight & playtime data...';
+    
+    const batchSize = 20;
+    const parallelBatches = 100;
+    const allGamesToFetch = [...missingGames, ...onBgaGames];
+    const batches = [];
+    
+    for (let i = 0; i < allGamesToFetch.length; i += batchSize) {
+      batches.push(allGamesToFetch.slice(i, i + batchSize));
+    }
+    
+    for (let i = 0; i < batches.length; i += parallelBatches) {
+      const batchGroup = batches.slice(i, i + parallelBatches);
+      await Promise.all(batchGroup.map(async (batch) => {
+        const ids = batch.map(g => g.id).join(',');
+        try {
+          const thingXml = await fetchAPI('thing', ids, '&stats=1');
+          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+          const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+          thingItems.forEach(thingItem => {
+            const id = thingItem.getAttribute('id');
+            const game = allGamesToFetch.find(g => g.id === id);
+            if (!game) return;
+            const weightNode = thingItem.querySelector('statistics ratings averageweight');
+            if (weightNode) {
+              game.averageweight = parseFloat(weightNode.getAttribute('value') || '0');
+            }
+            const ptNode = thingItem.querySelector('playingtime');
+            if (ptNode) {
+              game.playingtime = parseInt(ptNode.textContent || '0');
+            }
+          });
+        } catch (e) {
+          // Ignore batch error
+        }
+      }));
+    }
+    
+    loadingStatus.classList.add('hidden');
+    document.getElementById('modalCount').textContent = missingGames.length;
+    document.getElementById('modalTitle').textContent = 'Games Not on BGA';
+    stats.classList.remove('hidden');
+    collectionFilter = 'missing';
+    sortModalGames();
+    
+  } catch (e) {
+    console.error(e);
+    content.innerHTML = `
+      <div class="text-center text-red-500 p-10 font-bold">
+        Error fetching collection. <br>Please check username and try again.<br>
+        <div class="text-xs font-normal mt-2 text-slate-400">${e.message}</div>
+      </div>
+    `;
+  }
+}
+
+function setModalFilter(filter) {
+  collectionFilter = filter;
+  document.getElementById('filterMissingBtn').className = filter === 'missing' 
+    ? 'px-3 py-1 rounded-lg text-xs font-bold bg-red-100 text-red-700 border border-red-200'
+    : 'px-3 py-1 rounded-lg text-xs font-bold bg-slate-200 text-slate-600 border border-slate-300 hover:bg-slate-300';
+  document.getElementById('filterOnBgaBtn').className = filter === 'onbga'
+    ? 'px-3 py-1 rounded-lg text-xs font-bold bg-green-100 text-green-700 border border-green-200'
+    : 'px-3 py-1 rounded-lg text-xs font-bold bg-slate-200 text-slate-600 border border-slate-300 hover:bg-slate-300';
+  document.getElementById('modalTitle').textContent = filter === 'missing' ? 'Games Not on BGA' : 'Games Already on BGA';
+  document.getElementById('modalCount').textContent = filter === 'missing' ? missingGames.length : onBgaGames.length;
+  sortModalGames();
+}
+  
+  try {
+    // Corrected to use stats=1 to get ratings and ranks
+    const xml = await fetchAPI('collection', username, '&own=1&stats=1');
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    
+    // Check for errors in BGG response
+    const errors = doc.querySelector('errors');
+    if (errors) {
+       throw new Error(errors.textContent || 'BGG Error');
+    }
+
+    const items = Array.from(doc.querySelectorAll('item'));
+    
+    // Create a Set of BGA game IDs for O(1) lookup
+    const bgaIds = new Set(allGames.map(g => g.objectid));
+    
+    // Step 1: Build initial modalGames array (missing from BGA)
+    modalGames = items
+      .map(item => {
+        const id = item.getAttribute('objectid');
+        if (bgaIds.has(id)) return null;
+        let rank = 999999;
+        const rankNode = item.querySelector('stats rating ranks rank[name="boardgame"]');
+        if (rankNode) {
+            const val = rankNode.getAttribute('value');
+            if (val && val !== 'Not Ranked') {
+                rank = parseInt(val);
+            }
+        }
+        return {
+          id: id,
+          name: item.querySelector('name')?.textContent || 'Unknown',
+          thumb: item.querySelector('thumbnail')?.textContent || '',
+          rating: parseFloat(item.querySelector('stats rating')?.getAttribute('value') || '0'),
+          rank: rank,
+          averageweight: null,
+          playingtime: null
+        };
+      })
+      .filter(g => g);
+
+    // Step 2: Fetch thing API for all modalGames in parallel batches (100x)
+    const batchSize = 20;
+    const parallelBatches = 100;
+    const batches = [];
+    for (let i = 0; i < modalGames.length; i += batchSize) {
+      batches.push(modalGames.slice(i, i + batchSize));
+    }
+    for (let i = 0; i < batches.length; i += parallelBatches) {
+      const batchGroup = batches.slice(i, i + parallelBatches);
+      await Promise.all(batchGroup.map(async (batch) => {
+        const ids = batch.map(g => g.id).join(',');
+        try {
+          const thingXml = await fetchAPI('thing', ids, '&stats=1');
+          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+          const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+          thingItems.forEach(thingItem => {
+            const id = thingItem.getAttribute('id');
+            const game = modalGames.find(g => g.id === id);
+            if (!game) return;
+            // Parse averageweight
+            const weightNode = thingItem.querySelector('statistics ratings averageweight');
+            if (weightNode) {
+              game.averageweight = parseFloat(weightNode.getAttribute('value') || '0');
+            }
+            // Parse playingtime
+            const ptNode = thingItem.querySelector('playingtime');
+            if (ptNode) {
+              game.playingtime = parseInt(ptNode.textContent || '0');
+            }
+          });
+        } catch (e) {
+          // Ignore batch error
+        }
+      }));
+    }
+
+    document.getElementById('modalCount').textContent = modalGames.length;
+    stats.classList.remove('hidden');
+    sortModalGames();
+    
+  } catch (e) {
+    console.error(e);
+    content.innerHTML = `
+      <div class="text-center text-red-500 p-10 font-bold">
+        Error fetching collection. <br>Please check username and try again.<br>
+        <div class="text-xs font-normal mt-2 text-slate-400">${e.message}</div>
+      </div>
+    `;
+  }
+}
   
   try {
     // Corrected to use stats=1 to get ratings and ranks
@@ -516,21 +776,22 @@ async function checkCollection() {
 }
 
 function sortModalGames() {
+  const gamesToSort = collectionFilter === 'missing' ? missingGames : onBgaGames;
   const sort = document.getElementById('modalSort').value;
   if (sort === 'rating') {
-    modalGames.sort((a, b) => b.rating - a.rating);
+    gamesToSort.sort((a, b) => b.rating - a.rating);
   } else if (sort === 'rank') {
-    modalGames.sort((a, b) => a.rank - b.rank);
+    gamesToSort.sort((a, b) => a.rank - b.rank);
   } else if (sort === 'alpha') {
-    modalGames.sort((a, b) => a.name.localeCompare(b.name));
+    gamesToSort.sort((a, b) => a.name.localeCompare(b.name));
   } else if (sort === 'weight-desc') {
-    modalGames.sort((a, b) => (b.averageweight ?? -1) - (a.averageweight ?? -1));
+    gamesToSort.sort((a, b) => (b.averageweight ?? -1) - (a.averageweight ?? -1));
   } else if (sort === 'weight-asc') {
-    modalGames.sort((a, b) => (a.averageweight ?? 999) - (b.averageweight ?? 999));
+    gamesToSort.sort((a, b) => (a.averageweight ?? 999) - (b.averageweight ?? 999));
   } else if (sort === 'playtime-asc') {
-    modalGames.sort((a, b) => (a.playingtime ?? 99999) - (b.playingtime ?? 99999));
+    gamesToSort.sort((a, b) => (a.playingtime ?? 99999) - (b.playingtime ?? 99999));
   } else if (sort === 'playtime-desc') {
-    modalGames.sort((a, b) => (b.playingtime ?? -1) - (a.playingtime ?? -1));
+    gamesToSort.sort((a, b) => (b.playingtime ?? -1) - (a.playingtime ?? -1));
   }
   renderModalGames();
 }
@@ -539,16 +800,18 @@ function renderModalGames() {
   const content = document.getElementById('modalContent');
   content.innerHTML = '';
   
-  if (modalGames.length === 0) {
+  const gamesToRender = collectionFilter === 'missing' ? missingGames : onBgaGames;
+  
+  if (gamesToRender.length === 0) {
     content.innerHTML = `
       <div class="text-center text-slate-500 p-10">
-        All games in this collection are already on BGA! 🎉
+        ${collectionFilter === 'missing' ? 'All games in this collection are already on BGA! 🎉' : 'No games found on BGA in this collection.'}
       </div>
     `;
     return;
   }
   
-  modalGames.forEach(game => {
+  gamesToRender.forEach(game => {
     const div = document.createElement('div');
     div.className = 'bg-white p-3 rounded-xl border border-slate-100 flex gap-3 hover:shadow-md transition-all cursor-pointer';
     div.onclick = () => window.open(`https://boardgamegeek.com/boardgame/${game.id}`, '_blank');
@@ -579,6 +842,8 @@ async function fetchAPI(endpoint, id, queryParams = '') {
   let url;
   if (endpoint === 'collection') {
     url = `/api/bgg-helper?endpoint=${endpoint}&username=${encodeURIComponent(id)}${queryParams}`;
+  } else if (endpoint === 'geeklist') {
+    url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${queryParams}`;
   } else {
     url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${queryParams}`;
   }
