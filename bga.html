@@ -50,12 +50,58 @@
           <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">BGG Collection</p>
         </div>
       </div>
-      <div id="statsBox" class="text-right">
-        <div class="text-2xl font-bold text-blue-600" id="gameCount">0</div>
-        <div class="text-[10px] text-slate-500 uppercase font-bold">Games</div>
+      <div class="flex items-center gap-3">
+        <button onclick="openCollectionModal()" class="bg-white text-blue-600 border border-blue-200 hover:bg-blue-50 px-3 py-2 rounded-lg text-xs font-bold transition-colors">
+          <i class="fa-solid fa-layer-group mr-1"></i> Check Collection
+        </button>
+        <div id="statsBox" class="text-right">
+          <div class="text-2xl font-bold text-blue-600" id="gameCount">0</div>
+          <div class="text-[10px] text-slate-500 uppercase font-bold">Games</div>
+        </div>
       </div>
     </div>
   </header>
+
+  <!-- Collection Check Modal -->
+  <div id="collectionModal" class="fixed inset-0 z-50 hidden">
+    <div class="absolute inset-0 bg-slate-900/50 backdrop-blur-sm" onclick="closeCollectionModal()"></div>
+    <div class="absolute inset-4 sm:inset-auto sm:top-10 sm:bottom-10 sm:left-1/2 sm:-translate-x-1/2 sm:w-[600px] bg-white rounded-2xl shadow-2xl flex flex-col overflow-hidden">
+      <!-- Modal Header -->
+      <div class="p-4 border-b flex items-center justify-between bg-white z-10">
+        <h2 class="font-bold text-lg">Games Not on BGA</h2>
+        <button onclick="closeCollectionModal()" class="w-8 h-8 rounded-full bg-slate-100 hover:bg-slate-200 flex items-center justify-center transition-colors">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      
+      <!-- Modal Controls -->
+      <div class="p-4 border-b bg-slate-50 space-y-3">
+        <div class="flex gap-2">
+          <input type="text" id="collectionUsername" value="sportomax" class="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none" placeholder="BGG Username">
+          <button onclick="checkCollection()" class="bg-blue-600 text-white px-4 py-2 rounded-lg text-sm font-bold hover:bg-blue-700 transition-colors">
+            Check
+          </button>
+        </div>
+        <div class="flex items-center gap-2">
+           <select id="modalSort" onchange="sortModalGames()" class="flex-1 px-3 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-blue-500 outline-none">
+             <option value="rating">Avg Rating (High-Low)</option>
+             <option value="rank">BGG Rank (Best-Worst)</option>
+             <option value="alpha">Alphabetical (A-Z)</option>
+           </select>
+           <div id="modalStats" class="text-xs font-bold text-slate-500 whitespace-nowrap hidden">
+             Found <span id="modalCount" class="text-blue-600">0</span> games
+           </div>
+        </div>
+      </div>
+
+      <!-- Modal Content -->
+      <div id="modalContent" class="flex-1 overflow-y-auto p-4 space-y-2 bg-slate-50/50">
+        <div class="text-center text-slate-500 py-10">
+          Enter a username to find games in their collection<br>that are NOT on Board Game Arena.
+        </div>
+      </div>
+    </div>
+  </div>
 
   <main class="max-w-4xl mx-auto p-4 space-y-6">
     
@@ -172,9 +218,9 @@ async function fetchCollection() {
     displayedGames = [...allGames];
     renderGames();
     
-    // Fetch game details in batches with 10x parallel processing
+    // Fetch game details in batches with 100x parallel processing
     const batchSize = 20;
-    const parallelBatches = 10;
+    const parallelBatches = 100;
     const batches = [];
     for (let i = 0; i < gameIds.length; i += batchSize) {
       batches.push(gameIds.slice(i, i + batchSize));
@@ -348,8 +394,148 @@ function renderGames() {
   });
 }
 
+let modalGames = [];
+
+function openCollectionModal() {
+  document.getElementById('collectionModal').classList.remove('hidden');
+}
+
+function closeCollectionModal() {
+  document.getElementById('collectionModal').classList.add('hidden');
+}
+
+async function checkCollection() {
+  const username = document.getElementById('collectionUsername').value;
+  const content = document.getElementById('modalContent');
+  const stats = document.getElementById('modalStats');
+  
+  if (!username) return;
+  
+  content.innerHTML = `
+    <div class="flex flex-col items-center justify-center p-10 gap-3">
+      <i class="fa-solid fa-circle-notch fa-spin text-blue-600 text-2xl"></i>
+      <span class="font-bold text-slate-500">Fetching collection for ${username}...</span>
+    </div>
+  `;
+  stats.classList.add('hidden');
+  
+  try {
+    // Corrected to use stats=1 to get ratings and ranks
+    const xml = await fetchAPI('collection', username, '&own=1&stats=1');
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    
+    // Check for errors in BGG response
+    const errors = doc.querySelector('errors');
+    if (errors) {
+       throw new Error(errors.textContent || 'BGG Error');
+    }
+
+    const items = Array.from(doc.querySelectorAll('item'));
+    
+    // Create a Set of BGA game IDs for O(1) lookup
+    const bgaIds = new Set(allGames.map(g => g.objectid));
+    
+    modalGames = items
+      .map(item => {
+        const id = item.getAttribute('objectid');
+        if (bgaIds.has(id)) return null; // Skip if on BGA
+        
+        // Parse rank carefully locally
+        let rank = 999999;
+        const rankNode = item.querySelector('stats rating ranks rank[name="boardgame"]');
+        if (rankNode) {
+            const val = rankNode.getAttribute('value');
+            if (val && val !== 'Not Ranked') {
+                rank = parseInt(val);
+            }
+        }
+
+        return {
+          id: id,
+          name: item.querySelector('name')?.textContent || 'Unknown',
+          thumb: item.querySelector('thumbnail')?.textContent || '',
+          rating: parseFloat(item.querySelector('stats rating')?.getAttribute('value') || '0'),
+          rank: rank
+        };
+      })
+      .filter(g => g); // Remove nulls
+      
+    document.getElementById('modalCount').textContent = modalGames.length;
+    stats.classList.remove('hidden');
+    sortModalGames();
+    
+  } catch (e) {
+    console.error(e);
+    content.innerHTML = `
+      <div class="text-center text-red-500 p-10 font-bold">
+        Error fetching collection. <br>Please check username and try again.<br>
+        <div class="text-xs font-normal mt-2 text-slate-400">${e.message}</div>
+      </div>
+    `;
+  }
+}
+
+function sortModalGames() {
+  const sort = document.getElementById('modalSort').value;
+  
+  if (sort === 'rating') {
+    modalGames.sort((a, b) => b.rating - a.rating);
+  } else if (sort === 'rank') {
+    // Sort by rank (asc), putting 999999 at the end
+    modalGames.sort((a, b) => a.rank - b.rank);
+  } else if (sort === 'alpha') {
+    modalGames.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  
+  renderModalGames();
+}
+
+function renderModalGames() {
+  const content = document.getElementById('modalContent');
+  content.innerHTML = '';
+  
+  if (modalGames.length === 0) {
+    content.innerHTML = `
+      <div class="text-center text-slate-500 p-10">
+        All games in this collection are already on BGA! 🎉
+      </div>
+    `;
+    return;
+  }
+  
+  modalGames.forEach(game => {
+    const div = document.createElement('div');
+    div.className = 'bg-white p-3 rounded-xl border border-slate-100 flex gap-3 hover:shadow-md transition-all cursor-pointer';
+    div.onclick = () => window.open(`https://boardgamegeek.com/boardgame/${game.id}`, '_blank');
+    
+    // Proxy image if thumb is http
+    let thumbSrc = game.thumb;
+    if (thumbSrc && !thumbSrc.startsWith('https')) {
+        thumbSrc = `/api/image-proxy?url=${encodeURIComponent(thumbSrc)}`;
+    }
+    
+    div.innerHTML = `
+      <img src="${thumbSrc}" class="w-16 h-16 rounded bg-slate-100 object-cover flex-shrink-0" onerror="this.style.display='none'">
+      <div class="flex-1 min-w-0">
+        <h4 class="font-bold text-slate-900 truncate text-sm leading-tight mb-1">${game.name}</h4>
+        <div class="flex gap-2 text-xs">
+          ${game.rating > 0 ? `<span class="bg-amber-100 text-amber-800 px-1.5 py-0.5 rounded font-bold border border-amber-200">⭐ ${game.rating.toFixed(1)}</span>` : ''}
+          ${game.rank < 999999 ? `<span class="bg-blue-100 text-blue-700 px-1.5 py-0.5 rounded font-bold border border-blue-200">#${game.rank}</span>` : ''}
+        </div>
+      </div>
+    `;
+    content.appendChild(div);
+  });
+}
+
 async function fetchAPI(endpoint, id, queryParams = '') {
-  let url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${queryParams}`;
+  let url;
+  if (endpoint === 'collection') {
+    url = `/api/bgg-helper?endpoint=${endpoint}&username=${encodeURIComponent(id)}${queryParams}`;
+  } else {
+    url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${queryParams}`;
+  }
+  
   for (let attempt = 0; attempt < 5; attempt++) {
     let res;
     try {
