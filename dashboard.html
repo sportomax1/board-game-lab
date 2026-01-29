@@ -701,154 +701,154 @@
                         thumb: item.querySelector('thumbnail')?.textContent,
                         rank: idx + 1
                     }));
-            }
 
-            // 5. Fetch detailed stats for new slides using Thing API with batches
-            // Collect all owned game IDs
-            const ownedItems = items.filter(it => it.querySelector('status')?.getAttribute('own') === '1');
-            const ownedIds = ownedItems.map(it => it.getAttribute('objectid'));
-            
-            // Fetch thing data in batches of 20 with parallel processing (up to 100 batches in parallel)
-            const batchSize = 20;
-            const parallelBatches = 100;
-            const thingDataMap = {};
-            const batches = [];
-            
-            for (let i = 0; i < ownedIds.length; i += batchSize) {
-                batches.push(ownedIds.slice(i, i + batchSize));
-            }
-            
-            // Process batches in parallel groups
-            for (let i = 0; i < batches.length; i += parallelBatches) {
-                const batchGroup = batches.slice(i, i + parallelBatches);
+                // 5. Fetch detailed stats for new slides using Thing API with batches
+                // Collect all owned game IDs
+                const ownedItems = items.filter(it => it.querySelector('status')?.getAttribute('own') === '1');
+                const ownedIds = ownedItems.map(it => it.getAttribute('objectid'));
                 
-                await Promise.all(batchGroup.map(async (batch) => {
-                    const ids = batch.join(',');
-                    try {
-                        const thingXml = await fetchAPI('thing', `&id=${ids}&stats=1`);
-                        if (thingXml) {
-                            const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
-                            const thingItems = Array.from(thingDoc.querySelectorAll('item'));
-                            
-                            thingItems.forEach(thingItem => {
-                                const id = thingItem.getAttribute('id');
-                                const playingtime = parseInt(thingItem.querySelector('playingtime')?.getAttribute('value') || '0');
-                                const minplaytime = parseInt(thingItem.querySelector('minplaytime')?.getAttribute('value') || '0');
-                                const maxplaytime = parseInt(thingItem.querySelector('maxplaytime')?.getAttribute('value') || '0');
-                                const averageweight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
-                                const average = parseFloat(thingItem.querySelector('statistics ratings average')?.getAttribute('value') || '0');
-                                const yearpublished = parseInt(thingItem.querySelector('yearpublished')?.getAttribute('value') || '0');
+                // Fetch thing data in batches of 20 with parallel processing (up to 100 batches in parallel)
+                const batchSize = 20;
+                const parallelBatches = 100;
+                const thingDataMap = {};
+                const batches = [];
+                
+                for (let i = 0; i < ownedIds.length; i += batchSize) {
+                    batches.push(ownedIds.slice(i, i + batchSize));
+                }
+                
+                // Process batches in parallel groups
+                for (let i = 0; i < batches.length; i += parallelBatches) {
+                    const batchGroup = batches.slice(i, i + parallelBatches);
+                    
+                    await Promise.all(batchGroup.map(async (batch) => {
+                        const ids = batch.join(',');
+                        try {
+                            const thingXml = await fetchAPI('thing', `&id=${ids}&stats=1`);
+                            if (thingXml) {
+                                const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                                const thingItems = Array.from(thingDoc.querySelectorAll('item'));
                                 
-                                // Parse player count recommendations
-                                const polls = Array.from(thingItem.querySelectorAll('poll'));
-                                const playerPoll = polls.find(p => p.getAttribute('name') === 'suggested_numplayers');
-                                const playerCounts = {};
-                                
-                                if (playerPoll) {
-                                    const results = Array.from(playerPoll.querySelectorAll('results'));
-                                    results.forEach(result => {
-                                        const numplayers = result.getAttribute('numplayers');
-                                        const voteElements = Array.from(result.querySelectorAll('result'));
-                                        const votes = {};
-                                        voteElements.forEach(v => {
-                                            votes[v.getAttribute('value')] = parseInt(v.getAttribute('numvotes') || '0');
+                                thingItems.forEach(thingItem => {
+                                    const id = thingItem.getAttribute('id');
+                                    const playingtime = parseInt(thingItem.querySelector('playingtime')?.getAttribute('value') || '0');
+                                    const minplaytime = parseInt(thingItem.querySelector('minplaytime')?.getAttribute('value') || '0');
+                                    const maxplaytime = parseInt(thingItem.querySelector('maxplaytime')?.getAttribute('value') || '0');
+                                    const averageweight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
+                                    const average = parseFloat(thingItem.querySelector('statistics ratings average')?.getAttribute('value') || '0');
+                                    const yearpublished = parseInt(thingItem.querySelector('yearpublished')?.getAttribute('value') || '0');
+                                    
+                                    // Parse player count recommendations
+                                    const polls = Array.from(thingItem.querySelectorAll('poll'));
+                                    const playerPoll = polls.find(p => p.getAttribute('name') === 'suggested_numplayers');
+                                    const playerCounts = {};
+                                    
+                                    if (playerPoll) {
+                                        const results = Array.from(playerPoll.querySelectorAll('results'));
+                                        results.forEach(result => {
+                                            const numplayers = result.getAttribute('numplayers');
+                                            const voteElements = Array.from(result.querySelectorAll('result'));
+                                            const votes = {};
+                                            voteElements.forEach(v => {
+                                                votes[v.getAttribute('value')] = parseInt(v.getAttribute('numvotes') || '0');
+                                            });
+                                            const best = votes['Best'] || 0;
+                                            const recommended = votes['Recommended'] || 0;
+                                            const notRecommended = votes['Not Recommended'] || 0;
+                                            const total = best + recommended + notRecommended;
+                                            if (total > 0 && (best / total) >= 0.5) {
+                                                playerCounts[numplayers] = { best, recommended, notRecommended, total };
+                                            }
                                         });
-                                        const best = votes['Best'] || 0;
-                                        const recommended = votes['Recommended'] || 0;
-                                        const notRecommended = votes['Not Recommended'] || 0;
-                                        const total = best + recommended + notRecommended;
-                                        if (total > 0 && (best / total) >= 0.5) {
-                                            playerCounts[numplayers] = { best, recommended, notRecommended, total };
-                                        }
-                                    });
-                                }
-                                
-                                thingDataMap[id] = {
-                                    playingtime,
-                                    minplaytime,
-                                    maxplaytime,
-                                    averageweight,
-                                    average,
-                                    yearpublished,
-                                    playerCounts
-                                };
-                            });
+                                    }
+                                    
+                                    thingDataMap[id] = {
+                                        playingtime,
+                                        minplaytime,
+                                        maxplaytime,
+                                        averageweight,
+                                        average,
+                                        yearpublished,
+                                        playerCounts
+                                    };
+                                });
+                            }
+                        } catch (e) {
+                            console.error('Batch error:', e);
                         }
-                    } catch (e) {
-                        console.error('Batch error:', e);
-                    }
-                }));
-            }
-            
-            // Now build the new slides using the thingDataMap
-            const gamesWithDetails = ownedItems.map(it => ({
-                id: it.getAttribute('objectid'),
-                name: it.querySelector('name')?.textContent,
-                thumb: it.querySelector('thumbnail')?.textContent,
-                ...thingDataMap[it.getAttribute('objectid')]
-            })).filter(g => g.playingtime !== undefined);
-            
-            // QUICKEST GAMES (shortest playing time, excluding 0)
-            cache.QUICKEST_GAMES = gamesWithDetails
-                .filter(g => g.playingtime > 0)
-                .sort((a, b) => a.playingtime - b.playingtime)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // LONGEST GAMES (longest playing time)
-            cache.LONGEST_GAMES = gamesWithDetails
-                .filter(g => g.playingtime > 0)
-                .sort((a, b) => b.playingtime - a.playingtime)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // LIGHTEST GAMES (lowest weight, excluding 0)
-            cache.LIGHTEST_GAMES = gamesWithDetails
-                .filter(g => g.averageweight > 0)
-                .sort((a, b) => a.averageweight - b.averageweight)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // HEAVIEST GAMES (highest weight)
-            cache.HEAVIEST_GAMES = gamesWithDetails
-                .filter(g => g.averageweight > 0)
-                .sort((a, b) => b.averageweight - a.averageweight)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // NEWEST GAMES (year published desc)
-            cache.NEWEST_GAMES = gamesWithDetails
-                .filter(g => g.yearpublished > 0)
-                .sort((a, b) => b.yearpublished - a.yearpublished)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // OLDEST GAMES (year published asc)
-            cache.OLDEST_GAMES = gamesWithDetails
-                .filter(g => g.yearpublished > 0)
-                .sort((a, b) => a.yearpublished - b.yearpublished)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // TOP BGG AVERAGE (by BGG average rating)
-            cache.TOP_BGG_AVERAGE = gamesWithDetails
-                .filter(g => g.average > 0)
-                .sort((a, b) => b.average - a.average)
-                .slice(0, 10)
-                .map((g, idx) => ({ ...g, rank: idx + 1 }));
-            
-            // BEST BY PLAYER COUNT (1-8)
-            for (let pc = 1; pc <= 8; pc++) {
-                const pcKey = `BEST_${pc}P`;
-                cache[pcKey] = gamesWithDetails
-                    .filter(g => g.playerCounts && g.playerCounts[pc.toString()])
-                    .sort((a, b) => {
-                        const aVotes = a.playerCounts[pc.toString()];
-                        const bVotes = b.playerCounts[pc.toString()];
-                        return (bVotes.best / bVotes.total) - (aVotes.best / aVotes.total);
-                    })
+                    }));
+                }
+                
+                // Now build the new slides using the thingDataMap
+                const gamesWithDetails = ownedItems.map(it => ({
+                    id: it.getAttribute('objectid'),
+                    name: it.querySelector('name')?.textContent,
+                    thumb: it.querySelector('thumbnail')?.textContent,
+                    ...thingDataMap[it.getAttribute('objectid')]
+                })).filter(g => g.playingtime !== undefined);
+                
+                // QUICKEST GAMES (shortest playing time, excluding 0)
+                cache.QUICKEST_GAMES = gamesWithDetails
+                    .filter(g => g.playingtime > 0)
+                    .sort((a, b) => a.playingtime - b.playingtime)
                     .slice(0, 10)
                     .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // LONGEST GAMES (longest playing time)
+                cache.LONGEST_GAMES = gamesWithDetails
+                    .filter(g => g.playingtime > 0)
+                    .sort((a, b) => b.playingtime - a.playingtime)
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // LIGHTEST GAMES (lowest weight, excluding 0)
+                cache.LIGHTEST_GAMES = gamesWithDetails
+                    .filter(g => g.averageweight > 0)
+                    .sort((a, b) => a.averageweight - b.averageweight)
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // HEAVIEST GAMES (highest weight)
+                cache.HEAVIEST_GAMES = gamesWithDetails
+                    .filter(g => g.averageweight > 0)
+                    .sort((a, b) => b.averageweight - a.averageweight)
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // NEWEST GAMES (year published desc)
+                cache.NEWEST_GAMES = gamesWithDetails
+                    .filter(g => g.yearpublished > 0)
+                    .sort((a, b) => b.yearpublished - a.yearpublished)
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // OLDEST GAMES (year published asc)
+                cache.OLDEST_GAMES = gamesWithDetails
+                    .filter(g => g.yearpublished > 0)
+                    .sort((a, b) => a.yearpublished - b.yearpublished)
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // TOP BGG AVERAGE (by BGG average rating)
+                cache.TOP_BGG_AVERAGE = gamesWithDetails
+                    .filter(g => g.average > 0)
+                    .sort((a, b) => b.average - a.average)
+                    .slice(0, 10)
+                    .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                
+                // BEST BY PLAYER COUNT (1-8)
+                for (let pc = 1; pc <= 8; pc++) {
+                    const pcKey = `BEST_${pc}P`;
+                    cache[pcKey] = gamesWithDetails
+                        .filter(g => g.playerCounts && g.playerCounts[pc.toString()])
+                        .sort((a, b) => {
+                            const aVotes = a.playerCounts[pc.toString()];
+                            const bVotes = b.playerCounts[pc.toString()];
+                            return (bVotes.best / bVotes.total) - (aVotes.best / aVotes.total);
+                        })
+                        .slice(0, 10)
+                        .map((g, idx) => ({ ...g, rank: idx + 1 }));
+                }
             }
 
             // 6. Fetch Random Kevin (if sportomax)
