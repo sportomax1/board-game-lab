@@ -262,14 +262,38 @@
     }
   }
 
-  // Fetch collection using local api helper (returns XML)
+  // Fetch collection using local api helper (returns XML) with retry logic
   async function fetchCollection(username){
     if(!username) throw new Error('No username provided');
     const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
-    const r = await fetch(url);
-    if(!r.ok) throw new Error('BGG helper error: '+r.status);
-    const txt = await r.text();
-    return new DOMParser().parseFromString(txt,'text/xml');
+    
+    // Retry logic with exponential backoff
+    for (let attempt = 0; attempt < 5; attempt++) {
+      try {
+        const r = await fetch(url);
+        
+        // Handle 202 (accepted, processing)
+        if (r.status === 202) {
+          await wait(2000 * Math.pow(1.5, attempt));
+          continue;
+        }
+        
+        if (!r.ok) throw new Error('BGG helper error: ' + r.status);
+        
+        const txt = await r.text();
+        return new DOMParser().parseFromString(txt, 'text/xml');
+      } catch (e) {
+        if (attempt === 4) throw e; // Last attempt, throw error
+        await wait(1000 * Math.pow(2, attempt)); // Exponential backoff
+      }
+    }
+    
+    throw new Error('Failed to fetch collection after 5 attempts');
+  }
+  
+  // Helper function to wait
+  function wait(ms) {
+    return new Promise(resolve => setTimeout(resolve, ms));
   }
 
   // Parse BGG collection XML into a lightweight JS object array
