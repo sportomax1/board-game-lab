@@ -161,33 +161,44 @@
         document.getElementById('gameCount').textContent = allGames.length;
         document.getElementById('statsBox').classList.remove('hidden');
 
-        // Batch fetch Thing data
-        const batchSize = 100;
-        const batches = Math.ceil(allGames.length / batchSize);
+        // Batch fetch Thing data with 100x parallel processing
+        const batchSize = 20;
+        const parallelBatches = 100; // Process 100 batches in parallel
+        const batches = [];
+        for (let i = 0; i < allGames.length; i += batchSize) {
+          batches.push(allGames.slice(i, i + batchSize));
+        }
         
-        for (let i = 0; i < batches; i++) {
-          const start = i * batchSize;
-          const end = Math.min(start + batchSize, allGames.length);
-          const batchGames = allGames.slice(start, end);
-          const ids = batchGames.map(g => g.objectid).join(',');
+        // Process batches in parallel groups
+        for (let i = 0; i < batches.length; i += parallelBatches) {
+          const batchGroup = batches.slice(i, i + parallelBatches);
+          updateProgress(`Loading metrics ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`, 10 + ((Math.min(i + parallelBatches, batches.length) / batches.length) * 80));
           
-          updateProgress(`Fetching Thing data (${i + 1}/${batches})...`, 10 + ((i + 1) / batches * 80));
-          
-          const thingXml = await fetchAPI('thing', ids, '&stats=1');
-          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
-          
-          thingDoc.querySelectorAll('item').forEach(item => {
-            const objId = item.getAttribute('id');
-            const statsEl = item.querySelector('statistics ratings');
-            if (statsEl) {
-              const game = allGames.find(g => g.objectid === objId);
-              if (game) {
-                game.bayesAverage = parseFloat(statsEl.querySelector('bayesaverage')?.getAttribute('value') || 0);
-                game.averageWeight = parseFloat(statsEl.querySelector('averageweight')?.getAttribute('value') || 0);
-                game.loaded = true;
-              }
+          await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+            const ids = batch.map(g => g.objectid).join(',');
+            
+            try {
+              const thingXml = await fetchAPI('thing', ids, '&stats=1');
+              const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+              
+              thingDoc.querySelectorAll('item').forEach(item => {
+                const objId = item.getAttribute('id');
+                const statsEl = item.querySelector('statistics ratings');
+                if (statsEl) {
+                  const game = allGames.find(g => g.objectid === objId);
+                  if (game) {
+                    game.bayesAverage = parseFloat(statsEl.querySelector('bayesaverage')?.getAttribute('value') || 0);
+                    game.averageWeight = parseFloat(statsEl.querySelector('averageweight')?.getAttribute('value') || 0);
+                    game.loaded = true;
+                  }
+                }
+              });
+            } catch (e) {
+              console.error('Batch error:', e);
             }
-          });
+          }));
+          
+          await wait(500); // Throttle between parallel groups
         }
 
         updateProgress('Processing data...', 95);
