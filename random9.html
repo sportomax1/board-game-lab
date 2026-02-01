@@ -323,15 +323,23 @@
       }
 
       function swapCellContent(cell1, cell2) {
+        // Swap game data in currentGameData array
+        const index1 = Array.from(grid.children).indexOf(cell1);
+        const index2 = Array.from(grid.children).indexOf(cell2);
+        
+        if (index1 !== -1 && index2 !== -1) {
+          [currentGameData[index1], currentGameData[index2]] = [currentGameData[index2], currentGameData[index1]];
+        }
+
+        // Swap images and data attributes
         const img1 = cell1.querySelector('img');
         const img2 = cell2.querySelector('img');
-        const data1 = cell1.data;
-        const data2 = cell2.data;
-
-        cell1.querySelector('img').src = img2.src;
-        cell2.querySelector('img').src = img1.src;
-        cell1.data = data2;
-        cell2.data = data1;
+        const tempSrc = img1.src;
+        img1.src = img2.src;
+        img2.src = tempSrc;
+        
+        cell1.data = currentGameData[index1];
+        cell2.data = currentGameData[index2];
       }
 
       function renderGrid(games) {
@@ -355,6 +363,7 @@
               draggedCell = cell;
               img.classList.add('dragging');
               e.dataTransfer.effectAllowed = 'move';
+              e.dataTransfer.setData('text/html', cell.innerHTML);
             });
 
             img.addEventListener('dragend', () => {
@@ -364,6 +373,7 @@
 
             cell.addEventListener('dragover', (e) => {
               e.preventDefault();
+              e.dataTransfer.dropEffect = 'move';
               if (draggedCell && draggedCell !== cell) {
                 cell.classList.add('drag-over');
               }
@@ -489,8 +499,8 @@
 
       async function handleGenerateImage() {
         generateBtn.disabled = true;
-        status.textContent = 'Generating image...';
-
+        generateBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Generating...';
+        
         try {
           const canvas = document.createElement('canvas');
           canvas.width = 900;
@@ -503,41 +513,75 @@
           const cells = Array.from(grid.querySelectorAll('.game-cell'));
 
           for (let i = 0; i < 9; i++) {
+            const imgElement = cells[i].querySelector('img');
+            if (!imgElement || !imgElement.src) continue;
+            
             const img = new Image();
             img.crossOrigin = 'anonymous';
-            img.src = IMAGE_PROXY + encodeURIComponent(cells[i].querySelector('img').src);
+            img.src = IMAGE_PROXY + encodeURIComponent(imgElement.src);
+            
             await new Promise(resolve => {
-              img.onload = resolve;
+              img.onload = () => {
+                const row = Math.floor(i / 3);
+                const col = i % 3;
+                ctx.drawImage(img, col * cellSize, row * cellSize, cellSize, cellSize);
+                resolve();
+              };
               img.onerror = resolve;
             });
-
-            const row = Math.floor(i / 3);
-            const col = i % 3;
-            ctx.drawImage(img, col * cellSize, row * cellSize, cellSize, cellSize);
           }
 
           currentCanvas = canvas;
-          shareSection.style.display = 'block';
+          
+          // Show share/download options
+          shareSection.classList.remove('hidden');
+          status.textContent = 'Image generated! Share or download below.';
+          
         } catch (error) {
-          status.textContent = `Error: ${error.message}`;
+          status.textContent = `Error generating image: ${error.message}`;
         } finally {
           generateBtn.disabled = false;
+          generateBtn.innerHTML = '<i class="fa-solid fa-image"></i> Generate Image';
         }
       }
 
       async function handleShareImage() {
         shareBtn.disabled = true;
+        shareBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Sharing...';
+        
         try {
+          if (!currentCanvas) {
+            throw new Error('No image generated yet');
+          }
+
           const canvas = currentCanvas;
-          const customText = shareText.value;
+          
           canvas.toBlob(blob => {
-            const file = new File([blob], 'random9-grid.png', { type: 'image/png' });
-            downloadArea.innerHTML = `<a href="${URL.createObjectURL(blob)}" download="random9-grid.png" class="inline-block mt-3 px-4 py-2 bg-indigo-600 text-white rounded-lg font-bold hover:bg-indigo-700 transition-all"><i class="fa-solid fa-download"></i> Download Image</a>`;
-          });
+            if (!blob) {
+              status.textContent = 'Error creating image';
+              return;
+            }
+
+            const blobUrl = URL.createObjectURL(blob);
+            const filename = `random9-grid-${new Date().getTime()}.png`;
+            
+            // Create download button
+            downloadArea.innerHTML = `
+              <div class="mt-4 bg-green-50 border border-green-200 rounded-lg p-4">
+                <a href="${blobUrl}" download="${filename}" class="inline-flex items-center gap-2 px-4 py-2 bg-green-600 hover:bg-green-700 text-white rounded-lg font-bold transition-all">
+                  <i class="fa-solid fa-download"></i> Download Image
+                </a>
+              </div>
+            `;
+            
+            status.textContent = 'Image ready to download!';
+          }, 'image/png');
+
         } catch (error) {
           status.textContent = `Error: ${error.message}`;
         } finally {
           shareBtn.disabled = false;
+          shareBtn.innerHTML = '<i class="fa-solid fa-share-nodes"></i> Share Image';
         }
       }
 
@@ -546,33 +590,38 @@
       shareBtn.addEventListener('click', handleShareImage);
 
       document.addEventListener('touchmove', (e) => {
-        if (draggedCell) {
+        if (draggedCell && draggedCell.classList.contains('touch-dragging')) {
           e.preventDefault();
           const touch = e.touches[0];
           const dx = touch.clientX - draggedCell.startX;
           const dy = touch.clientY - draggedCell.startY;
           
           draggedCell.style.position = 'fixed';
-          draggedCell.style.zIndex = '10';
+          draggedCell.style.zIndex = '1000';
           draggedCell.style.left = `${draggedCell.initialX + dx}px`;
           draggedCell.style.top = `${draggedCell.initialY + dy}px`;
+          draggedCell.style.width = draggedCell.getBoundingClientRect().width + 'px';
 
           const elementOver = document.elementFromPoint(touch.clientX, touch.clientY);
-          const currentTargetCell = elementOver ? elementOver.closest('.game-cell') : null;
+          const currentTargetCell = elementOver?.closest('.game-cell');
 
-          if (currentTargetCell && currentTargetCell !== draggedCell && currentTargetCell !== touchTargetCell) {
-            if (touchTargetCell) touchTargetCell.classList.remove('drag-over');
-            currentTargetCell.classList.add('drag-over');
-            touchTargetCell = currentTargetCell;
+          if (currentTargetCell && currentTargetCell !== draggedCell) {
+            if (touchTargetCell && touchTargetCell !== currentTargetCell) {
+              touchTargetCell.classList.remove('drag-over');
+            }
+            if (currentTargetCell !== touchTargetCell) {
+              currentTargetCell.classList.add('drag-over');
+              touchTargetCell = currentTargetCell;
+            }
           } else if (!currentTargetCell && touchTargetCell) {
             touchTargetCell.classList.remove('drag-over');
             touchTargetCell = null;
           }
         }
-      });
+      }, { passive: false });
 
       document.addEventListener('touchend', (e) => {
-        if (draggedCell) {
+        if (draggedCell && draggedCell.classList.contains('touch-dragging')) {
           if (touchTargetCell && touchTargetCell !== draggedCell) {
             swapCellContent(touchTargetCell, draggedCell);
           }
@@ -581,6 +630,7 @@
           draggedCell.style.zIndex = 'auto';
           draggedCell.style.left = 'auto';
           draggedCell.style.top = 'auto';
+          draggedCell.style.width = 'auto';
           if (touchTargetCell) touchTargetCell.classList.remove('drag-over');
           draggedCell = null;
           touchTargetCell = null;
@@ -589,12 +639,26 @@
     });
 
     // Global functions accessible from HTML onclick handlers
+    function shuffleArray(array) {
+      for (let i = array.length - 1; i > 0; i--) {
+        const j = Math.floor(Math.random() * (i + 1));
+        [array[i], array[j]] = [array[j], array[i]];
+      }
+    }
+
     function resortGames(method) {
+      if (!currentGameData || currentGameData.length === 0) return;
+      
       if (method === 'random') {
         shuffleArray(currentGameData);
       } else if (method === 'rating') {
-        currentGameData.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+        currentGameData.sort((a, b) => {
+          const ratingA = a.rating || 0;
+          const ratingB = b.rating || 0;
+          return ratingB - ratingA; // Highest rating first
+        });
       }
+      
       renderGrid(currentGameData);
     }
   </script>
