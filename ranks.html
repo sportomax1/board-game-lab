@@ -290,40 +290,54 @@
                 console.log('   ├─ Total Pages:', pages);
                 console.log('   ├─ Items per Page: 100');
                 console.log('   └─ Total Target:', limit);
-                updateProgress(5, `Fetching ${pages} pages of rankings...`, '');
+                updateProgress(5, `Fetching ${pages} pages of rankings in parallel...`, '');
                 
+                // Fetch all pages in parallel for faster loading
+                const pagePromises = [];
                 for (let p = 1; p <= pages; p++) {
-                    console.log(`📖 [BROWSE API] Fetching page ${p}/${pages}`);
-                    
-                    const browseUrl = `/api/bgg-helper?endpoint=browse&page=${p}`;
-                    console.log('   ├─ API Request URL:', browseUrl);
-                    console.log('   ├─ Timestamp:', new Date().toISOString());
-                    
-                    const res = await fetch(browseUrl);
-                    console.log('   ├─ Response Status:', res.status, res.statusText);
-                    
-                    const html = await res.text();
-                    console.log('   ├─ Response Size:', html.length, 'bytes');
-                    
-                    // Parse HTML to find game IDs
-                    // Look for links like /boardgame/174430/gloomhaven
-                    const regex = /href="\/boardgame\/(\d+)\/[^"]*"/g;
-                    let match;
-                    let pageIds = 0;
-                    while ((match = regex.exec(html)) !== null) {
-                        if (ids.length < limit) {
-                            // Avoid duplicates if any
-                            if (!ids.includes(match[1])) {
-                                ids.push(match[1]);
-                                pageIds++;
+                    pagePromises.push(
+                        (async () => {
+                            console.log(`📖 [BROWSE API] Fetching page ${p}/${pages}`);
+                            
+                            const browseUrl = `/api/bgg-helper?endpoint=browse&page=${p}`;
+                            console.log('   ├─ API Request URL:', browseUrl);
+                            console.log('   ├─ Timestamp:', new Date().toISOString());
+                            
+                            const res = await fetch(browseUrl);
+                            console.log('   ├─ Response Status:', res.status, res.statusText);
+                            
+                            const html = await res.text();
+                            console.log('   ├─ Response Size:', html.length, 'bytes');
+                            
+                            // Parse HTML to find game IDs
+                            // Look for links like /boardgame/174430/gloomhaven
+                            const regex = /href="\/boardgame\/(\d+)\/[^"]*"/g;
+                            let match;
+                            let pageIds = [];
+                            while ((match = regex.exec(html)) !== null) {
+                                pageIds.push(match[1]);
                             }
+                            
+                            console.log(`✓ [BROWSE API] Page ${p} parsed`);
+                            console.log('   ├─ Found on Page:', pageIds.length);
+                            
+                            return pageIds;
+                        })()
+                    );
+                }
+                
+                // Wait for all pages to complete
+                const allPageIds = await Promise.all(pagePromises);
+                
+                // Flatten and deduplicate, respecting limit
+                const seenIds = new Set();
+                for (const pageIds of allPageIds) {
+                    for (const id of pageIds) {
+                        if (ids.length < limit && !seenIds.has(id)) {
+                            ids.push(id);
+                            seenIds.add(id);
                         }
                     }
-                    const pagePercent = 5 + (p/pages)*15;
-                    console.log(`✓ [BROWSE API] Page ${p} parsed`);
-                    console.log('   ├─ Found on Page:', pageIds);
-                    console.log('   ├─ Total Collected:', ids.length);
-                    updateProgress(pagePercent, `Parsed page ${p}/${pages}...`, `${ids.length} games found`);
                 }
                 
                 allGameIds = ids;
@@ -332,6 +346,7 @@
                 console.log('   ├─ Game IDs:', ids.slice(0, 5).join(', '), ids.length > 5 ? '...' : '');
 
                 document.getElementById('gameCount').textContent = ids.length;
+                updateProgress(20, `Collected ${ids.length} game IDs. Fetching details in batches...`, `${ids.length} / ${limit}`);
                 
                 if (ids.length === 0) throw new Error('No games found.');
 
