@@ -67,16 +67,33 @@
       align-items: center;
       justify-content: center;
       z-index: 50;
-      padding: 1rem;
     }
 
     .modal-content {
       background: white;
-      border-radius: 1rem;
-      max-width: 90%;
-      max-height: 80vh;
+      border-radius: 0;
+      width: 100%;
+      height: 100vh;
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+    }
+
+    .modal-header {
+      border-bottom: 1px solid #e2e8f0;
+      padding: 1rem;
+      flex-shrink: 0;
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 1rem;
+    }
+
+    .modal-games-container {
+      flex: 1;
       overflow-y: auto;
-      width: 500px;
+      padding: 1rem;
+      space-y: 1rem;
     }
   </style>
 </head>
@@ -201,13 +218,28 @@
   <!-- Modal -->
   <div id="modalOverlay" class="modal-overlay hidden" onclick="closeModal(event)">
     <div class="modal-content" onclick="event.stopPropagation()">
-      <div class="sticky top-0 bg-white border-b border-slate-200 p-4 flex items-center justify-between">
-        <h3 class="font-bold text-lg" id="modalTitle"></h3>
-        <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600">
+      <div class="modal-header">
+        <div class="flex-1 min-w-0">
+          <h3 class="font-bold text-lg" id="modalTitle"></h3>
+        </div>
+        <select 
+          id="modalSortSelect" 
+          onchange="sortModalGames(this.value)" 
+          class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-medium text-sm flex-shrink-0"
+        >
+          <option value="average-desc">Avg Rating ↓</option>
+          <option value="average-asc">Avg Rating ↑</option>
+          <option value="weight-desc">Weight ↓</option>
+          <option value="weight-asc">Weight ↑</option>
+          <option value="year-desc">Year ↓</option>
+          <option value="year-asc">Year ↑</option>
+          <option value="alpha">A-Z</option>
+        </select>
+        <button onclick="closeModal()" class="text-slate-400 hover:text-slate-600 flex-shrink-0">
           <i class="fa-solid fa-times text-xl"></i>
         </button>
       </div>
-      <div class="p-4 space-y-2" id="modalContent"></div>
+      <div class="modal-games-container space-y-3" id="modalContent"></div>
     </div>
   </div>
 
@@ -300,6 +332,14 @@ async function fetchCollection() {
             const id = thingItem.getAttribute('id');
             const game = allGames.find(g => g.objectid === id);
             if (!game) return;
+            
+            // Extract rating, weight, and year
+            const stats = thingItem.querySelector('statistics ratings');
+            if (stats) {
+              game.rating = parseFloat(stats.querySelector('average')?.getAttribute('value') || '0');
+              game.weight = parseFloat(stats.querySelector('averageweight')?.getAttribute('value') || '0');
+            }
+            game.year = parseInt(thingItem.querySelector('yearpublished')?.getAttribute('value') || '0');
             
             // Extract all link types
             Object.entries(TYPE_MAP).forEach(([key, type]) => {
@@ -443,14 +483,54 @@ function filterTypes() {
 function showGames(title, games) {
   const modal = document.getElementById('modalOverlay');
   const modalTitle = document.getElementById('modalTitle');
-  const modalContent = document.getElementById('modalContent');
+  const sortSelect = document.getElementById('modalSortSelect');
+  
+  // Store games and extract rating/weight from game data
+  currentModalGames = games.map(game => ({
+    ...game,
+    rating: allGames.find(g => g.objectid === game.objectid)?.rating || 0,
+    weight: allGames.find(g => g.objectid === game.objectid)?.weight || 0,
+    year: allGames.find(g => g.objectid === game.objectid)?.year || 0
+  }));
   
   modalTitle.textContent = `${title} (${games.length})`;
+  sortSelect.value = 'average-desc';
+  
+  sortModalGames('average-desc');
+  modal.classList.remove('hidden');
+}
+
+let currentModalGames = [];
+
+function sortModalGames(sortBy) {
+  let sorted = [...currentModalGames];
+  
+  if (sortBy === 'average-desc') {
+    sorted.sort((a, b) => (b.rating || 0) - (a.rating || 0));
+  } else if (sortBy === 'average-asc') {
+    sorted.sort((a, b) => (a.rating || 0) - (b.rating || 0));
+  } else if (sortBy === 'weight-desc') {
+    sorted.sort((a, b) => (b.weight || 0) - (a.weight || 0));
+  } else if (sortBy === 'weight-asc') {
+    sorted.sort((a, b) => (a.weight || 0) - (b.weight || 0));
+  } else if (sortBy === 'year-desc') {
+    sorted.sort((a, b) => (b.year || 0) - (a.year || 0));
+  } else if (sortBy === 'year-asc') {
+    sorted.sort((a, b) => (a.year || 0) - (b.year || 0));
+  } else if (sortBy === 'alpha') {
+    sorted.sort((a, b) => a.name.localeCompare(b.name));
+  }
+  
+  renderModalGames(sorted);
+}
+
+function renderModalGames(games) {
+  const modalContent = document.getElementById('modalContent');
   modalContent.innerHTML = '';
   
-  games.sort((a, b) => a.name.localeCompare(b.name)).forEach(game => {
+  games.forEach(game => {
     const gameCard = document.createElement('div');
-    gameCard.className = 'flex gap-3 p-3 bg-slate-50 rounded-lg border border-slate-200 cursor-pointer hover:bg-slate-100';
+    gameCard.className = 'flex gap-4 p-4 bg-slate-50 rounded-lg border border-slate-200 cursor-pointer hover:shadow-md hover:bg-slate-100 transition-all';
     gameCard.onclick = () => window.open(`https://boardgamegeek.com/boardgame/${game.objectid}`, '_blank');
     
     gameCard.innerHTML = `
@@ -458,19 +538,22 @@ function showGames(title, games) {
         <img 
           src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" 
           alt="${game.name}"
-          class="w-16 h-16 rounded object-cover bg-slate-200 flex-shrink-0"
+          class="w-20 h-20 rounded object-cover bg-slate-300 flex-shrink-0"
           onerror="this.style.display='none'"
         >
       ` : ''}
       <div class="flex-1 min-w-0">
-        <div class="font-semibold text-slate-900">${game.name}</div>
+        <div class="font-semibold text-slate-900 mb-2">${game.name}</div>
+        <div class="flex flex-wrap gap-2">
+          ${game.rating ? `<div class="bg-amber-100 text-amber-700 px-2 py-1 rounded text-xs font-bold">⭐ ${game.rating.toFixed(2)}</div>` : ''}
+          ${game.weight ? `<div class="bg-purple-100 text-purple-700 px-2 py-1 rounded text-xs font-bold">⚙️ ${game.weight.toFixed(2)}</div>` : ''}
+          ${game.year ? `<div class="bg-blue-100 text-blue-700 px-2 py-1 rounded text-xs font-bold">📅 ${game.year}</div>` : ''}
+        </div>
       </div>
     `;
     
     modalContent.appendChild(gameCard);
   });
-  
-  modal.classList.remove('hidden');
 }
 
 function closeModal(event) {
