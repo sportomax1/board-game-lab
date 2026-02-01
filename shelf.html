@@ -498,8 +498,8 @@
             <p class="text-slate-700 mb-3"><strong>Kallax Dimensions:</strong> Default 13" wide × 13" tall × 15" deep (customizable)</p>
             
             <div class="bg-purple-50 p-4 rounded-lg mb-3">
-              <h4 class="font-bold text-purple-900 mb-2">Algorithm: Expert Vertical (V+H)</h4>
-              <p class="text-sm text-slate-700 mb-2">Two-phase packing algorithm that prioritizes vertical orientation, then fills remaining space with horizontal games. V+H stands for Vertical plus Horizontal stacking.</p>
+              <h4 class="font-bold text-purple-900 mb-2">Algorithm: Smart Vertical</h4>
+              <p class="text-sm text-slate-700 mb-2">Efficient packing algorithm that sorts games by height (mid dimension) and intelligently fills each shelf by searching for best-fit games. Based on the same logic as cubes_backup.html smart vertical mode.</p>
             </div>
             
             <div class="bg-purple-50 p-4 rounded-lg">
@@ -507,40 +507,31 @@
               <ol class="list-decimal list-inside space-y-2 text-slate-700">
                 <li><strong>Dimension Tagging:</strong>
                   <ul class="list-disc list-inside ml-6 mt-1">
-                    <li>For each game, identify the smallest dimension → "min"</li>
-                    <li>Identify the middle dimension → "mid"</li>
+                    <li>For each game, identify the smallest dimension → "min" (width when vertical)</li>
+                    <li>Identify the middle dimension → "mid" (height when vertical)</li>
                     <li>Identify the largest dimension → "max" (used for depth checking)</li>
                   </ul>
                 </li>
                 <li><strong>Sorting:</strong> Sort all games by "mid" measurement from highest to lowest (tallest first)</li>
-                <li><strong>Phase 1 - Vertical Filling (Left to Right, Tallest Descending):</strong>
+                <li><strong>Smart Vertical Filling:</strong>
                   <ul class="list-disc list-inside ml-6 mt-1">
-                    <li>Start each cube with the tallest remaining "mid" game</li>
-                    <li>Stack games vertically, using "min" dimension as width</li>
-                    <li>When a game doesn't fit, smart search through remaining games for best fit</li>
-                    <li>Continue filling until no more games fit in remaining width</li>
+                    <li>Start each shelf with the tallest remaining game</li>
+                    <li>When filling a shelf, search through ALL remaining games for ANY that fits in the remaining width</li>
+                    <li>Add the first game found that fits (prioritizing taller games first due to sorting)</li>
+                    <li>Continue searching and adding until no games fit in the remaining space</li>
                   </ul>
                 </li>
-                <li><strong>Phase 2 - Horizontal Stacking (Above Vertical Games):</strong>
-                  <ul class="list-disc list-inside ml-6 mt-1">
-                    <li>Calculate remaining space above vertical stack (13" - tallest mid)</li>
-                    <li>Rotate games horizontally: mid becomes height, min becomes width (axis flip)</li>
-                    <li>Fill horizontal layers from bottom to top</li>
-                    <li>Each layer fills left to right until width exhausted</li>
-                    <li>Stack layers vertically until height exhausted</li>
-                  </ul>
-                </li>
-                <li><strong>Next Cube:</strong> When no more games fit horizontally, start a new cube with the largest remaining "mid"</li>
+                <li><strong>Next Cube:</strong> When no games fit in current shelf, start a new shelf with the next tallest remaining game</li>
               </ol>
             </div>
 
             <div class="mt-4 bg-blue-50 p-4 rounded-lg">
               <h4 class="font-bold text-blue-900 mb-2">Key Features:</h4>
               <ul class="list-disc list-inside space-y-1 text-slate-700">
-                <li><strong>Priority:</strong> Vertical orientation is prioritized, then horizontal</li>
-                <li><strong>Smart Filling:</strong> Searches for best-fit games to fill smaller spaces efficiently</li>
-                <li><strong>Axis Flipping:</strong> Mid and min dimensions flip roles when stacking horizontally</li>
-                <li><strong>Layer Stacking:</strong> Horizontal games stack in layers above vertical games</li>
+                <li><strong>Simple & Efficient:</strong> Straightforward algorithm that packs games vertically only</li>
+                <li><strong>Smart Search:</strong> Searches all remaining games to find best fit for available space</li>
+                <li><strong>Height Priority:</strong> Tallest games are placed first to maximize space usage</li>
+                <li><strong>Left-to-Right Filling:</strong> Games fill each shelf from left to right based on min dimension</li>
               </ul>
             </div>
 
@@ -1215,141 +1206,73 @@ function recalculateShelf() {
 }
 
 // Shelf fitting algorithm
-// Algorithm: Expert Vertical (V+H)
-// 1. Left to right, tallest (mid) descending
-// 2. Fill smaller spaces with lower min dimension games (smart search)
-// 3. Stack above vertical games in horizontal orientation
-// 4. Vertical is priority, then horizontal
-// 5. Mid and min flip axis for stacking above games
+// Algorithm: Smart Vertical (from cubes_backup.html)
+// 1. Sort games by mid (tallest first)
+// 2. Start each shelf with the tallest remaining game
+// 3. Search ALL remaining games for ANY that fits in remaining space
+// 4. Move to next shelf only when nothing fits
 function fitShelf(games, width, height, depth) {
   const skipped = games.filter(g => g.mid >= height);
   const valid = games.filter(g => g.mid < height);
   
-  // Sort by mid descending (tallest first, left to right)
-  valid.sort((a, b) => b.mid - a.mid);
+  // Sort by mid descending (tallest first)
+  const sortedGames = [...valid].sort((a, b) => b.mid - a.mid);
+  const unpackedGames = [...sortedGames];
   
   const cubes = [];
-  const remaining = [...valid];
+  let currentCube = [];
+  let currentMinSum = 0;
   let fitted = 0;
   
-  while (remaining.length > 0) {
-    const cube = {
-      vertical: [],
-      horizontal: [],
-      verticalSpace: 0,
-      horizontalSpace: 0
-    };
-    
-    // Phase 1: Fill vertically - start with tallest, smart fill for smaller spaces
-    let currentMin = 0;
-    let currentMid = 0;
-    
-    while (remaining.length > 0) {
-      let foundFit = false;
-      
-      if (cube.vertical.length === 0) {
-        // First game in cube - take the tallest available (already sorted)
-        const game = remaining.shift();
-        cube.vertical.push(game);
-        currentMin = game.min;
-        currentMid = Math.max(currentMid, game.mid);
-        foundFit = true;
-      } else {
-        // Try to fit next game in order first
-        const nextGame = remaining[0];
-        
-        if (currentMin + nextGame.min <= width) {
-          // Fits - add it
-          remaining.shift();
-          cube.vertical.push(nextGame);
-          currentMin += nextGame.min;
-          currentMid = Math.max(currentMid, nextGame.mid);
-          foundFit = true;
-        } else {
-          // Doesn't fit - smart search for best fit in remaining games
-          const remainingSpace = width - currentMin;
-          let bestFitIdx = -1;
-          let bestFitSize = 0;
-          
-          for (let i = 0; i < remaining.length; i++) {
-            const candidate = remaining[i];
-            if (candidate.min <= remainingSpace && candidate.min > bestFitSize) {
-              bestFitIdx = i;
-              bestFitSize = candidate.min;
-            }
-          }
-          
-          if (bestFitIdx >= 0) {
-            // Found a better fit - use it
-            const bestGame = remaining.splice(bestFitIdx, 1)[0];
-            cube.vertical.push(bestGame);
-            currentMin += bestGame.min;
-            currentMid = Math.max(currentMid, bestGame.mid);
-            foundFit = true;
-          }
-        }
-      }
-      
-      if (!foundFit) break;
-    }
-    
-    cube.verticalSpace = currentMid;
-    
-    // Phase 2: Fill horizontally above vertical stack BEFORE moving to next cube
-    // Mid becomes height, min becomes width (axis flip)
-    const remainingHeight = height - currentMid;
-    if (remainingHeight > 0 && remaining.length > 0) {
-      let currentLayerHeight = 0;
-      
-      // Keep trying to add horizontal layers
-      while (currentLayerHeight < remainingHeight && remaining.length > 0) {
-        let layerMin = 0; // Track width used in this layer
-        let layerMaxHeight = 0; // Track tallest game in this layer
-        let layerGames = [];
-        
-        // Fill this horizontal layer left to right
-        for (let i = 0; i < remaining.length; i++) {
-          const game = remaining[i];
-          
-          // When rotated horizontal: mid becomes height, min becomes width
-          const rotatedHeight = game.mid;
-          const rotatedWidth = game.min;
-          
-          const fitsHeight = (currentLayerHeight + rotatedHeight) <= remainingHeight;
-          const fitsWidth = (layerMin + rotatedWidth) <= width;
-          
-          if (fitsHeight && fitsWidth) {
-            layerGames.push({ game, index: i });
-            layerMin += rotatedWidth;
-            layerMaxHeight = Math.max(layerMaxHeight, rotatedHeight);
-          }
-        }
-        
-        // If no games fit in this layer, stop trying
-        if (layerGames.length === 0) break;
-        
-        // Add layer games to cube and remove from remaining
-        // Sort by index descending to prevent index shifting during splice operations
-        // (removing high indices first keeps lower indices valid)
-        layerGames.sort((a, b) => b.index - a.index);
-        for (const { game, index } of layerGames) {
-          cube.horizontal.push(game);
-          remaining.splice(index, 1);
-        }
-        
-        // Move to next layer
-        currentLayerHeight += layerMaxHeight;
-      }
-      
-      cube.horizontalSpace = remainingHeight;
-    }
-    
-    if (cube.vertical.length > 0 || cube.horizontal.length > 0) {
-      cubes.push(cube);
-      fitted += cube.vertical.length + cube.horizontal.length;
+  while (unpackedGames.length > 0) {
+    // If current shelf is empty, get highest mid game
+    if (currentCube.length === 0) {
+      const nextGame = unpackedGames.shift();
+      currentCube.push(nextGame);
+      currentMinSum = nextGame.min;
     } else {
-      break; // No more games can fit
+      // Try to find a game from remaining that fits in remaining space
+      let foundFit = false;
+      for (let i = 0; i < unpackedGames.length; i++) {
+        const game = unpackedGames[i];
+        if (currentMinSum + game.min <= width) {
+          // Found a fit! Add it
+          currentCube.push(game);
+          currentMinSum += game.min;
+          unpackedGames.splice(i, 1);
+          foundFit = true;
+          break;
+        }
+      }
+      
+      if (!foundFit) {
+        // No fit found, close current shelf and start new one
+        if (currentCube.length > 0) {
+          cubes.push({
+            vertical: currentCube,
+            horizontal: [],
+            verticalSpace: currentCube.reduce((max, g) => Math.max(max, g.mid), 0),
+            horizontalSpace: 0,
+            minSum: currentMinSum
+          });
+          fitted += currentCube.length;
+        }
+        currentCube = [];
+        currentMinSum = 0;
+      }
     }
+  }
+  
+  // Push last cube if it has games
+  if (currentCube.length > 0) {
+    cubes.push({
+      vertical: currentCube,
+      horizontal: [],
+      verticalSpace: currentCube.reduce((max, g) => Math.max(max, g.mid), 0),
+      horizontalSpace: 0,
+      minSum: currentMinSum
+    });
+    fitted += currentCube.length;
   }
   
   return { cubes, fitted, skipped };
@@ -1394,7 +1317,7 @@ function renderShelfVisualization(result, cubeWidth, cubeHeight) {
     titleDiv.setAttribute('aria-controls', `games-grid-${cubeIdx}`);
     titleDiv.innerHTML = `
       <i class="fa-solid fa-chevron-down cube-toggle" id="toggle-${cubeIdx}"></i>
-      <span>Cube ${cubeIdx + 1} (${cube.vertical.length + cube.horizontal.length} games)</span>
+      <span>Cube ${cubeIdx + 1} (${cube.vertical.length} games)</span>
     `;
     
     // Render vertical games
@@ -1413,27 +1336,6 @@ function renderShelfVisualization(result, cubeWidth, cubeHeight) {
       currentX += game.min;
     });
     
-    // Render horizontal games
-    if (cube.horizontal.length > 0) {
-      let horizontalX = 0;
-      const baseY = cube.verticalSpace;
-      
-      cube.horizontal.forEach(game => {
-        const box = document.createElement('div');
-        box.className = 'shelf-box';
-        box.style.left = (horizontalX * scale) + 'px';
-        box.style.bottom = (baseY * scale) + 'px';
-        box.style.width = (game.min * scale) + 'px';
-        box.style.height = (game.mid * scale) + 'px';
-        box.textContent = game.name;
-        box.style.background = 'linear-gradient(135deg, rgba(252, 165, 165, 0.8) 0%, rgba(239, 68, 68, 0.8) 100%)';
-        box.onclick = () => showGameDetails(game);
-        
-        cubeDiv.appendChild(box);
-        horizontalX += game.min;
-      });
-    }
-    
     // Create thumbnail grid (initially hidden)
     const gamesGrid = document.createElement('div');
     gamesGrid.className = 'cube-games-grid';
@@ -1441,7 +1343,7 @@ function renderShelfVisualization(result, cubeWidth, cubeHeight) {
     gamesGrid.style.display = 'none';
     
     // Add all games to grid
-    const allGames = [...cube.vertical, ...cube.horizontal];
+    const allGames = cube.vertical;
     allGames.forEach(game => {
       const gameThumb = document.createElement('div');
       gameThumb.className = 'cube-game-thumb';
