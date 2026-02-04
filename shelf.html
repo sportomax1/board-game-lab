@@ -406,7 +406,6 @@
     .raw-xml-container {
       background: #1e293b;
       border-radius: 12px;
-      overflow: hidden;
       border: 2px solid #334155;
     }
 
@@ -473,10 +472,9 @@
       font-size: 12px;
       line-height: 1.5;
       color: #a5f3fc;
-      max-height: 60vh;
-      overflow: auto;
       white-space: pre-wrap;
       word-break: break-all;
+      min-height: 200px;
     }
 
     .raw-xml-content .xml-tag {
@@ -554,7 +552,7 @@
     </div>
   </header>
 
-  <main class="flex-1 overflow-y-auto max-w-7xl mx-auto w-full p-4 pb-24">
+  <main class="flex-1 max-w-7xl mx-auto w-full p-4 pb-24 overflow-visible">
     
 
 
@@ -1242,10 +1240,59 @@ function renderRawXml() {
   }
   
   let xml = currentRawXml;
-  let matchCount = 0;
+  const lines = xml.split('\n');
+  const totalLines = lines.length;
   
-  // Syntax highlight the XML
-  let highlighted = escapeHtml(xml)
+  // Split into chunks for pagination (500 lines per page)
+  const chunkSize = 500;
+  const chunks = [];
+  for (let i = 0; i < totalLines; i += chunkSize) {
+    chunks.push(lines.slice(i, i + chunkSize).join('\n'));
+  }
+  
+  // Apply search filter
+  let filteredChunks = chunks;
+  let matchCount = 0;
+  if (searchTerm) {
+    const regex = new RegExp(escapeRegex(searchTerm), 'gi');
+    filteredChunks = [];
+    chunks.forEach(chunk => {
+      const matches = chunk.match(regex);
+      if (matches) {
+        matchCount += matches.length;
+        filteredChunks.push(chunk);
+      }
+    });
+  }
+  
+  // Render first chunk
+  renderRawXmlChunk(filteredChunks, 0, searchTerm);
+  
+  // Update stats
+  const size = (new Blob([xml]).size / 1024).toFixed(1);
+  let statsText = `${totalLines.toLocaleString()} lines • ${size} KB`;
+  if (searchTerm) {
+    statsText += ` • ${matchCount} match${matchCount !== 1 ? 'es' : ''} found`;
+  }
+  statsEl.textContent = statsText;
+  
+  // Store chunks for pagination
+  container.dataset.chunks = JSON.stringify(filteredChunks);
+  container.dataset.searchTerm = searchTerm;
+  container.dataset.currentChunk = 0;
+}
+
+function renderRawXmlChunk(chunks, chunkIndex, searchTerm = '') {
+  const container = document.getElementById('rawXmlContent');
+  const chunk = chunks[chunkIndex];
+  
+  if (!chunk) {
+    container.innerHTML = '<span class="text-slate-400">No matching content</span>';
+    return;
+  }
+  
+  // Syntax highlight the chunk
+  let highlighted = escapeHtml(chunk)
     .replace(/(&lt;\/?[\w:-]+)/g, '<span class="xml-tag">$1</span>')
     .replace(/(\s)([\w:-]+)(=)/g, '$1<span class="xml-attr">$2</span>$3')
     .replace(/(=)(&quot;[^&]*&quot;)/g, '$1<span class="xml-value">$2</span>');
@@ -1253,25 +1300,40 @@ function renderRawXml() {
   // Apply search highlighting
   if (searchTerm) {
     const regex = new RegExp(`(${escapeRegex(searchTerm)})`, 'gi');
-    const matches = highlighted.match(regex);
-    matchCount = matches ? matches.length : 0;
     highlighted = highlighted.replace(regex, '<span class="highlight">$1</span>');
   }
   
-  container.innerHTML = highlighted;
-  
-  // Update stats
-  const lines = xml.split('\n').length;
-  const size = (new Blob([xml]).size / 1024).toFixed(1);
-  let statsText = `${lines.toLocaleString()} lines • ${size} KB`;
-  if (searchTerm) {
-    statsText += ` • ${matchCount} match${matchCount !== 1 ? 'es' : ''} found`;
+  // Build pagination controls
+  let html = highlighted;
+  if (chunks.length > 1) {
+    html += `<div style="padding: 12px; border-top: 1px solid #334155; text-align: center; color: #94a3b8; font-size: 12px;">`;
+    html += `Showing chunk ${chunkIndex + 1} of ${chunks.length} • `;
+    html += `<button onclick="loadRawXmlChunk(${chunkIndex - 1})" ${chunkIndex === 0 ? 'disabled style="opacity:0.5;cursor:default;"' : 'style="cursor:pointer;color:#a5b4fc;"'}>← Previous</button> `;
+    html += `<button onclick="loadRawXmlChunk(${chunkIndex + 1})" ${chunkIndex === chunks.length - 1 ? 'disabled style="opacity:0.5;cursor:default;"' : 'style="cursor:pointer;color:#a5b4fc;"'}>Next →</button>`;
+    html += `</div>`;
   }
-  statsEl.textContent = statsText;
+  
+  container.innerHTML = html;
+}
+
+function loadRawXmlChunk(chunkIndex) {
+  const container = document.getElementById('rawXmlContent');
+  const chunks = JSON.parse(container.dataset.chunks || '[]');
+  const searchTerm = container.dataset.searchTerm || '';
+  
+  if (chunkIndex >= 0 && chunkIndex < chunks.length) {
+    renderRawXmlChunk(chunks, chunkIndex, searchTerm);
+    container.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
 }
 
 function filterRawXml() {
   renderRawXml();
+  // Reset to first chunk when filtering
+  const container = document.getElementById('rawXmlContent');
+  if (container) {
+    container.dataset.currentChunk = 0;
+  }
 }
 
 function copyRawXml() {
