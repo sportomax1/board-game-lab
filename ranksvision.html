@@ -1,0 +1,249 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>🏆</text></svg>">
+    <title>BGG Ranks Vision</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+        body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
+        .year-tabs { display: flex; gap: 0.5rem; overflow-x: auto; padding-bottom: 0.5rem; scroll-behavior: smooth; }
+        .year-tab { flex-shrink: 0; padding: 0.5rem 1rem; border-radius: 0.5rem; font-weight: 600; cursor: pointer; white-space: nowrap; transition: all 0.2s; border: 2px solid #e5e7eb; background: #f9fafb; color: #374151; }
+        .year-tab.active { background: #667eea; color: white; border-color: #667eea; }
+        .filter-category { display:flex; gap:6px; flex-wrap:wrap; }
+        .cat-btn { padding:8px 12px; border-radius:999px; border:1px solid #e5e7eb; background:#fff; cursor:pointer; font-weight:600; }
+        .cat-btn.active { background:#7c3aed; color:#fff; border-color:#7c3aed; }
+        /* reuse some styles from ranks.html for print/grid etc */
+        .game-card { transition: all 0.2s ease; }
+        .game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.1); }
+    </style>
+</head>
+<body class="pb-20">
+
+    <!-- Setup Screen - RANKSVISION includes category tabs -->
+    <div id="setupScreen" class="fixed inset-0 bg-gradient-to-br from-indigo-900 to-purple-900 z-50 flex items-center justify-center p-4 md:p-8">
+        <div class="bg-white rounded-2xl shadow-2xl p-6 md:p-8 max-w-md w-full">
+            <h1 class="text-2xl md:text-3xl font-bold text-gray-900 mb-2 text-center">🏷️ Ranks Vision</h1>
+            <p class="text-gray-500 text-center text-sm md:text-base mb-6">Pick a category to load Top Ranked games (default shows overall)</p>
+
+            <div class="mb-4">
+                <label class="block text-sm font-bold text-gray-700 mb-2">Category</label>
+                <div class="filter-category" id="categorySelector">
+                    <button class="cat-btn active" data-cat="all" onclick="selectCategory(this, 'all')">All</button>
+                    <button class="cat-btn" data-cat="family" onclick="selectCategory(this, 'family')">Family</button>
+                    <button class="cat-btn" data-cat="abstract" onclick="selectCategory(this, 'abstract')">Abstract</button>
+                    <button class="cat-btn" data-cat="strategy" onclick="selectCategory(this, 'strategy')">Strategy</button>
+                    <button class="cat-btn" data-cat="party" onclick="selectCategory(this, 'party')">Party</button>
+                    <button class="cat-btn" data-cat="thematic" onclick="selectCategory(this, 'thematic')">Thematic</button>
+                </div>
+            </div>
+
+            <div class="space-y-6">
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">Quantity</label>
+                    <input type="number" id="limitInput" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none transition text-base" value="100" min="1">
+                </div>
+
+                <div>
+                    <label class="block text-sm font-bold text-gray-700 mb-2">📚 Collection Username (Optional)</label>
+                    <input type="text" id="usernameInput" class="w-full border-2 border-gray-300 rounded-lg px-4 py-3 focus:border-purple-500 outline-none transition text-base" placeholder="Enter BGG username" value="sportomax">
+                    <p class="text-xs text-gray-500 mt-1">Compare with your owned/prev-owned games</p>
+                </div>
+                
+                <button onclick="fetchGames()" class="w-full bg-purple-600 text-white py-3 md:py-4 rounded-xl font-bold text-base md:text-lg hover:bg-purple-700 transition shadow-lg transform hover:scale-[1.02]">
+                    Load Category
+                </button>
+            </div>
+        </div>
+    </div>
+
+    <!-- Keep the rest of structure similar to ranks.html (header, controls, app, print view) -->
+    <!-- For brevity we reuse layout and scripts from ranks.html with a small change: category-aware browse requests -->
+
+    <!-- Main App Header -->
+    <header id="mainHeader" class="hidden sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-4 shadow-sm">
+        <div class="max-w-4xl mx-auto flex items-center justify-between gap-4">
+          <div class="flex items-center gap-3">
+            <div class="bg-purple-600 text-white p-2 rounded-lg"><i class="fa-solid fa-trophy"></i></div>
+            <div>
+              <h1 class="text-xl font-bold tracking-tight">Ranks Vision</h1>
+              <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider" id="headerSubtitle">Category: All</p>
+            </div>
+          </div>
+          <div id="statsBox" class="text-right">
+            <div class="text-2xl font-bold text-purple-600" id="gameCount">0</div>
+            <div class="text-[10px] text-slate-500 uppercase font-bold">Games</div>
+          </div>
+        </div>
+    </header>
+
+    <div id="controlsBar" class="hidden bg-white border-b border-slate-100 sticky top-20 z-20 px-4 py-3">
+      <div class="max-w-4xl mx-auto space-y-3">
+        <div class="flex flex-wrap gap-2" id="filterContainer"></div>
+      </div>
+    </div>
+
+    <main id="app" class="hidden flex-1 flex flex-col w-full">
+        <div id="progressContainer" class="w-full h-1 bg-gray-200 sticky top-20 z-50 overflow-hidden hidden">
+            <div id="progressBar" class="h-full bg-gradient-to-r from-purple-500 to-purple-600 w-0 transition-all duration-300"></div>
+        </div>
+        <div id="progressInfo" class="bg-purple-50 border-b border-purple-200 px-3 md:px-4 py-2 sticky top-20 z-40 hidden">
+            <div class="max-w-5xl mx-auto flex items-center justify-between">
+                <div><p class="text-xs md:text-sm font-medium text-purple-900" id="progressText">Loading...</p></div>
+                <div class="text-xs text-purple-700" id="progressCount"></div>
+            </div>
+        </div>
+
+        <div class="p-3 md:p-4 grid grid-cols-1 gap-3 md:gap-4 max-w-5xl mx-auto w-full flex-1" id="gamesList"></div>
+    </main>
+
+    <div id="printViewContainer" class="hidden-print bg-white p-8">
+        <div class="print-header">🏆 Ranks Vision Print</div>
+        <div class="print-grid" id="printGrid"></div>
+    </div>
+
+    <script>
+        // Category selected for browse (maps to BGG rankobjecttype)
+        let selectedCategory = 'all';
+        function selectCategory(el, cat) {
+            document.querySelectorAll('#categorySelector .cat-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            selectedCategory = cat;
+            document.getElementById('headerSubtitle').textContent = `Category: ${cat === 'all' ? 'All' : cat}`;
+        }
+
+        // Copy most of the fetchGames logic from ranks.html but make the browse request category-aware
+        async function fetchGames() {
+            const limit = parseInt(document.getElementById('limitInput').value) || 100;
+            const username = document.getElementById('usernameInput').value.trim();
+            document.getElementById('setupScreen').classList.add('hidden');
+            document.getElementById('app').classList.remove('hidden');
+            document.getElementById('mainHeader').classList.remove('hidden');
+            document.getElementById('controlsBar').classList.remove('hidden');
+            document.getElementById('progressContainer').classList.remove('hidden');
+            document.getElementById('progressInfo').classList.remove('hidden');
+
+            try {
+                let ids = [];
+                const pages = Math.ceil(Math.min(limit, 1000) / 100);
+                updateProgress(5, `Fetching ${pages} pages...`, '');
+
+                const pagePromises = [];
+                for (let p = 1; p <= pages; p++) {
+                    pagePromises.push((async () => {
+                        // include rankobjecttype if category selected
+                        const catParam = selectedCategory && selectedCategory !== 'all' ? `&rankobjecttype=${encodeURIComponent(selectedCategory)}` : '';
+                        const browseUrl = `/api/bgg-helper?endpoint=browse&page=${p}${catParam}`;
+                        const res = await fetch(browseUrl);
+                        const html = await res.text();
+                        const regex = /href=\"\/boardgame\/(\d+)\/[^\"]*\"/g;
+                        let match; let pageIds = [];
+                        while ((match = regex.exec(html)) !== null) pageIds.push(match[1]);
+                        return pageIds;
+                    })());
+                }
+
+                const allPageIds = await Promise.all(pagePromises);
+                const seen = new Set();
+                for (const pageIds of allPageIds) {
+                    for (const id of pageIds) {
+                        if (ids.length < Math.min(limit, 1000) && !seen.has(id)) { ids.push(id); seen.add(id); }
+                    }
+                }
+
+                document.getElementById('gameCount').textContent = ids.length;
+                updateProgress(20, `Collected ${ids.length} IDs. Fetching details...`, `${ids.length}`);
+
+                // Fetch thing details in batches of 20 (reuse logic)
+                const chunkSize = 20; const parallelBatches = 100;
+                const chunks = [];
+                for (let i = 0; i < ids.length; i += chunkSize) chunks.push(ids.slice(i, i + chunkSize));
+
+                let gamesData = [];
+                for (let i = 0; i < chunks.length; i += parallelBatches) {
+                    const batchGroup = chunks.slice(i, i + parallelBatches);
+                    await Promise.all(batchGroup.map(async (chunk) => {
+                        const thingUrl = `/api/bgg-helper?endpoint=thing&id=${chunk.join(',')}&stats=1`;
+                        const res = await fetch(thingUrl);
+                        const text = await res.text();
+                        const xml = new DOMParser().parseFromString(text, 'text/xml');
+                        const batchItems = Array.from(xml.querySelectorAll('item'));
+                        const batchGames = batchItems.map(item => {
+                            const stats = item.querySelector('statistics ratings');
+                            const rankObj = stats?.querySelector('rank[name="boardgame"]');
+                            const rank = rankObj ? parseInt(rankObj.getAttribute('value')) : 999999;
+                            const gameId = item.getAttribute('id');
+                            const gameName = item.querySelector('name[type="primary"]')?.getAttribute('value') || item.querySelector('name')?.textContent || 'Unknown';
+                            const gameRating = parseFloat(stats?.querySelector('average')?.getAttribute('value') || '0').toFixed(1);
+                            const categoryRanks = {};
+                            Array.from(stats?.querySelectorAll('rank')||[]).forEach(rankEl => { const name = rankEl.getAttribute('name'); const value = rankEl.getAttribute('value'); if (name && value) categoryRanks[name] = parseInt(value); });
+                            return {
+                                id: gameId, name: gameName, year: item.querySelector('yearpublished')?.getAttribute('value') || '?', image: item.querySelector('thumbnail')?.textContent || '', rating: gameRating, rank: isNaN(rank)?999999:rank,
+                                weight: parseFloat(stats?.querySelector('averageweight')?.getAttribute('value')||'0').toFixed(2), voters: parseInt(stats?.querySelector('usersrated')?.getAttribute('value')||'0'), description: item.querySelector('description')?.textContent||'', categoryRanks, statusTags:{}, owned:false, prevOwned:false
+                            };
+                        });
+                        gamesData = gamesData.concat(batchGames);
+                    }));
+
+                    // render partial
+                    gamesData.sort((a,b)=>a.rank-b.rank);
+                    renderGamesVision(gamesData);
+                    updateProgress(25 + (gamesData.length/ids.length)*60, `Loaded ${gamesData.length}/${ids.length}`, `${gamesData.length} / ${ids.length}`);
+                    await new Promise(r=>setTimeout(r, 300));
+                }
+
+                // fetch collection if provided
+                if (username) {
+                    try {
+                        const collUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
+                        const collRes = await fetch(collUrl);
+                        const collXml = await collRes.text();
+                        const collParser = new DOMParser().parseFromString(collXml, 'text/xml');
+                        const items = Array.from(collParser.querySelectorAll('item'));
+                        const userCollection = {};
+                        items.forEach(item => { const gameId = item.getAttribute('objectid'); const statusEl = item.querySelector('status'); userCollection[gameId] = { own: statusEl?.getAttribute('own')==='1', prevowned: statusEl?.getAttribute('prevowned')==='1' }; });
+                        gamesData = gamesData.map(g=>({ ...g, statusTags: userCollection[g.id]||{}, owned: userCollection[g.id]?.own||false, prevOwned: userCollection[g.id]?.prevowned||false }));
+                        renderGamesVision(gamesData);
+                    } catch(e) { console.warn('Collection fetch failed', e); }
+                }
+
+                updateProgress(100, 'Done', `${gamesData.length} games`);
+                setTimeout(()=>{ document.getElementById('progressContainer').classList.add('hidden'); document.getElementById('progressInfo').classList.add('hidden'); }, 1500);
+
+            } catch (err) { alert('Error: '+(err.message||err)); location.reload(); }
+        }
+
+        function renderGamesVision(gamesData) {
+            const container = document.getElementById('gamesList');
+            container.innerHTML = gamesData.map(game => {
+                const categoryRanks = game.categoryRanks || {};
+                const categoryRanksHtml = Object.entries(categoryRanks).slice(0,4).map(([k,v])=>`<div class="bg-purple-50 border border-purple-200 text-purple-700 px-2 py-1 rounded text-xs font-bold">${k}: #${v}</div>`).join('');
+                const status = game.statusTags||{}; const statusHtml = (status.own||status.prevowned) ? `<div class="text-xs text-green-600 font-bold">${status.own? 'Owned':''} ${status.prevowned? 'Prev-Own':''}</div>` : '';
+                return `
+                <div class="bg-white rounded-xl shadow-sm border border-gray-100 p-3 md:p-4 flex flex-col md:flex-row gap-3 md:gap-4 items-start md:items-center hover:shadow-md transition-shadow group">
+                    <div class="relative flex-shrink-0 w-full md:w-auto">
+                        <div class="w-full md:w-20 h-24 md:h-20 bg-gray-100 rounded-lg overflow-hidden">${game.image?`<img src="${game.image}" class="w-full h-full object-cover">`:'<span class="text-4xl md:text-2xl flex items-center justify-center h-full">🎲</span>'}</div>
+                        <div class="absolute top-2 left-2 bg-gray-900 text-white text-xs font-bold w-8 h-8 flex items-center justify-center rounded-full border-2 border-white shadow-sm">${game.rank===999999?'-':game.rank}</div>
+                    </div>
+                    <div class="flex-1 min-w-0 w-full md:w-auto">
+                        <div class="flex flex-col md:flex-row md:justify-between md:items-start gap-2 mb-2">
+                            <div class="flex-1"><h3 class="font-bold text-base md:text-lg text-gray-900 truncate">${game.name}</h3></div>
+                            <span class="bg-purple-100 text-purple-800 text-xs font-bold px-3 py-1 rounded self-start md:self-center whitespace-nowrap">${game.rating}</span>
+                        </div>
+                        <p class="text-xs md:text-sm text-gray-500 mb-2">${game.year} • ⚙️ ${game.weight}</p>
+                        ${categoryRanksHtml}
+                        ${statusHtml}
+                        <div class="flex items-center gap-3 text-xs text-gray-400 mt-2"><span>👥 ${game.voters.toLocaleString()} Ratings</span><a href="https://boardgamegeek.com/boardgame/${game.id}" target="_blank" class="text-purple-500 hover:underline font-medium">View on BGG ↗</a></div>
+                    </div>
+                </div>`;
+            }).join('');
+        }
+
+        function updateProgress(percent, text, count) { document.getElementById('progressBar').style.width = percent + '%'; document.getElementById('progressText').textContent = text; if (count) document.getElementById('progressCount').textContent = count; }
+    </script>
+    <script type="module" src="analytics-init.js"></script>
+</body>
+</html>
