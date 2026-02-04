@@ -1206,73 +1206,151 @@ function recalculateShelf() {
 }
 
 // Shelf fitting algorithm
-// Algorithm: Smart Vertical (from cubes_backup.html)
-// 1. Sort games by mid (tallest first)
-// 2. Start each shelf with the tallest remaining game
-// 3. Search ALL remaining games for ANY that fits in remaining space
-// 4. Move to next shelf only when nothing fits
+// Algorithm: Expert Vertical (from packing.md)
+// Two-phase per shelf:
+// Phase 1: Smart Fill for vertical orientation (games standing upright)
+// Phase 2: Fill upper space with horizontal games (games laid flat) BEFORE moving to next shelf
 function fitShelf(games, width, height, depth) {
   const skipped = games.filter(g => g.mid >= height);
   const valid = games.filter(g => g.mid < height);
   
   // Sort by mid descending (tallest first)
   const sortedGames = [...valid].sort((a, b) => b.mid - a.mid);
-  const unpackedGames = [...sortedGames];
+  let unpackedGames = [...sortedGames];
   
   const cubes = [];
-  let currentCube = [];
-  let currentMinSum = 0;
   let fitted = 0;
   
-  while (unpackedGames.length > 0) {
-    // If current shelf is empty, get highest mid game
-    if (currentCube.length === 0) {
-      const nextGame = unpackedGames.shift();
-      currentCube.push(nextGame);
-      currentMinSum = nextGame.min;
-    } else {
-      // Try to find a game from remaining that fits in remaining space
-      let foundFit = false;
-      for (let i = 0; i < unpackedGames.length; i++) {
-        const game = unpackedGames[i];
-        if (currentMinSum + game.min <= width) {
-          // Found a fit! Add it
-          currentCube.push(game);
-          currentMinSum += game.min;
-          unpackedGames.splice(i, 1);
-          foundFit = true;
-          break;
-        }
-      }
+  // Helper function to evaluate horizontal placement for current shelf
+  function tryHorizontalPlacement(cube, unpackedGames, shelfWidth, shelfHeight) {
+    const verticalGames = cube.vertical;
+    const firstGameMid = verticalGames.length > 0 ? verticalGames[0].mid : 0;
+    const upperSpaceHeight = shelfHeight - firstGameMid;
+    const upperSpaceWidth = shelfWidth;
+    
+    if (upperSpaceHeight > 0.5 && unpackedGames.length > 0) {
+      // Track horizontal layers (rows stacked vertically in upper space)
+      let currentLayerHeight = 0; // Distance from top of first game upward
       
-      if (!foundFit) {
-        // No fit found, close current shelf and start new one
-        if (currentCube.length > 0) {
-          cubes.push({
-            vertical: currentCube,
-            horizontal: [],
-            verticalSpace: currentCube.reduce((max, g) => Math.max(max, g.mid), 0),
-            horizontalSpace: 0,
-            minSum: currentMinSum
-          });
-          fitted += currentCube.length;
+      // Keep trying to add layers until we run out of vertical space
+      while (currentLayerHeight < upperSpaceHeight && unpackedGames.length > 0) {
+        // Sort candidates by min descending (min becomes height when rotated, want tallest first)
+        const sortedCandidates = [...unpackedGames].sort((a, b) => b.min - a.min);
+        
+        let usedHorizontalSpace = 0;
+        let layerMaxHeight = 0;
+        let layerGames = [];
+        
+        // Try to fill this horizontal layer
+        for (const candidate of sortedCandidates) {
+          // When rotated: mid → width, min → height
+          const rotatedWidth = candidate.mid;
+          const rotatedHeight = candidate.min;
+          
+          const fitsHeight = (currentLayerHeight + rotatedHeight) <= upperSpaceHeight;
+          const fitsWidth = (usedHorizontalSpace + rotatedWidth) <= upperSpaceWidth;
+          const fits = fitsHeight && fitsWidth;
+          
+          if (fits) {
+            layerGames.push({
+              ...candidate,
+              rotated: true,
+              rotatedWidth: rotatedWidth,
+              rotatedHeight: rotatedHeight,
+              horizontalLayer: currentLayerHeight
+            });
+            usedHorizontalSpace += rotatedWidth;
+            layerMaxHeight = Math.max(layerMaxHeight, rotatedHeight);
+            
+            if (usedHorizontalSpace >= upperSpaceWidth) break;
+          }
         }
-        currentCube = [];
-        currentMinSum = 0;
+        
+        // If no games fit in this layer, stop trying
+        if (layerGames.length === 0) break;
+        
+        // Add layer games to cube and remove from unpacked
+        layerGames.forEach(game => {
+          cube.horizontal.push(game);
+          const idx = unpackedGames.findIndex(g => g.gameId === game.gameId);
+          if (idx >= 0) unpackedGames.splice(idx, 1);
+        });
+        
+        // Move to next layer
+        currentLayerHeight += layerMaxHeight;
       }
     }
+    
+    return cube;
   }
   
-  // Push last cube if it has games
-  if (currentCube.length > 0) {
-    cubes.push({
-      vertical: currentCube,
+  // Phase 1: Pack shelves vertically, then Phase 2: evaluate horizontal BEFORE next shelf
+  while (unpackedGames.length > 0) {
+    let currentVertical = [];
+    let currentMinSum = 0;
+    
+    // Fill vertical space on this shelf
+    while (unpackedGames.length > 0) {
+      if (currentVertical.length === 0) {
+        // Start shelf with tallest remaining game
+        const nextGame = unpackedGames.shift();
+        currentVertical.push(nextGame);
+        currentMinSum = nextGame.min;
+      } else {
+        const nextGame = unpackedGames[0];
+        
+        if (currentMinSum + nextGame.min <= width) {
+          // Game fits, add it
+          unpackedGames.shift();
+          currentVertical.push(nextGame);
+          currentMinSum += nextGame.min;
+        } else {
+          // Smart search: find best-fit game that still fits
+          const remainingWidth = width - currentMinSum;
+          let bestFitIdx = -1;
+          let bestFitSize = 0;
+          
+          for (let i = 0; i < unpackedGames.length; i++) {
+            const candidate = unpackedGames[i];
+            if (candidate.min <= remainingWidth && candidate.min > bestFitSize) {
+              bestFitIdx = i;
+              bestFitSize = candidate.min;
+            }
+          }
+          
+          if (bestFitIdx >= 0) {
+            const bestGame = unpackedGames.splice(bestFitIdx, 1)[0];
+            currentVertical.push(bestGame);
+            currentMinSum += bestGame.min;
+          } else {
+            // No more vertical fits - shelf vertical packing complete
+            break;
+          }
+        }
+      }
+    }
+    
+    // Shelf vertical packing complete - create cube
+    const maxMidHeight = currentVertical.reduce((max, g) => Math.max(max, g.mid), 0);
+    let cube = {
+      vertical: currentVertical,
       horizontal: [],
-      verticalSpace: currentCube.reduce((max, g) => Math.max(max, g.mid), 0),
+      verticalSpace: maxMidHeight,
       horizontalSpace: 0,
       minSum: currentMinSum
-    });
-    fitted += currentCube.length;
+    };
+    
+    // Phase 2: NOW evaluate horizontal placement for THIS shelf
+    cube = tryHorizontalPlacement(cube, unpackedGames, width, height);
+    cube.horizontalSpace = cube.horizontal.length > 0 
+      ? cube.horizontal.reduce((sum, g) => sum + g.rotatedHeight, 0) 
+      : 0;
+    
+    // Count fitted games
+    fitted += cube.vertical.length + cube.horizontal.length;
+    
+    // Add completed shelf
+    cubes.push(cube);
   }
   
   return { cubes, fitted, skipped };
@@ -1317,11 +1395,13 @@ function renderShelfVisualization(result, cubeWidth, cubeHeight) {
     titleDiv.setAttribute('aria-controls', `games-grid-${cubeIdx}`);
     titleDiv.innerHTML = `
       <i class="fa-solid fa-chevron-down cube-toggle" id="toggle-${cubeIdx}"></i>
-      <span>Cube ${cubeIdx + 1} (${cube.vertical.length} games)</span>
+      <span>Cube ${cubeIdx + 1} (${cube.vertical.length}V${cube.horizontal.length > 0 ? ' + ' + cube.horizontal.length + 'H' : ''} games)</span>
     `;
     
     // Render vertical games
     let currentX = 0;
+    const firstGameMid = cube.vertical.length > 0 ? cube.vertical[0].mid : 0;
+    
     cube.vertical.forEach(game => {
       const box = document.createElement('div');
       box.className = 'shelf-box';
@@ -1336,14 +1416,50 @@ function renderShelfVisualization(result, cubeWidth, cubeHeight) {
       currentX += game.min;
     });
     
+    // Render horizontal games (in upper space above first vertical game)
+    if (cube.horizontal && cube.horizontal.length > 0) {
+      // Group horizontal games by layer
+      const layerMap = new Map();
+      cube.horizontal.forEach(game => {
+        const layerPos = game.horizontalLayer || 0;
+        if (!layerMap.has(layerPos)) layerMap.set(layerPos, []);
+        layerMap.get(layerPos).push(game);
+      });
+      
+      // Render each layer
+      const sortedLayers = Array.from(layerMap.entries()).sort((a, b) => a[0] - b[0]);
+      sortedLayers.forEach(([layerHeight, gamesInLayer]) => {
+        let rotatedPosX = 0;
+        
+        gamesInLayer.forEach(game => {
+          const box = document.createElement('div');
+          box.className = 'shelf-box';
+          // Position ABOVE first game (from top of first game upward)
+          const topY = (cubeHeight - firstGameMid - layerHeight - game.rotatedHeight) * scale;
+          box.style.left = (rotatedPosX * scale) + 'px';
+          box.style.top = topY + 'px';
+          box.style.width = (game.rotatedWidth * scale) + 'px';
+          box.style.height = (game.rotatedHeight * scale) + 'px';
+          box.style.background = 'linear-gradient(135deg, rgba(255, 152, 0, 0.85) 0%, rgba(255, 87, 34, 0.85) 100%)';
+          box.style.border = '2px dashed rgba(0,0,0,0.3)';
+          box.textContent = game.name;
+          box.title = `${game.name} (horizontal)`;
+          box.onclick = () => showGameDetails(game);
+          
+          cubeDiv.appendChild(box);
+          rotatedPosX += game.rotatedWidth;
+        });
+      });
+    }
+    
     // Create thumbnail grid (initially hidden)
     const gamesGrid = document.createElement('div');
     gamesGrid.className = 'cube-games-grid';
     gamesGrid.id = `games-grid-${cubeIdx}`;
     gamesGrid.style.display = 'none';
     
-    // Add all games to grid
-    const allGames = cube.vertical;
+    // Add all games to grid (vertical + horizontal)
+    const allGames = [...cube.vertical, ...cube.horizontal];
     allGames.forEach(game => {
       const gameThumb = document.createElement('div');
       gameThumb.className = 'cube-game-thumb';
@@ -1358,14 +1474,19 @@ function renderShelfVisualization(result, cubeWidth, cubeHeight) {
       gameThumb.setAttribute('role', 'button');
       gameThumb.setAttribute('aria-label', `View details for ${game.name}`);
       
+      const orientation = game.rotated ? ' (H)' : '';
+      const dims = game.rotated 
+        ? `${game.rotatedWidth.toFixed(1)}" × ${game.rotatedHeight.toFixed(1)}"`
+        : `${game.min.toFixed(1)}" × ${game.mid.toFixed(1)}"`;
+      
       gameThumb.innerHTML = `
         <img 
           src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" 
           alt="${game.name}"
           onerror="this.style.display='none'"
         >
-        <div class="game-name">${game.name}</div>
-        <div class="game-measurement">${game.min.toFixed(1)}" × ${game.mid.toFixed(1)}"</div>
+        <div class="game-name">${game.name}${orientation}</div>
+        <div class="game-measurement">${dims}</div>
       `;
       
       gamesGrid.appendChild(gameThumb);
