@@ -347,8 +347,11 @@
                 </div>
                 
                 <div class="ios-card p-4">
-                    <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-2">GeekList ID</label>
-                    <input type="text" id="geeklistId" value="370282" class="ios-input" placeholder="Enter GeekList ID">
+                    <label class="block text-xs font-semibold text-gray-500 uppercase tracking-wide mb-3">Select GeekLists</label>
+                    <div id="geeklistSelector" class="flex flex-wrap gap-2">
+                        <!-- Populated by renderGeeklistSelector() -->
+                    </div>
+                    <p class="text-xs text-gray-400 mt-2" id="selectedGeeklistsCount">0 GeekLists selected</p>
                 </div>
                 
                 <button id="runButton" onclick="runDataFetch()" class="ios-button mt-6">
@@ -390,6 +393,11 @@
                 <p class="text-sm text-gray-500 mb-4" id="listingsSubtitle">GeekList postings</p>
             </div>
             
+            <!-- Search Field -->
+            <div class="px-4 mb-3">
+                <input type="text" id="listingsSearch" class="ios-input" placeholder="Search games..." oninput="searchListings()">
+            </div>
+            
             <!-- Filters -->
             <div class="px-4 mb-4">
                 <div class="filters-scroll flex gap-2 pb-2">
@@ -422,6 +430,26 @@
             <div class="px-4 pt-6 pb-2">
                 <h1 class="text-2xl font-bold text-gray-900 mb-1">Analytics</h1>
                 <p class="text-sm text-gray-500 mb-4" id="analyticsSubtitle">Price insights by game</p>
+            </div>
+            
+            <!-- Search Field -->
+            <div class="px-4 mb-3">
+                <input type="text" id="analyticsSearch" class="ios-input" placeholder="Search games..." oninput="searchAnalytics()">
+            </div>
+            
+            <!-- Filters -->
+            <div class="px-4 mb-4">
+                <div class="filters-scroll flex gap-2 pb-2">
+                    <button class="filter-chip active" data-analytics-filter="all" onclick="setAnalyticsFilter('all')">All</button>
+                    <button class="filter-chip" data-analytics-filter="wanttoplay" onclick="setAnalyticsFilter('wanttoplay')">Want to Play</button>
+                    <button class="filter-chip" data-analytics-filter="own" onclick="setAnalyticsFilter('own')">Owned</button>
+                    <button class="filter-chip" data-analytics-filter="prevowned" onclick="setAnalyticsFilter('prevowned')">Prev Owned</button>
+                    <button class="filter-chip" data-analytics-filter="want" onclick="setAnalyticsFilter('want')">Want</button>
+                    <button class="filter-chip" data-analytics-filter="wanttobuy" onclick="setAnalyticsFilter('wanttobuy')">Want to Buy</button>
+                    <button class="filter-chip" data-analytics-filter="wishlist" onclick="setAnalyticsFilter('wishlist')">Wishlist</button>
+                    <button class="filter-chip" data-analytics-filter="fortrade" onclick="setAnalyticsFilter('fortrade')">For Trade</button>
+                    <button id="analyticsNumplaysToggle" class="filter-chip" onclick="toggleNumplaysFilter('analytics')">Played</button>
+                </div>
             </div>
             
             <!-- Summary Stats -->
@@ -523,13 +551,27 @@
         const THING_PARALLEL_BATCHES = 100;
         
         // ============ STATE ============
-        let collectionData = new Map(); // gameId -> { name, thumbnail, status: { own, prevowned, ... }, rating }
-        let geeklistData = []; // Array of { itemId, gameId, gameName, thumbnail, price, isSold, comments, commentsList, postDate, body, numplays }
+        let collectionData = new Map(); // gameId -> { name, thumbnail, status: { own, prevowned, ... }, rating, numplays }
+        let geeklistData = []; // Array of { itemId, gameId, gameName, thumbnail, price, isSold, comments, commentsList, postDate, body }
         let currentFilter = 'all';
+        let analyticsFilter = 'all';
         let filterNumplays = false;
+        let analyticsFilterNumplays = false;
+        let listingsSearchQuery = '';
+        let analyticsSearchQuery = '';
         let isRunning = false;
         let collectionXML = '';
         let geeklistXML = '';
+        
+        // Available GeekLists for multi-select
+        const GEEKLIST_OPTIONS = [
+            { label: 'DTW VFM 2026 (Upcoming)', geeklistId: '370282', category: 'dtw', year: '2026' },
+            { label: 'BGG VFM 2025', geeklistId: '363504', category: 'bgg', year: '2025' },
+            { label: 'SPR VFM 2025', geeklistId: '355629', category: 'spr', year: '2025' },
+            { label: 'DTE VFM 2025', geeklistId: '352224', category: 'dte', year: '2025' },
+            { label: 'DTW VFM 2025', geeklistId: '349103', category: 'dtw', year: '2025' }
+        ];
+        let selectedGeeklists = ['370282']; // Default selection
 
         // ============ TAB MANAGEMENT ============
         function switchTab(tabName) {
@@ -553,10 +595,82 @@
             renderListings();
         }
         
-        function toggleNumplaysFilter() {
-            filterNumplays = !filterNumplays;
-            document.getElementById('numplaysToggle').classList.toggle('active', filterNumplays);
+        function toggleNumplaysFilter(tab = 'listings') {
+            if (tab === 'analytics') {
+                analyticsFilterNumplays = !analyticsFilterNumplays;
+                document.getElementById('analyticsNumplaysToggle').classList.toggle('active', analyticsFilterNumplays);
+                renderAnalytics();
+            } else {
+                filterNumplays = !filterNumplays;
+                document.getElementById('numplaysToggle').classList.toggle('active', filterNumplays);
+                renderListings();
+            }
+        }
+        
+        function setAnalyticsFilter(filter) {
+            analyticsFilter = filter;
+            document.querySelectorAll('[data-analytics-filter]').forEach(chip => {
+                chip.classList.toggle('active', chip.dataset.analyticsFilter === filter);
+            });
+            renderAnalytics();
+        }
+        
+        function searchListings() {
+            listingsSearchQuery = document.getElementById('listingsSearch').value.toLowerCase();
             renderListings();
+        }
+        
+        function searchAnalytics() {
+            analyticsSearchQuery = document.getElementById('analyticsSearch').value.toLowerCase();
+            renderAnalytics();
+        }
+        
+        function toggleGeeklist(geeklistId) {
+            const idx = selectedGeeklists.indexOf(geeklistId);
+            if (idx > -1) {
+                if (selectedGeeklists.length > 1) {
+                    selectedGeeklists.splice(idx, 1);
+                }
+            } else {
+                selectedGeeklists.push(geeklistId);
+            }
+            renderGeeklistSelector();
+            updateSelectedGeeklistsCount();
+        }
+        
+        function renderGeeklistSelector() {
+            const container = document.getElementById('geeklistSelector');
+            container.innerHTML = GEEKLIST_OPTIONS.map(gl => `
+                <button class="filter-chip ${selectedGeeklists.includes(gl.geeklistId) ? 'active' : ''}" 
+                        onclick="toggleGeeklist('${gl.geeklistId}')">
+                    ${gl.label}
+                </button>
+            `).join('');
+        }
+        
+        // ============ BBCODE PARSER ============
+        function parseBBCode(text) {
+            if (!text) return '';
+            return text
+                // Strikethrough
+                .replace(/\[-\](.*?)\[\/-\]/g, '<span class="line-through text-gray-400">$1</span>')
+                // Bold
+                .replace(/\[b\](.*?)\[\/b\]/gi, '<strong>$1</strong>')
+                // Italic
+                .replace(/\[i\](.*?)\[\/i\]/gi, '<em>$1</em>')
+                // Underline
+                .replace(/\[u\](.*?)\[\/u\]/gi, '<span class="underline">$1</span>')
+                // Size (make small text)
+                .replace(/\[size=\d+\](.*?)\[\/size\]/gi, '<span class="text-xs text-gray-500">$1</span>')
+                // User link
+                .replace(/\[user=(.*?)\]\[\/user\]/gi, '<span class="text-blue-600 font-medium">@$1</span>')
+                .replace(/\[user=(.*?)\](.*?)\[\/user\]/gi, '<span class="text-blue-600 font-medium">@$1</span>')
+                // URL
+                .replace(/\[url=(.*?)\](.*?)\[\/url\]/gi, '<a href="$1" target="_blank" class="text-blue-600 underline">$2</a>')
+                // Color
+                .replace(/\[color=(.*?)\](.*?)\[\/color\]/gi, '<span style="color:$1">$2</span>')
+                // Line breaks
+                .replace(/\n/g, '<br>');
         }
 
         // ============ API HELPERS ============
@@ -616,10 +730,9 @@
             if (isRunning) return;
             
             const username = document.getElementById('username').value.trim();
-            const geeklistId = document.getElementById('geeklistId').value.trim();
             
-            if (!username || !geeklistId) {
-                alert('Please enter both username and GeekList ID');
+            if (!username || selectedGeeklists.length === 0) {
+                alert('Please enter username and select at least one GeekList');
                 return;
             }
             
@@ -641,9 +754,9 @@
                 updateProgress('Processing Status Tags...', 40, 'Analyzing collection status fields');
                 await sleep(300); // Brief pause for UX
                 
-                // Step 3: Fetch GeekList
-                updateProgress('Loading GeekList...', 50, 'Fetching GeekList postings');
-                await fetchGeekList(geeklistId);
+                // Step 3: Fetch GeekLists (multiple in parallel)
+                updateProgress('Loading GeekLists...', 50, `Fetching ${selectedGeeklists.length} GeekList(s)`);
+                await fetchGeekList(selectedGeeklists);
                 document.getElementById('geeklistCount').textContent = geeklistData.length;
                 
                 // Step 4: Fetch thumbnails for geeklist items
@@ -716,7 +829,11 @@
                     const ratingEl = item.getElementsByTagName('rating')[0];
                     const rating = ratingEl?.getAttribute('value') || null;
                     
-                    collectionData.set(gameId, { name, thumbnail, status, rating });
+                    // Get numplays from element
+                    const numplaysEl = item.getElementsByTagName('numplays')[0];
+                    const numplays = parseInt(numplaysEl?.textContent) || 0;
+                    
+                    collectionData.set(gameId, { name, thumbnail, status, rating, numplays });
                 }
             } catch (error) {
                 console.error('Collection fetch error:', error);
@@ -725,64 +842,71 @@
         }
 
         // ============ GEEKLIST FETCH ============
-        async function fetchGeekList(geeklistId) {
+        async function fetchGeekList(geeklistIds) {
             geeklistData = [];
+            geeklistXML = '';
             
-            const url = `/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(geeklistId)}&comments=1`;
-            
-            try {
-                const text = await fetchWithRetry(url);
-                geeklistXML = text;
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
+            // Process multiple geeklists in parallel
+            const fetchPromises = geeklistIds.map(async (geeklistId) => {
+                const url = `/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(geeklistId)}&comments=1`;
                 
-                const items = xml.getElementsByTagName('item');
-                
-                for (let i = 0; i < items.length; i++) {
-                    const item = items[i];
-                    const itemId = item.getAttribute('id');
-                    const gameId = item.getAttribute('objectid');
-                    const gameName = item.getAttribute('objectname') || 'Unknown Game';
-                    const postDate = item.getAttribute('postdate') || '';
-                    const body = item.getElementsByTagName('body')[0]?.textContent || '';
-                    const numplays = parseInt(item.getAttribute('numplays')) || 0;
+                try {
+                    const text = await fetchWithRetry(url);
+                    geeklistXML += `\n<!-- GeekList ${geeklistId} -->\n${text}`;
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
                     
-                    // Get all comments
-                    const commentNodes = item.getElementsByTagName('comment');
-                    const commentsList = [];
-                    for (let c = 0; c < commentNodes.length; c++) {
-                        commentsList.push({
-                            user: commentNodes[c].getAttribute('username') || 'Unknown',
-                            text: commentNodes[c].textContent || '',
-                            date: commentNodes[c].getAttribute('postdate') || ''
+                    const items = xml.getElementsByTagName('item');
+                    const results = [];
+                    
+                    for (let i = 0; i < items.length; i++) {
+                        const item = items[i];
+                        const itemId = item.getAttribute('id');
+                        const gameId = item.getAttribute('objectid');
+                        const gameName = item.getAttribute('objectname') || 'Unknown Game';
+                        const postDate = item.getAttribute('postdate') || '';
+                        const body = item.getElementsByTagName('body')[0]?.textContent || '';
+                        
+                        // Get all comments
+                        const commentNodes = item.getElementsByTagName('comment');
+                        const commentsList = [];
+                        for (let c = 0; c < commentNodes.length; c++) {
+                            commentsList.push({
+                                user: commentNodes[c].getAttribute('username') || 'Unknown',
+                                text: commentNodes[c].textContent || '',
+                                date: commentNodes[c].getAttribute('postdate') || ''
+                            });
+                        }
+                        
+                        // Parse price from body and check comments for sold
+                        const priceInfo = parsePrice(body, commentsList);
+                        
+                        results.push({
+                            itemId,
+                            gameId,
+                            gameName,
+                            thumbnail: '', // Will be filled by fetchThumbnails
+                            price: priceInfo.price,
+                            isSold: priceInfo.isSold,
+                            comments: commentNodes.length,
+                            commentsList,
+                            postDate,
+                            body,
+                            geeklistId
                         });
                     }
-                    
-                    // Parse price from body and check comments for sold
-                    const priceInfo = parsePrice(body, commentsList);
-                    
-                    geeklistData.push({
-                        itemId,
-                        gameId,
-                        gameName,
-                        thumbnail: '', // Will be filled by fetchThumbnails
-                        price: priceInfo.price,
-                        isSold: priceInfo.isSold,
-                        comments: commentNodes.length,
-                        commentsList,
-                        postDate,
-                        body,
-                        numplays
-                    });
+                    return results;
+                } catch (error) {
+                    console.error(`GeekList ${geeklistId} fetch error:`, error);
+                    return [];
                 }
-                
-                // Sort by post date descending (newest first)
-                geeklistData.sort((a, b) => new Date(b.postDate) - new Date(a.postDate));
-                
-            } catch (error) {
-                console.error('GeekList fetch error:', error);
-                throw new Error('Failed to load GeekList. Please try again.');
-            }
+            });
+            
+            const allResults = await Promise.all(fetchPromises);
+            geeklistData = allResults.flat();
+            
+            // Sort by post date descending (newest first)
+            geeklistData.sort((a, b) => new Date(b.postDate) - new Date(a.postDate));
         }
 
         // ============ THUMBNAIL FETCH ============
@@ -905,21 +1029,33 @@
         // ============ RENDER LISTINGS ============
         function renderListings() {
             const container = document.getElementById('listingsContainer');
+            const searchQuery = listingsSearchQuery.toLowerCase();
             
             // Filter listings
             let filtered = geeklistData;
             
+            // Search filter
+            if (searchQuery) {
+                filtered = filtered.filter(item => 
+                    item.gameName.toLowerCase().includes(searchQuery)
+                );
+            }
+            
+            // Collection status filter
             if (currentFilter !== 'all') {
-                filtered = geeklistData.filter(item => {
+                filtered = filtered.filter(item => {
                     const collectionItem = collectionData.get(item.gameId);
                     if (!collectionItem) return false;
                     return collectionItem.status[currentFilter] === true;
                 });
             }
             
-            // Filter by numplays if toggled
+            // Filter by numplays if toggled - use collection data
             if (filterNumplays) {
-                filtered = filtered.filter(item => item.numplays > 0);
+                filtered = filtered.filter(item => {
+                    const collectionItem = collectionData.get(item.gameId);
+                    return collectionItem && collectionItem.numplays > 0;
+                });
             }
             
             document.getElementById('listingsSubtitle').textContent = `${filtered.length} listing${filtered.length !== 1 ? 's' : ''}`;
@@ -939,7 +1075,10 @@
             
             container.innerHTML = `
                 <div class="space-y-3">
-                    ${filtered.map(item => `
+                    ${filtered.map(item => {
+                        const collectionItem = collectionData.get(item.gameId);
+                        const numplays = collectionItem?.numplays || 0;
+                        return `
                         <div class="game-card fade-in cursor-pointer" onclick="openGameDetail('${item.itemId}')">
                             <div class="flex p-3">
                                 <div class="w-16 h-16 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0">
@@ -970,12 +1109,12 @@
                                             ${item.comments}
                                         </span>
                                         <span>${timeAgo(item.postDate)}</span>
-                                        ${item.numplays > 0 ? `<span class="text-blue-600 font-medium">🎲 ${item.numplays}</span>` : ''}
+                                        ${numplays > 0 ? `<span class="text-blue-600 font-medium">🎲 ${numplays}</span>` : ''}
                                     </div>
                                 </div>
                             </div>
                         </div>
-                    `).join('')}
+                    `}).join('')}
                 </div>
             `;
         }
@@ -983,11 +1122,39 @@
         // ============ RENDER ANALYTICS ============
         function renderAnalytics() {
             const container = document.getElementById('analyticsContainer');
+            const searchQuery = analyticsSearchQuery.toLowerCase();
+            
+            // Start with all listings for filtering
+            let filteredListings = geeklistData;
+            
+            // Search filter
+            if (searchQuery) {
+                filteredListings = filteredListings.filter(item => 
+                    item.gameName.toLowerCase().includes(searchQuery)
+                );
+            }
+            
+            // Collection status filter
+            if (analyticsFilter !== 'all') {
+                filteredListings = filteredListings.filter(item => {
+                    const collectionItem = collectionData.get(item.gameId);
+                    if (!collectionItem) return false;
+                    return collectionItem.status[analyticsFilter] === true;
+                });
+            }
+            
+            // Filter by numplays if toggled - use collection data
+            if (analyticsFilterNumplays) {
+                filteredListings = filteredListings.filter(item => {
+                    const collectionItem = collectionData.get(item.gameId);
+                    return collectionItem && collectionItem.numplays > 0;
+                });
+            }
             
             // Group by game
             const gameMap = new Map();
             
-            geeklistData.forEach(item => {
+            filteredListings.forEach(item => {
                 if (!gameMap.has(item.gameId)) {
                     gameMap.set(item.gameId, {
                         gameId: item.gameId,
@@ -1019,7 +1186,7 @@
             // Update summary stats
             document.getElementById('summaryStats').classList.remove('hidden');
             document.getElementById('uniqueGames').textContent = games.length;
-            document.getElementById('totalListings').textContent = geeklistData.length;
+            document.getElementById('totalListings').textContent = filteredListings.length;
             
             const allPrices = games.filter(g => g.avgPrice !== null).map(g => g.avgPrice);
             const overallAvg = allPrices.length > 0 ? allPrices.reduce((a, b) => a + b, 0) / allPrices.length : 0;
@@ -1043,7 +1210,7 @@
             container.innerHTML = `
                 <div class="space-y-3">
                     ${games.map(game => `
-                        <div class="ios-card p-3 fade-in">
+                        <div class="ios-card p-3 fade-in cursor-pointer" onclick="openAnalyticsDetail('${game.gameId}')">
                             <div class="flex items-start">
                                 <div class="w-12 h-12 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0">
                                     ${game.thumbnail 
@@ -1094,17 +1261,20 @@
                     </button>
                 </div>
                 <div class="p-4 space-y-4">
-                    ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${item.gameName}" class="w-full rounded-lg">` : ''}
-                    
-                    <div class="grid grid-cols-3 gap-2">
-                        ${item.price !== null ? `<div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Price</div><div class="text-lg font-bold ${item.isSold ? 'text-red-600' : 'text-green-600'}">$${item.price.toFixed(0)}</div>${item.isSold ? '<div class="text-xs text-red-600">SOLD</div>' : ''}</div>` : ''}
-                        <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Comments</div><div class="text-lg font-bold text-gray-900">${item.comments}</div></div>
-                        <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Plays</div><div class="text-lg font-bold text-blue-600">${item.numplays}</div></div>
+                    <div class="flex items-start gap-4">
+                        ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${item.gameName}" class="w-20 h-20 rounded-lg object-cover flex-shrink-0">` : ''}
+                        <div class="flex-1">
+                            <div class="grid grid-cols-3 gap-2">
+                                ${item.price !== null ? `<div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Price</div><div class="text-lg font-bold ${item.isSold ? 'text-red-600' : 'text-green-600'}">$${item.price.toFixed(0)}</div>${item.isSold ? '<div class="text-xs text-red-600">SOLD</div>' : ''}</div>` : ''}
+                                <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Comments</div><div class="text-lg font-bold text-gray-900">${item.comments}</div></div>
+                                <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Plays</div><div class="text-lg font-bold text-blue-600">${collectionData.get(item.gameId)?.numplays || 0}</div></div>
+                            </div>
+                        </div>
                     </div>
                     
                     <div class="ios-card p-4">
                         <h3 class="font-bold text-gray-900 mb-2">Listing</h3>
-                        <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${item.body}</p>
+                        <div class="text-sm text-gray-700 whitespace-pre-wrap break-words">${parseBBCode(item.body)}</div>
                         <div class="text-xs text-gray-400 mt-2">Posted: ${item.postDate}</div>
                     </div>
                     
@@ -1118,12 +1288,78 @@
                                             <span class="font-medium text-sm text-gray-900">${c.user}</span>
                                             <span class="text-xs text-gray-400">${c.date}</span>
                                         </div>
-                                        <p class="text-sm text-gray-700 whitespace-pre-wrap break-words">${c.text}</p>
+                                        <div class="text-sm text-gray-700 whitespace-pre-wrap break-words">${parseBBCode(c.text)}</div>
                                     </div>
                                 `).join('')}
                             </div>
                         </div>
                     ` : ''}
+                </div>
+            `;
+            
+            overlay.classList.add('active');
+        }
+        
+        function openAnalyticsDetail(gameId) {
+            // Get all listings for this game
+            const listings = geeklistData.filter(item => item.gameId === gameId);
+            if (listings.length === 0) return;
+            
+            const gameName = listings[0].gameName;
+            const thumbnail = listings[0].thumbnail;
+            const collectionItem = collectionData.get(gameId);
+            const numplays = collectionItem?.numplays || 0;
+            
+            const overlay = document.getElementById('detailModal');
+            const content = document.getElementById('detailContent');
+            
+            content.innerHTML = `
+                <div class="modal-close">
+                    <h2 class="text-lg font-bold text-gray-900">${gameName}</h2>
+                    <button onclick="closeModal()" class="text-gray-400 hover:text-gray-600">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12" />
+                        </svg>
+                    </button>
+                </div>
+                <div class="p-4 space-y-4">
+                    <div class="flex items-start gap-4">
+                        ${thumbnail ? `<img src="${thumbnail}" alt="${gameName}" class="w-20 h-20 rounded-lg object-cover flex-shrink-0">` : ''}
+                        <div class="flex-1">
+                            <div class="grid grid-cols-2 gap-2">
+                                <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Listings</div><div class="text-lg font-bold text-gray-900">${listings.length}</div></div>
+                                <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Plays</div><div class="text-lg font-bold text-blue-600">${numplays}</div></div>
+                            </div>
+                        </div>
+                    </div>
+                    
+                    <h3 class="font-bold text-gray-900">All Listings (${listings.length})</h3>
+                    
+                    <div class="space-y-3">
+                        ${listings.map(item => `
+                            <div class="ios-card p-4">
+                                <div class="flex justify-between items-start mb-2">
+                                    ${item.price !== null 
+                                        ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${item.isSold ? 'price-red' : 'price-green'}">
+                                            $${item.price.toFixed(0)}${item.isSold ? ' SOLD' : ''}
+                                        </span>`
+                                        : `<span class="text-xs text-gray-400">No price listed</span>`
+                                    }
+                                    <span class="text-xs text-gray-400">${timeAgo(item.postDate)}</span>
+                                </div>
+                                <div class="text-sm text-gray-700 whitespace-pre-wrap break-words">${parseBBCode(item.body)}</div>
+                                ${item.commentsList.length > 0 ? `
+                                    <div class="mt-2 pt-2 border-t border-gray-100">
+                                        <div class="text-xs text-gray-500 mb-1">${item.commentsList.length} comment${item.commentsList.length !== 1 ? 's' : ''}</div>
+                                        ${item.commentsList.slice(0, 3).map(c => `
+                                            <div class="text-xs text-gray-600 mb-1"><span class="font-medium">@${c.user}:</span> ${parseBBCode(c.text).substring(0, 100)}${c.text.length > 100 ? '...' : ''}</div>
+                                        `).join('')}
+                                        ${item.commentsList.length > 3 ? `<div class="text-xs text-gray-400">+${item.commentsList.length - 3} more</div>` : ''}
+                                    </div>
+                                ` : ''}
+                            </div>
+                        `).join('')}
+                    </div>
                 </div>
             `;
             
@@ -1169,6 +1405,10 @@
             // Set initial tab
             switchTab('setup');
             
+            // Render the geeklist selector
+            renderGeeklistSelector();
+            updateSelectedGeeklistsCount();
+            
             // Close modal when clicking overlay
             document.getElementById('detailModal').addEventListener('click', function(e) {
                 if (e.target === this) {
@@ -1176,6 +1416,11 @@
                 }
             });
         });
+        
+        function updateSelectedGeeklistsCount() {
+            document.getElementById('selectedGeeklistsCount').textContent = 
+                `${selectedGeeklists.length} GeekList${selectedGeeklists.length !== 1 ? 's' : ''} selected`;
+        }
     </script>
 </body>
 </html>
