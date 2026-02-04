@@ -921,7 +921,11 @@
                         const gameName = item.getAttribute('objectname') || 'Unknown Game';
                         const postDate = item.getAttribute('postdate') || '';
                         const username = item.getAttribute('username') || '';
+                        const thumbs = parseInt(item.getAttribute('thumbs')) || 0;
                         const body = item.getElementsByTagName('body')[0]?.textContent || '';
+                        
+                        // Get geeklist label
+                        const geeklistLabel = GEEKLIST_OPTIONS.find(gl => gl.geeklistId === geeklistId)?.label || `GeekList ${geeklistId}`;
                         
                         // Get all comments
                         const commentNodes = item.getElementsByTagName('comment');
@@ -949,7 +953,9 @@
                             commentsList,
                             postDate,
                             body,
-                            geeklistId
+                            geeklistId,
+                            geeklistLabel,
+                            thumbs
                         });
                     }
                     return results;
@@ -1195,6 +1201,7 @@
                                             </svg>
                                             ${item.comments}
                                         </span>
+                                        ${item.thumbs > 0 ? `<span class="flex items-center gap-1">👍 ${item.thumbs}</span>` : ''}
                                         <span>${timeAgo(item.postDate)}</span>
                                         ${numplays > 0 ? `<span class="flex items-center gap-1 text-blue-600 font-medium">
                                             <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -1203,6 +1210,9 @@
                                             </svg>
                                             ${numplays}
                                         </span>` : ''}
+                                    </div>
+                                    <div class="text-xs text-gray-400 mt-1">
+                                        ${item.geeklistLabel}
                                     </div>
                                 </div>
                                 <button onclick="event.stopPropagation(); window.open('https://boardgamegeek.com/geeklist/${item.geeklistId}?itemid=${item.itemId}', '_blank')" class="flex-shrink-0 ml-2 p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="View on BGG">
@@ -1260,6 +1270,8 @@
                         thumbnail: item.thumbnail,
                         unsoldPrices: [],
                         soldPrices: [],
+                        unsoldListings: [],
+                        soldListings: [],
                         count: 0,
                         soldCount: 0,
                         unsoldCount: 0
@@ -1272,29 +1284,45 @@
                     game.soldCount++;
                     if (item.price !== null) {
                         game.soldPrices.push(item.price);
+                        game.soldListings.push({price: item.price, date: new Date(item.postDate)});
                     }
                 } else {
                     game.unsoldCount++;
                     if (item.price !== null) {
                         game.unsoldPrices.push(item.price);
+                        game.unsoldListings.push({price: item.price, date: new Date(item.postDate)});
                     }
                 }
             });
             
-            // Calculate stats
+            // Calculate stats including trendlines
             const games = [...gameMap.values()].map(game => {
                 const unsoldPrices = game.unsoldPrices;
                 const soldPrices = game.soldPrices;
+                
+                // Calculate trendlines (oldest to newest)
+                const calcTrend = (listings) => {
+                    if (listings.length < 2) return null;
+                    const sorted = [...listings].sort((a, b) => a.date - b.date);
+                    const firstPrice = sorted[0].price;
+                    const lastPrice = sorted[sorted.length - 1].price;
+                    const change = lastPrice - firstPrice;
+                    const percentChange = (change / firstPrice) * 100;
+                    return { change, percentChange, direction: change > 0 ? 'up' : change < 0 ? 'down' : 'flat' };
+                };
+                
                 return {
                     ...game,
                     // Unsold stats
                     unsoldAvg: unsoldPrices.length > 0 ? unsoldPrices.reduce((a, b) => a + b, 0) / unsoldPrices.length : null,
                     unsoldMin: unsoldPrices.length > 0 ? Math.min(...unsoldPrices) : null,
                     unsoldMax: unsoldPrices.length > 0 ? Math.max(...unsoldPrices) : null,
+                    unsoldTrend: calcTrend(game.unsoldListings),
                     // Sold stats
                     soldAvg: soldPrices.length > 0 ? soldPrices.reduce((a, b) => a + b, 0) / soldPrices.length : null,
                     soldMin: soldPrices.length > 0 ? Math.min(...soldPrices) : null,
-                    soldMax: soldPrices.length > 0 ? Math.max(...soldPrices) : null
+                    soldMax: soldPrices.length > 0 ? Math.max(...soldPrices) : null,
+                    soldTrend: calcTrend(game.soldListings)
                 };
             }).sort((a, b) => b.count - a.count);
             
@@ -1336,25 +1364,25 @@
                                 <div class="ml-3 flex-1 min-w-0">
                                     <h3 class="font-semibold text-gray-900 text-sm leading-tight">${game.gameName}</h3>
                                     <div class="flex items-center gap-2 mt-1">
-                                        <span class="text-xs text-gray-400">${game.count} listing${game.count !== 1 ? 's' : ''}</span>
-                                        ${game.soldCount > 0 ? `<span class="text-xs text-red-600">• ${game.soldCount} sold</span>` : ''}
-                                        ${game.unsoldCount > 0 ? `<span class="text-xs text-green-600">• ${game.unsoldCount} avail</span>` : ''}
+                                        <span class="text-xs text-gray-400">${game.count} total</span>
                                     </div>
                                     ${game.unsoldCount > 0 ? `
                                         <div class="mt-2 text-xs">
-                                            <div class="font-semibold text-green-700 mb-0.5">Available:</div>
+                                            <div class="font-semibold text-green-700 mb-0.5">Available (${game.unsoldCount}):</div>
                                             <div class="text-gray-600">
                                                 ${game.unsoldAvg !== null ? `Avg: $${game.unsoldAvg.toFixed(0)}` : 'No prices'}
                                                 ${game.unsoldMin !== null && game.unsoldMax !== null && game.unsoldMin !== game.unsoldMax ? ` | Range: $${game.unsoldMin.toFixed(0)}-$${game.unsoldMax.toFixed(0)}` : ''}
+                                                ${game.unsoldTrend ? ` | <span class="${game.unsoldTrend.direction === 'up' ? 'text-red-600' : game.unsoldTrend.direction === 'down' ? 'text-green-600' : 'text-gray-500'}">${game.unsoldTrend.direction === 'up' ? '↗' : game.unsoldTrend.direction === 'down' ? '↘' : '→'} ${game.unsoldTrend.percentChange.toFixed(0)}%</span>` : ''}
                                             </div>
                                         </div>
                                     ` : ''}
                                     ${game.soldCount > 0 ? `
                                         <div class="mt-1.5 text-xs">
-                                            <div class="font-semibold text-red-700 mb-0.5">Sold:</div>
+                                            <div class="font-semibold text-red-700 mb-0.5">Sold (${game.soldCount}):</div>
                                             <div class="text-gray-600">
                                                 ${game.soldAvg !== null ? `Avg: $${game.soldAvg.toFixed(0)}` : 'No prices'}
                                                 ${game.soldMin !== null && game.soldMax !== null && game.soldMin !== game.soldMax ? ` | Range: $${game.soldMin.toFixed(0)}-$${game.soldMax.toFixed(0)}` : ''}
+                                                ${game.soldTrend ? ` | <span class="${game.soldTrend.direction === 'up' ? 'text-red-600' : game.soldTrend.direction === 'down' ? 'text-green-600' : 'text-gray-500'}">${game.soldTrend.direction === 'up' ? '↗' : game.soldTrend.direction === 'down' ? '↘' : '→'} ${game.soldTrend.percentChange.toFixed(0)}%</span>` : ''}
                                             </div>
                                         </div>
                                     ` : ''}
