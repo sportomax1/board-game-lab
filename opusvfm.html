@@ -1173,6 +1173,10 @@
                                 </div>
                                 <div class="ml-3 flex-1 min-w-0">
                                     <h3 class="font-semibold text-gray-900 text-sm leading-tight truncate">${item.gameName}</h3>
+                                    <div class="flex items-center gap-1.5 mt-0.5">
+                                        <span class="text-xs text-gray-500">by</span>
+                                        <span class="text-xs font-medium text-blue-600">@${item.username}</span>
+                                    </div>
                                     <div class="flex items-center gap-2 mt-1.5">
                                         ${item.price !== null 
                                             ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${item.isSold ? 'price-red' : 'price-green'}">
@@ -1198,6 +1202,11 @@
                                         </span>` : ''}
                                     </div>
                                 </div>
+                                <button onclick="event.stopPropagation(); window.open('https://boardgamegeek.com/geeklist/${item.geeklistId}?itemid=${item.itemId}', '_blank')" class="flex-shrink-0 ml-2 p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="View on BGG">
+                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                    </svg>
+                                </button>
                             </div>
                         </div>
                     `}).join('')}
@@ -1247,12 +1256,19 @@
                         gameName: item.gameName,
                         thumbnail: item.thumbnail,
                         prices: [],
-                        count: 0
+                        count: 0,
+                        soldCount: 0,
+                        unsoldCount: 0
                     });
                 }
                 
                 const game = gameMap.get(item.gameId);
                 game.count++;
+                if (item.isSold) {
+                    game.soldCount++;
+                } else {
+                    game.unsoldCount++;
+                }
                 if (item.price !== null && !item.isSold) {
                     game.prices.push(item.price);
                 }
@@ -1308,6 +1324,8 @@
                                     <h3 class="font-semibold text-gray-900 text-sm leading-tight">${game.gameName}</h3>
                                     <div class="flex items-center gap-2 mt-1">
                                         <span class="text-xs text-gray-400">${game.count} listing${game.count !== 1 ? 's' : ''}</span>
+                                        ${game.soldCount > 0 ? `<span class="text-xs text-red-600">• ${game.soldCount} sold</span>` : ''}
+                                        ${game.unsoldCount > 0 ? `<span class="text-xs text-green-600">• ${game.unsoldCount} avail</span>` : ''}
                                     </div>
                                 </div>
                                 <div class="text-right flex-shrink-0">
@@ -1379,14 +1397,35 @@
             `).join('');
         }
         
+        // ============ USER API FETCH ============
+        async function fetchUserLocation(username) {
+            if (!username) return null;
+            try {
+                const url = `/api/bgg-helper?endpoint=user&name=${encodeURIComponent(username)}`;
+                const text = await fetchWithRetry(url, 3, 500);
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const stateProvince = xml.getElementsByTagName('stateorprovince')[0]?.getAttribute('value') || '';
+                const country = xml.getElementsByTagName('country')[0]?.getAttribute('value') || '';
+                
+                const parts = [stateProvince, country].filter(p => p);
+                return parts.length > 0 ? parts.join(', ') : null;
+            } catch (error) {
+                console.warn(`Failed to fetch location for ${username}:`, error);
+                return null;
+            }
+        }
+        
         // ============ MODAL FUNCTIONS ============
-        function openGameDetail(itemId) {
+        async function openGameDetail(itemId) {
             const item = geeklistData.find(g => g.itemId === itemId);
             if (!item) return;
             
             const overlay = document.getElementById('detailModal');
             const content = document.getElementById('detailContent');
             
+            // Show modal with loading state for location
             content.innerHTML = `
                 <div class="modal-close">
                     <h2 class="text-lg font-bold text-gray-900">${item.gameName}</h2>
@@ -1400,6 +1439,10 @@
                     <div class="flex items-start gap-4">
                         ${item.thumbnail ? `<img src="${item.thumbnail}" alt="${item.gameName}" class="w-20 h-20 rounded-lg object-cover flex-shrink-0">` : ''}
                         <div class="flex-1">
+                            <div class="flex items-center gap-2 mb-2">
+                                <span class="text-sm font-medium text-blue-600">@${item.username}</span>
+                                <span id="userLocation" class="text-xs text-gray-400">Loading location...</span>
+                            </div>
                             <div class="grid grid-cols-3 gap-2">
                                 ${item.price !== null ? `<div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Price</div><div class="text-lg font-bold ${item.isSold ? 'text-red-600' : 'text-green-600'}">$${item.price.toFixed(0)}</div>${item.isSold ? '<div class="text-xs text-red-600">SOLD</div>' : ''}</div>` : ''}
                                 <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Comments</div><div class="text-lg font-bold text-gray-900">${item.comments}</div></div>
@@ -1407,6 +1450,13 @@
                             </div>
                         </div>
                     </div>
+                    
+                    <a href="https://boardgamegeek.com/geeklist/${item.geeklistId}?itemid=${item.itemId}" target="_blank" class="ios-button flex items-center justify-center gap-2" style="background: #34c759; text-decoration: none;">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                        View on BoardGameGeek
+                    </a>
                     
                     <div class="ios-card p-4">
                         <h3 class="font-bold text-gray-900 mb-2">Listing</h3>
@@ -1434,6 +1484,13 @@
             `;
             
             overlay.classList.add('active');
+            
+            // Fetch user location asynchronously
+            const location = await fetchUserLocation(item.username);
+            const locationEl = document.getElementById('userLocation');
+            if (locationEl) {
+                locationEl.textContent = location || 'Location not available';
+            }
         }
         
         function openAnalyticsDetail(gameId) {
@@ -1475,13 +1532,23 @@
                         ${listings.map(item => `
                             <div class="ios-card p-4">
                                 <div class="flex justify-between items-start mb-2">
-                                    ${item.price !== null 
-                                        ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${item.isSold ? 'price-red' : 'price-green'}">
-                                            $${item.price.toFixed(0)}${item.isSold ? ' SOLD' : ''}
-                                        </span>`
-                                        : `<span class="text-xs text-gray-400">No price listed</span>`
-                                    }
-                                    <span class="text-xs text-gray-400">${timeAgo(item.postDate)}</span>
+                                    <div class="flex-1">
+                                        <div class="flex items-center gap-2 mb-1">
+                                            ${item.price !== null 
+                                                ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${item.isSold ? 'price-red' : 'price-green'}">
+                                                    $${item.price.toFixed(0)}${item.isSold ? ' SOLD' : ''}
+                                                </span>`
+                                                : `<span class="text-xs text-gray-400">No price listed</span>`
+                                            }
+                                            <span class="text-xs text-gray-400">${timeAgo(item.postDate)}</span>
+                                        </div>
+                                        <div class="text-xs text-gray-500 mb-2">by @${item.username}</div>
+                                    </div>
+                                    <a href="https://boardgamegeek.com/geeklist/${item.geeklistId}?itemid=${item.itemId}" target="_blank" class="flex-shrink-0 ml-2 p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="View on BGG">
+                                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                                        </svg>
+                                    </a>
                                 </div>
                                 <div class="text-sm text-gray-700 whitespace-pre-wrap break-words">${parseBBCode(item.body)}</div>
                                 ${item.commentsList.length > 0 ? `
