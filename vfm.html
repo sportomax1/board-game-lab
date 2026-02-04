@@ -398,6 +398,15 @@
                 <input type="text" id="listingsSearch" class="ios-input" placeholder="Search games..." oninput="searchListings()">
             </div>
             
+            <!-- Sort Dropdown -->
+            <div class="px-4 mb-3">
+                <select id="listingsSort" class="ios-input text-sm" onchange="setListingsSort(this.value)">
+                    <option value="date-desc">Sort: Date Posted (Newest)</option>
+                    <option value="price-asc">Sort: Price (Low to High)</option>
+                    <option value="price-desc">Sort: Price (High to Low)</option>
+                </select>
+            </div>
+            
             <!-- Filters -->
             <div class="px-4 mb-4">
                 <div class="filters-scroll flex gap-2 pb-2">
@@ -411,7 +420,7 @@
                     <button class="filter-chip" data-filter="fortrade" onclick="setFilter('fortrade')">For Trade</button>
                     <button id="numplaysToggle" class="filter-chip" onclick="toggleNumplaysFilter()">Played</button>
                     <button id="myPostsToggle" class="filter-chip" onclick="toggleMyPosts()">My Posts</button>
-                    <button id="iCommentedToggle" class="filter-chip" onclick="toggleICommented()">I Commented</button>
+                    <button id="iCommentedToggle" class="filter-chip" onclick="toggleICommented()">My Comments</button>
                     <button id="showSoldToggle" class="filter-chip active" onclick="toggleShowSold()">Sold</button>
                     <button id="showUnsoldToggle" class="filter-chip active" onclick="toggleShowUnsold()">Unsold</button>
                 </div>
@@ -439,6 +448,14 @@
             <!-- Search Field -->
             <div class="px-4 mb-3">
                 <input type="text" id="analyticsSearch" class="ios-input" placeholder="Search games..." oninput="searchAnalytics()">
+            </div>
+            
+            <!-- Sort Dropdown -->
+            <div class="px-4 mb-3">
+                <select id="analyticsSort" class="ios-input text-sm" onchange="setAnalyticsSort(this.value)">
+                    <option value="avg-desc">Sort: Average Price (High to Low)</option>
+                    <option value="rank-asc">Sort: BGG Rank (Best First)</option>
+                </select>
             </div>
             
             <!-- Filters -->
@@ -585,6 +602,8 @@
         let filterShowUnsold = true;
         let listingsSearchQuery = '';
         let analyticsSearchQuery = '';
+        let listingsSort = 'date-desc'; // date-desc, price-asc, price-desc
+        let analyticsSort = 'avg-desc'; // avg-desc, rank-asc
         let isRunning = false;
         let collectionXML = '';
         let geeklistXML = '';
@@ -674,6 +693,16 @@
             filterShowUnsold = !filterShowUnsold;
             document.getElementById('showUnsoldToggle').classList.toggle('active', filterShowUnsold);
             renderListings();
+        }
+        
+        function setListingsSort(sortValue) {
+            listingsSort = sortValue;
+            renderListings();
+        }
+        
+        function setAnalyticsSort(sortValue) {
+            analyticsSort = sortValue;
+            renderAnalytics();
         }
         
         function toggleGeeklist(geeklistId) {
@@ -813,6 +842,24 @@
                 await fetchGeekList(selectedGeeklists);
                 document.getElementById('geeklistCount').textContent = geeklistData.length;
                 
+                // Check if no geeklist data was loaded
+                if (geeklistData.length === 0) {
+                    showModal(`
+                        <div class="p-6 text-center">
+                            <div class="text-4xl mb-3">⚠️</div>
+                            <h2 class="text-xl font-bold text-gray-900 mb-2">No Listings Found</h2>
+                            <p class="text-gray-600 mb-4">No records were retrieved from the selected GeekList(s). This could be because:</p>
+                            <ul class="text-left text-sm text-gray-600 mb-4 space-y-1">
+                                <li>• The GeekList is empty</li>
+                                <li>• There was a temporary BGG API issue</li>
+                                <li>• The GeekList ID is incorrect</li>
+                            </ul>
+                            <button onclick="closeModal()" class="bg-blue-500 text-white px-6 py-2 rounded-lg font-semibold">Try Again</button>
+                        </div>
+                    `);
+                    throw new Error('No geeklist data loaded');
+                }
+                
                 // Step 4: Fetch thumbnails for geeklist items
                 updateProgress('Loading Images...', 70, 'Fetching game thumbnails');
                 await fetchThumbnails();
@@ -884,11 +931,22 @@
                     const ratingEl = item.getElementsByTagName('rating')[0];
                     const rating = ratingEl?.getAttribute('value') || null;
                     
+                    // Get BGG rank (boardgamerank)
+                    const ranks = item.getElementsByTagName('rank');
+                    let rank = null;
+                    for (let j = 0; j < ranks.length; j++) {
+                        if (ranks[j].getAttribute('name') === 'boardgame') {
+                            const rankValue = ranks[j].getAttribute('value');
+                            rank = rankValue && rankValue !== 'Not Ranked' ? parseInt(rankValue) : null;
+                            break;
+                        }
+                    }
+                    
                     // Get numplays from element
                     const numplaysEl = item.getElementsByTagName('numplays')[0];
                     const numplays = parseInt(numplaysEl?.textContent) || 0;
                     
-                    collectionData.set(gameId, { name, thumbnail, status, rating, numplays });
+                    collectionData.set(gameId, { name, thumbnail, status, rating, numplays, rank });
                 }
             } catch (error) {
                 console.error('Collection fetch error:', error);
@@ -1131,7 +1189,7 @@
                 );
             }
             
-            // Filter by I Commented
+            // Filter by My Comments
             if (filterICommented && currentFilter !== 'all') {
                 filtered = filtered.filter(item => 
                     item.commentsList.some(c => c.user.toLowerCase() === myUsername.toLowerCase())
@@ -1144,6 +1202,25 @@
                     if (!filterShowSold && item.isSold) return false;
                     if (!filterShowUnsold && !item.isSold) return false;
                     return true;
+                });
+            }
+            
+            // Apply sorting
+            if (listingsSort === 'date-desc') {
+                filtered.sort((a, b) => new Date(b.postDate) - new Date(a.postDate));
+            } else if (listingsSort === 'price-asc') {
+                filtered.sort((a, b) => {
+                    if (a.price === null && b.price === null) return 0;
+                    if (a.price === null) return 1;
+                    if (b.price === null) return -1;
+                    return a.price - b.price;
+                });
+            } else if (listingsSort === 'price-desc') {
+                filtered.sort((a, b) => {
+                    if (a.price === null && b.price === null) return 0;
+                    if (a.price === null) return 1;
+                    if (b.price === null) return -1;
+                    return b.price - a.price;
                 });
             }
             
@@ -1324,7 +1401,24 @@
                     soldMax: soldPrices.length > 0 ? Math.max(...soldPrices) : null,
                     soldTrend: calcTrend(game.soldListings)
                 };
-            }).sort((a, b) => b.count - a.count);
+            });
+            
+            // Apply sorting
+            if (analyticsSort === 'avg-desc') {
+                games.sort((a, b) => {
+                    const avgA = a.unsoldAvg || a.soldAvg || 0;
+                    const avgB = b.unsoldAvg || b.soldAvg || 0;
+                    return avgB - avgA;
+                });
+            } else if (analyticsSort === 'rank-asc') {
+                games.sort((a, b) => {
+                    const collectionA = collectionData.get(a.gameId);
+                    const collectionB = collectionData.get(b.gameId);
+                    const rankA = collectionA?.rank || 999999;
+                    const rankB = collectionB?.rank || 999999;
+                    return rankA - rankB;
+                });
+            }
             
             // Update summary stats
             document.getElementById('summaryStats').classList.remove('hidden');
