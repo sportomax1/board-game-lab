@@ -1133,33 +1133,49 @@
         function parsePrice(body, commentsList = []) {
             const lowerBody = body.toLowerCase();
             let isSold = lowerBody.includes('sold') || lowerBody.includes('[s]') || lowerBody.includes('**sold**');
-            
+
             // Check comments for "Sold"
             if (!isSold && commentsList) {
                 isSold = commentsList.some(c => c.text.toLowerCase().includes('sold'));
             }
-            
-            // Try to find price patterns
+
+            // High-confidence patterns (in preferential order)
             const pricePatterns = [
-                /\$\s*(\d+(?:\.\d{2})?)/,
-                /(\d+(?:\.\d{2})?)\s*(?:dollars?|usd)/i,
-                /price[:\s]*\$?\s*(\d+(?:\.\d{2})?)/i,
-                /asking[:\s]*\$?\s*(\d+(?:\.\d{2})?)/i
+                /\$\s*(\d+(?:\.\d{2})?)/,                                   // $50 or $ 50
+                /\bfp[:\s]*?(\d+(?:\.\d{2})?)\b/i,                          // FP 50 or FP:50
+                /\bbs[:\s]*?(\d+(?:\.\d{2})?)\b/i,                          // SB 20 or SB:20
+                /price\s*(?:for this(?: would be)?\s*[:\s]*)\$?\s*(\d+(?:\.\d{2})?)\b/i, // "price for this would be 50"
+                /asking[:\s]*\$?\s*(\d+(?:\.\d{2})?)/i,
+                /(\d+(?:\.\d{1,2})?)\s*(?:dollars?|usd)\b/i
             ];
-            
+
             for (const pattern of pricePatterns) {
                 const match = body.match(pattern);
                 if (match) {
                     return { price: parseFloat(match[1]), isSold };
                 }
             }
-            
-            // Fallback: look for any number if standard patterns don't match
-            const fallbackMatch = body.match(/\b(\d+(?:\.\d{2})?)\b/);
-            if (fallbackMatch) {
-                return { price: parseFloat(fallbackMatch[1]), isSold };
+
+            // Safer fallback: scan for small numeric tokens that look like prices and avoid IDs/URLs/years
+            const numRegex = /\b(\d{1,4}(?:\.\d{1,2})?)\b/g;
+            let m;
+            while ((m = numRegex.exec(body)) !== null) {
+                const raw = m[1];
+                const num = parseFloat(raw);
+                if (!isFinite(num) || num <= 0 || num > 1000) continue; // skip unrealistic values
+
+                const idx = m.index;
+                const before = body.slice(Math.max(0, idx - 12), idx).toLowerCase();
+                const after = body.slice(idx, idx + 12).toLowerCase();
+
+                // Avoid picking up thing ids, long listing ids, or numbers embedded in URLs
+                if (before.includes('thing=') || before.includes('thing:') || before.includes('/listing') || before.includes('etsy.com') || before.includes('ref=')) continue;
+                if (raw.length >= 7) continue; // extremely long digit sequences are likely IDs
+                if (num >= 1900 && num <= 2100) continue; // avoid years
+
+                return { price: num, isSold };
             }
-            
+
             return { price: null, isSold };
         }
 
