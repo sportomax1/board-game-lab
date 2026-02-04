@@ -387,6 +387,10 @@
     </div>
 
     <script>
+        // ============ PARALLEL PROCESSING CONSTANTS ============
+        const THING_BATCH_SIZE = 20;
+        const THING_PARALLEL_BATCHES = 100;
+        
         // ============ STATE ============
         let collectionData = new Map(); // gameId -> { name, thumbnail, status: { own, prevowned, ... }, rating }
         let geeklistData = []; // Array of { itemId, gameId, gameName, thumbnail, price, isSold, comments, postDate, body }
@@ -628,39 +632,63 @@
         // ============ THUMBNAIL FETCH ============
         async function fetchThumbnails() {
             const gameIds = [...new Set(geeklistData.map(g => g.gameId))];
-            const batchSize = 20;
             
-            for (let i = 0; i < gameIds.length; i += batchSize) {
-                const batch = gameIds.slice(i, i + batchSize);
-                const url = `/api/bgg-helper?endpoint=thing&id=${batch.join(',')}`;
+            // Create batches of THING_BATCH_SIZE
+            const batchesOf20 = [];
+            for (let i = 0; i < gameIds.length; i += THING_BATCH_SIZE) {
+                batchesOf20.push(gameIds.slice(i, i + THING_BATCH_SIZE));
+            }
+            
+            // Process THING_PARALLEL_BATCHES requests in parallel
+            for (let i = 0; i < batchesOf20.length; i += THING_PARALLEL_BATCHES) {
+                const currentParallelSet = batchesOf20.slice(i, i + THING_PARALLEL_BATCHES);
+                const progressPercentStart = 70;
+                const progressPercentEnd = 90;
                 
-                try {
-                    const text = await fetchWithRetry(url);
-                    const parser = new DOMParser();
-                    const xml = parser.parseFromString(text, 'text/xml');
-                    
-                    const items = xml.getElementsByTagName('item');
-                    
-                    for (let j = 0; j < items.length; j++) {
-                        const item = items[j];
-                        const id = item.getAttribute('id');
-                        const thumbEl = item.getElementsByTagName('thumbnail')[0];
-                        const thumbnail = thumbEl?.textContent || '';
-                        
-                        // Update geeklist items with this game's thumbnail
-                        geeklistData.forEach(g => {
-                            if (g.gameId === id && !g.thumbnail) {
-                                g.thumbnail = thumbnail.startsWith('//') ? 'https:' + thumbnail : thumbnail;
-                            }
-                        });
-                    }
-                } catch (error) {
-                    console.warn('Thumbnail batch error:', error);
-                }
+                // Process all batches in this parallel set concurrently
+                const promises = currentParallelSet.map(batch => fetchThingMetadataBatch(batch));
+                await Promise.all(promises);
                 
                 // Update progress
-                const progress = 70 + (i / gameIds.length) * 20;
-                updateProgress('Loading Images...', progress, `Fetched ${Math.min(i + batchSize, gameIds.length)}/${gameIds.length} thumbnails`);
+                const progressPercent = progressPercentStart + (i / batchesOf20.length) * (progressPercentEnd - progressPercentStart);
+                const totalFetched = Math.min(i + THING_PARALLEL_BATCHES, batchesOf20.length) * THING_BATCH_SIZE;
+                updateProgress('Loading Images...', progressPercent, `Fetched ${Math.min(totalFetched, gameIds.length)}/${gameIds.length} thumbnails`);
+                
+                // Small delay between parallel batches to avoid overwhelming the API
+                if (i + THING_PARALLEL_BATCHES < batchesOf20.length) {
+                    await sleep(200);
+                }
+            }
+        }
+        
+        // ============ THING METADATA BATCH FETCH ============
+        async function fetchThingMetadataBatch(ids) {
+            if (ids.length === 0) return;
+            
+            const url = `/api/bgg-helper?endpoint=thing&id=${ids.join(',')}`;
+            
+            try {
+                const text = await fetchWithRetry(url);
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(text, 'text/xml');
+                
+                const items = xml.getElementsByTagName('item');
+                
+                for (let j = 0; j < items.length; j++) {
+                    const item = items[j];
+                    const id = item.getAttribute('id');
+                    const thumbEl = item.getElementsByTagName('thumbnail')[0];
+                    const thumbnail = thumbEl?.textContent || '';
+                    
+                    // Update geeklist items with this game's thumbnail
+                    geeklistData.forEach(g => {
+                        if (g.gameId === id && !g.thumbnail) {
+                            g.thumbnail = thumbnail.startsWith('//') ? 'https:' + thumbnail : thumbnail;
+                        }
+                    });
+                }
+            } catch (error) {
+                console.warn('Thumbnail batch error for ids:', ids, error);
             }
         }
 
