@@ -1098,7 +1098,7 @@
                 );
             }
             
-            // Collection status filter
+            // Collection status filter - if 'all' is selected, skip this filter entirely
             if (currentFilter !== 'all') {
                 filtered = filtered.filter(item => {
                     const collectionItem = collectionData.get(item.gameId);
@@ -1107,8 +1107,11 @@
                 });
             }
             
-            // Filter by numplays if toggled - use collection data
-            if (filterNumplays) {
+            // Apply additional toggles only if 'all' is NOT selected, or if they're active
+            // If 'all' is selected, only apply these filters if they're explicitly toggled on
+            
+            // Filter by numplays if toggled
+            if (filterNumplays && currentFilter !== 'all') {
                 filtered = filtered.filter(item => {
                     const collectionItem = collectionData.get(item.gameId);
                     return collectionItem && collectionItem.numplays > 0;
@@ -1116,21 +1119,21 @@
             }
             
             // Filter by My Posts
-            if (filterMyPosts) {
+            if (filterMyPosts && currentFilter !== 'all') {
                 filtered = filtered.filter(item => 
                     item.username.toLowerCase() === myUsername.toLowerCase()
                 );
             }
             
             // Filter by I Commented
-            if (filterICommented) {
+            if (filterICommented && currentFilter !== 'all') {
                 filtered = filtered.filter(item => 
                     item.commentsList.some(c => c.user.toLowerCase() === myUsername.toLowerCase())
                 );
             }
             
-            // Filter by Sold/Unsold status
-            if (!filterShowSold || !filterShowUnsold) {
+            // Filter by Sold/Unsold status - only apply if not both are selected
+            if (currentFilter !== 'all' && (!filterShowSold || !filterShowUnsold)) {
                 filtered = filtered.filter(item => {
                     if (!filterShowSold && item.isSold) return false;
                     if (!filterShowUnsold && !item.isSold) return false;
@@ -1229,7 +1232,7 @@
                 );
             }
             
-            // Collection status filter
+            // Collection status filter - if 'all' is selected, skip this filter entirely
             if (analyticsFilter !== 'all') {
                 filteredListings = filteredListings.filter(item => {
                     const collectionItem = collectionData.get(item.gameId);
@@ -1238,8 +1241,8 @@
                 });
             }
             
-            // Filter by numplays if toggled - use collection data
-            if (analyticsFilterNumplays) {
+            // Filter by numplays if toggled - only apply if 'all' is not selected
+            if (analyticsFilterNumplays && analyticsFilter !== 'all') {
                 filteredListings = filteredListings.filter(item => {
                     const collectionItem = collectionData.get(item.gameId);
                     return collectionItem && collectionItem.numplays > 0;
@@ -1255,7 +1258,8 @@
                         gameId: item.gameId,
                         gameName: item.gameName,
                         thumbnail: item.thumbnail,
-                        prices: [],
+                        unsoldPrices: [],
+                        soldPrices: [],
                         count: 0,
                         soldCount: 0,
                         unsoldCount: 0
@@ -1266,22 +1270,31 @@
                 game.count++;
                 if (item.isSold) {
                     game.soldCount++;
+                    if (item.price !== null) {
+                        game.soldPrices.push(item.price);
+                    }
                 } else {
                     game.unsoldCount++;
-                }
-                if (item.price !== null && !item.isSold) {
-                    game.prices.push(item.price);
+                    if (item.price !== null) {
+                        game.unsoldPrices.push(item.price);
+                    }
                 }
             });
             
             // Calculate stats
             const games = [...gameMap.values()].map(game => {
-                const validPrices = game.prices;
+                const unsoldPrices = game.unsoldPrices;
+                const soldPrices = game.soldPrices;
                 return {
                     ...game,
-                    avgPrice: validPrices.length > 0 ? validPrices.reduce((a, b) => a + b, 0) / validPrices.length : null,
-                    minPrice: validPrices.length > 0 ? Math.min(...validPrices) : null,
-                    maxPrice: validPrices.length > 0 ? Math.max(...validPrices) : null
+                    // Unsold stats
+                    unsoldAvg: unsoldPrices.length > 0 ? unsoldPrices.reduce((a, b) => a + b, 0) / unsoldPrices.length : null,
+                    unsoldMin: unsoldPrices.length > 0 ? Math.min(...unsoldPrices) : null,
+                    unsoldMax: unsoldPrices.length > 0 ? Math.max(...unsoldPrices) : null,
+                    // Sold stats
+                    soldAvg: soldPrices.length > 0 ? soldPrices.reduce((a, b) => a + b, 0) / soldPrices.length : null,
+                    soldMin: soldPrices.length > 0 ? Math.min(...soldPrices) : null,
+                    soldMax: soldPrices.length > 0 ? Math.max(...soldPrices) : null
                 };
             }).sort((a, b) => b.count - a.count);
             
@@ -1327,20 +1340,26 @@
                                         ${game.soldCount > 0 ? `<span class="text-xs text-red-600">• ${game.soldCount} sold</span>` : ''}
                                         ${game.unsoldCount > 0 ? `<span class="text-xs text-green-600">• ${game.unsoldCount} avail</span>` : ''}
                                     </div>
-                                </div>
-                                <div class="text-right flex-shrink-0">
-                                    ${game.avgPrice !== null 
-                                        ? `<div class="text-lg font-bold text-green-600">$${game.avgPrice.toFixed(0)}</div>
-                                           <div class="text-[10px] text-gray-400">avg</div>`
-                                        : `<div class="text-sm text-gray-400">No price</div>`
-                                    }
+                                    ${game.unsoldCount > 0 ? `
+                                        <div class="mt-2 text-xs">
+                                            <div class="font-semibold text-green-700 mb-0.5">Available:</div>
+                                            <div class="text-gray-600">
+                                                ${game.unsoldAvg !== null ? `Avg: $${game.unsoldAvg.toFixed(0)}` : 'No prices'}
+                                                ${game.unsoldMin !== null && game.unsoldMax !== null && game.unsoldMin !== game.unsoldMax ? ` | Range: $${game.unsoldMin.toFixed(0)}-$${game.unsoldMax.toFixed(0)}` : ''}
+                                            </div>
+                                        </div>
+                                    ` : ''}
+                                    ${game.soldCount > 0 ? `
+                                        <div class="mt-1.5 text-xs">
+                                            <div class="font-semibold text-red-700 mb-0.5">Sold:</div>
+                                            <div class="text-gray-600">
+                                                ${game.soldAvg !== null ? `Avg: $${game.soldAvg.toFixed(0)}` : 'No prices'}
+                                                ${game.soldMin !== null && game.soldMax !== null && game.soldMin !== game.soldMax ? ` | Range: $${game.soldMin.toFixed(0)}-$${game.soldMax.toFixed(0)}` : ''}
+                                            </div>
+                                        </div>
+                                    ` : ''}
                                 </div>
                             </div>
-                            ${game.minPrice !== null && game.maxPrice !== null && game.minPrice !== game.maxPrice ? `
-                                <div class="mt-2 pt-2 border-t border-gray-100 flex justify-between text-xs">
-                                    <span class="text-gray-400">Range: <span class="font-medium text-gray-600">$${game.minPrice.toFixed(0)} – $${game.maxPrice.toFixed(0)}</span></span>
-                                </div>
-                            ` : ''}
                         </div>
                     `).join('')}
                 </div>
