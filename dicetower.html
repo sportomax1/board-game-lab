@@ -293,7 +293,7 @@ async function runCompare() {
   content.innerHTML = '<div class="text-center py-8 text-slate-500"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Fetching collection…</div>';
 
   try {
-    // Fetch full collection (NO own=1 filter) to get numplays and prevowned
+    // Fetch full collection (NO own=1 filter) to get all metadata
     const xml = await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}`);
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
     const ownedMap = {};
@@ -322,80 +322,157 @@ async function runCompare() {
     const results = [];
     for (const g of Object.values(groups)) {
       const maxRank = Math.max(...g.items.map(i => i.rank || 0), 100);
-      let matches = 0, points = 0;
+      let ownCount = 0, prevownedCount = 0, playedCount = 0, totalPlays = 0;
+      let ownScore = 0, playScore = 0, dynamicScore = 0;
       const matchedGames = [];
+      
       g.items.forEach(item => {
         if (item.bggId && ownedMap[item.bggId]) {
           const info = ownedMap[item.bggId];
-          let pts = 0;
-          let matchType = '';
+          const pts = maxRank + 1 - item.rank;
           
           if (info.own === '1') {
-            // Full points: owned
-            pts = maxRank + 1 - item.rank;
-            matchType = 'owned';
-          } else if (info.numplays > 0 || info.prevowned === '1') {
-            // Half points: played or previously owned
-            pts = (maxRank + 1 - item.rank) * 0.5;
-            matchType = info.numplays > 0 ? `played ${info.numplays}x` : 'prev owned';
-          }
-          
-          if (pts > 0) {
-            matches++;
-            points += pts;
+            ownCount++;
+            ownScore += pts;
+            dynamicScore += pts;
             matchedGames.push({ 
               game: item.bggName || item.game, 
               rank: item.rank, 
-              pts: pts.toFixed(1), 
               thumb: item.thumb,
-              matchType
+              own: true,
+              prevowned: false,
+              plays: 0
+            });
+          } else if (info.numplays > 0) {
+            playedCount++;
+            totalPlays += info.numplays;
+            playScore += pts;
+            dynamicScore += pts * 0.5;
+            matchedGames.push({ 
+              game: item.bggName || item.game, 
+              rank: item.rank, 
+              thumb: item.thumb,
+              own: false,
+              prevowned: false,
+              plays: info.numplays
+            });
+          } else if (info.prevowned === '1') {
+            prevownedCount++;
+            dynamicScore += pts * 0.5;
+            matchedGames.push({ 
+              game: item.bggName || item.game, 
+              rank: item.rank, 
+              thumb: item.thumb,
+              own: false,
+              prevowned: true,
+              plays: 0
             });
           }
         }
       });
+      
       matchedGames.sort((a, b) => a.rank - b.rank);
-      results.push({ name: g.name, year: g.year, total: g.items.length, matches, points: points.toFixed(1), matchedGames });
+      results.push({ 
+        name: g.name, 
+        year: g.year, 
+        total: g.items.length, 
+        ownCount, 
+        prevownedCount, 
+        playedCount, 
+        totalPlays,
+        ownScore: ownScore.toFixed(1), 
+        playScore: playScore.toFixed(1), 
+        dynamicScore: dynamicScore.toFixed(1),
+        matchedGames 
+      });
     }
 
-    results.sort((a, b) => parseFloat(b.points) - parseFloat(a.points) || b.matches - a.matches);
+    // Default sort by dynamicScore
+    results.sort((a, b) => parseFloat(b.dynamicScore) - parseFloat(a.dynamicScore));
 
-    let html = '';
-    results.forEach((r, idx) => {
-      const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
-      html += `
-        <div class="bg-white rounded-xl border border-slate-100 shadow-sm mb-3 overflow-hidden">
-          <div class="p-3 flex items-center justify-between cursor-pointer" onclick="this.nextElementSibling.classList.toggle('hidden')">
-            <div class="flex items-center gap-3">
-              <div class="text-xl">${medal}</div>
-              <div>
-                <div class="font-bold text-sm">${r.name} <span class="text-slate-400 font-normal">${r.year}</span></div>
-                <div class="text-xs text-slate-500">${r.matches} matches</div>
-              </div>
-            </div>
-            <div class="text-right">
-              <div class="text-lg font-bold text-purple-600">${r.points}</div>
-              <div class="text-[10px] text-slate-400 uppercase font-bold">pts</div>
-            </div>
-          </div>
-          <div class="hidden border-t border-slate-100 p-3 space-y-2 max-h-60 overflow-y-auto bg-slate-50">
-            ${r.matchedGames.map(mg => `
-              <div class="flex items-center gap-2 text-xs">
-                ${mg.thumb ? `<img src="${mg.thumb}" class="w-8 h-8 rounded object-cover bg-slate-200">` : ''}
-                <div class="flex-1 truncate">${mg.game}</div>
-                <div class="text-slate-400 text-[10px]">#${mg.rank}</div>
-                <div class="text-slate-500 text-[10px]">${mg.matchType}</div>
-                <div class="font-bold text-purple-600">+${mg.pts}</div>
-              </div>
-            `).join('')}
-            ${r.matchedGames.length === 0 ? '<div class="text-xs text-slate-400 text-center">No matches</div>' : ''}
-          </div>
-        </div>
-      `;
-    });
-    content.innerHTML = html || '<div class="text-center py-8 text-slate-400">No data</div>';
+    // Render sortable leaderboard
+    let html = `
+      <div class="mb-4 flex gap-2 flex-wrap text-xs">
+        <button onclick="sortCompareResults('dynamicScore')" class="px-2 py-1 rounded bg-purple-100 text-purple-700 font-bold hover:bg-purple-200">↓ Dynamic</button>
+        <button onclick="sortCompareResults('ownScore')" class="px-2 py-1 rounded bg-blue-100 text-blue-700 font-bold hover:bg-blue-200">↓ Own Score</button>
+        <button onclick="sortCompareResults('playScore')" class="px-2 py-1 rounded bg-green-100 text-green-700 font-bold hover:bg-green-200">↓ Play Score</button>
+        <button onclick="sortCompareResults('ownCount')" class="px-2 py-1 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200">↓ Owned #</button>
+        <button onclick="sortCompareResults('playedCount')" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 font-bold hover:bg-indigo-200">↓ Played #</button>
+        <button onclick="sortCompareResults('totalPlays')" class="px-2 py-1 rounded bg-rose-100 text-rose-700 font-bold hover:bg-rose-200">↓ Total Plays</button>
+      </div>
+      <div id="compareResultsTable" class="space-y-2"></div>
+    `;
+    content.innerHTML = html;
+    window.compareResults = results; // Store for sorting
+    renderCompareResults(results);
   } catch (e) {
     content.innerHTML = `<div class="text-center py-8 text-red-600">Error: ${e.message}</div>`;
   }
+}
+
+function renderCompareResults(results) {
+  const container = document.getElementById('compareResultsTable');
+  container.innerHTML = '';
+  
+  results.forEach((r, idx) => {
+    const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+    const html = `
+      <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-3 cursor-pointer hover:bg-slate-50" onclick="this.nextElementSibling.classList.toggle('hidden')">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3 flex-1 min-w-0">
+              <div class="text-lg font-bold">${medal}</div>
+              <div class="min-w-0">
+                <div class="font-bold text-sm">${r.name} <span class="text-slate-400 font-normal text-xs">${r.year}</span></div>
+                <div class="text-xs text-slate-600">Owned: ${r.ownCount} | Played: ${r.playedCount} | Prev: ${r.prevownedCount}</div>
+              </div>
+            </div>
+            <div class="flex gap-3 text-right text-xs">
+              <div><div class="font-bold text-purple-600">${r.dynamicScore}</div><div class="text-slate-500">dyn</div></div>
+              <div><div class="font-bold text-blue-600">${r.ownScore}</div><div class="text-slate-500">own</div></div>
+              <div><div class="font-bold text-green-600">${r.playScore}</div><div class="text-slate-500">play</div></div>
+              <div><div class="font-bold text-rose-600">${r.totalPlays}</div><div class="text-slate-500">plays</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="hidden border-t border-slate-100 bg-slate-50 p-3 space-y-1 max-h-72 overflow-y-auto">
+          ${r.matchedGames.map(mg => `
+            <div class="flex items-center gap-2 text-xs pb-1 border-b border-slate-200 last:border-0">
+              ${mg.thumb ? `<img src="${mg.thumb}" class="w-6 h-6 rounded object-cover bg-slate-200 flex-shrink-0">` : '<div class="w-6 h-6 bg-slate-200 rounded flex-shrink-0"></div>'}
+              <div class="flex-1 truncate">${mg.game}</div>
+              <div class="text-slate-500 text-[10px] font-bold w-8 text-right">#${mg.rank}</div>
+              ${mg.own ? '<div class="text-blue-600 text-[10px] font-bold">OWN</div>' : ''}
+              ${mg.plays > 0 ? `<div class="text-green-600 text-[10px] font-bold">${mg.plays}x</div>` : ''}
+              ${mg.prevowned ? '<div class="text-amber-600 text-[10px] font-bold">PREV</div>' : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    container.innerHTML += html;
+  });
+}
+
+function sortCompareResults(sortBy) {
+  const results = window.compareResults || [];
+  let sortFn;
+  
+  if (sortBy === 'dynamicScore') {
+    sortFn = (a, b) => parseFloat(b.dynamicScore) - parseFloat(a.dynamicScore);
+  } else if (sortBy === 'ownScore') {
+    sortFn = (a, b) => parseFloat(b.ownScore) - parseFloat(a.ownScore);
+  } else if (sortBy === 'playScore') {
+    sortFn = (a, b) => parseFloat(b.playScore) - parseFloat(a.playScore);
+  } else if (sortBy === 'ownCount') {
+    sortFn = (a, b) => b.ownCount - a.ownCount;
+  } else if (sortBy === 'playedCount') {
+    sortFn = (a, b) => b.playedCount - a.playedCount;
+  } else if (sortBy === 'totalPlays') {
+    sortFn = (a, b) => b.totalPlays - a.totalPlays;
+  }
+  
+  results.sort(sortFn);
+  renderCompareResults(results);
 }
 
 /* ────────── Utilities ────────── */
