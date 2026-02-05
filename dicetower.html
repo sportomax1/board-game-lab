@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <title>Dice Tower Ranked Lists — Viewer</title>
+  <style>
+    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;color:#111}
+    header{padding:12px 16px;border-bottom:1px solid #eee;background:#fafafa}
+    .container{max-width:1200px;margin:18px auto;padding:0 16px}
+    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
+    .card{border:1px solid #e5e7eb;border-radius:8px;padding:10px;display:flex;gap:8px;align-items:flex-start;background:#fff}
+    .thumb{width:84px;height:84px;flex:0 0 84px;background:#f3f4f6;border-radius:4px;object-fit:cover}
+    .meta{flex:1;min-width:0}
+    .meta h4{margin:0 0 6px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .meta p{margin:0;font-size:13px;color:#444}
+    .status{font-size:20px;margin-left:6px}
+    .small{font-size:12px;color:#666;margin-top:6px}
+    .legend{margin:10px 0;font-size:13px}
+    .placeholder{display:flex;align-items:center;justify-content:center;background:#f8fafc;color:#9ca3af;font-size:12px}
+  </style>
+</head>
+<body>
+  <header>
+    <div class="container">
+      <strong>Dice Tower — CSV Viewer</strong>
+      <div class="legend">Status: <span>✅ exact match</span> <span style="margin-left:8px">⚠️ guessed</span> <span style="margin-left:8px">❌ no match</span></div>
+    </div>
+  </header>
+
+  <main class="container">
+    <div id="controls" style="margin-bottom:12px">
+      <button id="reload">Reload</button>
+      <label style="margin-left:12px"><input id="showGuessed" type="checkbox" checked> Show guessed matches</label>
+    </div>
+    <div id="grid" class="grid"></div>
+  </main>
+
+  <script>
+    const CSV_PATH = './dicetower.csv';
+    const API_BASE = '/api/bgg-helper'; // expected helper proxy used elsewhere in this repo
+
+    document.getElementById('reload').addEventListener('click', loadAndRender);
+
+    async function loadAndRender(){
+      const grid = document.getElementById('grid');
+      grid.innerHTML = '<div class="placeholder">Loading…</div>';
+      try{
+        const text = await fetch(CSV_PATH).then(r=>r.text());
+        const rows = parseCSV(text);
+        grid.innerHTML = '';
+        // process sequentially but start many searches in parallel to avoid blocking UI
+        for(const row of rows){
+          const card = createCardSkeleton(row);
+          grid.appendChild(card.root);
+          matchAndFill(card, row).catch(err=>{
+            console.error('match error',err,row);
+            card.statusEl.textContent = '❌';
+            card.thumb.src = placeholderSVG();
+          });
+        }
+      }catch(err){
+        document.getElementById('grid').innerHTML = '<div class="placeholder">Failed to load CSV</div>';
+        console.error(err);
+      }
+    }
+
+    function parseCSV(text){
+      // simple CSV parser: header then rows split by newline, comma-separated (game names may contain commas but this CSV appears simple)
+      const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
+      if(lines.length<=1) return [];
+      const data = [];
+      for(let i=1;i<lines.length;i++){
+        const cols = lines[i].split(',');
+        // join any extra columns as game name
+        if(cols.length<4) continue;
+        const name = cols[0];
+        const year = cols[1];
+        const rank = cols[2];
+        const game = cols.slice(3).join(',').trim();
+        data.push({name,year,rank,game});
+      }
+      return data;
+    }
+
+    function createCardSkeleton(row){
+      const root = document.createElement('div'); root.className='card';
+      const img = document.createElement('img'); img.className='thumb'; img.alt = row.game; img.src = placeholderSVG();
+      const meta = document.createElement('div'); meta.className='meta';
+      const h = document.createElement('h4'); h.textContent = `${row.game}`;
+      const p = document.createElement('p'); p.textContent = `Name: ${row.name} • Year: ${row.year} • Rank: ${row.rank}`;
+      const small = document.createElement('div'); small.className='small'; small.textContent = '';
+      const idDiv = document.createElement('div'); idDiv.className = 'small'; idDiv.style.fontWeight = '600'; idDiv.textContent = '';
+      const status = document.createElement('div'); status.className='status'; status.textContent='';
+      meta.appendChild(h); meta.appendChild(p); meta.appendChild(small); meta.appendChild(idDiv);
+      root.appendChild(img); root.appendChild(meta); root.appendChild(status);
+      return {root,thumb:img,titleEl:h,metaEl:meta,statusEl:status,smallEl:small,idEl:idDiv};
+    }
+
+    async function matchAndFill(card,row){
+      const game = row.game;
+      // try exact search
+      const searchUrl = `${API_BASE}?endpoint=search&query=${encodeURIComponent(game)}`;
+      const text = await fetch(searchUrl).then(r=>r.text());
+      const doc = new DOMParser().parseFromString(text,'application/xml');
+      const items = Array.from(doc.querySelectorAll('item'));
+      let exact = null;
+      for(const it of items){
+        const nameNode = it.querySelector('name');
+        if(!nameNode) continue;
+        const val = nameNode.getAttribute('value') || nameNode.textContent || '';
+        if(normalize(val) === normalize(game)) { exact = it; break; }
+      }
+      let chosen = null;
+      let statusEmoji = '❌';
+      if(exact){
+        chosen = exact; statusEmoji = '✅';
+      } else if(items.length>0){
+        // guessed
+        chosen = items[0]; statusEmoji = '⚠️';
+      }
+      card.statusEl.textContent = statusEmoji;
+      if(!chosen){
+        card.thumb.src = placeholderSVG();
+        card.smallEl.textContent = 'No BGG match';
+        card.idEl.textContent = '';
+        return;
+      }
+      const id = chosen.getAttribute('id');
+      card.idEl.textContent = `BGG id: ${id}`;
+      // fetch thing for thumbnail
+      try{
+        const thingUrl = `${API_BASE}?endpoint=thing&id=${id}`;
+        const t = await fetch(thingUrl).then(r=>r.text());
+        const tdoc = new DOMParser().parseFromString(t,'application/xml');
+        const thumbNode = tdoc.querySelector('thumbnail') || tdoc.querySelector('image');
+        const thumb = thumbNode ? (thumbNode.textContent || thumbNode.innerHTML || '') : '';
+        card.thumb.src = thumb || placeholderSVG();
+        if(statusEmoji==='⚠️') card.smallEl.textContent = 'Guessed match — please verify';
+        else card.smallEl.textContent = 'Exact BGG match';
+      }catch(err){
+        console.error('thing fetch',err);
+        card.thumb.src = placeholderSVG();
+        card.smallEl.textContent = 'Failed to fetch thumbnail';
+      }
+    }
+
+    function normalize(s){
+      return (s||'').toLowerCase().replace(/[^a-z0-9 ]+/g,'').replace(/\s+/g,' ').trim();
+    }
+
+    function placeholderSVG(){
+      return 'data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="84" height="84"><rect width="100%" height="100%" fill="#f3f4f6"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#9ca3af" font-size="10">no thumb</text></svg>`);
+    }
+
+    // initial load
+    loadAndRender();
+  </script>
+</body>
+</html>
