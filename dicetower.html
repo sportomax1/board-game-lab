@@ -2,77 +2,95 @@
 <html lang="en">
 <head>
   <meta charset="utf-8" />
-  <meta name="viewport" content="width=device-width,initial-scale=1" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
   <title>Dice Tower Ranked Lists — Viewer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
   <style>
-    body{font-family:system-ui,Segoe UI,Roboto,Arial;margin:0;color:#111}
-    header{padding:12px 16px;border-bottom:1px solid #eee;background:#fafafa}
-    .container{max-width:1200px;margin:18px auto;padding:0 16px}
-    .grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(220px,1fr));gap:12px}
-    .card{border:1px solid #e5e7eb;border-radius:8px;padding:10px;display:flex;gap:8px;align-items:flex-start;background:#fff}
-    .thumb{width:84px;height:84px;flex:0 0 84px;background:#f3f4f6;border-radius:4px;object-fit:cover}
-    .meta{flex:1;min-width:0}
-    .meta h4{margin:0 0 6px;font-size:14px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .meta p{margin:0;font-size:13px;color:#444}
-    .status{font-size:20px;margin-left:6px}
-    .small{font-size:12px;color:#666;margin-top:6px}
-    .legend{margin:10px 0;font-size:13px}
-    .placeholder{display:flex;align-items:center;justify-content:center;background:#f8fafc;color:#9ca3af;font-size:12px}
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
+    .game-card { transition: all 0.2s ease; }
+    .game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.08); }
+    .skeleton { animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite; }
+    @keyframes pulse { 0%,100%{opacity:1}50%{opacity:.5} }
+    .status-badge { font-size:1.25rem; }
   </style>
 </head>
-<body>
-  <header>
-    <div class="container">
-      <strong>Dice Tower — CSV Viewer</strong>
-      <div class="legend">Status: <span>✅ exact match</span> <span style="margin-left:8px">⚠️ guessed</span> <span style="margin-left:8px">❌ no match</span></div>
+<body class="pb-20">
+
+  <header class="sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-4 shadow-sm">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-purple-600 text-white p-2 rounded-lg"><i class="fa-solid fa-list"></i></div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Dice Tower — Ranked Lists</h1>
+          <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">CSV viewer with BGG thumbnails</p>
+        </div>
+      </div>
+      <div id="statsBox" class="text-right hidden">
+        <div class="text-2xl font-bold text-purple-600" id="gameCount">0</div>
+        <div class="text-[10px] text-slate-500 uppercase font-bold">Entries</div>
+      </div>
     </div>
   </header>
 
-  <main class="container">
-    <div id="controls" style="margin-bottom:12px">
-      <button id="reload">Reload</button>
-      <label style="margin-left:12px"><input id="showGuessed" type="checkbox" checked> Show guessed matches</label>
+  <main class="max-w-4xl mx-auto p-4 space-y-6">
+
+    <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex items-center gap-4">
+      <div class="flex-1">
+        <div class="text-sm text-slate-600">Source CSV: <strong>dicetower.csv</strong></div>
+        <div class="text-xs text-slate-400">Displays Name • Year • Rank • Game with BGG match status and thumbnails</div>
+      </div>
+      <div class="flex items-center gap-3">
+        <label class="text-sm"><input id="showGuessed" type="checkbox" checked class="mr-2">Show guessed matches</label>
+        <button id="reload" class="bg-purple-600 text-white px-4 py-2 rounded-lg">Reload</button>
+      </div>
     </div>
-    <div id="grid" class="grid"></div>
+
+    <div id="gamesSection" class="hidden space-y-3">
+      <!-- cards will render here -->
+    </div>
+
   </main>
 
   <script>
     const CSV_PATH = './dicetower.csv';
-    const API_BASE = '/api/bgg-helper'; // expected helper proxy used elsewhere in this repo
+    const API_BASE = '/api/bgg-helper';
+
+    let allEntries = [];
+    let displayedEntries = [];
 
     document.getElementById('reload').addEventListener('click', loadAndRender);
+    document.getElementById('showGuessed').addEventListener('change', () => renderEntries());
 
     async function loadAndRender(){
-      const grid = document.getElementById('grid');
-      grid.innerHTML = '<div class="placeholder">Loading…</div>';
+      const fetchSection = document.getElementById('fetchSection');
+      const gamesSection = document.getElementById('gamesSection');
+      gamesSection.classList.remove('hidden');
+      gamesSection.innerHTML = '<div class="text-center text-slate-500 py-8">Loading…</div>';
       try{
         const text = await fetch(CSV_PATH).then(r=>r.text());
         const rows = parseCSV(text);
-        grid.innerHTML = '';
-        // process sequentially but start many searches in parallel to avoid blocking UI
-        for(const row of rows){
-          const card = createCardSkeleton(row);
-          grid.appendChild(card.root);
-          matchAndFill(card, row).catch(err=>{
-            console.error('match error',err,row);
-            card.statusEl.textContent = '❌';
-            card.thumb.src = placeholderSVG();
-          });
+        allEntries = rows.map(r => ({ name: r.name, year: r.year, rank: r.rank, game: r.game, bggId: '', thumb:'', status:'', note:'' }));
+        document.getElementById('gameCount').textContent = allEntries.length;
+        renderEntries();
+
+        // Start matching in background
+        for (let i=0;i<allEntries.length;i++){
+          matchAndFill(allEntries[i]).catch(e=>console.error(e));
         }
       }catch(err){
-        document.getElementById('grid').innerHTML = '<div class="placeholder">Failed to load CSV</div>';
+        document.getElementById('gamesSection').innerHTML = '<div class="text-center text-red-600 py-8">Failed to load CSV</div>';
         console.error(err);
       }
     }
 
     function parseCSV(text){
-      // simple CSV parser: header then rows split by newline, comma-separated (game names may contain commas but this CSV appears simple)
       const lines = text.split(/\r?\n/).map(l=>l.trim()).filter(l=>l.length>0);
       if(lines.length<=1) return [];
       const data = [];
       for(let i=1;i<lines.length;i++){
         const cols = lines[i].split(',');
-        // join any extra columns as game name
         if(cols.length<4) continue;
         const name = cols[0];
         const year = cols[1];
@@ -83,77 +101,107 @@
       return data;
     }
 
-    function createCardSkeleton(row){
-      const root = document.createElement('div'); root.className='card';
-      const img = document.createElement('img'); img.className='thumb'; img.alt = row.game; img.src = placeholderSVG();
-      const meta = document.createElement('div'); meta.className='meta';
-      const h = document.createElement('h4'); h.textContent = `${row.game}`;
-      const p = document.createElement('p'); p.textContent = `Name: ${row.name} • Year: ${row.year} • Rank: ${row.rank}`;
-      const small = document.createElement('div'); small.className='small'; small.textContent = '';
-      const idDiv = document.createElement('div'); idDiv.className = 'small'; idDiv.style.fontWeight = '600'; idDiv.textContent = '';
-      const status = document.createElement('div'); status.className='status'; status.textContent='';
-      meta.appendChild(h); meta.appendChild(p); meta.appendChild(small); meta.appendChild(idDiv);
-      root.appendChild(img); root.appendChild(meta); root.appendChild(status);
-      return {root,thumb:img,titleEl:h,metaEl:meta,statusEl:status,smallEl:small,idEl:idDiv};
+    function renderEntries(){
+      const container = document.getElementById('gamesSection');
+      container.innerHTML = '';
+      displayedEntries = allEntries.slice();
+      const showGuessed = document.getElementById('showGuessed').checked;
+
+      displayedEntries.forEach((entry, idx) => {
+        // hide guessed if requested
+        if(entry.status === 'guessed' && !showGuessed) return;
+
+        const card = document.createElement('div');
+        card.className = 'game-card bg-white rounded-xl shadow-sm border border-slate-100 p-4';
+
+        const thumb = document.createElement('img');
+        thumb.className = 'w-20 h-20 rounded-lg object-cover bg-slate-200 flex-shrink-0';
+        thumb.src = entry.thumb ? entry.thumb : placeholderSVG();
+        thumb.onerror = () => thumb.style.display = 'none';
+
+        const meta = document.createElement('div');
+        meta.className = 'flex-1 min-w-0 pl-4';
+
+        const title = document.createElement('h3');
+        title.className = 'font-bold text-slate-900 mb-1 text-sm';
+        title.textContent = entry.game;
+
+        const details = document.createElement('div');
+        details.className = 'text-xs text-slate-500 mb-2';
+        details.textContent = `${entry.name} • ${entry.year} • Rank ${entry.rank}`;
+
+        const info = document.createElement('div');
+        info.className = 'text-xs text-slate-600';
+        info.innerHTML = entry.note ? entry.note : (entry.status ? statusText(entry.status, entry.bggId) : '');
+
+        meta.appendChild(title); meta.appendChild(details); meta.appendChild(info);
+
+        const right = document.createElement('div');
+        right.className = 'flex flex-col items-end gap-2';
+        const badge = document.createElement('div');
+        badge.className = 'status-badge text-lg';
+        badge.textContent = entry.status === 'exact' ? '✅' : (entry.status === 'guessed' ? '⚠️' : (entry.status === 'none' ? '❌' : ''));
+        const idDiv = document.createElement('div'); idDiv.className = 'text-[11px] text-slate-500'; idDiv.textContent = entry.bggId ? `BGG: ${entry.bggId}` : '';
+        right.appendChild(badge); right.appendChild(idDiv);
+
+        const row = document.createElement('div');
+        row.className = 'flex gap-4 cursor-pointer';
+        row.onclick = () => { if(entry.bggId) window.open(`https://boardgamegeek.com/boardgame/${entry.bggId}`,'_blank'); };
+        row.appendChild(thumb); row.appendChild(meta); row.appendChild(right);
+
+        card.appendChild(row);
+        container.appendChild(card);
+      });
     }
 
-    async function matchAndFill(card,row){
-      const game = row.game;
-      // try exact search
-      const searchUrl = `${API_BASE}?endpoint=search&query=${encodeURIComponent(game)}`;
-      const text = await fetch(searchUrl).then(r=>r.text());
-      const doc = new DOMParser().parseFromString(text,'application/xml');
-      const items = Array.from(doc.querySelectorAll('item'));
-      let exact = null;
-      for(const it of items){
-        const nameNode = it.querySelector('name');
-        if(!nameNode) continue;
-        const val = nameNode.getAttribute('value') || nameNode.textContent || '';
-        if(normalize(val) === normalize(game)) { exact = it; break; }
-      }
-      let chosen = null;
-      let statusEmoji = '❌';
-      if(exact){
-        chosen = exact; statusEmoji = '✅';
-      } else if(items.length>0){
-        // guessed
-        chosen = items[0]; statusEmoji = '⚠️';
-      }
-      card.statusEl.textContent = statusEmoji;
-      if(!chosen){
-        card.thumb.src = placeholderSVG();
-        card.smallEl.textContent = 'No BGG match';
-        card.idEl.textContent = '';
-        return;
-      }
-      const id = chosen.getAttribute('id');
-      card.idEl.textContent = `BGG id: ${id}`;
-      // fetch thing for thumbnail
+    function statusText(status,id){
+      if(status==='exact') return '<span class="text-green-600 font-semibold">Exact match</span>';
+      if(status==='guessed') return '<span class="text-amber-600 font-semibold">Guessed match — verify</span>';
+      if(status==='none') return '<span class="text-red-600 font-semibold">No BGG match</span>';
+      return '';
+    }
+
+    async function matchAndFill(entry){
+      if(!entry || !entry.game) return;
       try{
-        const thingUrl = `${API_BASE}?endpoint=thing&id=${id}`;
-        const t = await fetch(thingUrl).then(r=>r.text());
-        const tdoc = new DOMParser().parseFromString(t,'application/xml');
-        const thumbNode = tdoc.querySelector('thumbnail') || tdoc.querySelector('image');
-        const thumb = thumbNode ? (thumbNode.textContent || thumbNode.innerHTML || '') : '';
-        card.thumb.src = thumb || placeholderSVG();
-        if(statusEmoji==='⚠️') card.smallEl.textContent = 'Guessed match — please verify';
-        else card.smallEl.textContent = 'Exact BGG match';
-      }catch(err){
-        console.error('thing fetch',err);
-        card.thumb.src = placeholderSVG();
-        card.smallEl.textContent = 'Failed to fetch thumbnail';
-      }
+        const searchUrl = `${API_BASE}?endpoint=search&query=${encodeURIComponent(entry.game)}`;
+        const text = await fetch(searchUrl).then(r=>r.text());
+        const doc = new DOMParser().parseFromString(text,'application/xml');
+        const items = Array.from(doc.querySelectorAll('item'));
+        let exact = null;
+        for(const it of items){
+          const nameNode = it.querySelector('name');
+          if(!nameNode) continue;
+          const val = nameNode.getAttribute('value') || nameNode.textContent || '';
+          if(normalize(val) === normalize(entry.game)) { exact = it; break; }
+        }
+        let chosen = null;
+        if(exact){ chosen = exact; entry.status='exact'; }
+        else if(items.length>0){ chosen = items[0]; entry.status='guessed'; }
+        else { entry.status='none'; entry.thumb = ''; renderEntries(); return; }
+
+        const id = chosen.getAttribute('id');
+        entry.bggId = id || '';
+        try{
+          const thingUrl = `${API_BASE}?endpoint=thing&id=${id}`;
+          const t = await fetch(thingUrl).then(r=>r.text());
+          const tdoc = new DOMParser().parseFromString(t,'application/xml');
+          const thumbNode = tdoc.querySelector('thumbnail') || tdoc.querySelector('image');
+          const thumb = thumbNode ? (thumbNode.textContent || '') : '';
+          entry.thumb = thumb || '';
+        }catch(e){ console.warn('thumb fetch failed',e); }
+
+        renderEntries();
+      }catch(e){ console.error('match error', e); entry.status='none'; renderEntries(); }
     }
 
-    function normalize(s){
-      return (s||'').toLowerCase().replace(/[^a-z0-9 ]+/g,'').replace(/\s+/g,' ').trim();
-    }
+    function normalize(s){ return (s||'').toLowerCase().replace(/[^a-z0-9 ]+/g,'').replace(/\s+/g,' ').trim(); }
 
     function placeholderSVG(){
       return 'data:image/svg+xml;utf8,'+encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="84" height="84"><rect width="100%" height="100%" fill="#f3f4f6"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#9ca3af" font-size="10">no thumb</text></svg>`);
     }
 
-    // initial load
+    // auto-load
     loadAndRender();
   </script>
 </body>
