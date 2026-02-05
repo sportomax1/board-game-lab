@@ -31,6 +31,24 @@
         </div>
       </div>
       <div class="flex items-center gap-3">
+        <!-- Player count filter + mode (left of status) -->
+        <div class="flex items-center gap-2">
+          <select id="playerCountSelect" onchange="filterGames()" class="px-2 py-2 rounded border border-slate-200 bg-white text-sm">
+            <option value="any">Players</option>
+            <option value="1">1</option>
+            <option value="2">2</option>
+            <option value="3">3</option>
+            <option value="4">4</option>
+            <option value="5">5</option>
+            <option value="6">6</option>
+          </select>
+          <select id="playerModeSelect" onchange="filterGames()" class="px-2 py-2 rounded border border-slate-200 bg-white text-sm">
+            <option value="bestwith">Best With</option>
+            <option value="recommendedwith">Recommended With</option>
+            <option value="canplay">Can Play</option>
+          </select>
+        </div>
+
         <div class="relative">
           <button id="statusBtnHeader" onclick="toggleStatusPanel()" class="bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-2 rounded-lg text-sm font-bold transition"><i class="fa-solid fa-tag"></i> Status</button>
           <div id="statusPanel" class="hidden absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded shadow p-3 text-sm">
@@ -50,18 +68,19 @@
           </div>
         </div>
 
-        <!-- Moved Search/Sort/Filter into header -->
+        <!-- Moved Search/Sort into header (filter button removed per request) -->
         <div class="hidden sm:flex items-center gap-2">
           <input id="searchInput" type="text" placeholder="Search..." oninput="filterGames()" class="px-3 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm w-56">
           <select id="sortSelect" onchange="sortGames()" class="px-3 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm bg-white font-bold">
             <option value="name">Name</option>
             <option value="rating">BGG Rating</option>
+            <option value="bggRank">BGG Rank</option>
             <option value="year">Year</option>
             <option value="weight">Complexity</option>
             <option value="playingtime">Playing Time</option>
           </select>
           <button id="sortDirBtn" onclick="toggleSortDir()" class="px-2 py-2 rounded border border-slate-200 bg-white text-sm">▼</button>
-          <button onclick="showFilterPanel()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg text-sm font-bold transition"><i class="fa-solid fa-filter"></i> Filter</button>
+          
         </div>
 
         <div id="statsBox" class="text-right hidden">
@@ -109,6 +128,7 @@
           <i class="fa-solid fa-circle-notch fa-spin text-indigo-600 text-2xl"></i>
           <span class="font-bold text-slate-700" id="loadingStatus">Loading collection...</span>
         </div>
+        <div id="currentFetchUrl" class="text-xs text-slate-500 break-words mb-2"></div>
         <div class="bg-slate-100 rounded-full h-2 overflow-hidden">
           <div id="progressBar" class="bg-indigo-600 h-full transition-all duration-300" style="width:0%"></div>
         </div>
@@ -213,7 +233,9 @@ async function fetchCollection() {
     await Promise.all(batches.map(async (batch, idx) => {
       try {
         const ids = batch.join(',');
-        const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`);
+        const fetchUrl = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`;
+        updateCurrentFetchUrl(fetchUrl);
+        const xml = await fetchWithRetry(fetchUrl);
         const doc = new DOMParser().parseFromString(xml, 'text/xml');
         Array.from(doc.querySelectorAll('item')).forEach(item => {
           const id = item.getAttribute('id');
@@ -314,18 +336,25 @@ async function fetchCollection() {
       } catch (e) { console.error('Batch error', e); }
     }));
 
+    updateCurrentFetchUrl('');
+
     updateProgress(100);
     updateLoadingStatus('Complete!');
     
     document.getElementById('controlsSection').classList.remove('hidden');
     document.getElementById('gamesSection').classList.remove('hidden');
     document.getElementById('statsBox').classList.remove('hidden');
-    document.getElementById('gameCount').textContent = allGames.length;
-    
+
+    // default sort: BGG average (rating) descending
+    try { document.getElementById('sortSelect').value = 'rating'; } catch(e){}
+    sortAsc = false;
+    const sbtn = document.getElementById('sortDirBtn'); if (sbtn) sbtn.textContent = '▼';
+
     displayedGames = [...allGames];
     // update status counts for header panel
     updateStatusCounts(displayedGames);
-    renderGames(displayedGames);
+    // run filter (which will sort & render and set game count)
+    filterGames();
     
     setTimeout(() => { document.getElementById('loadingSection').classList.add('hidden'); }, 500);
   } catch (err) {
@@ -371,6 +400,27 @@ function filterGames() {
     const mecs = Array.from(tagFilters.mechanics);
     displayedGames = displayedGames.filter(g => (g.mechanics || []).some(m => mecs.includes(m)));
   }
+  // apply player count filter
+  const pcount = (document.getElementById('playerCountSelect')||{}).value || 'any';
+  const pmode = (document.getElementById('playerModeSelect')||{}).value || 'bestwith';
+  if (pcount && pcount !== 'any') {
+    const n = parseInt(pcount, 10);
+    if (!isNaN(n)) {
+      displayedGames = displayedGames.filter(g => {
+        if (pmode === 'canplay') return (g.minplayers || 0) <= n && (g.maxplayers || 0) >= n;
+        const label = pmode === 'bestwith' ? (g.bestwith||'') : (g.recommendedwith||'');
+        if (!label) return false;
+        // parse range or single number from label
+        const m = label.match(/(\d+)(?:[^0-9]+(\d+))?/);
+        if (!m) return false;
+        const a = parseInt(m[1],10);
+        const b = m[2] ? parseInt(m[2],10) : a;
+        return n >= a && n <= b;
+      });
+    }
+  }
+  // update visible count
+  const gc = document.getElementById('gameCount'); if (gc) gc.textContent = displayedGames.length;
   sortGames();
 }
 
@@ -414,6 +464,12 @@ function updateStatusCounts(baseSet) {
   });
 }
 
+function updateCurrentFetchUrl(url) {
+  const el = document.getElementById('currentFetchUrl');
+  if (!el) return;
+  el.textContent = url || '';
+}
+
 function toggleTagFilter(type, encodedValue) {
   const value = decodeURIComponent(encodedValue || '');
   if (!value) return;
@@ -431,6 +487,12 @@ function sortGames() {
     let res = 0;
     if (sortBy === 'name') res = a.name.localeCompare(b.name);
     else if (sortBy === 'rating') res = (b.bggRating || 0) - (a.bggRating || 0);
+    else if (sortBy === 'bggRank') {
+      const ra = parseInt(a.primaryRank) || 1000000;
+      const rb = parseInt(b.primaryRank) || 1000000;
+      // lower rank number is better; we want ascending by rank number for 'best' first
+      res = ra - rb;
+    }
     else if (sortBy === 'year') res = (b.year || 0) - (a.year || 0);
     else if (sortBy === 'weight') res = (b.avgweight || 0) - (a.avgweight || 0);
     else if (sortBy === 'playingtime') {
@@ -613,12 +675,12 @@ function renderGames(games) {
             ${(g.categories||[]).map(c => {
               const enc = encodeURIComponent(c);
               const active = (tagFilters.categories && tagFilters.categories.has(c)) ? 'ring-2 ring-indigo-300 font-bold' : '';
-              return `<span onclick="toggleTagFilter('category','${enc}')" class="tag tag-category cursor-pointer ${active}">${c}</span>`;
+              return `<span onclick="event.stopPropagation(); toggleTagFilter('category','${enc}')" class="tag tag-category cursor-pointer ${active}">${c}</span>`;
             }).join('')}
             ${(g.mechanics||[]).map(m => {
               const enc = encodeURIComponent(m);
               const active = (tagFilters.mechanics && tagFilters.mechanics.has(m)) ? 'ring-2 ring-indigo-300 font-bold' : '';
-              return `<span onclick="toggleTagFilter('mechanic','${enc}')" class="tag tag-mechanic cursor-pointer ${active}">${m}</span>`;
+              return `<span onclick="event.stopPropagation(); toggleTagFilter('mechanic','${enc}')" class="tag tag-mechanic cursor-pointer ${active}">${m}</span>`;
             }).join('')}
           </div>
         </div>
