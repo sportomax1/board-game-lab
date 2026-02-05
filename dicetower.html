@@ -13,10 +13,10 @@
     .game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.08); }
     .skeleton { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
     @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
-    .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.5); z-index:1000; align-items:flex-end; }
+    .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }
     .modal.active { display:flex; }
-    .modal-content { background:white; border-radius:20px 20px 0 0; width:100%; max-height:85vh; overflow-y:auto; animation:slideUp 0.3s ease; }
-    @keyframes slideUp { from{transform:translateY(100%)} to{transform:translateY(0)} }
+    .modal-content { background:white; border-radius:16px; width:95%; max-width:900px; max-height:90vh; overflow-y:auto; animation:fadeIn 0.3s ease; box-shadow:0 20px 60px rgba(0,0,0,0.3); }
+    @keyframes fadeIn { from{opacity:0; transform:scale(0.95)} to{opacity:1; transform:scale(1)} }
   </style>
 </head>
 <body class="pb-20">
@@ -78,18 +78,19 @@
   <!-- Compare Modal -->
   <div id="compareModal" class="modal">
     <div class="modal-content p-0">
-      <div class="sticky top-0 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-4 flex justify-between items-center shadow-lg rounded-t-[20px]">
+      <div class="sticky top-0 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-4 flex justify-between items-center shadow-lg rounded-t-[16px]">
         <h2 class="text-lg font-bold"><i class="fa-solid fa-scale-balanced mr-2"></i>Compare with Collection</h2>
         <button onclick="closeCompareModal()" class="text-2xl hover:opacity-80">✕</button>
       </div>
-      <div class="p-4">
+      <div class="p-4 sm:p-6">
         <div class="flex gap-2 mb-4">
           <input id="compareUsername" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm">
           <button onclick="runCompare()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition">
             <i class="fa-solid fa-magnifying-glass"></i> Go
           </button>
         </div>
-        <div id="compareContent" class="text-sm text-slate-700 max-h-[60vh] overflow-y-auto">
+        <p class="text-[10px] text-slate-500 mb-4 italic">Full points: owned | Half points: played or previously owned</p>
+        <div id="compareContent" class="text-sm text-slate-700">
           <div class="text-slate-400 text-center py-8">Enter a BGG username and tap Go</div>
         </div>
       </div>
@@ -207,34 +208,34 @@ async function resolveAllBGG() {
   });
   renderList();
 
+  // Batch fetch thumbnails: 20 IDs per batch, ALL batches in parallel (100x true parallelism)
   const uniqueIds = [...new Set(allEntries.filter(e => e.bggId).map(e => e.bggId))];
   updateStatus(`Fetching thumbnails for ${uniqueIds.length} games…`);
   const BATCH_SIZE = 20;
-  const PARALLEL_BATCHES = 100;
   const batches = [];
   for (let i = 0; i < uniqueIds.length; i += BATCH_SIZE) {
     batches.push(uniqueIds.slice(i, i + BATCH_SIZE));
   }
 
-  for (let i = 0; i < batches.length; i += PARALLEL_BATCHES) {
-    const group = batches.slice(i, i + PARALLEL_BATCHES);
-    await Promise.all(group.map(async batch => {
-      try {
-        const ids = batch.join(',');
-        const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}`);
-        const doc = new DOMParser().parseFromString(xml, 'text/xml');
-        Array.from(doc.querySelectorAll('item')).forEach(item => {
-          const id = item.getAttribute('id');
-          const thumb = item.querySelector('thumbnail')?.textContent || '';
-          for (const key of Object.keys(gameCache)) {
-            if (gameCache[key].bggId === id) { gameCache[key].thumb = thumb; break; }
-          }
-        });
-      } catch (e) { console.error('Batch thumb error', e); }
-    }));
-    updateProgress(50 + ((Math.min(i + PARALLEL_BATCHES, batches.length) / batches.length) * 50));
-    updateStatus(`Thumbnails ${Math.min(i + PARALLEL_BATCHES, batches.length)}/${batches.length} batches…`);
-  }
+  // Process all batches in parallel (truly parallel, not sequential groups)
+  await Promise.all(batches.map(async (batch, batchIndex) => {
+    try {
+      const ids = batch.join(',');
+      const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}`);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      Array.from(doc.querySelectorAll('item')).forEach(item => {
+        const id = item.getAttribute('id');
+        const thumb = item.querySelector('thumbnail')?.textContent || '';
+        for (const key of Object.keys(gameCache)) {
+          if (gameCache[key].bggId === id) { gameCache[key].thumb = thumb; break; }
+        }
+      });
+      // Update progress: batches completed
+      const completed = batches.filter((_, idx) => idx <= batchIndex).length;
+      updateProgress(50 + ((completed / batches.length) * 50));
+      updateStatus(`Thumbnails ${completed}/${batches.length} batches…`);
+    } catch (e) { console.error('Batch thumb error', e); }
+  }));
 
   allEntries.forEach(e => {
     const cached = gameCache[normalize(e.game)];
@@ -289,9 +290,19 @@ async function runCompare() {
   content.innerHTML = '<div class="text-center py-8 text-slate-500"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Fetching collection…</div>';
 
   try {
-    const xml = await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}&own=1`);
+    // Fetch full collection (NO own=1 filter) to get numplays and prevowned
+    const xml = await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}`);
     const doc = new DOMParser().parseFromString(xml, 'text/xml');
-    const ownedIds = new Set(Array.from(doc.querySelectorAll('item')).map(i => i.getAttribute('objectid')));
+    const ownedMap = {};
+    Array.from(doc.querySelectorAll('item')).forEach(item => {
+      const id = item.getAttribute('objectid');
+      const status = item.querySelector('status');
+      const own = status ? status.getAttribute('own') : '0';
+      const prevowned = status ? status.getAttribute('prevowned') : '0';
+      const numplaysNode = item.querySelector('numplays');
+      const numplays = numplaysNode ? parseInt(numplaysNode.textContent) || 0 : 0;
+      ownedMap[id] = { own, prevowned, numplays };
+    });
 
     if (isLoading) {
       content.innerHTML = '<div class="text-center py-4 text-slate-500">Still resolving BGG IDs… try again shortly.</div>';
@@ -311,18 +322,39 @@ async function runCompare() {
       let matches = 0, points = 0;
       const matchedGames = [];
       g.items.forEach(item => {
-        if (item.bggId && ownedIds.has(item.bggId)) {
-          matches++;
-          const pts = maxRank + 1 - item.rank;
-          points += pts;
-          matchedGames.push({ game: item.bggName || item.game, rank: item.rank, pts, thumb: item.thumb });
+        if (item.bggId && ownedMap[item.bggId]) {
+          const info = ownedMap[item.bggId];
+          let pts = 0;
+          let matchType = '';
+          
+          if (info.own === '1') {
+            // Full points: owned
+            pts = maxRank + 1 - item.rank;
+            matchType = 'owned';
+          } else if (info.numplays > 0 || info.prevowned === '1') {
+            // Half points: played or previously owned
+            pts = (maxRank + 1 - item.rank) * 0.5;
+            matchType = info.numplays > 0 ? `played ${info.numplays}x` : 'prev owned';
+          }
+          
+          if (pts > 0) {
+            matches++;
+            points += pts;
+            matchedGames.push({ 
+              game: item.bggName || item.game, 
+              rank: item.rank, 
+              pts: pts.toFixed(1), 
+              thumb: item.thumb,
+              matchType
+            });
+          }
         }
       });
       matchedGames.sort((a, b) => a.rank - b.rank);
-      results.push({ name: g.name, year: g.year, total: g.items.length, matches, points, matchedGames });
+      results.push({ name: g.name, year: g.year, total: g.items.length, matches, points: points.toFixed(1), matchedGames });
     }
 
-    results.sort((a, b) => b.points - a.points || b.matches - a.matches);
+    results.sort((a, b) => parseFloat(b.points) - parseFloat(a.points) || b.matches - a.matches);
 
     let html = '';
     results.forEach((r, idx) => {
@@ -334,7 +366,7 @@ async function runCompare() {
               <div class="text-xl">${medal}</div>
               <div>
                 <div class="font-bold text-sm">${r.name} <span class="text-slate-400 font-normal">${r.year}</span></div>
-                <div class="text-xs text-slate-500">${r.matches}/${r.total} owned</div>
+                <div class="text-xs text-slate-500">${r.matches} matches</div>
               </div>
             </div>
             <div class="text-right">
@@ -347,7 +379,8 @@ async function runCompare() {
               <div class="flex items-center gap-2 text-xs">
                 ${mg.thumb ? `<img src="${mg.thumb}" class="w-8 h-8 rounded object-cover bg-slate-200">` : ''}
                 <div class="flex-1 truncate">${mg.game}</div>
-                <div class="text-slate-400">#${mg.rank}</div>
+                <div class="text-slate-400 text-[10px]">#${mg.rank}</div>
+                <div class="text-slate-500 text-[10px]">${mg.matchType}</div>
                 <div class="font-bold text-purple-600">+${mg.pts}</div>
               </div>
             `).join('')}
