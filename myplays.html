@@ -116,6 +116,7 @@
             <div class="flex border-b border-slate-100 bg-white/50">
                 <button onclick="switchTab('plays')" id="tab-plays" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider tab-active whitespace-nowrap">History</button>
                 <button onclick="switchTab('stats')" id="tab-stats" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Analytics</button>
+                <button onclick="switchTab('locations')" id="tab-locations" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Locations</button>
                 <button onclick="switchTab('unplayed')" id="tab-unplayed" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Unplayed</button>
             </div>
 
@@ -151,6 +152,14 @@
                     <div id="stats-filters" class="hidden flex items-center gap-1.5">
                         <label class="switch"><input type="checkbox" id="ownedOnlyToggle" onchange="updateUI()"><span class="slider"></span></label>
                         <span class="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Owned</span>
+                    </div>
+                    <div id="locations-filters" class="hidden flex items-center gap-2">
+                        <select id="locationTimePeriod" onchange="renderLocations()" class="text-[10px] border border-slate-200 rounded px-2 py-1.5 outline-none bg-white text-slate-600 min-w-[100px]">
+                            <option value="7">Last 7 Days</option>
+                            <option value="30">Last 30 Days</option>
+                            <option value="365">Last Year</option>
+                            <option value="999999">All Time</option>
+                        </select>
                     </div>
                     <div id="unplayed-filters" class="hidden flex items-center gap-1.5">
                         <label class="switch"><input type="checkbox" id="ignoreExpansionsToggle" onchange="updateUI()"><span class="slider"></span></label>
@@ -191,6 +200,20 @@
                 </table>
             </div>
 
+            <div id="view-locations" class="hidden flex-1 overflow-y-auto custom-scrollbar">
+                <table class="w-full text-left border-collapse">
+                    <thead class="sticky top-0 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase tracking-widest z-10">
+                        <tr>
+                            <th class="px-4 py-2 border-b">Location</th>
+                            <th class="px-4 py-2 border-b text-center">Games</th>
+                            <th class="px-4 py-2 border-b text-center">Days</th>
+                            <th class="px-4 py-2 border-b text-center">Plays</th>
+                        </tr>
+                    </thead>
+                    <tbody id="locationsTableBody" class="text-[11px] divide-y divide-slate-50"></tbody>
+                </table>
+            </div>
+
             <div id="view-unplayed" class="hidden flex-1 overflow-y-auto custom-scrollbar">
                 <table class="w-full text-left border-collapse">
                     <thead class="sticky top-0 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase tracking-widest z-10">
@@ -203,6 +226,17 @@
                     <tbody id="unplayedTableBody" class="text-[11px] divide-y divide-slate-50"></tbody>
                 </table>
             </div>
+        </div>
+    </div>
+
+    <!-- Location Stats Modal -->
+    <div id="locationModal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
+        <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden">
+            <div class="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-4 flex justify-between items-center">
+                <h2 id="locationModalTitle" class="text-lg font-bold">Location Details</h2>
+                <button onclick="closeLocationModal()" class="text-2xl font-light hover:text-blue-100">×</button>
+            </div>
+            <div id="locationModalContent" class="p-4 overflow-y-auto" style="max-height: calc(80vh - 60px);"></div>
         </div>
     </div>
 
@@ -511,15 +545,17 @@
 
         function switchTab(tab) {
             currentTab = tab;
-            ['plays', 'stats', 'unplayed'].forEach(t => {
+            ['plays', 'stats', 'locations', 'unplayed'].forEach(t => {
                 document.getElementById(`view-${t}`).classList.toggle('hidden', t !== tab);
                 document.getElementById(`tab-${t}`).classList.toggle('tab-active', t === tab);
                 document.getElementById(`tab-${t}`).classList.toggle('text-slate-400', t !== tab);
             });
             document.getElementById('history-filters').classList.toggle('hidden', tab !== 'plays');
             document.getElementById('stats-filters').classList.toggle('hidden', tab !== 'stats');
+            document.getElementById('locations-filters').classList.toggle('hidden', tab !== 'locations');
             document.getElementById('unplayed-filters').classList.toggle('hidden', tab !== 'unplayed');
-            filterView();
+            if (tab === 'locations') renderLocations();
+            else filterView();
         }
 
         function applyFilters(plays) {
@@ -547,6 +583,113 @@
         }
 
         function updateStatus(text) { document.getElementById('statusText').textContent = text; }
+        
+        function renderLocations() {
+            const days = parseInt(document.getElementById('locationTimePeriod').value) || 999999;
+            const cutoffDate = new Date();
+            cutoffDate.setDate(cutoffDate.getDate() - days);
+            const cutoffStr = cutoffDate.toISOString().split('T')[0];
+            
+            const locStats = {};
+            totalPlays.forEach(p => {
+                if (p.date < cutoffStr) return;
+                const loc = p.location || 'IRL';
+                if (!locStats[loc]) {
+                    locStats[loc] = { games: new Set(), days: new Set(), total: 0 };
+                }
+                locStats[loc].games.add(p.gameId);
+                locStats[loc].days.add(p.date);
+                locStats[loc].total++;
+            });
+            
+            const tbody = document.getElementById('locationsTableBody');
+            const sorted = Object.entries(locStats)
+                .map(([loc, stats]) => ({
+                    location: loc,
+                    games: stats.games.size,
+                    days: stats.days.size,
+                    total: stats.total
+                }))
+                .sort((a, b) => b.total - a.total);
+            
+            tbody.innerHTML = sorted.map(s => `
+                <tr class="hover:bg-slate-50 transition-colors cursor-pointer" onclick="showLocationStats('${s.location}')">
+                    <td class="px-4 py-2 font-bold text-slate-700">${s.location}</td>
+                    <td class="px-4 py-2 text-center text-blue-600 font-semibold">${s.games}</td>
+                    <td class="px-4 py-2 text-center text-green-600 font-semibold">${s.days}</td>
+                    <td class="px-4 py-2 text-center text-purple-600 font-bold">${s.total}</td>
+                </tr>
+            `).join('');
+        }
+        
+        function showLocationStats(location) {
+            const days = parseInt(document.getElementById('locationTimePeriod').value) || 999999;
+            const cutoffDate = new Date();
+            cutoffDate.setDate(cutoffDate.getDate() - days);
+            const cutoffStr = cutoffDate.toISOString().split('T')[0];
+            
+            const plays = totalPlays.filter(p => p.location === location && p.date >= cutoffStr);
+            const games = [...new Set(plays.map(p => p.gameId))];
+            const uniqueDays = [...new Set(plays.map(p => p.date))];
+            
+            const periodText = {
+                '7': 'Last 7 Days',
+                '30': 'Last 30 Days',
+                '365': 'Last Year',
+                '999999': 'All Time'
+            }[days] || 'Period';
+            
+            document.getElementById('locationModalTitle').textContent = `${location} - ${periodText}`;
+            
+            let html = `
+                <div class="grid grid-cols-3 gap-3 mb-4">
+                    <div class="bg-blue-50 border border-blue-200 rounded p-3 text-center">
+                        <div class="text-2xl font-bold text-blue-700">${games.length}</div>
+                        <div class="text-xs text-blue-600 font-semibold mt-1">DISTINCT GAMES</div>
+                    </div>
+                    <div class="bg-green-50 border border-green-200 rounded p-3 text-center">
+                        <div class="text-2xl font-bold text-green-700">${uniqueDays.length}</div>
+                        <div class="text-xs text-green-600 font-semibold mt-1">DISTINCT DAYS</div>
+                    </div>
+                    <div class="bg-purple-50 border border-purple-200 rounded p-3 text-center">
+                        <div class="text-2xl font-bold text-purple-700">${plays.length}</div>
+                        <div class="text-xs text-purple-600 font-semibold mt-1">TOTAL PLAYS</div>
+                    </div>
+                </div>
+                
+                <div class="mb-4">
+                    <h3 class="text-sm font-bold text-slate-800 mb-2">Games Played</h3>
+                    <div class="grid grid-cols-2 gap-2">
+            `;
+            
+            const gamesByCount = {};
+            plays.forEach(p => {
+                gamesByCount[p.gameId] = (gamesByCount[p.gameId] || 0) + 1;
+            });
+            
+            Object.entries(gamesByCount)
+                .sort((a, b) => b[1] - a[1])
+                .forEach(([gameId, count]) => {
+                    const play = plays.find(p => p.gameId === gameId);
+                    html += `
+                        <div class="bg-slate-50 rounded p-2 border border-slate-200 flex items-start gap-2">
+                            ${gameThumbnails.has(gameId) ? `<img src="${gameThumbnails.get(gameId)}" class="w-6 h-6 rounded object-cover flex-shrink-0">` : '<div class="w-6 h-6 bg-slate-200 rounded flex-shrink-0"></div>'}
+                            <div class="flex-1 min-w-0">
+                                <div class="font-semibold text-[10px] text-slate-800 truncate">${play.game}</div>
+                                <div class="text-[9px] text-slate-500 font-mono">${count} play${count !== 1 ? 's' : ''}</div>
+                            </div>
+                        </div>
+                    `;
+                });
+            
+            html += `</div></div>`;
+            document.getElementById('locationModalContent').innerHTML = html;
+            document.getElementById('locationModal').classList.remove('hidden');
+        }
+        
+        function closeLocationModal() {
+            document.getElementById('locationModal').classList.add('hidden');
+        }
         
         function finishParsing() {
             isRunning = false;
