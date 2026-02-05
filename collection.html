@@ -50,6 +50,7 @@
         </div>
 
         <div class="relative">
+          <button id="statsBtnHeader" onclick="openStatsModal()" class="bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-2 rounded-lg text-sm font-bold transition mr-2"><i class="fa-solid fa-chart-simple"></i> Stats</button>
           <button id="statusBtnHeader" onclick="toggleStatusPanel()" class="bg-slate-100 hover:bg-slate-200 text-slate-800 px-3 py-2 rounded-lg text-sm font-bold transition"><i class="fa-solid fa-tag"></i> Status</button>
           <div id="statusPanel" class="hidden absolute right-0 mt-2 w-64 bg-white border border-slate-200 rounded shadow p-3 text-sm">
             <div class="grid grid-cols-1 gap-2">
@@ -158,6 +159,21 @@
       </div>
       <div id="modalContent" class="p-4 space-y-3 overflow-y-auto">
         <div class="text-slate-500 text-center py-8">Loading...</div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Stats Modal (uses existing allGames data; no API calls) -->
+  <div id="statsModal" class="fixed inset-0 z-50 hidden bg-black/60 overflow-auto">
+    <div class="bg-white w-full max-w-5xl mx-auto my-8 rounded-lg shadow-2xl p-4 min-h-[80vh]">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-lg font-bold">Collection Stats</h2>
+        <div class="flex items-center gap-2">
+          <button onclick="closeStatsModal()" class="px-3 py-1 rounded bg-slate-200 hover:bg-slate-300">Close</button>
+        </div>
+      </div>
+      <div id="statsContent" class="space-y-4 text-sm">
+        <div class="text-slate-500">Generating stats from loaded collection...</div>
       </div>
     </div>
   </div>
@@ -835,6 +851,130 @@ function copyToClipboard(text) {
   navigator.clipboard.writeText(text).then(() => {
     alert('XML copied!');
   });
+}
+
+function openStatsModal() {
+  const modal = document.getElementById('statsModal');
+  const content = document.getElementById('statsContent');
+  if (!modal || !content) return;
+  if (!allGames || allGames.length === 0) {
+    content.innerHTML = '<div class="text-red-600">No collection loaded. Load a collection first to view stats.</div>';
+    modal.classList.remove('hidden');
+    return;
+  }
+  content.innerHTML = '<div class="text-slate-600">Computing stats…</div>';
+  // Small timeout to allow modal to show before heavy compute
+  setTimeout(() => { renderStats(); modal.classList.remove('hidden'); }, 50);
+}
+
+function closeStatsModal() { document.getElementById('statsModal').classList.add('hidden'); }
+
+function renderStats() {
+  const content = document.getElementById('statsContent');
+  if (!content) return;
+  const games = allGames || [];
+
+  // Helper: aggregate counts
+  const agg = (arr, keyFn) => {
+    const m = new Map();
+    arr.forEach(x => {
+      const k = keyFn(x);
+      if (k === null || k === undefined || k === '') return;
+      m.set(k, (m.get(k) || 0) + 1);
+    });
+    return Array.from(m.entries()).map(([k,v])=>({k,v}));
+  };
+
+  // Year published (descending by year)
+  const years = agg(games, g => Number(g.year) || null).filter(x=>x.k>0).sort((a,b)=>b.k - a.k).map(x=>({k:String(x.k),v:x.v}));
+
+  // Player count: use minplayers as representative (ascending)
+  const players = agg(games, g=>Number(g.minplayers)||0).filter(x=>x.k>0).sort((a,b)=>a.k - b.k).map(x=>({k:String(x.k),v:x.v}));
+
+  // Playing time: average of min/max rounded to int, unique times asc
+  const times = agg(games, g=>{
+    const avg = Math.round(((Number(g.minplaytime)||0)+(Number(g.maxplaytime)||0))/2);
+    return avg>0?avg:null;
+  }).sort((a,b)=>a.k - b.k).map(x=>({k:String(x.k),v:x.v}));
+
+  // BGG rating: integer bucket floor, descending
+  const ratings = agg(games, g=>Math.floor(Number(g.bggRating) || 0)).sort((a,b)=>b.k - a.k).map(x=>({k:String(x.k),v:x.v}));
+
+  // BGG rank buckets per spec
+  const ranks = new Map();
+  const bucketFor = (r) => {
+    if (!r || isNaN(r) || r <= 0) return 'Unranked';
+    const n = Number(r);
+    if (n <= 1000) {
+      const start = Math.floor((n-1)/100)*100 + 1;
+      const end = start + 99;
+      return `${start}-${end}`;
+    }
+    if (n <= 10000) {
+      const start = Math.floor((n-1)/1000)*1000 + 1;
+      const end = start + 999;
+      return `${start}-${end}`;
+    }
+    if (n <= 100000) {
+      const start = Math.floor((n-1)/10000)*10000 + 1;
+      const end = start + 9999;
+      return `${start}-${end}`;
+    }
+    return '100001+';
+  };
+  games.forEach(g => {
+    let r = null;
+    try { r = parseInt((g.primaryRank||'').replace(/[^0-9]/g,'')) || null; } catch(e) { r=null; }
+    const b = bucketFor(r);
+    ranks.set(b, (ranks.get(b)||0) + 1);
+  });
+  const rankArr = Array.from(ranks.entries()).map(([k,v])=>({k,v})).sort((a,b)=>{
+    if (a.k === 'Unranked') return 1; if (b.k === 'Unranked') return -1;
+    if (a.k === '100001+' ) return 1; if (b.k === '100001+') return -1;
+    // sort numeric by start
+    const sa = Number(a.k.split('-')[0]);
+    const sb = Number(b.k.split('-')[0]);
+    return sa - sb;
+  });
+
+  // Average weight rounded integer asc
+  const weights = agg(games, g=>Math.round(Number(g.avgweight)||0)).filter(x=>x.k>0).sort((a,b)=>a.k - b.k).map(x=>({k:String(x.k),v:x.v}));
+
+  // Utility to render bars
+  const renderList = (title, items, sortFn, showKey=true) => {
+    if (!items || items.length===0) return '';
+    const max = Math.max(...items.map(i=>i.v));
+    return `
+      <div>
+        <div class="font-bold mb-2">${title} <span class="text-xs text-slate-500">(count: ${items.reduce((s,i)=>s+i.v,0)})</span></div>
+        <div class="space-y-1">
+          ${items.map(it => `
+            <div class="flex items-center gap-2">
+              <div class="w-36 text-xs text-slate-700">${showKey?it.k:''}</div>
+              <div class="flex-1 bg-slate-100 h-4 rounded overflow-hidden">
+                <div class="bg-indigo-600 h-4" style="width:${Math.round((it.v/max)*100)}%"></div>
+              </div>
+              <div class="w-12 text-right text-xs text-slate-700">${it.v}</div>
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+  };
+
+  // Build HTML
+  const html = `
+    <div class="grid grid-cols-1 md:grid-cols-2 gap-6">
+      <div>${renderList('Year Published', years)}</div>
+      <div>${renderList('Player Count (min players)', players)}</div>
+      <div>${renderList('Playing Time (avg min/max)', times)}</div>
+      <div>${renderList('BGG Rating (floor)', ratings)}</div>
+      <div>${renderList('BGG Rank Buckets', rankArr)}</div>
+      <div>${renderList('Average Weight (rounded)', weights)}</div>
+    </div>
+  `;
+
+  content.innerHTML = html;
 }
 
 function updateLoadingStatus(msg) { document.getElementById('loadingStatus').textContent = msg; }
