@@ -58,7 +58,9 @@
             <option value="rating">BGG Rating</option>
             <option value="year">Year</option>
             <option value="weight">Complexity</option>
+            <option value="playingtime">Playing Time</option>
           </select>
+          <button id="sortDirBtn" onclick="toggleSortDir()" class="px-2 py-2 rounded border border-slate-200 bg-white text-sm">▼</button>
           <button onclick="showFilterPanel()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded-lg text-sm font-bold transition"><i class="fa-solid fa-filter"></i> Filter</button>
         </div>
 
@@ -147,6 +149,8 @@ let displayedGames = [];
 let filters = [];
 let filterLogic = 'and';
 let statusFilters = [];
+let tagFilters = { categories: new Set(), mechanics: new Set() };
+let sortAsc = false; // default sort direction (false = desc)
 
 async function fetchCollection() {
   const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -226,7 +230,7 @@ async function fetchCollection() {
           
           // Stats - read attribute "value" from thing API response (safer)
           const ratings = item.querySelector('statistics ratings') || item.querySelector('statistics > ratings');
-          const bggRating = ratings ? parseFloat(ratings.querySelector('average')?.getAttribute('value') || ratings.querySelector('average')?.textContent || '0') : 0;
+              const bggRating = ratings ? parseFloat(ratings.querySelector('average')?.getAttribute('value') || ratings.querySelector('average')?.textContent || '0') : 0;
           const bayesaverage = ratings ? parseFloat(ratings.querySelector('bayesaverage')?.getAttribute('value') || '0') : 0;
           const userRated = ratings ? parseInt(ratings.querySelector('usersrated')?.getAttribute('value') || '0') : 0;
           const stddev = ratings ? parseFloat(ratings.querySelector('stddev')?.getAttribute('value') || '0') : 0;
@@ -358,6 +362,15 @@ function filterGames() {
   } else {
     displayedGames = baseSet;
   }
+  // apply tag filters (categories/mechanics) - OR semantics within each type, AND across types
+  if (tagFilters.categories && tagFilters.categories.size > 0) {
+    const cats = Array.from(tagFilters.categories);
+    displayedGames = displayedGames.filter(g => (g.categories || []).some(c => cats.includes(c)));
+  }
+  if (tagFilters.mechanics && tagFilters.mechanics.size > 0) {
+    const mecs = Array.from(tagFilters.mechanics);
+    displayedGames = displayedGames.filter(g => (g.mechanics || []).some(m => mecs.includes(m)));
+  }
   sortGames();
 }
 
@@ -401,17 +414,42 @@ function updateStatusCounts(baseSet) {
   });
 }
 
+function toggleTagFilter(type, encodedValue) {
+  const value = decodeURIComponent(encodedValue || '');
+  if (!value) return;
+  const set = type === 'category' ? tagFilters.categories : tagFilters.mechanics;
+  if (!set) return;
+  if (set.has(value)) set.delete(value); else set.add(value);
+  // re-render games using filterGames which will consider tagFilters
+  filterGames();
+}
+
 function sortGames() {
   if (displayedGames.length === 0) return;
   const sortBy = document.getElementById('sortSelect').value;
   displayedGames.sort((a, b) => {
-    if (sortBy === 'name') return a.name.localeCompare(b.name);
-    if (sortBy === 'rating') return (b.bggRating || 0) - (a.bggRating || 0);
-    if (sortBy === 'year') return b.year - a.year;
-    if (sortBy === 'weight') return (b.avgweight || 0) - (a.avgweight || 0);
-    return 0;
+    let res = 0;
+    if (sortBy === 'name') res = a.name.localeCompare(b.name);
+    else if (sortBy === 'rating') res = (b.bggRating || 0) - (a.bggRating || 0);
+    else if (sortBy === 'year') res = (b.year || 0) - (a.year || 0);
+    else if (sortBy === 'weight') res = (b.avgweight || 0) - (a.avgweight || 0);
+    else if (sortBy === 'playingtime') {
+      const ta = ((a.minplaytime||0) + (a.maxplaytime||0)) / 2;
+      const tb = ((b.minplaytime||0) + (b.maxplaytime||0)) / 2;
+      res = tb - ta;
+    }
+    // apply asc/desc
+    if (sortAsc) res = -res;
+    return res;
   });
   renderGames(displayedGames);
+}
+
+function toggleSortDir() {
+  sortAsc = !sortAsc;
+  const btn = document.getElementById('sortDirBtn');
+  if (btn) btn.textContent = sortAsc ? '▲' : '▼';
+  sortGames();
 }
 
 function showFilterPanel() {
@@ -531,7 +569,9 @@ function renderGames(games) {
         <!-- Small Square Thumbnail -->
         <div class="flex-shrink-0">
           ${g.thumb ? `
-            <img src="${g.thumb}" alt="${g.name}" class="w-16 h-16 rounded-lg object-cover bg-slate-200">
+            <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">
+              <img src="${g.thumb}" alt="${g.name}" class="w-16 h-16 rounded-lg object-cover bg-slate-200">
+            </a>
           ` : '<div class="w-16 h-16 bg-slate-200 rounded-lg flex items-center justify-center text-slate-400"><i class="fa-solid fa-image"></i></div>'}
         </div>
         
@@ -570,8 +610,16 @@ function renderGames(games) {
 
           <!-- Tags: show full lists -->
           <div class="flex gap-1 flex-wrap mt-2 text-xs">
-            ${(g.categories||[]).map(c => `<span class="tag tag-category">${c}</span>`).join('')}
-            ${(g.mechanics||[]).map(m => `<span class="tag tag-mechanic">${m}</span>`).join('')}
+            ${(g.categories||[]).map(c => {
+              const enc = encodeURIComponent(c);
+              const active = (tagFilters.categories && tagFilters.categories.has(c)) ? 'ring-2 ring-indigo-300 font-bold' : '';
+              return `<span onclick="toggleTagFilter('category','${enc}')" class="tag tag-category cursor-pointer ${active}">${c}</span>`;
+            }).join('')}
+            ${(g.mechanics||[]).map(m => {
+              const enc = encodeURIComponent(m);
+              const active = (tagFilters.mechanics && tagFilters.mechanics.has(m)) ? 'ring-2 ring-indigo-300 font-bold' : '';
+              return `<span onclick="toggleTagFilter('mechanic','${enc}')" class="tag tag-mechanic cursor-pointer ${active}">${m}</span>`;
+            }).join('')}
           </div>
         </div>
       </div>
@@ -592,26 +640,31 @@ function openModal(id) {
   content.innerHTML = `
     <div class="space-y-3">
       <div class="flex gap-2 border-b pb-2">
-        <button id="tabRaw" class="px-3 py-1 text-sm font-bold bg-slate-100 rounded">Raw XML</button>
-        <button id="tabFull" class="px-3 py-1 text-sm font-bold bg-white rounded">Full Details</button>
+        <button id="tabFull" class="px-3 py-1 text-sm font-bold bg-slate-100 rounded">Full Details</button>
+        <button id="tabRaw" class="px-3 py-1 text-sm font-bold bg-white rounded">Raw XML</button>
         <div class="ml-auto text-xs text-slate-500">ID: ${id}</div>
       </div>
 
-      <div id="tabContentRaw" class="pt-3">
+      <div id="tabContentFull" class="pt-3">
+        ${renderFullData(game)}
+      </div>
+
+      <div id="tabContentRaw" class="hidden pt-3">
         <div class="bg-slate-900 text-slate-100 p-3 rounded text-xs overflow-x-auto font-mono max-h-96 overflow-y-auto whitespace-pre-wrap break-words">${escapedXml}</div>
         <div class="flex gap-2 text-xs mt-2">
           <button id="copyRawBtn" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded font-bold">📋 Copy XML</button>
-          <a href="https://boardgamegeek.com/boardgame/${id}" target="_blank" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded text-center font-bold">🔗 BGG Link</a>
+          <a href="https://boardgamegeek.com/boardgame/${id}" target="_blank" rel="noopener noreferrer" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded text-center font-bold">🔗 BGG Link</a>
         </div>
-      </div>
-
-      <div id="tabContentFull" class="hidden pt-3">
-        ${renderFullData(game)}
       </div>
     </div>
   `;
 
   // Tab wiring
+  // default to Full Details
+  document.getElementById('tabFull').classList.add('bg-slate-100');
+  document.getElementById('tabContentFull').classList.remove('hidden');
+  document.getElementById('tabRaw').classList.remove('bg-slate-100');
+
   document.getElementById('tabRaw').addEventListener('click', () => {
     document.getElementById('tabContentRaw').classList.remove('hidden');
     document.getElementById('tabContentFull').classList.add('hidden');
