@@ -1140,49 +1140,84 @@
         async function analyzeAllGames() {
             if (allGames.length === 0) return;
 
-            console.log(`🎨 Starting color analysis for ${allGames.length} games`);
+            console.log(`🎨 Starting color analysis for ${allGames.length} games (100x parallel batching)`);
             colorGrid.innerHTML = '';
             let processed = 0;
 
-            for (const game of allGames) {
-                console.log(`[${processed + 1}/${allGames.length}] Analyzing: ${game.name}`);
+            const PARALLEL_BATCH_SIZE = 100;
+            
+            // Process games in batches of 100 in parallel
+            for (let i = 0; i < allGames.length; i += PARALLEL_BATCH_SIZE) {
+                const batch = allGames.slice(i, i + PARALLEL_BATCH_SIZE);
+                console.log(`📦 Processing batch ${Math.floor(i / PARALLEL_BATCH_SIZE) + 1}: games ${i + 1}-${Math.min(i + PARALLEL_BATCH_SIZE, allGames.length)}`);
                 
-                try {
-                    if (game.thumbnail) {
-                        console.log(`  📥 Fetching thumbnail...`);
-                        game.colors = await analyzeImageColors(game.thumbnail);
-                        console.log(`  ✅ Colors extracted: Primary = ${game.colors.primary.hex} (${game.colors.primary.percentage}%)`);
-                    } else {
-                        console.log(`  ⚠️ No thumbnail available, using default color`);
+                // Launch all image analyses in parallel
+                const batchPromises = batch.map(async (game) => {
+                    try {
+                        if (game.thumbnail) {
+                            game.colors = await analyzeImageColors(game.thumbnail);
+                            console.log(`  ✅ [${processed + 1}/${allGames.length}] ${game.name} → ${game.colors.primary.hex}`);
+                        } else {
+                            console.log(`  ⚠️ [${processed + 1}/${allGames.length}] ${game.name} (no thumbnail)`);
+                            game.colors = {
+                                colors: [{ hex: '#cccccc', count: 0, percentage: 100 }],
+                                primary: { hex: '#cccccc', count: 0, percentage: 100 }
+                            };
+                        }
+                    } catch (error) {
+                        console.error(`  ❌ [${processed + 1}/${allGames.length}] ${game.name}: ${error.message}`);
                         game.colors = {
-                            colors: [{ hex: '#cccccc', count: 0, percentage: 100 }],
-                            primary: { hex: '#cccccc', count: 0, percentage: 100 }
+                            colors: [{ hex: '#999999', count: 0, percentage: 100 }],
+                            primary: { hex: '#999999', count: 0, percentage: 100 }
                         };
                     }
-                } catch (error) {
-                    console.error(`  ❌ Error analyzing ${game.name}:`, error);
-                    game.colors = {
-                        colors: [{ hex: '#999999', count: 0, percentage: 100 }],
-                        primary: { hex: '#999999', count: 0, percentage: 100 }
-                    };
-                }
+                    processed++;
+                });
 
-                processed++;
+                // Wait for all parallel tasks to complete
+                await Promise.all(batchPromises);
                 
-                // Render card immediately after analysis
-                console.log(`  🎴 Rendering card...`);
-                renderGameCard(game);
+                // Render all cards from this batch
+                batch.forEach(game => renderGameCard(game));
                 
                 showStatus(`🎨 Analyzed ${processed} of ${allGames.length} games...`, 'loading');
                 
-                // Small delay to avoid blocking (allows UI to update)
-                if (processed % 3 === 0) {
-                    await new Promise(r => setTimeout(r, 50));
+                // Small delay between batches to allow UI update
+                if (i + PARALLEL_BATCH_SIZE < allGames.length) {
+                    await new Promise(r => setTimeout(r, 100));
                 }
             }
 
             console.log(`✅ All ${allGames.length} games analyzed!`);
             showStatus(`✅ Successfully analyzed ${allGames.length} games!`, 'success');
+        }
+
+        // Parallel batch processor for BGG Thing API calls (20 at a time)
+        async function processThingBatch(ids, batchSize = 20) {
+            console.log(`🔷 Processing ${ids.length} thing IDs in batches of ${batchSize}`);
+            const results = [];
+            
+            for (let i = 0; i < ids.length; i += batchSize) {
+                const batch = ids.slice(i, i + batchSize);
+                console.log(`  📦 Thing batch ${Math.floor(i / batchSize) + 1}: ${batch.length} IDs`);
+                
+                try {
+                    const xmlText = await fetchBGG('thing', { id: batch.join(',') });
+                    const doc = parseXML(xmlText);
+                    const items = Array.from(doc.querySelectorAll('item'));
+                    results.push(...items);
+                    console.log(`  ✅ Retrieved ${items.length} items`);
+                } catch (error) {
+                    console.error(`  ❌ Thing batch error:`, error);
+                }
+                
+                // Small delay between batches
+                if (i + batchSize < ids.length) {
+                    await new Promise(r => setTimeout(r, 500));
+                }
+            }
+            
+            return results;
         }
 
         function renderGames() {
