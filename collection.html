@@ -170,18 +170,26 @@ async function fetchCollection() {
     // Build a quick map of collection status flags so we can merge them into thing results
     const collectionMap = {};
     collItems.forEach(it => {
-      const oid = it.getAttribute('objectid');
+      const oid = it.getAttribute('objectid') || it.getAttribute('id');
       if (!oid) return;
+      const statusNode = it.querySelector('status');
+      const getFlag = (name) => {
+        const a = it.getAttribute(name);
+        if (a !== null) return parseInt(a || '0');
+        const s = statusNode ? statusNode.getAttribute(name) : null;
+        if (s !== null) return parseInt(s || '0');
+        return 0;
+      };
       collectionMap[oid] = {
-        own: parseInt(it.getAttribute('own') || '0'),
-        prevowned: parseInt(it.getAttribute('prevowned') || '0'),
-        fortrade: parseInt(it.getAttribute('fortrade') || '0'),
-        want: parseInt(it.getAttribute('want') || '0'),
-        wanttoplay: parseInt(it.getAttribute('wanttoplay') || '0'),
-        wanttobuy: parseInt(it.getAttribute('wanttobuy') || '0'),
-        wishlist: parseInt(it.getAttribute('wishlist') || '0'),
-        preordered: parseInt(it.getAttribute('preordered') || '0'),
-        lastmodified: it.getAttribute('lastmodified') || ''
+        own: getFlag('own'),
+        prevowned: getFlag('prevowned'),
+        fortrade: getFlag('fortrade'),
+        want: getFlag('want'),
+        wanttoplay: getFlag('wanttoplay'),
+        wanttobuy: getFlag('wanttobuy'),
+        wishlist: getFlag('wishlist'),
+        preordered: getFlag('preordered'),
+        lastmodified: it.getAttribute('lastmodified') || (statusNode ? statusNode.getAttribute('lastmodified') || '' : '')
       };
     });
 
@@ -239,39 +247,48 @@ async function fetchCollection() {
           const categories = Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value'));
           const mechanics = Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value'));
 
-          // Polls: suggested number of players -> derive Best with / Recommended with
+          // Polls: suggested number of players -> prefer poll-summary, otherwise derive Best/Recommended from poll results
           let bestwith = '';
           let recommendedwith = '';
           try {
-            const poll = item.querySelector('poll[name="suggested_numplayers"]');
-            if (poll) {
-              const bestNums = [];
-              const recoNums = [];
-              Array.from(poll.querySelectorAll('results')).forEach(res => {
-                const num = res.getAttribute('numplayers');
-                const resultNode = res.querySelector('result');
-                const label = resultNode ? (resultNode.getAttribute('value') || resultNode.textContent || '') : '';
-                if (!num) return;
-                if (label.toLowerCase().includes('best')) bestNums.push(parseInt(num));
-                if (label.toLowerCase().includes('recommended')) recoNums.push(parseInt(num));
-              });
+            const ps = item.querySelector('poll-summary[name="suggested_numplayers"], poll-summary');
+            if (ps) {
+              const b = ps.querySelector('result[name="bestwith"]')?.getAttribute('value') || ps.querySelector('result[name="bestwith"]')?.textContent || '';
+              const r = ps.querySelector('result[name="recommendedwith"]')?.getAttribute('value') || ps.querySelector('result[name="recommendedwith"]')?.textContent || ps.querySelector('result[name="recommmendedwith"]')?.getAttribute('value') || ps.querySelector('result[name="recommmendedwith"]')?.textContent || '';
+              if (b) bestwith = b;
+              if (r) recommendedwith = r;
+            } else {
+              const poll = item.querySelector('poll[name="suggested_numplayers"]');
+              if (poll) {
+                const bestNums = [];
+                const recoNums = [];
+                Array.from(poll.querySelectorAll('results')).forEach(res => {
+                  const num = res.getAttribute('numplayers');
+                  // check all result nodes inside this results
+                  Array.from(res.querySelectorAll('result')).forEach(resultNode => {
+                    const label = (resultNode.getAttribute('value') || resultNode.textContent || '').toLowerCase();
+                    if (!num) return;
+                    if (label.includes('best')) bestNums.push(parseInt(num));
+                    if (label.includes('recommend')) recoNums.push(parseInt(num));
+                  });
+                });
 
-              const fmt = (arr) => {
-                if (!arr || arr.length === 0) return '';
-                const nums = Array.from(new Set(arr.map(n => parseInt(n)).filter(n=>!isNaN(n)))).sort((a,b)=>a-b);
-                if (nums.length === 1) return `${nums[0]} players`;
-                // check consecutive
-                const min = nums[0], max = nums[nums.length-1];
-                let consecutive = true;
-                for (let i=0;i<nums.length;i++) if (nums[i] !== min + i) { consecutive = false; break; }
-                if (consecutive) return `${min}–${max} players`;
-                return nums.join(', ') + ' players';
-              };
+                const fmt = (arr) => {
+                  if (!arr || arr.length === 0) return '';
+                  const nums = Array.from(new Set(arr.map(n => parseInt(n)).filter(n=>!isNaN(n)))).sort((a,b)=>a-b);
+                  if (nums.length === 1) return `${nums[0]} players`;
+                  const min = nums[0], max = nums[nums.length-1];
+                  let consecutive = true;
+                  for (let i=0;i<nums.length;i++) if (nums[i] !== min + i) { consecutive = false; break; }
+                  if (consecutive) return `${min}–${max} players`;
+                  return nums.join(', ') + ' players';
+                };
 
-              const bw = fmt(bestNums);
-              const rw = fmt(recoNums);
-              if (bw) bestwith = `Best with ${bw}`;
-              if (rw) recommendedwith = `Recommended with ${rw}`;
+                const bw = fmt(bestNums);
+                const rw = fmt(recoNums);
+                if (bw) bestwith = `Best with ${bw}`;
+                if (rw) recommendedwith = `Recommended with ${rw}`;
+              }
             }
           } catch (e) { console.warn('poll parse', e); }
           
