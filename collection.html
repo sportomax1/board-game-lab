@@ -61,15 +61,34 @@
     </div>
 
     <!-- Controls -->
-    <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4 flex gap-3">
-      <input id="searchInput" type="text" placeholder="Search..." oninput="filterGames()" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-      <select id="sortSelect" onchange="sortGames()" class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm bg-white font-bold">
-        <option value="name">Name</option>
-        <option value="rating">Your Rating</option>
-        <option value="bggrating">BGG Rating</option>
-        <option value="year">Year</option>
-        <option value="weight">Complexity</option>
-      </select>
+    <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4 space-y-3">
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input id="searchInput" type="text" placeholder="Search..." oninput="filterGames()" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
+        <select id="sortSelect" onchange="sortGames()" class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm bg-white font-bold">
+          <option value="name">Name</option>
+          <option value="rating">BGG Rating</option>
+          <option value="year">Year</option>
+          <option value="weight">Complexity</option>
+        </select>
+        <button onclick="showFilterPanel()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition"><i class="fa-solid fa-filter"></i> Filter</button>
+      </div>
+      
+      <!-- Filter Panel -->
+      <div id="filterPanel" class="hidden border-t pt-3 space-y-3">
+        <div class="flex items-center justify-between mb-2">
+          <span class="font-bold text-sm">Filters (AND/OR Logic)</span>
+          <button onclick="addFilter()" class="text-xs bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold hover:bg-indigo-200">+ Add Filter</button>
+        </div>
+        <div id="filtersList" class="space-y-2"></div>
+        <div class="flex gap-2 text-xs">
+          <select id="logicSelect" class="flex-1 px-2 py-1 rounded border border-slate-200 bg-white font-bold">
+            <option value="and">AND (all filters match)</option>
+            <option value="or">OR (any filter matches)</option>
+          </select>
+          <button onclick="applyFilters()" class="bg-green-600 hover:bg-green-700 text-white px-3 py-1 rounded font-bold">Apply</button>
+          <button onclick="clearFilters()" class="bg-slate-400 hover:bg-slate-500 text-white px-3 py-1 rounded font-bold">Clear</button>
+        </div>
+      </div>
     </div>
 
     <!-- Games Grid -->
@@ -83,10 +102,25 @@
 
   </main>
 
+  <!-- Game Details Modal -->
+  <div id="detailsModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60">
+    <div class="bg-white rounded-lg max-w-2xl w-full max-h-[90vh] overflow-y-auto m-4 shadow-2xl">
+      <div class="sticky top-0 bg-indigo-600 text-white p-4 flex justify-between items-center">
+        <h2 class="font-bold" id="modalTitle">Game Details</h2>
+        <button onclick="closeModal()" class="text-2xl hover:opacity-80">✕</button>
+      </div>
+      <div id="modalContent" class="p-4 space-y-3">
+        <div class="text-slate-500 text-center py-8">Loading...</div>
+      </div>
+    </div>
+  </div>
+
 <script>
 const API_BASE = '/api/bgg-helper';
 let allGames = [];
 let displayedGames = [];
+let filters = [];
+let filterLogic = 'and';
 
 async function fetchCollection() {
   const username = document.getElementById('username').value.trim() || 'sportomax';
@@ -153,7 +187,8 @@ async function fetchCollection() {
           
           allGames.push({
             id, name, thumb, image, desc, year, minplayers, maxplayers, minplaytime, maxplaytime, minage,
-            bggRating, bayesaverage, userRated, owned, wishing, avgweight, categories, mechanics
+            bggRating, bayesaverage, userRated, owned, wishing, avgweight, categories, mechanics,
+            xmlStr: new XMLSerializer().serializeToString(item)
           });
         });
         updateProgress(10 + ((batches.indexOf(batch) + 1) / batches.length) * 85);
@@ -205,12 +240,97 @@ function sortGames() {
   displayedGames.sort((a, b) => {
     if (sortBy === 'name') return a.name.localeCompare(b.name);
     if (sortBy === 'rating') return (b.bggRating || 0) - (a.bggRating || 0);
-    if (sortBy === 'bggrating') return (b.bayesaverage || 0) - (a.bayesaverage || 0);
     if (sortBy === 'year') return b.year - a.year;
     if (sortBy === 'weight') return (b.avgweight || 0) - (a.avgweight || 0);
     return 0;
   });
   renderGames(displayedGames);
+}
+
+function showFilterPanel() {
+  const panel = document.getElementById('filterPanel');
+  panel.classList.toggle('hidden');
+  if (!panel.classList.contains('hidden') && filters.length === 0) {
+    addFilter();
+  }
+}
+
+function addFilter() {
+  const id = Date.now();
+  filters.push({ id, field: 'bggRating', operator: '>=', value: '5' });
+  renderFilterPanel();
+}
+
+function removeFilter(id) {
+  filters = filters.filter(f => f.id !== id);
+  renderFilterPanel();
+}
+
+function updateFilter(id, field, operator, value) {
+  const f = filters.find(x => x.id === id);
+  if (f) { f.field = field; f.operator = operator; f.value = value; }
+}
+
+function renderFilterPanel() {
+  const list = document.getElementById('filtersList');
+  if (filters.length === 0) {
+    list.innerHTML = '<div class="text-slate-500 text-xs">No filters added</div>';
+    return;
+  }
+  
+  list.innerHTML = filters.map(f => `
+    <div class="flex gap-2 text-xs bg-slate-50 p-2 rounded">
+      <select onchange="updateFilter(${f.id}, this.value, '${f.operator}', '${f.value}')" class="px-2 py-1 rounded border border-slate-200 bg-white">
+        <option value="bggRating" ${f.field === 'bggRating' ? 'selected' : ''}>BGG Rating</option>
+        <option value="avgweight" ${f.field === 'avgweight' ? 'selected' : ''}>Weight</option>
+        <option value="minplayers" ${f.field === 'minplayers' ? 'selected' : ''}>Min Players</option>
+        <option value="maxplayers" ${f.field === 'maxplayers' ? 'selected' : ''}>Max Players</option>
+        <option value="minplaytime" ${f.field === 'minplaytime' ? 'selected' : ''}>Min Time</option>
+        <option value="maxplaytime" ${f.field === 'maxplaytime' ? 'selected' : ''}>Max Time</option>
+        <option value="year" ${f.field === 'year' ? 'selected' : ''}>Year</option>
+        <option value="minage" ${f.field === 'minage' ? 'selected' : ''}>Min Age</option>
+        <option value="userRated" ${f.field === 'userRated' ? 'selected' : ''}>User Ratings</option>
+        <option value="owned" ${f.field === 'owned' ? 'selected' : ''}>Owned</option>
+        <option value="wishing" ${f.field === 'wishing' ? 'selected' : ''}>Wishing</option>
+      </select>
+      <select onchange="updateFilter(${f.id}, '${f.field}', this.value, '${f.value}')" class="px-2 py-1 rounded border border-slate-200 bg-white">
+        <option value=">=" ${f.operator === '>=' ? 'selected' : ''}>&ge;</option>
+        <option value=">" ${f.operator === '>' ? 'selected' : ''}>&gt;</option>
+        <option value="<=" ${f.operator === '<=' ? 'selected' : ''}>&le;</option>
+        <option value="<" ${f.operator === '<' ? 'selected' : ''}>&lt;</option>
+        <option value="=" ${f.operator === '=' ? 'selected' : ''}>=</option>
+      </select>
+      <input type="number" value="${f.value}" onchange="updateFilter(${f.id}, '${f.field}', '${f.operator}', this.value)" class="flex-1 px-2 py-1 rounded border border-slate-200">
+      <button onclick="removeFilter(${f.id})" class="text-red-600 hover:text-red-800 font-bold">✕</button>
+    </div>
+  `).join('');
+}
+
+function applyFilters() {
+  filterLogic = document.getElementById('logicSelect').value;
+  const filtered = allGames.filter(game => {
+    const results = filters.map(f => {
+      const val = game[f.field];
+      const target = parseFloat(f.value);
+      if (f.operator === '>=') return val >= target;
+      if (f.operator === '>') return val > target;
+      if (f.operator === '<=') return val <= target;
+      if (f.operator === '<') return val < target;
+      if (f.operator === '=') return val === target;
+      return true;
+    });
+    return filterLogic === 'and' ? results.every(r => r) : results.some(r => r);
+  });
+  displayedGames = filtered;
+  sortGames();
+  document.getElementById('filterPanel').classList.add('hidden');
+}
+
+function clearFilters() {
+  filters = [];
+  renderFilterPanel();
+  displayedGames = [...allGames];
+  sortGames();
 }
 
 function renderGames(games) {
@@ -231,18 +351,18 @@ function renderGames(games) {
     const timeRange = g.minplaytime === g.maxplaytime ? `${g.minplaytime}m` : `${g.minplaytime}-${g.maxplaytime}m`;
     
     return `
-      <div class="game-card bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden p-3 flex gap-3">
+      <div class="game-card bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden p-3 flex gap-3 cursor-pointer hover:shadow-md transition" onclick="openModal('${g.id}', '${g.name.replace(/'/g, "\\'")}', '${g.xmlStr.replace(/'/g, "\\'")}')">
         <!-- Small Square Thumbnail -->
         <div class="flex-shrink-0">
           ${g.thumb ? `
-            <img src="${g.thumb}" alt="${g.name}" class="w-16 h-16 rounded-lg object-cover bg-slate-200 cursor-pointer hover:opacity-80 transition" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">
+            <img src="${g.thumb}" alt="${g.name}" class="w-16 h-16 rounded-lg object-cover bg-slate-200">
           ` : '<div class="w-16 h-16 bg-slate-200 rounded-lg flex items-center justify-center text-slate-400"><i class="fa-solid fa-image"></i></div>'}
         </div>
         
         <!-- Content -->
         <div class="flex-1 min-w-0">
           <!-- Title -->
-          <h3 class="font-bold text-sm text-slate-900 line-clamp-1 cursor-pointer hover:text-indigo-600 transition" onclick="window.open('https://boardgamegeek.com/boardgame/${g.id}', '_blank')">${g.name}</h3>
+          <h3 class="font-bold text-sm text-slate-900 line-clamp-1">${g.name}</h3>
           
           <!-- Meta Row -->
           <div class="text-xs text-slate-600 line-clamp-1 mb-1">${g.year || 'N/A'} • ${playerRange} • ${timeRange} • ${g.minage}+</div>
@@ -267,6 +387,35 @@ function renderGames(games) {
   }).join('');
 }
 
+function openModal(id, name, xmlStr) {
+  document.getElementById('modalTitle').textContent = name;
+  const content = document.getElementById('modalContent');
+  content.innerHTML = `
+    <div class="space-y-3">
+      <div class="bg-slate-900 text-slate-100 p-3 rounded text-xs overflow-x-auto font-mono max-h-96 overflow-y-auto whitespace-pre-wrap break-words">${xmlStr.replace(/</g, '&lt;').replace(/>/g, '&gt;')}</div>
+      <div class="flex gap-2 text-xs">
+        <button onclick="copyToClipboard('${xmlStr.replace(/'/g, "\\'")}')" class="flex-1 bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded font-bold">📋 Copy XML</button>
+        <a href="https://boardgamegeek.com/boardgame/${id}" target="_blank" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white px-3 py-2 rounded text-center font-bold">🔗 BGG Link</a>
+      </div>
+    </div>
+  `;
+  document.getElementById('detailsModal').classList.remove('hidden');
+}
+
+function closeModal() {
+  document.getElementById('detailsModal').classList.add('hidden');
+}
+
+function copyToClipboard(text) {
+  navigator.clipboard.writeText(text).then(() => {
+    alert('XML copied!');
+  });
+}
+
 function updateLoadingStatus(msg) { document.getElementById('loadingStatus').textContent = msg; }
 function updateProgress(pct) { document.getElementById('progressBar').style.width = pct + '%'; }
 </script>
+
+  </main>
+</body>
+</html>
