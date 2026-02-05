@@ -44,11 +44,27 @@
       <div class="flex items-center gap-3">
         <label class="text-sm"><input id="showGuessed" type="checkbox" checked class="mr-2">Show guessed matches</label>
         <button id="reload" class="bg-purple-600 text-white px-4 py-2 rounded-lg">Reload</button>
+        <button id="compareBtn" class="bg-blue-600 text-white px-4 py-2 rounded-lg">Compare with Collection</button>
       </div>
     </div>
 
     <div id="gamesSection" class="hidden space-y-3">
       <!-- cards will render here -->
+    </div>
+
+    <!-- Compare Modal -->
+    <div id="compareModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/40">
+      <div class="bg-white rounded-xl max-w-3xl w-full p-4 mx-4">
+        <div class="flex items-center justify-between mb-3">
+          <h3 class="font-bold">Compare Lists to my collection (sportomax)</h3>
+          <div class="flex gap-2">
+            <button id="closeCompare" class="text-sm text-gray-600">Close</button>
+          </div>
+        </div>
+        <div id="compareContent" class="text-sm text-slate-700 max-h-80 overflow-y-auto">
+          <div class="text-slate-500">Running comparison...</div>
+        </div>
+      </div>
     </div>
 
   </main>
@@ -193,6 +209,84 @@
 
         renderEntries();
       }catch(e){ console.error('match error', e); entry.status='none'; renderEntries(); }
+    
+    // Compare lists with a user's collection (default: sportomax)
+    document.getElementById('compareBtn').addEventListener('click', () => openCompareModal('sportomax'));
+    document.getElementById('closeCompare').addEventListener('click', () => closeCompareModal());
+
+    function openCompareModal(username){
+      document.getElementById('compareModal').classList.remove('hidden');
+      document.getElementById('compareContent').innerHTML = '<div class="text-slate-500">Fetching collection and matching entries — this may take a moment...</div>';
+      compareLists(username).catch(e=>{
+        document.getElementById('compareContent').innerHTML = `<div class="text-red-600">Error: ${e.message}</div>`;
+      });
+    }
+
+    function closeCompareModal(){
+      document.getElementById('compareModal').classList.add('hidden');
+    }
+
+    async function fetchUserCollection(username='sportomax'){
+      const url = `${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}&own=1`;
+      const text = await fetch(url).then(r=>r.text());
+      const doc = new DOMParser().parseFromString(text,'application/xml');
+      const items = Array.from(doc.querySelectorAll('item'));
+      return new Set(items.map(i => i.getAttribute('objectid')));
+    }
+
+    async function compareLists(username='sportomax'){
+      // ensure entries are loaded
+      if(!allEntries || allEntries.length===0){
+        document.getElementById('compareContent').innerHTML = '<div class="text-red-600">No entries loaded.</div>';
+        return;
+      }
+
+      // fetch user's collection of owned games
+      document.getElementById('compareContent').innerHTML = '<div class="text-slate-600">Fetching collection...</div>';
+      const ownedSet = await fetchUserCollection(username);
+
+      // Make sure each entry has a bggId (run matching for entries without id)
+      document.getElementById('compareContent').innerHTML = '<div class="text-slate-600">Matching list entries to BGG (may be slow)...</div>';
+      const matchPromises = allEntries.map(e => matchAndFill(e));
+      await Promise.all(matchPromises);
+
+      // Group by list (name + year)
+      const groups = {};
+      allEntries.forEach(e => {
+        const key = `${e.name}||${e.year}`;
+        groups[key] = groups[key] || { name: e.name, year: e.year, items: [] };
+        groups[key].items.push(e);
+      });
+
+      // Compute results
+      const results = [];
+      for(const k of Object.keys(groups)){
+        const g = groups[k];
+        // find max numeric rank in this list
+        const ranks = g.items.map(i => parseInt(i.rank) || 0).filter(n=>n>0);
+        const maxRank = ranks.length ? Math.max(...ranks) : 100;
+        let matchCount = 0;
+        let points = 0;
+        g.items.forEach(item => {
+          const r = parseInt(item.rank) || 0;
+          if(item.bggId && ownedSet.has(item.bggId)){
+            matchCount++;
+            const pts = (maxRank + 1 - r);
+            points += pts;
+          }
+        });
+        results.push({ name: g.name, year: g.year, total: g.items.length, matchCount, points, maxRank });
+      }
+
+      // Render table
+      results.sort((a,b)=> (b.points - a.points) || (b.matchCount - a.matchCount));
+      let html = `<table class="w-full text-sm"><thead><tr class="text-left"><th>List</th><th>Matches</th><th>Total Items</th><th>Points</th></tr></thead><tbody>`;
+      for(const r of results){
+        html += `<tr class="border-t"><td class="py-2">${r.name} • ${r.year}</td><td class="py-2">${r.matchCount}</td><td class="py-2">${r.total}</td><td class="py-2 font-semibold">${r.points}</td></tr>`;
+      }
+      html += `</tbody></table>`;
+      document.getElementById('compareContent').innerHTML = html;
+    }
     }
 
     function normalize(s){ return (s||'').toLowerCase().replace(/[^a-z0-9 ]+/g,'').replace(/\s+/g,' ').trim(); }
