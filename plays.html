@@ -514,7 +514,14 @@
             document.getElementById('playCounter').textContent = `${totalPlays.length} Plays`;
             renderPlays(filteredPlays);
             renderStats(filteredPlays);
-            renderUnplayed(totalPlays);
+            
+            // Update unplayed tab if player is selected
+            if (currentTab === 'unplayed' && document.getElementById('unplayedUserSelect').value) {
+                updateUnplayedTab();
+            } else {
+                renderUnplayed(totalPlays);
+            }
+            
             // prepare players & XML views
             try { renderPlayers(); renderXMLContents(); } catch(e){}
         }
@@ -629,27 +636,66 @@
                 return;
             }
             
-            const ignoreExpansions = document.getElementById('ignoreExpansionsToggle').checked;
-            const playedIds = new Set(totalPlays.map(p => p.gameId));
+            updateStatus(`Fetching ${selectedUser === 'myself' ? 'sportomax' : selectedUser}'s collection...`);
             
-            // Get unplayed games from collection
-            let unplayed = collection.filter(c => {
-                if (playedIds.has(c.id)) return false;
-                if (ignoreExpansions && gameTypes.get(c.id) === 'boardgameexpansion') return false;
-                return true;
-            });
+            // Fetch the selected player's collection
+            const username = selectedUser === 'myself' ? 'sportomax' : selectedUser;
             
-            unplayedGamesCache = unplayed;
-            
-            // Fetch game details if we don't have them cached
-            const idsToFetch = unplayed.filter(g => !unplayedDetailsMap.has(g.id)).map(g => g.id);
-            
-            if (idsToFetch.length > 0) {
-                await fetchUnplayedGameDetails(idsToFetch);
+            try {
+                const collectionData = await fetchPlayerCollection(username);
+                
+                // Get plays for this player
+                const playerPlays = selectedUser === 'myself' 
+                    ? totalPlays 
+                    : (playersMap.get(selectedUser) || []);
+                
+                const playedIds = new Set(playerPlays.map(p => p.gameId));
+                const ignoreExpansions = document.getElementById('ignoreExpansionsToggle').checked;
+                
+                // Filter to unplayed games from their collection
+                let unplayed = collectionData.filter(c => {
+                    if (playedIds.has(c.id)) return false;
+                    if (ignoreExpansions && gameTypes.get(c.id) === 'boardgameexpansion') return false;
+                    return true;
+                });
+                
+                unplayedGamesCache = unplayed;
+                unplayedDetailsMap.clear();
+                
+                // Fetch game details
+                const gameIds = unplayed.map(g => g.id);
+                if (gameIds.length > 0) {
+                    updateStatus(`Fetching details for ${gameIds.length} unplayed games...`);
+                    await fetchUnplayedGameDetails(gameIds);
+                }
+                
                 renderUnplayedEnhanced();
-            } else {
-                renderUnplayedEnhanced();
+                updateStatus('Done');
+            } catch (e) {
+                console.error('Error updating unplayed tab:', e);
+                updateStatus('Error loading unplayed games');
+                document.getElementById('unplayedTableBody').innerHTML = `<tr><td colspan="6" class="p-4 text-center text-red-600">Error: ${e.message}</td></tr>`;
             }
+        }
+
+        async function fetchPlayerCollection(username) {
+            const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+            const response = await fetch(url);
+            if (response.status === 202) {
+                await new Promise(r => setTimeout(r, 2000));
+                return fetchPlayerCollection(username);
+            }
+            if (!response.ok) throw new Error(`Failed to fetch collection: ${response.status}`);
+            
+            const xml = await response.text();
+            const doc = new DOMParser().parseFromString(xml, 'text/xml');
+            const items = Array.from(doc.querySelectorAll('item'));
+            
+            return items.map(item => ({
+                id: item.getAttribute('objectid') || item.getAttribute('id'),
+                name: item.querySelector('name')?.textContent || 'Unknown',
+                thumbnail: item.querySelector('thumbnail')?.textContent || ''
+            })).filter(g => g.id);
         }
 
         async function fetchUnplayedGameDetails(gameIds) {
@@ -686,7 +732,11 @@
                             const bayesRating = parseFloat(rating?.getElementsByTagName('bayesaverage')[0]?.getAttribute('value') || '0') || 0;
                             const rank = parseInt(rating?.getElementsByTagName('rank')[0]?.getAttribute('value') || '999999') || 999999;
                             
-                            const nameEl = item.getElementsByTagName('name')[0];
+                            const thumb = item.getElementsByTagName('thumbnail')[0];
+                            if (thumb && !gameThumbnails.has(id)) {
+                                gameThumbnails.set(id, thumb.textContent);
+                            }
+                            
                             const weightsEl = item.getElementsByTagName('statistics')[0];
                             const weight = parseFloat(weightsEl?.getAttribute('avgweight') || '0') || 0;
                             const playingTimeEl = item.getElementsByTagName('playingtime')[0];
@@ -710,8 +760,8 @@
             const tbody = document.getElementById('unplayedTableBody');
             const selectedUser = document.getElementById('unplayedUserSelect').value;
             
-            if (!selectedUser) {
-                tbody.innerHTML = '';
+            if (!selectedUser || unplayedGamesCache.length === 0) {
+                tbody.innerHTML = selectedUser ? '<tr><td colspan="6" class="p-4 text-center text-slate-500">No unplayed games found</td></tr>' : '';
                 return;
             }
             
