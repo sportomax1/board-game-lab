@@ -1787,19 +1787,31 @@
             const gameIds = gamesToFetchThumbnails.map(g => g.objectid).filter(id => id);
             const thumbnailMap = {};
             const batchSize = 20;
+            const parallelBatches = 100; // Process 100 batches in parallel for faster loading
             
             if (gameIds.length > 0) {
                 updatePrivateProgress(10, `Fetching thumbnails for ${gameIds.length} games...`);
                 
+                // Create batches of 20 game IDs each
+                const batches = [];
                 for (let i = 0; i < gameIds.length; i += batchSize) {
-                    const batch = gameIds.slice(i, i + batchSize);
-                    const batchThumbnails = await fetchThumbnailsBatch(batch);
-                    Object.assign(thumbnailMap, batchThumbnails);
+                    batches.push(gameIds.slice(i, i + batchSize));
+                }
+                
+                // Process batches in parallel groups of 100
+                for (let i = 0; i < batches.length; i += parallelBatches) {
+                    const batchGroup = batches.slice(i, i + parallelBatches);
                     
-                    const progress = 10 + Math.round((i + batchSize) / gameIds.length * 90);
-                    updatePrivateProgress(progress, `Fetched ${Math.min(i + batchSize, gameIds.length)} of ${gameIds.length} thumbnails...`);
+                    await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                        const actualIndex = (i + batchIndex) * batchSize;
+                        const batchThumbnails = await fetchThumbnailsBatch(batch);
+                        Object.assign(thumbnailMap, batchThumbnails);
+                        
+                        const progress = 10 + Math.round((actualIndex + batchSize) / gameIds.length * 90);
+                        updatePrivateProgress(progress, `Fetched ${Math.min(actualIndex + batchSize, gameIds.length)} of ${gameIds.length} thumbnails...`);
+                    }));
                     
-                    // Update thumbnails in cards as they arrive
+                    // Update thumbnails in cards after each parallel group completes
                     allPrivateGames = allPrivateGames.map(game => ({
                         ...game,
                         thumbnail: thumbnailMap[game.objectid] || game.thumbnail
