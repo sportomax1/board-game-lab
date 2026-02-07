@@ -639,7 +639,8 @@
                     game_started: false,
                     created_at: new Date().toISOString(),
                     player_scores: { [playerName]: 0 },
-                    history: []
+                    history: [],
+                    current_turn_state: null // Live roll state for spectators
                 };
 
                 const { data, error } = await supabase
@@ -1021,15 +1022,22 @@
                         resetDiceUI(); // Reset dice for new turn
                     }
                 } else {
-                    // Spectating — show whose turn it is, hide buttons
+                    // Spectating — show live roll state if available
                     diceTitle.textContent = `👀 Watching ${currentTurnPlayer}...`;
                     diceTitle.className = 'text-lg font-bold text-gray-600 mb-2';
                     diceButtons.classList.add('hidden');
                     hideTurnNotification();
                     
-                    // Show waiting state for spectating
-                    document.getElementById('diceDisplay').textContent = '?';
-                    document.getElementById('rollsLeft').textContent = '?';
+                    // Show live roll state from database
+                    if (gameState.current_turn_state) {
+                        const state = gameState.current_turn_state;
+                        document.getElementById('diceDisplay').textContent = state.last_roll || '?';
+                        document.getElementById('rollsLeft').textContent = state.rolls_remaining ?? '?';
+                    } else {
+                        // No active roll yet or migration not run
+                        document.getElementById('diceDisplay').textContent = '⏳';
+                        document.getElementById('rollsLeft').textContent = '3';
+                    }
                 }
                 
                 // Track last turn player
@@ -1135,7 +1143,8 @@
                     .from('diceduel_lobbies')
                     .update({
                         game_started: true,
-                        status: 'playing'
+                        status: 'playing',
+                        current_turn_state: null
                     })
                     .eq('id', currentLobbyId);
 
@@ -1179,6 +1188,9 @@
                     
                     // Update keep button score preview
                     document.getElementById('keepScoreValue').textContent = currentRoll;
+                    
+                    // Sync turn state to DB for spectators (async, non-blocking)
+                    syncTurnStateToDb();
                     
                     // Always show Keep button after first roll
                     stopBtn.classList.remove('hidden');
@@ -1230,7 +1242,8 @@
                 const updateData = {
                     player_scores: updatedScores,
                     current_turn: nextTurn,
-                    history: updatedHistory
+                    history: updatedHistory,
+                    current_turn_state: null // Clear when turn ends
                 };
                 
                 if (isWinner) {
@@ -1269,6 +1282,25 @@
             document.getElementById('rollBtn').disabled = false;
             document.getElementById('rollBtn').classList.remove('hidden');
             document.getElementById('stopBtn').classList.add('hidden');
+        }
+
+        // Sync current turn state to database for spectators
+        function syncTurnStateToDb() {
+            if (!currentLobbyId) return;
+            
+            const turnState = {
+                last_roll: currentRoll,
+                rolls_remaining: rollsRemaining,
+                all_rolls: [...allRolls]
+            };
+            
+            // Fire and forget - don't block on this
+            supabase
+                .from('diceduel_lobbies')
+                .update({ current_turn_state: turnState })
+                .eq('id', currentLobbyId)
+                .then(() => console.log('🔄 Synced roll to spectators:', turnState))
+                .catch(err => console.warn('Sync failed (run migration?):', err.message));
         }
 
         // Leave lobby
