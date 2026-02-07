@@ -578,15 +578,15 @@
             document.getElementById('lobbyListView').classList.remove('hidden');
         };
 
-        // Start polling lobby list (every 3 seconds)
+        // Start polling lobby list (every 1 second)
         function startLobbyListPolling() {
             stopLobbyListPolling(); // Clear any existing interval
-            console.log('🔄 Starting lobby list auto-refresh (every 3s)');
+            console.log('🔄 Starting lobby list auto-refresh (every 1s)');
             lobbyListPollInterval = setInterval(async () => {
                 if (!document.getElementById('lobbyListView').classList.contains('hidden')) {
                     await loadLobbies();
                 }
-            }, 3000);
+            }, 1000);
         }
 
         function stopLobbyListPolling() {
@@ -597,10 +597,10 @@
             }
         }
 
-        // Start polling game state (every 3 seconds)
+        // Start polling game state (every 1 second)
         function startGamePolling() {
             stopGamePolling(); // Clear any existing interval
-            console.log('🔄 Starting game state auto-refresh (every 3s)');
+            console.log('🔄 Starting game state auto-refresh (every 1s)');
             gamePollInterval = setInterval(async () => {
                 if (currentLobbyId && !document.getElementById('gameView').classList.contains('hidden')) {
                     try {
@@ -634,7 +634,7 @@
                         console.warn('Game polling error:', e);
                     }
                 }
-            }, 3000);
+            }, 1000);
         }
 
         function stopGamePolling() {
@@ -921,13 +921,17 @@
             }
         }
 
-        // Update game view
+        // Update game view (optimized to minimize flashing)
         function updateGameView(gameState) {
-            console.log('🔄 Updating game view with state:', gameState);
-            
-            // Update header
-            document.getElementById('gameLobbyName').textContent = gameState.name;
-            document.getElementById('gameWinScore').textContent = gameState.win_score;
+            // Update header (only if changed)
+            const lobbyNameEl = document.getElementById('gameLobbyName');
+            if (lobbyNameEl.textContent !== gameState.name) {
+                lobbyNameEl.textContent = gameState.name;
+            }
+            const winScoreEl = document.getElementById('gameWinScore');
+            if (winScoreEl.textContent !== String(gameState.win_score)) {
+                winScoreEl.textContent = gameState.win_score;
+            }
             
             // Show/hide delete button for creator
             const deleteLobbyBtn = document.getElementById('deleteLobbyBtn');
@@ -937,32 +941,59 @@
                 deleteLobbyBtn.classList.add('hidden');
             }
             
-            // Update players list (scoreboard)
+            // Update players list (scoreboard) - smart update without full rebuild
             const playersList = document.getElementById('playersList');
-            playersList.innerHTML = '';
-            
             const currentTurnPlayer = gameState.players[gameState.current_turn];
             const isMyTurn = currentTurnPlayer === playerName && gameState.game_started && gameState.status === 'playing';
             
+            // Only rebuild if player count changed
+            if (playersList.children.length !== gameState.players.length) {
+                playersList.innerHTML = '';
+                gameState.players.forEach((player, index) => {
+                    const playerCard = document.createElement('div');
+                    playerCard.className = 'player-card flex justify-between items-center p-3 rounded-lg';
+                    playerCard.dataset.playerIndex = index;
+                    playerCard.innerHTML = `
+                        <div class="flex items-center space-x-2">
+                            <span class="player-icon text-2xl">👤</span>
+                            <span class="player-name font-semibold">${player}</span>
+                            <span class="player-status text-xs px-2 py-0.5 rounded-full ml-1 hidden">Rolling...</span>
+                        </div>
+                        <span class="player-score text-xl font-bold text-gray-800">0 <span class="text-xs text-gray-500">/ ${gameState.win_score}</span></span>
+                    `;
+                    playersList.appendChild(playerCard);
+                });
+            }
+            
+            // Update each player card's styling and content
             gameState.players.forEach((player, index) => {
                 const isCurrentTurn = index === gameState.current_turn && gameState.game_started && gameState.status === 'playing';
                 const score = gameState.player_scores[player] || 0;
+                const card = playersList.querySelector(`[data-player-index="${index}"]`);
+                if (!card) return;
                 
-                const playerCard = document.createElement('div');
-                playerCard.className = `player-card flex justify-between items-center p-3 rounded-lg ${
-                    isCurrentTurn ? 'bg-purple-100 border-2 border-purple-500' : 'bg-gray-50'
-                }`;
+                // Update turn highlight
+                if (isCurrentTurn) {
+                    card.className = 'player-card flex justify-between items-center p-3 rounded-lg bg-purple-100 border-2 border-purple-500';
+                    card.querySelector('.player-icon').textContent = '👉';
+                    card.querySelector('.player-status').classList.remove('hidden');
+                    card.querySelector('.player-status').classList.add('bg-purple-200', 'text-purple-800');
+                } else {
+                    card.className = 'player-card flex justify-between items-center p-3 rounded-lg bg-gray-50';
+                    card.querySelector('.player-icon').textContent = '👤';
+                    card.querySelector('.player-status').classList.add('hidden');
+                }
                 
-                playerCard.innerHTML = `
-                    <div class="flex items-center space-x-2">
-                        ${isCurrentTurn ? '<span class="turn-indicator text-2xl">👉</span>' : '<span class="text-2xl">👤</span>'}
-                        <span class="font-semibold ${player === playerName ? 'text-purple-600' : 'text-gray-800'}">${player}</span>
-                        ${isCurrentTurn ? '<span class="text-xs bg-purple-200 text-purple-800 px-2 py-0.5 rounded-full ml-1">Rolling...</span>' : ''}
-                    </div>
-                    <span class="text-xl font-bold text-gray-800">${score} <span class="text-xs text-gray-500">/ ${gameState.win_score}</span></span>
-                `;
+                // Update player name color
+                const nameEl = card.querySelector('.player-name');
+                nameEl.className = `player-name font-semibold ${player === playerName ? 'text-purple-600' : 'text-gray-800'}`;
                 
-                playersList.appendChild(playerCard);
+                // Update score (only if changed)
+                const scoreEl = card.querySelector('.player-score');
+                const newScoreText = `${score} <span class="text-xs text-gray-500">/ ${gameState.win_score}</span>`;
+                if (scoreEl.innerHTML !== newScoreText) {
+                    scoreEl.innerHTML = newScoreText;
+                }
             });
             
             // Update game status
@@ -1027,29 +1058,34 @@
             updateHistory(gameState.history || []);
         }
 
-        // Update history
+        // Update history (optimized to only add new entries)
         function updateHistory(history) {
             const historyDiv = document.getElementById('gameHistory');
             
             if (!history || history.length === 0) {
-                historyDiv.innerHTML = '<p class="text-gray-500 text-center py-2">No moves yet</p>';
+                if (historyDiv.children.length > 0 || historyDiv.innerHTML !== '<p class="text-gray-500 text-center py-2">No moves yet</p>') {
+                    historyDiv.innerHTML = '<p class="text-gray-500 text-center py-2">No moves yet</p>';
+                }
                 return;
             }
             
-            historyDiv.innerHTML = '';
-            history.slice().reverse().forEach(entry => {
-                const item = document.createElement('div');
-                item.className = 'history-item p-2 bg-gray-50 rounded border border-gray-200';
-                const rollsUsed = entry.rolls_used || entry.rerolls || '?';
-                item.innerHTML = `
-                    <span class="font-semibold text-gray-800">${entry.player}</span>
-                    <span class="text-gray-600"> kept </span>
-                    <span class="font-bold text-purple-600">${entry.roll}</span>
-                    <span class="text-gray-500 text-xs">(${rollsUsed}/3 rolls)</span>
-                    <span class="text-xs font-semibold text-gray-700 float-right">Total: ${entry.score}</span>
-                `;
-                historyDiv.appendChild(item);
-            });
+            // Only rebuild if count changed
+            if (historyDiv.children.length !== history.length) {
+                historyDiv.innerHTML = '';
+                history.slice().reverse().forEach(entry => {
+                    const item = document.createElement('div');
+                    item.className = 'history-item p-2 bg-gray-50 rounded border border-gray-200';
+                    const rollsUsed = entry.rolls_used || entry.rerolls || '?';
+                    item.innerHTML = `
+                        <span class="font-semibold text-gray-800">${entry.player}</span>
+                        <span class="text-gray-600"> kept </span>
+                        <span class="font-bold text-purple-600">${entry.roll}</span>
+                        <span class="text-gray-500 text-xs">(${rollsUsed}/3 rolls)</span>
+                        <span class="text-xs font-semibold text-gray-700 float-right">Total: ${entry.score}</span>
+                    `;
+                    historyDiv.appendChild(item);
+                });
+            }
         }
 
         // Delete lobby (creator only)
