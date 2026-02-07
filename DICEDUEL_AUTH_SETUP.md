@@ -35,8 +35,8 @@ Go to **Authentication > Settings**:
 Run this SQL in **SQL Editor**:
 
 ```sql
--- Create diceduel_diceduel_users_profile table to store additional user data
-CREATE TABLE IF NOT EXISTS diceduel_diceduel_users_profile (
+-- Create diceduel_users_profile table to store additional user data
+CREATE TABLE IF NOT EXISTS diceduel_users_profile (
   user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   username TEXT UNIQUE NOT NULL,
   display_name TEXT NOT NULL,
@@ -47,34 +47,26 @@ CREATE TABLE IF NOT EXISTS diceduel_diceduel_users_profile (
   games_won INT DEFAULT 0
 );
 
--- Enable RLS on diceduel_diceduel_users_profile
-ALTER TABLE diceduel_diceduel_users_profile ENABLE ROW LEVEL SECURITY;
+-- Enable RLS on diceduel_users_profile
+ALTER TABLE diceduel_users_profile ENABLE ROW LEVEL SECURITY;
 
 -- Allow users to read all profiles
 CREATE POLICY "Public profiles are viewable by everyone"
-ON diceduel_diceduel_users_profile FOR SELECT
+ON diceduel_users_profile FOR SELECT
 TO public
 USING (true);
 
 -- Allow users to insert their own profile
 CREATE POLICY "Users can insert their own profile"
-ON diceduel_diceduel_users_profile FOR INSERT
+ON diceduel_users_profile FOR INSERT
 TO authenticated
 WITH CHECK (auth.uid() = user_id);
 
 -- Allow users to update their own profile
 CREATE POLICY "Users can update their own profile"
-ON diceduel_diceduel_users_profile FOR UPDATE
-TO authenticated
-USING (auth.uid() = user_id);
-TO authenticated
-WITH CHECK (auth.uid() = id);
-
--- Allow users to update their own profile
-CREATE POLICY "Users can update their own profile"
 ON diceduel_users_profile FOR UPDATE
 TO authenticated
-USING (auth.uid() = id);
+USING (auth.uid() = user_id);
 
 -- Create index for faster username lookups
 CREATE INDEX idx_diceduel_users_profile_username ON diceduel_users_profile(username);
@@ -169,7 +161,7 @@ BEGIN
     games_played = games_played + 1,
     games_won = CASE WHEN p_won THEN games_won + 1 ELSE games_won END,
     last_seen = NOW()
-  WHERE id = p_user_id;
+  WHERE user_id = p_user_id;
 END;
 $$;
 
@@ -195,7 +187,7 @@ AS $$
       ELSE 0
     END as win_rate
   FROM diceduel_users_profile
-  WHERE id = p_user_id;
+  WHERE user_id = p_user_id;
 $$;
 ```
 
