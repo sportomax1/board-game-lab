@@ -35,40 +35,49 @@ Go to **Authentication > Settings**:
 Run this SQL in **SQL Editor**:
 
 ```sql
--- Create users_profile table to store additional user data
-CREATE TABLE IF NOT EXISTS users_profile (
-  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+-- Create diceduel_diceduel_users_profile table to store additional user data
+CREATE TABLE IF NOT EXISTS diceduel_diceduel_users_profile (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   username TEXT UNIQUE NOT NULL,
   display_name TEXT NOT NULL,
+  email TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_seen TIMESTAMPTZ DEFAULT NOW(),
   games_played INT DEFAULT 0,
   games_won INT DEFAULT 0
 );
 
--- Enable RLS on users_profile
-ALTER TABLE users_profile ENABLE ROW LEVEL SECURITY;
+-- Enable RLS on diceduel_diceduel_users_profile
+ALTER TABLE diceduel_diceduel_users_profile ENABLE ROW LEVEL SECURITY;
 
 -- Allow users to read all profiles
 CREATE POLICY "Public profiles are viewable by everyone"
-ON users_profile FOR SELECT
+ON diceduel_diceduel_users_profile FOR SELECT
 TO public
 USING (true);
 
 -- Allow users to insert their own profile
 CREATE POLICY "Users can insert their own profile"
-ON users_profile FOR INSERT
+ON diceduel_diceduel_users_profile FOR INSERT
+TO authenticated
+WITH CHECK (auth.uid() = user_id);
+
+-- Allow users to update their own profile
+CREATE POLICY "Users can update their own profile"
+ON diceduel_diceduel_users_profile FOR UPDATE
+TO authenticated
+USING (auth.uid() = user_id);
 TO authenticated
 WITH CHECK (auth.uid() = id);
 
 -- Allow users to update their own profile
 CREATE POLICY "Users can update their own profile"
-ON users_profile FOR UPDATE
+ON diceduel_users_profile FOR UPDATE
 TO authenticated
 USING (auth.uid() = id);
 
 -- Create index for faster username lookups
-CREATE INDEX idx_users_profile_username ON users_profile(username);
+CREATE INDEX idx_diceduel_users_profile_username ON diceduel_users_profile(username);
 ```
 
 ### 4. Update diceduel_lobbies Table
@@ -155,7 +164,7 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 BEGIN
-  UPDATE users_profile
+  UPDATE diceduel_users_profile
   SET 
     games_played = games_played + 1,
     games_won = CASE WHEN p_won THEN games_won + 1 ELSE games_won END,
@@ -185,7 +194,7 @@ AS $$
       WHEN games_played > 0 THEN ROUND((games_won::NUMERIC / games_played::NUMERIC) * 100, 2)
       ELSE 0
     END as win_rate
-  FROM users_profile
+  FROM diceduel_users_profile
   WHERE id = p_user_id;
 $$;
 ```
@@ -200,7 +209,7 @@ No additional environment variables are needed. The existing `SUPABASE_URL` and 
 
 1. User enters username, email, and password
 2. Frontend calls `supabase.auth.signUp({ email, password })`
-3. If successful, create profile in `users_profile` table with username
+3. If successful, create profile in `diceduel_users_profile` table with username
 4. User is automatically logged in
 
 ### Login Process
@@ -209,7 +218,7 @@ No additional environment variables are needed. The existing `SUPABASE_URL` and 
 2. Frontend calls `supabase.auth.signInWithPassword({ email, password })`
 3. If successful, Supabase returns user session
 4. Frontend stores session in localStorage
-5. Load user profile from `users_profile` table
+5. Load user profile from `diceduel_users_profile` table
 
 ### Session Management
 
@@ -317,7 +326,7 @@ If email confirmation is enabled:
 
 ### "Username already taken"
 
-- Check `users_profile` table for existing username
+- Check `diceduel_users_profile` table for existing username
 - Ensure username uniqueness constraint is working
 - Consider case-insensitive username checks
 
