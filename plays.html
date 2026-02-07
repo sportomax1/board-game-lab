@@ -84,6 +84,12 @@
                     <input type="text" id="username" value="sportomax" placeholder="BGG User"
                         class="px-2 py-1 rounded border border-slate-200 text-[11px] font-semibold outline-none w-24 focus:ring-1 focus:ring-blue-500">
                     
+                    <select id="buddySelect" onchange="onBuddyChange()" 
+                        class="px-2 py-1 rounded border border-slate-200 text-[11px] font-semibold outline-none bg-white focus:ring-1 focus:ring-blue-500"
+                        style="max-width: 120px;">
+                        <option value="">Their Plays ↓</option>
+                    </select>
+                    
                     <div class="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded border border-slate-100">
                         <input type="date" id="mindate" onchange="updateUI()" class="bg-transparent text-[9px] outline-none text-slate-500" title="Start Date Filter">
                         <span class="text-slate-300">→</span>
@@ -318,6 +324,7 @@
         const BGG_BEARER_TOKEN = ""; // TODO: set securely
         
         let totalPlays = [];
+        let basePlays = []; // preserve the main user's plays regardless of buddy selection
         let collection = []; 
         let ownedIds = new Set();
         let isRunning = false;
@@ -325,22 +332,92 @@
         let gameTypes = new Map();
         let gameYears = new Map();
         let playersMap = new Map();
+        let selectedBuddy = ''; // Track selected buddy for plays filtering
 
-        function computePlayersMap() {
-            playersMap = new Map();
-            totalPlays.forEach(p => {
+        function computePlayersMap(plays = totalPlays) {
+            const map = new Map();
+            plays.forEach(p => {
                 try {
                     const xml = new DOMParser().parseFromString(p.rawXml || '', 'text/xml');
                     const playerEls = xml.getElementsByTagName('player');
                     for (let i = 0; i < playerEls.length; i++) {
                         const el = playerEls[i];
                         const name = (el.getAttribute('username') || el.getAttribute('name') || 'Unknown').trim();
-                        if (!playersMap.has(name)) playersMap.set(name, []);
-                        playersMap.get(name).push(p);
+                        if (!map.has(name)) map.set(name, []);
+                        map.get(name).push(p);
                     }
                 } catch (e) { /* ignore parse errors */ }
             });
+            // If we're computing for the live totalPlays, update the global playersMap
+            if (plays === totalPlays) playersMap = map;
+            return map;
         }
+        
+        function populateBuddyDropdown() {
+            const select = document.getElementById('buddySelect');
+            const baseUsername = document.getElementById('username').value.trim();
+            const friends = Array.from(playersMap.keys())
+                .filter(name => name !== baseUsername && name !== 'Unknown')
+                .sort();
+            
+            select.innerHTML = '<option value="">Their Plays ↓</option>' + 
+                friends.map(name => `<option value="${name}">${name}</option>`).join('');
+        }
+        
+        async function onBuddyChange() {
+            selectedBuddy = document.getElementById('buddySelect').value;
+            
+            if (!selectedBuddy) {
+                // Revert to base user content: restore the preserved base plays and players map
+                totalPlays = [...basePlays];
+                computePlayersMap();
+                updateUI();
+                return;
+            }
+
+            // Fetch plays for selected buddy
+            isRunning = true;
+            document.getElementById('startBtn').disabled = true;
+            document.getElementById('startBtn').classList.add('opacity-50');
+            updateStatus(`Loading ${selectedBuddy}'s plays...`);
+            
+            const buddyTotalPlays = [];
+            let currentPageStart = 1;
+            let stopFound = false;
+
+            while (!stopFound) {
+                const batchPromises = [];
+                for (let i = 0; i < PLAY_FETCH_PARALLEL; i++) {
+                    batchPromises.push(fetchPage(selectedBuddy, currentPageStart + i));
+                }
+
+                const results = await Promise.all(batchPromises);
+                results.sort((a, b) => a.page - b.page);
+
+                for (const res of results) {
+                    if (res && res.plays && res.plays.length > 0) {
+                        buddyTotalPlays.push(...res.plays);
+                    } else {
+                        stopFound = true;
+                    }
+                }
+
+                if (!stopFound) {
+                    currentPageStart += PLAY_FETCH_PARALLEL;
+                    document.getElementById('pageInfo').textContent = `${buddyTotalPlays.length} records`;
+                    await new Promise(r => setTimeout(r, 600));
+                }
+            }
+
+            // Replace totalPlays with buddy's plays
+            totalPlays = buddyTotalPlays;
+            updateStatus(`Loaded: ${selectedBuddy}'s ${totalPlays.length} plays`);
+            isRunning = false;
+            document.getElementById('startBtn').disabled = false;
+            document.getElementById('startBtn').classList.remove('opacity-50');
+            updateUI();
+        }
+        
         let currentTab = 'plays';
         let statsSortField = 'total';
         let statsSortDir = -1;
@@ -351,12 +428,14 @@
 
         async function startParsing() {
             if (isRunning) return;
-            const username = document.getElementById('username').value.trim();
-            if (!username) return;
+            const baseUsername = document.getElementById('username').value.trim();
+            if (!baseUsername) return;
 
             isRunning = true;
             totalPlays = [];
             collection = [];
+            selectedBuddy = ''; // Reset buddy when re-syncing
+            document.getElementById('buddySelect').value = '';
             ownedIds.clear();
             gameThumbnails.clear();
             gameTypes.clear();
@@ -369,37 +448,10 @@
             document.getElementById('pulseDot').className = "w-1.5 h-1.5 bg-blue-500 rounded-full status-pulse";
             
             updateStatus(`Syncing Collection...`);
-            await fetchCollection(username);
+            await fetchCollection(baseUsername);
             
             updateStatus(`Scanning History...`);
-            let currentPageStart = 1;
-            let stopFound = false;
-            let playIdsToFetch = new Set();
-
-            while (!stopFound) {
-                const batchPromises = [];
-                for (let i = 0; i < PLAY_FETCH_PARALLEL; i++) {
-                    batchPromises.push(fetchPage(username, currentPageStart + i));
-                }
-
-                const results = await Promise.all(batchPromises);
-                results.sort((a, b) => a.page - b.page);
-
-                for (const res of results) {
-                    if (res && res.plays && res.plays.length > 0) {
-                        totalPlays.push(...res.plays);
-                        res.plays.forEach(p => { if(p.gameId) playIdsToFetch.add(p.gameId); });
-                    } else {
-                        stopFound = true;
-                    }
-                }
-
-                if (!stopFound) {
-                    currentPageStart += PLAY_FETCH_PARALLEL;
-                    document.getElementById('pageInfo').textContent = `${totalPlays.length} records`;
-                    await new Promise(r => setTimeout(r, 600));
-                }
-            }
+            await fetchAllPlays(baseUsername);
 
             // Populate Venues unique list
             const venues = [...new Set(totalPlays.map(p => p.location))].filter(v => v).sort();
@@ -407,6 +459,9 @@
             venueSelect.innerHTML = '<option value="">All Venues</option>' + venues.map(v => `<option value="${v}">${v}</option>`).join('');
 
             updateStatus(`Loading Icons & Metadata...`);
+            const playIdsToFetch = new Set();
+            totalPlays.forEach(p => { if(p.gameId) playIdsToFetch.add(p.gameId); });
+            
             const allIds = [...new Set([...ownedIds, ...playIdsToFetch])];
             const batchesOf20 = [];
             for (let i = 0; i < allIds.length; i += THING_BATCH_SIZE) {
@@ -424,6 +479,35 @@
             }
 
             finishParsing();
+        }
+        
+        async function fetchAllPlays(username) {
+            let currentPageStart = 1;
+            let stopFound = false;
+
+            while (!stopFound) {
+                const batchPromises = [];
+                for (let i = 0; i < PLAY_FETCH_PARALLEL; i++) {
+                    batchPromises.push(fetchPage(username, currentPageStart + i));
+                }
+
+                const results = await Promise.all(batchPromises);
+                results.sort((a, b) => a.page - b.page);
+
+                for (const res of results) {
+                    if (res && res.plays && res.plays.length > 0) {
+                        totalPlays.push(...res.plays);
+                    } else {
+                        stopFound = true;
+                    }
+                }
+
+                if (!stopFound) {
+                    currentPageStart += PLAY_FETCH_PARALLEL;
+                    document.getElementById('pageInfo').textContent = `${totalPlays.length} records`;
+                    await new Promise(r => setTimeout(r, 600));
+                }
+            }
         }
 
         async function fetchCollection(username) {
@@ -622,9 +706,10 @@
         let unplayedDetailsMap = new Map();
 
         function populateUnplayedUserDropdown() {
-            computePlayersMap();
+            // Build players list from the base user's plays (not the currently-selected plays)
+            const basePlayers = computePlayersMap(basePlays);
             const select = document.getElementById('unplayedUserSelect');
-            const users = ['myself', ...Array.from(playersMap.keys()).sort()];
+            const users = ['myself', ...Array.from(basePlayers.keys()).sort()];
             select.innerHTML = '<option value="">Select Player...</option>' + 
                 users.map(u => `<option value="${u}">${u === 'myself' ? 'Myself (sportomax)' : u}</option>`).join('');
         }
@@ -636,18 +721,17 @@
                 return;
             }
             
-            updateStatus(`Fetching ${selectedUser === 'myself' ? 'sportomax' : selectedUser}'s collection...`);
-            
-            // Fetch the selected player's collection
-            const username = selectedUser === 'myself' ? 'sportomax' : selectedUser;
-            
+            updateStatus(`Computing unplayed for ${selectedUser === 'myself' ? 'sportomax' : selectedUser} from base collection...`);
+
             try {
-                const collectionData = await fetchPlayerCollection(username);
-                
-                // Get plays for this player
-                const playerPlays = selectedUser === 'myself' 
-                    ? totalPlays 
-                    : (playersMap.get(selectedUser) || []);
+                // Always use the main user's collection that was loaded during sync
+                const collectionData = collection || [];
+
+                // Get plays for this player from the preserved base plays (not the currently-selected plays)
+                const basePlayers = computePlayersMap(basePlays);
+                const playerPlays = selectedUser === 'myself'
+                    ? basePlays
+                    : (basePlayers.get(selectedUser) || []);
                 
                 const playedIds = new Set(playerPlays.map(p => p.gameId));
                 const ignoreExpansions = document.getElementById('ignoreExpansionsToggle').checked;
@@ -1304,7 +1388,10 @@
             document.getElementById('pulseDot').className = "w-1.5 h-1.5 bg-emerald-500 rounded-full";
             document.getElementById('pageInfo').textContent = `Done: ${totalPlays.length} records`;
             updateStatus('Sync Complete');
+            // preserve the original (base) plays so collection comparisons always target the main user
+            basePlays = [...totalPlays];
             populateUnplayedUserDropdown();
+            populateBuddyDropdown();
         }
 
         // --- Players & XML helpers ---
