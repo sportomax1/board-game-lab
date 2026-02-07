@@ -118,6 +118,8 @@
                 <button onclick="switchTab('stats')" id="tab-stats" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Analytics</button>
                 <button onclick="switchTab('locations')" id="tab-locations" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Locations</button>
                 <button onclick="switchTab('unplayed')" id="tab-unplayed" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Unplayed</button>
+                <button onclick="switchTab('players')" id="tab-players" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">Players</button>
+                <button onclick="switchTab('xml')" id="tab-xml" class="px-4 py-3 text-[10px] font-bold uppercase tracking-wider text-slate-400 whitespace-nowrap">XML</button>
             </div>
 
             <!-- View Controls & Filters -->
@@ -230,6 +232,33 @@
                     </thead>
                     <tbody id="unplayedTableBody" class="text-[11px] divide-y divide-slate-50"></tbody>
                 </table>
+            </div>
+
+            <div id="view-players" class="hidden flex-1 overflow-y-auto custom-scrollbar p-3">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="flex items-center gap-2">
+                        <input id="playersSearch" oninput="renderPlayers()" placeholder="Search players..." class="px-2 py-1 text-[11px] border border-slate-200 rounded outline-none">
+                        <div id="playersCount" class="text-[10px] text-slate-500"></div>
+                    </div>
+                    <div class="text-[10px] text-slate-400">Click a player to view plays</div>
+                </div>
+
+                <div id="playersList" class="space-y-1 overflow-auto" style="max-height: calc(100% - 48px);"></div>
+            </div>
+
+            <div id="view-xml" class="hidden flex-1 overflow-y-auto custom-scrollbar p-3">
+                <div class="flex items-center gap-2 mb-3">
+                    <button onclick="switchXMLSubtab('plays')" id="xmlTabPlays" class="px-3 py-1 text-[11px] font-bold tab-active">Plays XML</button>
+                    <button onclick="switchXMLSubtab('collection')" id="xmlTabCollection" class="px-3 py-1 text-[11px] font-bold text-slate-400">Collection XML</button>
+                    <input id="xmlSearch" oninput="handleXMLSearch()" placeholder="Search XML..." class="ml-auto px-2 py-1 text-[11px] border border-slate-200 rounded outline-none">
+                </div>
+
+                <div id="xmlPlaysContainer" class="h-full overflow-auto border border-slate-100 rounded p-2 bg-white/50">
+                    <pre id="playsXmlContent" class="whitespace-pre-wrap text-[11px] font-mono text-slate-700"></pre>
+                </div>
+                <div id="xmlCollectionContainer" class="hidden h-full overflow-auto border border-slate-100 rounded p-2 bg-white/50">
+                    <pre id="collectionXmlContent" class="whitespace-pre-wrap text-[11px] font-mono text-slate-700"></pre>
+                </div>
             </div>
         </div>
     </div>
@@ -463,6 +492,8 @@
             renderPlays(filteredPlays);
             renderStats(filteredPlays);
             renderUnplayed(totalPlays);
+            // prepare players & XML views
+            try { renderPlayers(); renderXMLContents(); } catch(e){}
         }
 
         function renderPlays(plays) {
@@ -582,16 +613,20 @@
 
         function switchTab(tab) {
             currentTab = tab;
-            ['plays', 'stats', 'locations', 'unplayed'].forEach(t => {
-                document.getElementById(`view-${t}`).classList.toggle('hidden', t !== tab);
-                document.getElementById(`tab-${t}`).classList.toggle('tab-active', t === tab);
-                document.getElementById(`tab-${t}`).classList.toggle('text-slate-400', t !== tab);
+            ['plays', 'stats', 'locations', 'unplayed', 'players', 'xml'].forEach(t => {
+                const view = document.getElementById(`view-${t}`);
+                const tabBtn = document.getElementById(`tab-${t}`);
+                if (view) view.classList.toggle('hidden', t !== tab);
+                if (tabBtn) tabBtn.classList.toggle('tab-active', t === tab);
+                if (tabBtn) tabBtn.classList.toggle('text-slate-400', t !== tab);
             });
             document.getElementById('history-filters').classList.toggle('hidden', tab !== 'plays');
             document.getElementById('stats-filters').classList.toggle('hidden', tab !== 'stats');
             document.getElementById('locations-filters').classList.toggle('hidden', tab !== 'locations');
             document.getElementById('unplayed-filters').classList.toggle('hidden', tab !== 'unplayed');
             if (tab === 'locations') renderLocations();
+            else if (tab === 'players') renderPlayers();
+            else if (tab === 'xml') renderXMLContents();
             else filterView();
         }
 
@@ -953,6 +988,114 @@
             document.getElementById('pulseDot').className = "w-1.5 h-1.5 bg-emerald-500 rounded-full";
             document.getElementById('pageInfo').textContent = `Done: ${totalPlays.length} records`;
             updateStatus('Sync Complete');
+        }
+
+        // --- Players & XML helpers ---
+        let playersMap = new Map();
+
+        function computePlayersMap() {
+            playersMap = new Map();
+            totalPlays.forEach(p => {
+                try {
+                    const xml = new DOMParser().parseFromString(p.rawXml || '', 'text/xml');
+                    const players = xml.getElementsByTagName('player');
+                    for (let i = 0; i < players.length; i++) {
+                        const el = players[i];
+                        const name = (el.getAttribute('username') || el.getAttribute('name') || 'Unknown').trim();
+                        if (!playersMap.has(name)) playersMap.set(name, []);
+                        playersMap.get(name).push(p);
+                    }
+                } catch (e) { /* ignore parse errors */ }
+            });
+        }
+
+        function renderPlayers() {
+            computePlayersMap();
+            const list = document.getElementById('playersList');
+            const query = (document.getElementById('playersSearch').value || '').toLowerCase();
+            const entries = [...playersMap.entries()].map(([name, plays]) => ({ name, count: plays.length, plays })).filter(e => e.name.toLowerCase().includes(query));
+            document.getElementById('playersCount').textContent = `${entries.length} players`;
+            if (entries.length === 0) {
+                list.innerHTML = '<div class="py-10 text-center text-slate-300 text-[10px]">No players found.</div>';
+                return;
+            }
+            list.innerHTML = entries.map(e => `
+                <div class="p-2 border border-slate-100 rounded hover:bg-slate-50 cursor-pointer flex items-center justify-between" onclick="showPlayerModal('${escapeHtmlAttr(e.name)}')">
+                    <div class="font-semibold text-[11px] truncate">${escapeHtml(e.name)}</div>
+                    <div class="text-[10px] text-slate-500 font-mono">${e.count}</div>
+                </div>
+            `).join('');
+        }
+
+        function showPlayerModal(name) {
+            const plays = playersMap.get(name) || [];
+            let html = `<div class="p-3 space-y-3">`;
+            html += `<div class="text-sm font-bold">Plays for ${escapeHtml(name)} (${plays.length})</div>`;
+            if (plays.length === 0) html += `<div class="text-[10px] text-slate-400">No plays.</div>`;
+            else {
+                html += `<div class="space-y-2 max-h-[60vh] overflow-auto">`;
+                plays.forEach(p => {
+                    html += `<div class="border border-slate-100 rounded p-2 bg-white">
+                        <div class="flex justify-between items-start"><div class="font-semibold text-[11px]">${escapeHtml(p.game)}</div><div class="text-[10px] text-slate-400 font-mono">${p.date}</div></div>
+                        <div class="text-[10px] text-slate-500 mt-1">${escapeHtml(p.location || '')}</div>
+                        <div class="mt-2 text-[11px]"> <pre class="whitespace-pre-wrap text-[11px] font-mono text-slate-700">${escapeHtml(p.rawXml)}</pre></div>
+                    </div>`;
+                });
+                html += `</div>`;
+            }
+            html += `</div>`;
+
+            document.getElementById('playDetailTitle').textContent = `Player: ${name}`;
+            document.getElementById('playDetailContent').innerHTML = html;
+            document.getElementById('playDetailModal').classList.remove('hidden');
+        }
+
+        function escapeHtml(str) {
+            if (!str && str !== 0) return '';
+            return String(str).replace(/[&<>\"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":"&#39;"})[c]);
+        }
+
+        function escapeHtmlAttr(s){ return (s||'').replace(/'/g,"\\'").replace(/\"/g,'\\\"'); }
+
+        // XML view helpers
+        function switchXMLSubtab(which) {
+            document.getElementById('xmlTabPlays').classList.toggle('tab-active', which === 'plays');
+            document.getElementById('xmlTabCollection').classList.toggle('tab-active', which === 'collection');
+            document.getElementById('xmlPlaysContainer').classList.toggle('hidden', which !== 'plays');
+            document.getElementById('xmlCollectionContainer').classList.toggle('hidden', which !== 'collection');
+        }
+
+        function renderXMLContents() {
+            // Plays XML - concatenate rawXml entries
+            const playsPre = document.getElementById('playsXmlContent');
+            playsPre.textContent = totalPlays.map(p => p.rawXml || '').join('\n\n');
+
+            // Collection XML - raw items
+            const collPre = document.getElementById('collectionXmlContent');
+            collPre.textContent = collection.map(c => `<item id="${c.id}">${c.name}</item>`).join('\n');
+        }
+
+        function handleXMLSearch() {
+            const q = document.getElementById('xmlSearch').value.trim();
+            if (!q) return renderXMLContents();
+            // Highlight matches in visible tab
+            const playsContainer = document.getElementById('playsXmlContent');
+            const collContainer = document.getElementById('collectionXmlContent');
+            if (!document.getElementById('xmlPlaysContainer').classList.contains('hidden')) {
+                const raw = playsContainer.textContent || '';
+                const highlighted = highlightText(raw, q);
+                playsContainer.innerHTML = highlighted;
+            } else {
+                const raw = collContainer.textContent || '';
+                const highlighted = highlightText(raw, q);
+                collContainer.innerHTML = highlighted;
+            }
+        }
+
+        function highlightText(text, q) {
+            const esc = q.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+            const re = new RegExp(esc, 'gi');
+            return escapeHtml(text).replace(re, m => `<mark class="bg-yellow-200 text-slate-900">${m}</mark>`);
         }
     </script>
 </body>
