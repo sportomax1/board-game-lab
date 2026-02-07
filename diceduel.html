@@ -295,7 +295,10 @@
                     <div class="bg-white rounded-lg shadow-lg p-4">
                         <div class="flex justify-between items-center mb-4">
                             <h2 class="text-xl font-bold text-gray-800" id="gameLobbyName"></h2>
-                            <button onclick="leaveLobby()" class="text-sm text-red-600 hover:text-red-800">Leave</button>
+                            <div class="flex items-center space-x-2">
+                                <button id="deleteLobbyBtn" onclick="deleteLobby()" class="hidden text-sm bg-red-500 hover:bg-red-600 text-white px-3 py-1 rounded-lg transition-colors">🗑️ Delete</button>
+                                <button onclick="leaveLobby()" class="text-sm text-red-600 hover:text-red-800">Leave</button>
+                            </div>
                         </div>
                         <div class="flex justify-between items-center text-sm text-gray-600">
                             <span>Play to: <span id="gameWinScore" class="font-bold"></span></span>
@@ -315,11 +318,11 @@
                         </div>
                     </div>
 
-                    <!-- Dice Area -->
+                    <!-- Dice Area (shown only when it's your turn) -->
                     <div id="diceArea" class="hidden bg-white rounded-lg shadow-lg p-6">
                         <div class="text-center mb-4">
-                            <h3 class="text-lg font-bold text-gray-800 mb-2">Your Turn</h3>
-                            <p class="text-sm text-gray-600">Rerolls left: <span id="rerollsLeft" class="font-bold text-purple-600">2</span></p>
+                            <h3 class="text-lg font-bold text-purple-700 mb-2">🎲 Your Turn!</h3>
+                            <p class="text-sm text-gray-600">Rolls remaining: <span id="rollsLeft" class="font-bold text-purple-600">3</span> / 3</p>
                         </div>
                         <div class="flex justify-center mb-6">
                             <div id="diceDisplay" class="dice">?</div>
@@ -337,9 +340,16 @@
                                 onclick="stopRolling()" 
                                 class="w-full bg-green-600 hover:bg-green-700 text-white font-bold py-3 px-4 rounded-lg transition-colors hidden"
                             >
-                                ✓ Keep Score
+                                ✓ Keep Score (+<span id="keepScoreValue">0</span>)
                             </button>
                         </div>
+                    </div>
+
+                    <!-- Waiting for other player (shown when not your turn) -->
+                    <div id="waitingTurnArea" class="hidden bg-white rounded-lg shadow-lg p-6 text-center">
+                        <div class="text-4xl mb-3">⏳</div>
+                        <h3 class="text-lg font-bold text-gray-700 mb-1">Waiting for opponent...</h3>
+                        <p id="waitingForPlayer" class="text-purple-600 font-semibold text-lg"></p>
                     </div>
 
                     <!-- History -->
@@ -375,7 +385,8 @@
         let selectedWinScore = 21;
         let lobbySubscription = null;
         let currentRoll = 0;
-        let rerollsRemaining = 2;
+        let rollsRemaining = 3;
+        let hasRolledThisTurn = false;
         let lastTurnPlayer = null;
         let notificationPermission = false;
 
@@ -786,15 +797,23 @@
             document.getElementById('gameLobbyName').textContent = gameState.name;
             document.getElementById('gameWinScore').textContent = gameState.win_score;
             
-            // Update players list
+            // Show/hide delete button for creator
+            const deleteLobbyBtn = document.getElementById('deleteLobbyBtn');
+            if (gameState.creator === playerName) {
+                deleteLobbyBtn.classList.remove('hidden');
+            } else {
+                deleteLobbyBtn.classList.add('hidden');
+            }
+            
+            // Update players list (scoreboard)
             const playersList = document.getElementById('playersList');
             playersList.innerHTML = '';
             
             const currentTurnPlayer = gameState.players[gameState.current_turn];
-            const isMyTurn = currentTurnPlayer === playerName && gameState.game_started;
+            const isMyTurn = currentTurnPlayer === playerName && gameState.game_started && gameState.status === 'playing';
             
             gameState.players.forEach((player, index) => {
-                const isCurrentTurn = index === gameState.current_turn && gameState.game_started;
+                const isCurrentTurn = index === gameState.current_turn && gameState.game_started && gameState.status === 'playing';
                 const score = gameState.player_scores[player] || 0;
                 
                 const playerCard = document.createElement('div');
@@ -806,8 +825,9 @@
                     <div class="flex items-center space-x-2">
                         ${isCurrentTurn ? '<span class="turn-indicator text-2xl">👉</span>' : '<span class="text-2xl">👤</span>'}
                         <span class="font-semibold ${player === playerName ? 'text-purple-600' : 'text-gray-800'}">${player}</span>
+                        ${isCurrentTurn ? '<span class="text-xs bg-purple-200 text-purple-800 px-2 py-0.5 rounded-full ml-1">Rolling...</span>' : ''}
                     </div>
-                    <span class="text-xl font-bold text-gray-800">${score}</span>
+                    <span class="text-xl font-bold text-gray-800">${score} <span class="text-xs text-gray-500">/ ${gameState.win_score}</span></span>
                 `;
                 
                 playersList.appendChild(playerCard);
@@ -818,7 +838,9 @@
                 document.getElementById('gameStatus').textContent = 'Waiting to start';
                 document.getElementById('waitingMessage').classList.remove('hidden');
                 document.getElementById('diceArea').classList.add('hidden');
+                document.getElementById('waitingTurnArea').classList.add('hidden');
                 document.getElementById('winnerDisplay').classList.add('hidden');
+                hideTurnNotification();
                 
                 // Only show start button to creator (allow 1+ players)
                 const startBtn = document.getElementById('startGameBtn');
@@ -831,6 +853,8 @@
                 document.getElementById('gameStatus').textContent = 'Game Over';
                 document.getElementById('waitingMessage').classList.add('hidden');
                 document.getElementById('diceArea').classList.add('hidden');
+                document.getElementById('waitingTurnArea').classList.add('hidden');
+                hideTurnNotification();
                 
                 // Show winner
                 const winner = Object.entries(gameState.player_scores)
@@ -839,21 +863,28 @@
                 document.getElementById('winnerScore').textContent = winner[1];
                 document.getElementById('winnerDisplay').classList.remove('hidden');
             } else {
-                document.getElementById('gameStatus').textContent = gameState.status === 'playing' ? 'In Progress' : '';
+                // Game in progress
+                document.getElementById('gameStatus').textContent = `${currentTurnPlayer}'s turn`;
                 document.getElementById('waitingMessage').classList.add('hidden');
                 document.getElementById('winnerDisplay').classList.add('hidden');
                 
-                // Show dice area and notification only if it's my turn
                 if (isMyTurn) {
+                    // My turn — show dice area, hide waiting area
                     document.getElementById('diceArea').classList.remove('hidden');
+                    document.getElementById('waitingTurnArea').classList.add('hidden');
                     
                     // Show notification if turn just changed to me
-                    if (lastTurnPlayer && lastTurnPlayer !== playerName) {
+                    if (lastTurnPlayer !== null && lastTurnPlayer !== playerName) {
                         showTurnNotification();
+                        resetDiceUI(); // Reset dice for new turn
                     }
                 } else {
+                    // Not my turn — hide dice area, show waiting area
                     document.getElementById('diceArea').classList.add('hidden');
+                    document.getElementById('waitingTurnArea').classList.remove('hidden');
+                    document.getElementById('waitingForPlayer').textContent = `${currentTurnPlayer} is rolling...`;
                     hideTurnNotification();
+                    resetDiceUI(); // Reset so it's clean when my turn comes
                 }
                 
                 // Track last turn player
@@ -877,16 +908,58 @@
             history.slice().reverse().forEach(entry => {
                 const item = document.createElement('div');
                 item.className = 'history-item p-2 bg-gray-50 rounded border border-gray-200';
+                const rollsUsed = entry.rolls_used || entry.rerolls || '?';
                 item.innerHTML = `
                     <span class="font-semibold text-gray-800">${entry.player}</span>
-                    <span class="text-gray-600"> rolled </span>
+                    <span class="text-gray-600"> kept </span>
                     <span class="font-bold text-purple-600">${entry.roll}</span>
-                    <span class="text-gray-600"> (${entry.rerolls} rerolls)</span>
-                    <span class="text-xs text-gray-500 float-right">${entry.score} pts</span>
+                    <span class="text-gray-500 text-xs">(${rollsUsed}/3 rolls)</span>
+                    <span class="text-xs font-semibold text-gray-700 float-right">Total: ${entry.score}</span>
                 `;
                 historyDiv.appendChild(item);
             });
         }
+
+        // Delete lobby (creator only)
+        window.deleteLobby = async () => {
+            if (!currentLobbyId || !currentGameState) return;
+            
+            if (currentGameState.creator !== playerName) {
+                alert('Only the lobby creator can delete this lobby.');
+                return;
+            }
+            
+            const confirmed = confirm('Are you sure you want to delete this lobby? This will end the game for all players.');
+            if (!confirmed) return;
+            
+            try {
+                if (lobbySubscription) {
+                    supabase.removeChannel(lobbySubscription);
+                    lobbySubscription = null;
+                }
+                
+                const { error } = await supabase
+                    .from('diceduel_lobbies')
+                    .delete()
+                    .eq('id', currentLobbyId);
+                
+                if (error) throw error;
+                
+                console.log('🗑️ Lobby deleted successfully');
+                
+                currentLobbyId = null;
+                currentGameState = null;
+                resetDiceUI();
+                
+                document.getElementById('gameView').classList.add('hidden');
+                document.getElementById('lobbyListView').classList.remove('hidden');
+                
+                await loadLobbies();
+            } catch (error) {
+                console.error('Error deleting lobby:', error);
+                alert('Failed to delete lobby: ' + error.message);
+            }
+        };
 
         // Start game
         window.startGame = async () => {
@@ -911,6 +984,7 @@
         // Roll dice
         window.rollDice = async () => {
             if (!currentGameState) return;
+            if (rollsRemaining <= 0) return;
             
             const diceDisplay = document.getElementById('diceDisplay');
             const rollBtn = document.getElementById('rollBtn');
@@ -931,18 +1005,25 @@
                     clearInterval(animationInterval);
                     diceDisplay.classList.remove('rolling');
                     
-                    // Update rerolls
-                    rerollsRemaining--;
-                    document.getElementById('rerollsLeft').textContent = rerollsRemaining;
+                    hasRolledThisTurn = true;
+                    rollsRemaining--;
+                    document.getElementById('rollsLeft').textContent = rollsRemaining;
                     
-                    // Show/hide buttons based on rerolls
-                    if (rerollsRemaining > 0) {
+                    // Update keep button score preview
+                    document.getElementById('keepScoreValue').textContent = currentRoll;
+                    
+                    // Always show Keep button after first roll
+                    stopBtn.classList.remove('hidden');
+                    
+                    if (rollsRemaining > 0) {
+                        // More rolls available
                         rollBtn.disabled = false;
-                        stopBtn.classList.remove('hidden');
+                        rollBtn.textContent = `🎲 Reroll (${rollsRemaining} left)`;
+                        stopBtn.innerHTML = `✓ Keep Score (+<span id="keepScoreValue">${currentRoll}</span>)`;
                     } else {
+                        // No more rolls — must keep
                         rollBtn.classList.add('hidden');
-                        stopBtn.classList.remove('hidden');
-                        stopBtn.textContent = '✓ Finish Turn';
+                        stopBtn.innerHTML = `✓ Finish Turn (+<span id="keepScoreValue">${currentRoll}</span>)`;
                     }
                 }
             }, 100);
@@ -950,20 +1031,20 @@
 
         // Stop rolling and lock in score
         window.stopRolling = async () => {
-            if (!currentGameState || currentRoll === 0) return;
+            if (!currentGameState || !hasRolledThisTurn || currentRoll === 0) return;
             
             try {
                 const currentPlayer = currentGameState.players[currentGameState.current_turn];
                 const newScore = (currentGameState.player_scores[currentPlayer] || 0) + currentRoll;
-                const usedRerolls = 2 - rerollsRemaining;
+                const rollsUsed = 3 - rollsRemaining;
                 
-                console.log(`🎲 ${currentPlayer} rolled ${currentRoll} (${usedRerolls} rerolls used), new score: ${newScore}`);
+                console.log(`🎲 ${currentPlayer} kept ${currentRoll} (used ${rollsUsed}/3 rolls), new score: ${newScore}`);
                 
                 // Create history entry
                 const historyEntry = {
                     player: currentPlayer,
                     roll: currentRoll,
-                    rerolls: usedRerolls,
+                    rolls_used: rollsUsed,
                     score: newScore,
                     timestamp: new Date().toISOString()
                 };
@@ -999,18 +1080,25 @@
                 console.log('✅ Game state updated successfully');
                 
                 // Reset for next turn
-                currentRoll = 0;
-                rerollsRemaining = 2;
-                document.getElementById('diceDisplay').textContent = '?';
-                document.getElementById('rerollsLeft').textContent = '2';
-                document.getElementById('rollBtn').disabled = false;
-                document.getElementById('rollBtn').classList.remove('hidden');
-                document.getElementById('stopBtn').classList.add('hidden');
+                resetDiceUI();
             } catch (error) {
                 console.error('Error finishing turn:', error);
                 alert('Failed to finish turn: ' + error.message);
             }
         };
+
+        // Reset dice UI for a new turn
+        function resetDiceUI() {
+            currentRoll = 0;
+            rollsRemaining = 3;
+            hasRolledThisTurn = false;
+            document.getElementById('diceDisplay').textContent = '?';
+            document.getElementById('rollsLeft').textContent = '3';
+            document.getElementById('rollBtn').textContent = '🎲 Roll Dice';
+            document.getElementById('rollBtn').disabled = false;
+            document.getElementById('rollBtn').classList.remove('hidden');
+            document.getElementById('stopBtn').classList.add('hidden');
+        }
 
         // Leave lobby
         window.leaveLobby = async () => {
@@ -1054,10 +1142,12 @@
                 
                 currentLobbyId = null;
                 currentGameState = null;
-                currentRoll = 0;
-                rerollsRemaining = 2;
+                lastTurnPlayer = null;
+                resetDiceUI();
+                hideTurnNotification();
                 
                 document.getElementById('gameView').classList.add('hidden');
+                document.getElementById('waitingTurnArea').classList.add('hidden');
                 document.getElementById('lobbyListView').classList.remove('hidden');
                 
                 await loadLobbies();
