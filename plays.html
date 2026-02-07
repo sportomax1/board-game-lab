@@ -318,6 +318,23 @@
         let gameThumbnails = new Map();
         let gameTypes = new Map();
         let gameYears = new Map();
+        let playersMap = new Map();
+
+        function computePlayersMap() {
+            playersMap = new Map();
+            totalPlays.forEach(p => {
+                try {
+                    const xml = new DOMParser().parseFromString(p.rawXml || '', 'text/xml');
+                    const playerEls = xml.getElementsByTagName('player');
+                    for (let i = 0; i < playerEls.length; i++) {
+                        const el = playerEls[i];
+                        const name = (el.getAttribute('username') || el.getAttribute('name') || 'Unknown').trim();
+                        if (!playersMap.has(name)) playersMap.set(name, []);
+                        playersMap.get(name).push(p);
+                    }
+                } catch (e) { /* ignore parse errors */ }
+            });
+        }
         let currentTab = 'plays';
         let statsSortField = 'total';
         let statsSortDir = -1;
@@ -628,6 +645,10 @@
             else if (tab === 'players') renderPlayers();
             else if (tab === 'xml') renderXMLContents();
             else filterView();
+
+            // hide the global game filter when on players tab (players have their own search)
+            const tf = document.getElementById('tableFilter');
+            if (tf) tf.style.display = (tab === 'players') ? 'none' : '';
         }
 
         function applyFilters(plays) {
@@ -798,6 +819,84 @@
         
         function closeCalendarModal() {
             document.getElementById('calendarModal').classList.add('hidden');
+        }
+
+        // Player modal sorting state
+        let currentPlayerModalName = null;
+        let playerModalSortField = 'count';
+        let playerModalSortDir = -1;
+
+        function showPlayerModal(name) {
+            currentPlayerModalName = name;
+            playerModalSortField = 'count';
+            playerModalSortDir = -1;
+            renderPlayerModalGames();
+        }
+
+        function renderPlayerModalGames() {
+            const name = currentPlayerModalName;
+            const plays = (playersMap.get(name) || []).slice();
+            // Aggregate per game
+            const map = new Map();
+            plays.forEach(p => {
+                if (!map.has(p.gameId)) map.set(p.gameId, { id: p.gameId, name: p.game, count: 0, lastDate: null });
+                const g = map.get(p.gameId);
+                g.count++;
+                if (!g.lastDate || p.date > g.lastDate) g.lastDate = p.date;
+            });
+            let arr = [...map.values()];
+            const field = playerModalSortField;
+            arr.sort((a,b)=>{
+                if (field === 'name') return playerModalSortDir * a.name.localeCompare(b.name);
+                if (field === 'lastDate') return playerModalSortDir * (a.lastDate < b.lastDate ? -1 : (a.lastDate > b.lastDate ? 1 : 0));
+                return playerModalSortDir * (b.count - a.count);
+            });
+
+            let html = `<div class="p-3">
+                <div class="flex items-center justify-between mb-3">
+                    <div class="text-sm font-bold">Plays for ${escapeHtml(name)} (${plays.length})</div>
+                    <div class="text-[11px] text-slate-500">Unique games: ${arr.length}</div>
+                </div>
+                <div class="w-full overflow-auto">
+                    <table class="w-full text-left border-collapse">
+                        <thead class="text-[11px] text-slate-500 bg-slate-50 sticky top-0">
+                            <tr>
+                                <th class="px-2 py-2"></th>
+                                <th class="px-2 py-2 sortable" onclick="sortPlayerModal('name')">Game</th>
+                                <th class="px-2 py-2 text-right sortable" onclick="sortPlayerModal('count')">Count</th>
+                                <th class="px-2 py-2 text-right sortable" onclick="sortPlayerModal('lastDate')">Most Recent</th>
+                            </tr>
+                        </thead>
+                        <tbody class="text-[11px]">`;
+
+            arr.forEach(g => {
+                const thumb = (g.id && gameThumbnails.has(g.id)) ? `<img src="${gameThumbnails.get(g.id)}" class="w-10 h-10 object-cover rounded">` : `<div class="w-10 h-10 bg-slate-100 rounded flex items-center justify-center text-[11px] text-slate-400">?</div>`;
+                html += `
+                    <tr class="border-t border-slate-100 hover:bg-slate-50 cursor-pointer" onclick="showGameFromPlayer('${escapeHtmlAttr(g.id||'') }')">
+                        <td class="px-2 py-2 w-12">${thumb}</td>
+                        <td class="px-2 py-2">${escapeHtml(g.name)}</td>
+                        <td class="px-2 py-2 text-right font-bold">${g.count}</td>
+                        <td class="px-2 py-2 text-right text-slate-500 font-mono">${g.lastDate || '-'}</td>
+                    </tr>`;
+            });
+
+            html += `</tbody></table></div></div>`;
+
+            document.getElementById('playDetailTitle').textContent = `Player: ${name}`;
+            document.getElementById('playDetailContent').innerHTML = html;
+            document.getElementById('playDetailModal').classList.remove('hidden');
+        }
+
+        function sortPlayerModal(field) {
+            if (playerModalSortField === field) playerModalSortDir *= -1;
+            else { playerModalSortField = field; playerModalSortDir = field === 'name' ? 1 : -1; }
+            renderPlayerModalGames();
+        }
+
+        function showGameFromPlayer(gameId) {
+            // find a play for this game and open detail
+            const play = totalPlays.find(p => p.gameId == gameId && (playersMap.get(currentPlayerModalName) || []).some(pp => pp.id === p.id));
+            if (play) showPlayDetail(play.id);
         }
         
         function renderCalendar() {
@@ -1013,18 +1112,44 @@
             computePlayersMap();
             const list = document.getElementById('playersList');
             const query = (document.getElementById('playersSearch').value || '').toLowerCase();
-            const entries = [...playersMap.entries()].map(([name, plays]) => ({ name, count: plays.length, plays })).filter(e => e.name.toLowerCase().includes(query));
+            const entries = [...playersMap.entries()].map(([name, plays]) => {
+                const uniqueDays = new Set(plays.map(p => p.date));
+                let bga = 0, irl = 0;
+                plays.forEach(p => {
+                    const loc = (p.location || '').toLowerCase();
+                    if (loc.includes('boardgamearena') || loc.includes('bga')) bga++; else irl++;
+                });
+                return { name, plays, total: plays.length, uniqueDays: uniqueDays.size, bga, irl };
+            }).filter(e => e.name.toLowerCase().includes(query)).sort((a,b)=>b.total-a.total);
+
             document.getElementById('playersCount').textContent = `${entries.length} players`;
             if (entries.length === 0) {
                 list.innerHTML = '<div class="py-10 text-center text-slate-300 text-[10px]">No players found.</div>';
                 return;
             }
+
             list.innerHTML = entries.map(e => `
-                <div class="p-2 border border-slate-100 rounded hover:bg-slate-50 cursor-pointer flex items-center justify-between" onclick="showPlayerModal('${escapeHtmlAttr(e.name)}')">
-                    <div class="font-semibold text-[11px] truncate">${escapeHtml(e.name)}</div>
-                    <div class="text-[10px] text-slate-500 font-mono">${e.count}</div>
+                <div class="p-3 border border-slate-100 rounded hover:shadow-sm bg-white flex items-center gap-3 cursor-pointer" onclick="showPlayerModal('${escapeHtmlAttr(e.name)}')">
+                    <div class="flex-shrink-0 w-10 h-10 rounded bg-slate-50 border border-slate-200 overflow-hidden flex items-center justify-center">${playerAvatarHtml(e.name)}</div>
+                    <div class="flex-1 min-w-0">
+                        <div class="font-semibold text-[13px] truncate">${escapeHtml(e.name)}</div>
+                        <div class="text-[11px] text-slate-500 mt-0.5">${e.total} plays • ${e.uniqueDays} days</div>
+                    </div>
+                    <div class="text-right">
+                        <div class="text-[12px] font-bold text-slate-800">${e.total}</div>
+                        <div class="text-[10px] text-slate-400">IRL ${e.irl} • BGA ${e.bga}</div>
+                    </div>
                 </div>
             `).join('');
+        }
+
+        function playerAvatarHtml(name) {
+            // try to show first game's thumbnail for player or fallback initials
+            const plays = playersMap.get(name) || [];
+            const first = plays.find(p => p.gameId && gameThumbnails.has(p.gameId));
+            if (first) return `<img src="${gameThumbnails.get(first.gameId)}" class="w-full h-full object-cover">`;
+            const initials = (name.split(' ').map(s=>s[0]).join('')||name).slice(0,2).toUpperCase();
+            return `<div class="text-sm font-bold text-slate-600">${escapeHtml(initials)}</div>`;
         }
 
         function showPlayerModal(name) {
