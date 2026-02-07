@@ -85,7 +85,7 @@ ADD COLUMN IF NOT EXISTS creator_user_id UUID REFERENCES auth.users(id);
 ALTER TABLE diceduel_lobbies 
 ADD COLUMN IF NOT EXISTS player_user_ids UUID[] DEFAULT '{}'::UUID[];
 
--- Add shareable_link column for unique lobby URLs
+-- Add shareable_code column for unique lobby URLs
 ALTER TABLE diceduel_lobbies 
 ADD COLUMN IF NOT EXISTS shareable_code TEXT UNIQUE;
 
