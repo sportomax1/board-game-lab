@@ -2,43 +2,44 @@
 -- Run this SQL in your Supabase SQL Editor after enabling Email authentication
 
 -- ============================================
--- STEP 1: Create users_profile table
+-- STEP 1: Create diceduel_users_profile table
 -- ============================================
 
--- Create users_profile table to store additional user data
-CREATE TABLE IF NOT EXISTS users_profile (
-  id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
+-- Create diceduel_users_profile table to store additional user data
+CREATE TABLE IF NOT EXISTS diceduel_users_profile (
+  user_id UUID PRIMARY KEY REFERENCES auth.users(id) ON DELETE CASCADE,
   username TEXT UNIQUE NOT NULL,
   display_name TEXT NOT NULL,
+  email TEXT,
   created_at TIMESTAMPTZ DEFAULT NOW(),
   last_seen TIMESTAMPTZ DEFAULT NOW(),
   games_played INT DEFAULT 0,
   games_won INT DEFAULT 0
 );
 
--- Enable RLS on users_profile
-ALTER TABLE users_profile ENABLE ROW LEVEL SECURITY;
+-- Enable RLS on diceduel_users_profile
+ALTER TABLE diceduel_users_profile ENABLE ROW LEVEL SECURITY;
 
 -- Allow users to read all profiles
 CREATE POLICY "Public profiles are viewable by everyone"
-ON users_profile FOR SELECT
+ON diceduel_users_profile FOR SELECT
 TO public
 USING (true);
 
 -- Allow users to insert their own profile
 CREATE POLICY "Users can insert their own profile"
-ON users_profile FOR INSERT
+ON diceduel_users_profile FOR INSERT
 TO authenticated
-WITH CHECK (auth.uid() = id);
+WITH CHECK (auth.uid() = user_id);
 
 -- Allow users to update their own profile
 CREATE POLICY "Users can update their own profile"
-ON users_profile FOR UPDATE
+ON diceduel_users_profile FOR UPDATE
 TO authenticated
-USING (auth.uid() = id);
+USING (auth.uid() = user_id);
 
 -- Create index for faster username lookups
-CREATE INDEX IF NOT EXISTS idx_users_profile_username ON users_profile(username);
+CREATE INDEX IF NOT EXISTS idx_diceduel_users_profile_username ON diceduel_users_profile(username);
 
 -- ============================================
 -- STEP 2: Update diceduel_lobbies table
@@ -119,12 +120,12 @@ LANGUAGE plpgsql
 SECURITY DEFINER
 AS $$
 BEGIN
-  UPDATE users_profile
+  UPDATE diceduel_users_profile
   SET 
     games_played = games_played + 1,
     games_won = CASE WHEN p_won THEN games_won + 1 ELSE games_won END,
     last_seen = NOW()
-  WHERE id = p_user_id;
+  WHERE user_id = p_user_id;
 END;
 $$;
 
@@ -149,8 +150,8 @@ AS $$
       WHEN games_played > 0 THEN ROUND((games_won::NUMERIC / games_played::NUMERIC) * 100, 2)
       ELSE 0
     END as win_rate
-  FROM users_profile
-  WHERE id = p_user_id;
+  FROM diceduel_users_profile
+  WHERE user_id = p_user_id;
 $$;
 
 -- ============================================
@@ -175,5 +176,5 @@ SELECT
   (SELECT COUNT(*) FROM information_schema.columns WHERE table_name = t.table_name) as column_count
 FROM information_schema.tables t
 WHERE table_schema = 'public' 
-  AND table_name IN ('users_profile', 'diceduel_lobbies')
+  AND table_name IN ('diceduel_users_profile', 'diceduel_lobbies')
 ORDER BY table_name;
