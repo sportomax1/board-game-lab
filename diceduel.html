@@ -263,6 +263,21 @@
             </div>
         </div>
 
+        <!-- Set New Password Modal (for recovery redirect handling) -->
+        <div id="setPasswordModal" class="hidden fixed inset-0 z-50 flex items-center justify-center modal-backdrop p-4">
+            <div class="bg-white rounded-lg shadow-xl w-full max-w-md p-6">
+                <h3 class="text-lg font-bold text-gray-800 mb-2">Set a New Password</h3>
+                <p class="text-sm text-gray-600 mb-4">Enter a new password to finish account recovery.</p>
+                <input id="newPassword" type="password" placeholder="New password (min 6 chars)" class="w-full px-4 py-2 border border-gray-300 rounded mb-3">
+                <input id="confirmNewPassword" type="password" placeholder="Confirm password" class="w-full px-4 py-2 border border-gray-300 rounded mb-3">
+                <p id="setPasswordMessage" class="text-sm text-center text-gray-600 mb-3"></p>
+                <div class="flex space-x-2">
+                    <button onclick="handleSetNewPassword()" class="flex-1 bg-purple-600 hover:bg-purple-700 text-white font-bold py-2 px-4 rounded">Set Password</button>
+                    <button onclick="hideSetPasswordModal()" class="flex-1 bg-gray-200 hover:bg-gray-300 text-gray-800 font-bold py-2 px-4 rounded">Cancel</button>
+                </div>
+            </div>
+        </div>
+
         <div id="aboutSection" class="bg-white rounded-lg shadow-lg p-4 mt-4 text-sm text-gray-700">
             <h2 class="text-lg font-bold text-gray-800 mb-2">About / How to play</h2>
             <p class="mb-2">Objective: Be the first player to reach the <span id="aboutWinScore" class="font-semibold">win score</span> (default 21).</p>
@@ -808,6 +823,78 @@
                 showToast('Failed to send reset email', 'error');
             }
         };
+
+        // Show/hide Set Password modal (for recovery flow)
+        window.showSetPasswordModal = () =&gt; {
+            document.getElementById('newPassword').value = '';
+            document.getElementById('confirmNewPassword').value = '';
+            document.getElementById('setPasswordMessage').textContent = '';
+            document.getElementById('setPasswordModal').classList.remove('hidden');
+        };
+
+        window.hideSetPasswordModal = () =&gt; {
+            document.getElementById('setPasswordModal').classList.add('hidden');
+        };
+
+        // Handle setting new password after recovery redirect
+        window.handleSetNewPassword = async () =&gt; {
+            const pass = document.getElementById('newPassword').value.trim();
+            const confirm = document.getElementById('confirmNewPassword').value.trim();
+            const msgEl = document.getElementById('setPasswordMessage');
+            if (!pass || pass.length < 6) {
+                msgEl.textContent = 'Password must be at least 6 characters';
+                return;
+            }
+            if (pass !== confirm) {
+                msgEl.textContent = 'Passwords do not match';
+                return;
+            }
+
+            msgEl.textContent = 'Setting new password...';
+            try {
+                const { data, error } = await supabase.auth.updateUser({ password: pass });
+                if (error) throw error;
+                showToast('Password updated — you are signed in', 'success');
+                hideSetPasswordModal();
+                // Remove token fragment from URL
+                try { history.replaceState(null, '', window.location.pathname + window.location.search); } catch (e) { /* ignore */ }
+                // Load profile and enter app
+                const { data: { user } } = await supabase.auth.getUser();
+                if (user) {
+                    await loadUserProfile(user.id);
+                    await enterApp();
+                }
+            } catch (e) {
+                console.error('Set new password failed:', e);
+                msgEl.textContent = 'Failed to set password: ' + (e.message || e);
+                showToast('Failed to set password', 'error');
+            }
+        };
+
+        // Detect recovery tokens in URL hash and set session so user can set a new password in-app
+        async function handleRecoveryFromUrl() {
+            try {
+                const hash = window.location.hash || '';
+                if (!hash) return false;
+                const params = new URLSearchParams(hash.replace(/^#/, ''));
+                const access_token = params.get('access_token');
+                const refresh_token = params.get('refresh_token');
+                const type = params.get('type'); // often 'recovery'
+                if (!access_token) return false;
+
+                // Set the session using the tokens provided by Supabase
+                const { data, error } = await supabase.auth.setSession({ access_token, refresh_token });
+                if (error) throw error;
+
+                // Show in-app set-password modal
+                showSetPasswordModal();
+
+                return true;
+            } catch (e) {
+                console.warn('Recovery handling failed:', e);
+                return false;
+            }
+        }
         
         // Restore existing Supabase session
         async function restoreSession(session) {
@@ -1896,6 +1983,17 @@
 
             // Show auth forms by default
             document.getElementById('authForms').classList.remove('hidden');
+
+            // If the user was redirected from a password-recovery link, handle tokens in URL
+            try {
+                const recovered = await handleRecoveryFromUrl();
+                if (recovered) {
+                    // Recovery flow will show set-password modal — skip restore
+                    return;
+                }
+            } catch (e) {
+                console.warn('Recovery check failed:', e);
+            }
 
             // Try to restore existing session
             try {
