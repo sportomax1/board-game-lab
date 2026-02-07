@@ -187,12 +187,15 @@
             <div id="view-plays" class="flex-1 overflow-y-auto custom-scrollbar">
                 <table class="w-full text-left border-collapse">
                     <thead class="sticky top-0 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase tracking-widest z-10">
-                        <tr>
-                            <th class="px-4 py-2 border-b w-12"></th>
-                            <th class="px-4 py-2 border-b">Game</th>
-                            <th class="px-4 py-2 border-b">Venue</th>
-                            <th class="px-4 py-2 border-b text-right">Date</th>
-                        </tr>
+                                <tr>
+                                    <th class="px-4 py-2 border-b w-12"></th>
+                                    <th class="px-4 py-2 border-b">Game</th>
+                                    <th class="px-4 py-2 border-b">Venue</th>
+                                    <th class="px-4 py-2 border-b">Date</th>
+                                    <th class="px-4 py-2 border-b text-right">Rating</th>
+                                    <th class="px-4 py-2 border-b text-right">Avg</th>
+                                    <th class="px-4 py-2 border-b text-right">Rank</th>
+                                </tr>
                     </thead>
                     <tbody id="playsTableBody" class="text-[11px] divide-y divide-slate-50"></tbody>
                 </table>
@@ -331,6 +334,7 @@
         let gameThumbnails = new Map();
         let gameTypes = new Map();
         let gameYears = new Map();
+        let gameDetailsMap = new Map(); // stores thing stats: average, rank, weight, playingtime
         let playersMap = new Map();
         let selectedBuddy = ''; // Track selected buddy for plays filtering
 
@@ -567,7 +571,7 @@
         async function fetchThingMetadataBatch(ids) {
             if (ids.length === 0) return;
             // Use the server-side BGG proxy for thing requests
-            const url = `/api/bgg-helper?endpoint=thing&id=${ids.join(',')}`;
+            const url = `/api/bgg-helper?endpoint=thing&id=${ids.join(',')}&stats=1`;
             try {
                 const response = await fetch(url);
                 const text = await response.text();
@@ -587,6 +591,19 @@
                     if (yearNode) {
                         gameYears.set(id, yearNode.getAttribute('value'));
                     }
+                    // parse stats for average & rank
+                    try {
+                        const statsNode = items[i].getElementsByTagName('statistics')[0] || items[i].getElementsByTagName('stats')[0];
+                        const ratings = statsNode ? (statsNode.getElementsByTagName('ratings')[0] || statsNode.getElementsByTagName('rating')[0] || statsNode) : null;
+                        const avg = ratings ? parseFloat((ratings.querySelector && (ratings.querySelector('average')?.getAttribute('value') || ratings.querySelector('average')?.textContent)) || ratings.getAttribute && ratings.getAttribute('average') || '0') : 0;
+                        const bayes = ratings ? parseFloat((ratings.querySelector && (ratings.querySelector('bayesaverage')?.getAttribute('value') || ratings.querySelector('bayesaverage')?.textContent)) || ratings.getAttribute && ratings.getAttribute('bayesaverage') || '0') : 0;
+                        const rankNode = ratings ? (ratings.querySelector ? ratings.querySelector('rank[type="subtype"]') || ratings.querySelector('rank') : null) : null;
+                        const rank = rankNode ? parseInt(rankNode.getAttribute('value') || '999999') || 999999 : 999999;
+                        const weight = ratings ? parseFloat((ratings.querySelector && (ratings.querySelector('averageweight')?.getAttribute('value') || ratings.querySelector('averageweight')?.textContent)) || ratings.getAttribute && ratings.getAttribute('averageweight') || '0') : 0;
+                        const playingTimeEl = items[i].getElementsByTagName('playingtime')[0];
+                        const playingtime = playingTimeEl ? parseInt(playingTimeEl.getAttribute('value') || '0') || 0 : 0;
+                        gameDetailsMap.set(id, { average: avg > 0 ? avg : bayes, rank, weight, playingtime });
+                    } catch (e) { /* ignore stats parse errors */ }
                     
                     gameTypes.set(id, type);
                 }
@@ -614,6 +631,29 @@
             const tbody = document.getElementById('playsTableBody');
             tbody.innerHTML = plays.map(p => {
                 const year = gameYears.get(p.gameId);
+                const details = gameDetailsMap.get(p.gameId) || {};
+                const average = details.average || 0;
+                const rank = details.rank || 999999;
+                // user rating: try to extract rating for the main username from the play rawXml
+                const getUserRating = (() => {
+                    if (p._cachedUserRating !== undefined) return p._cachedUserRating;
+                    try {
+                        const doc = new DOMParser().parseFromString(p.rawXml || '', 'text/xml');
+                        const players = doc.getElementsByTagName('player');
+                        const baseUser = document.getElementById('username').value.trim() || 'sportomax';
+                        for (let i = 0; i < players.length; i++) {
+                            const pl = players[i];
+                            const uname = (pl.getAttribute('username') || pl.getAttribute('name') || '').trim();
+                            if (uname && uname.toLowerCase() === baseUser.toLowerCase()) {
+                                const r = pl.getAttribute('rating') || '';
+                                p._cachedUserRating = r;
+                                return r;
+                            }
+                        }
+                    } catch (e) { }
+                    p._cachedUserRating = '';
+                    return '';
+                })();
                 return `
                 <tr class="hover:bg-slate-50 transition-colors cursor-pointer" onclick="showPlayDetail('${p.id}')">
                     <td class="px-4 py-1.5">
@@ -625,10 +665,13 @@
                         <div class="font-bold text-slate-700 leading-tight">${p.game}</div>
                         ${year ? `<div class="text-[8px] text-slate-400 font-mono mt-0.5">${year}</div>` : ''}
                     </td>
-                    <td class="px-4 py-1.5 text-[9px] text-slate-400 font-medium">${p.location}</td>
-                    <td class="px-4 py-1.5 text-right font-mono text-[9px] text-slate-400">${p.date}</td>
+                    <td class="px-3 py-1.5 text-[9px] text-slate-400 font-medium">${p.location}</td>
+                    <td class="px-3 py-1.5 text-[9px] text-slate-400 font-mono">${p.date}</td>
+                    <td class="px-3 py-1.5 text-[10px] text-slate-600 text-right font-mono">${getUserRating || '—'}</td>
+                    <td class="px-3 py-1.5 text-[10px] text-slate-600 text-right font-mono">${average ? average.toFixed(2) : '—'}</td>
+                    <td class="px-3 py-1.5 text-[10px] text-slate-600 text-right font-mono">${rank < 999999 ? rank : '—'}</td>
                 </tr>
-            `}).join('') || '<tr><td colspan="4" class="py-10 text-center text-slate-300 text-[10px]">No records match selected filters.</td></tr>';
+            `}).join('') || '<tr><td colspan="7" class="py-10 text-center text-slate-300 text-[10px]">No records match selected filters.</td></tr>';
         }
 
         function renderStats(plays) {
