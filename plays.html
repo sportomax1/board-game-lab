@@ -167,7 +167,10 @@
                             Calendar
                         </button>
                     </div>
-                    <div id="unplayed-filters" class="hidden flex items-center gap-1.5">
+                    <div id="unplayed-filters" class="hidden flex items-center gap-2">
+                        <select id="unplayedUserSelect" onchange="updateUnplayedTab()" class="px-2 py-1 text-[11px] border border-slate-200 rounded outline-none focus:ring-1 focus:ring-blue-500 bg-white">
+                            <option value="">Select Player...</option>
+                        </select>
                         <label class="switch"><input type="checkbox" id="ignoreExpansionsToggle" onchange="updateUI()"><span class="slider"></span></label>
                         <span class="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">No Exp</span>
                     </div>
@@ -226,8 +229,11 @@
                     <thead class="sticky top-0 bg-slate-50 text-slate-400 text-[8px] font-bold uppercase tracking-widest z-10">
                         <tr>
                             <th class="px-4 py-2 border-b w-12"></th>
-                            <th class="px-4 py-2 border-b">Game Title</th>
-                            <th class="px-4 py-2 border-b text-right">Status</th>
+                            <th class="px-4 py-2 border-b sortable" onclick="sortUnplayed('name')">Game Title</th>
+                            <th class="px-4 py-2 border-b text-right sortable" onclick="sortUnplayed('average')">Avg</th>
+                            <th class="px-4 py-2 border-b text-right sortable" onclick="sortUnplayed('rank')">Rank</th>
+                            <th class="px-4 py-2 border-b text-right sortable" onclick="sortUnplayed('weight')">Weight</th>
+                            <th class="px-4 py-2 border-b text-right sortable" onclick="sortUnplayed('playingtime')">Time</th>
                         </tr>
                     </thead>
                     <tbody id="unplayedTableBody" class="text-[11px] divide-y divide-slate-50"></tbody>
@@ -600,6 +606,167 @@
                     <td class="px-4 py-1.5 text-right"><span class="px-1.5 py-0.5 bg-red-50 text-red-500 text-[8px] font-bold rounded">UNPLAYED</span></td>
                 </tr>
             `).join('');
+        }
+
+        // --- Enhanced Unplayed Tab with User Selection & Game Details ---
+        let unplayedSortField = 'name';
+        let unplayedSortDir = 1;
+        let unplayedGamesCache = [];
+        let unplayedDetailsMap = new Map();
+
+        function populateUnplayedUserDropdown() {
+            computePlayersMap();
+            const select = document.getElementById('unplayedUserSelect');
+            const users = ['myself', ...Array.from(playersMap.keys()).sort()];
+            select.innerHTML = '<option value="">Select Player...</option>' + 
+                users.map(u => `<option value="${u}">${u === 'myself' ? 'Myself (sportomax)' : u}</option>`).join('');
+        }
+
+        async function updateUnplayedTab() {
+            const selectedUser = document.getElementById('unplayedUserSelect').value;
+            if (!selectedUser) {
+                document.getElementById('unplayedTableBody').innerHTML = '';
+                return;
+            }
+            
+            const ignoreExpansions = document.getElementById('ignoreExpansionsToggle').checked;
+            const playedIds = new Set(totalPlays.map(p => p.gameId));
+            
+            // Get unplayed games from collection
+            let unplayed = collection.filter(c => {
+                if (playedIds.has(c.id)) return false;
+                if (ignoreExpansions && gameTypes.get(c.id) === 'boardgameexpansion') return false;
+                return true;
+            });
+            
+            unplayedGamesCache = unplayed;
+            
+            // Fetch game details if we don't have them cached
+            const idsToFetch = unplayed.filter(g => !unplayedDetailsMap.has(g.id)).map(g => g.id);
+            
+            if (idsToFetch.length > 0) {
+                await fetchUnplayedGameDetails(idsToFetch);
+                renderUnplayedEnhanced();
+            } else {
+                renderUnplayedEnhanced();
+            }
+        }
+
+        async function fetchUnplayedGameDetails(gameIds) {
+            const batchSize = 20;
+            const parallelBatches = 100;
+            
+            // Create batches
+            const batches = [];
+            for (let i = 0; i < gameIds.length; i += batchSize) {
+                batches.push(gameIds.slice(i, i + batchSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                
+                await Promise.all(batchGroup.map(async (batch) => {
+                    const idsParam = batch.join(',');
+                    try {
+                        const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${idsParam}&stats=1`);
+                        if (!response.ok) return;
+                        
+                        const xml = await response.text();
+                        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+                        const items = doc.getElementsByTagName('item');
+                        
+                        for (let j = 0; j < items.length; j++) {
+                            const item = items[j];
+                            const id = item.getAttribute('id');
+                            
+                            const stats = item.getElementsByTagName('stats')[0];
+                            const rating = stats?.getElementsByTagName('rating')[0];
+                            const avgRating = parseFloat(rating?.getElementsByTagName('average')[0]?.getAttribute('value') || '0') || 0;
+                            const bayesRating = parseFloat(rating?.getElementsByTagName('bayesaverage')[0]?.getAttribute('value') || '0') || 0;
+                            const rank = parseInt(rating?.getElementsByTagName('rank')[0]?.getAttribute('value') || '999999') || 999999;
+                            
+                            const nameEl = item.getElementsByTagName('name')[0];
+                            const weightsEl = item.getElementsByTagName('statistics')[0];
+                            const weight = parseFloat(weightsEl?.getAttribute('avgweight') || '0') || 0;
+                            const playingTimeEl = item.getElementsByTagName('playingtime')[0];
+                            const playingTime = parseInt(playingTimeEl?.getAttribute('value') || '0') || 0;
+                            
+                            unplayedDetailsMap.set(id, {
+                                average: avgRating > 0 ? avgRating : bayesRating,
+                                rank: rank,
+                                weight: weight,
+                                playingtime: playingTime
+                            });
+                        }
+                    } catch (e) {
+                        console.warn('Error fetching unplayed game details:', e);
+                    }
+                }));
+            }
+        }
+
+        function renderUnplayedEnhanced() {
+            const tbody = document.getElementById('unplayedTableBody');
+            const selectedUser = document.getElementById('unplayedUserSelect').value;
+            
+            if (!selectedUser) {
+                tbody.innerHTML = '';
+                return;
+            }
+            
+            // Sort the cache
+            let sorted = [...unplayedGamesCache].sort((a, b) => {
+                let aVal = a[unplayedSortField];
+                let bVal = b[unplayedSortField];
+                
+                if (unplayedSortField === 'average' || unplayedSortField === 'rank' || unplayedSortField === 'weight' || unplayedSortField === 'playingtime') {
+                    const detailsA = unplayedDetailsMap.get(a.id) || {};
+                    const detailsB = unplayedDetailsMap.get(b.id) || {};
+                    aVal = detailsA[unplayedSortField] || 0;
+                    bVal = detailsB[unplayedSortField] || 0;
+                    aVal = parseFloat(aVal) || 0;
+                    bVal = parseFloat(bVal) || 0;
+                    return unplayedSortDir === 1 ? aVal - bVal : bVal - aVal;
+                }
+                
+                // String sort for name
+                if (unplayedSortField === 'name') {
+                    aVal = (a.name || '').toLowerCase();
+                    bVal = (b.name || '').toLowerCase();
+                    return unplayedSortDir === 1 ? aVal.localeCompare(bVal) : bVal.localeCompare(aVal);
+                }
+                
+                return 0;
+            });
+            
+            tbody.innerHTML = sorted.map(game => {
+                const details = unplayedDetailsMap.get(game.id) || { average: 0, rank: 999999, weight: 0, playingtime: 0 };
+                return `
+                    <tr class="hover:bg-slate-50 transition-colors">
+                        <td class="px-4 py-1.5">
+                            <div class="w-7 h-7 rounded bg-slate-100 overflow-hidden flex items-center justify-center border border-slate-200/50">
+                                ${gameThumbnails.has(game.id) ? `<img src="${gameThumbnails.get(game.id)}" class="w-full h-full object-cover">` : '<div class="text-[5px] text-slate-300">...</div>'}
+                            </div>
+                        </td>
+                        <td class="px-4 py-1.5 font-bold text-slate-700">${escapeHtml(game.name)}</td>
+                        <td class="px-4 py-1.5 text-right text-slate-600">${details.average > 0 ? details.average.toFixed(2) : '—'}</td>
+                        <td class="px-4 py-1.5 text-right text-slate-600">${details.rank < 999999 ? details.rank : '—'}</td>
+                        <td class="px-4 py-1.5 text-right text-slate-600">${details.weight > 0 ? details.weight.toFixed(2) : '—'}</td>
+                        <td class="px-4 py-1.5 text-right text-slate-600">${details.playingtime || '—'} min</td>
+                    </tr>
+                `;
+            }).join('');
+        }
+
+        function sortUnplayed(field) {
+            if (unplayedSortField === field) {
+                unplayedSortDir = unplayedSortDir === 1 ? -1 : 1;
+            } else {
+                unplayedSortField = field;
+                unplayedSortDir = 1;
+            }
+            renderUnplayedEnhanced();
         }
 
         function copyGameList() {
@@ -1087,25 +1254,10 @@
             document.getElementById('pulseDot').className = "w-1.5 h-1.5 bg-emerald-500 rounded-full";
             document.getElementById('pageInfo').textContent = `Done: ${totalPlays.length} records`;
             updateStatus('Sync Complete');
+            populateUnplayedUserDropdown();
         }
 
         // --- Players & XML helpers ---
-        function computePlayersMap() {
-            playersMap = new Map();
-            totalPlays.forEach(p => {
-                try {
-                    const xml = new DOMParser().parseFromString(p.rawXml || '', 'text/xml');
-                    const players = xml.getElementsByTagName('player');
-                    for (let i = 0; i < players.length; i++) {
-                        const el = players[i];
-                        const name = (el.getAttribute('username') || el.getAttribute('name') || 'Unknown').trim();
-                        if (!playersMap.has(name)) playersMap.set(name, []);
-                        playersMap.get(name).push(p);
-                    }
-                } catch (e) { /* ignore parse errors */ }
-            });
-        }
-
         function renderPlayers() {
             computePlayersMap();
             const list = document.getElementById('playersList');
