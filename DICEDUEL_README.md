@@ -138,7 +138,7 @@ See [DICEDUEL_AUTH_SETUP.md](./DICEDUEL_AUTH_SETUP.md) for detailed security gui
 
 ## 📊 Database Structure
 
-### Table: `users_profile`
+### Table: `diceduel_users_profile`
 
 User profile information linked to Supabase Auth:
 
