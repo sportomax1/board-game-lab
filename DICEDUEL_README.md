@@ -1,6 +1,6 @@
 # Dice Duel 🎲
 
-A real-time multiplayer dice game built with Firebase Firestore. Players compete in turn-based dice duels to reach the target score first!
+A real-time multiplayer dice game built with Supabase. Players compete in turn-based dice duels to reach the target score first!
 
 ## 🎮 Game Features
 
@@ -13,7 +13,7 @@ A real-time multiplayer dice game built with Firebase Firestore. Players compete
 - **Win Conditions**: Choose to play to 10, 21, or 50 points
 
 ### Real-Time Features
-- **Live Updates**: All players see game state changes instantly
+- **Live Updates**: All players see game state changes instantly via Supabase Realtime
 - **Real-Time Lobby Browser**: See available games update automatically
 - **Synchronized Gameplay**: Turn progression and scores sync across all devices
 - **Resume Games**: Turn-based nature allows players to take breaks and return
@@ -48,29 +48,22 @@ A real-time multiplayer dice game built with Firebase Firestore. Players compete
 
 ### For Administrators
 
-See [DICEDUEL_SETUP.md](./DICEDUEL_SETUP.md) for complete Firebase configuration instructions.
-
-## 📱 Screenshots
-
-### Login Screen
-![Login Screen](https://github.com/user-attachments/assets/208d48d1-fb81-4597-af33-6d83cdf9856f)
-
-### Lobby Browser & Create Lobby
-![Create Lobby](https://github.com/user-attachments/assets/32eccf4d-833d-40ce-81e8-a09aa6bb4599)
+See [DICEDUEL_SUPABASE_SETUP.md](./DICEDUEL_SUPABASE_SETUP.md) for complete Supabase configuration instructions.
 
 ## 🔧 Technical Details
 
 ### Built With
 - **Frontend**: HTML5, Tailwind CSS, Vanilla JavaScript
-- **Backend**: Firebase Firestore (Real-time NoSQL database)
+- **Backend**: Supabase (PostgreSQL + Realtime)
 - **Hosting**: Vercel
 - **Security**: Environment variable-based configuration
 
-### Firebase Integration
-- Uses existing `/api/firebase-config` endpoint
+### Supabase Integration
+- Uses custom `/api/supabase-config` endpoint for secure credential delivery
 - Real-time listeners for lobby and game state updates
+- PostgreSQL database with JSONB for flexible data storage
 - Automatic cleanup when players leave
-- Optimized queries for performance
+- Optimized queries with indexes
 
 ### Browser Compatibility
 - Modern browsers (Chrome, Firefox, Safari, Edge)
@@ -105,43 +98,44 @@ See [DICEDUEL_SETUP.md](./DICEDUEL_SETUP.md) for complete Firebase configuration
 
 ### Current Setup
 - Password protection via `/api/get-password`
-- Open Firestore rules for ease of use
+- Open RLS policies for ease of use
 - No user authentication system
+- Anonymous access with anon key
 
 ### Production Recommendations
 For production deployment, consider:
-1. Enable Firebase Authentication (email/password or social login)
-2. Implement stricter Firestore security rules
-3. Add server-side move validation
+1. Enable Supabase Authentication (email/password or social login)
+2. Implement stricter Row Level Security (RLS) policies
+3. Add server-side move validation via Edge Functions
 4. Implement rate limiting
 5. Add anti-cheat measures
 
-See [DICEDUEL_SETUP.md](./DICEDUEL_SETUP.md) for detailed security guidelines.
+See [DICEDUEL_SUPABASE_SETUP.md](./DICEDUEL_SUPABASE_SETUP.md) for detailed security guidelines.
 
 ## 📊 Database Structure
 
-### Collection: `diceduel_lobbies`
+### Table: `diceduel_lobbies`
 
 ```javascript
 {
-  name: "My Game",           // Lobby display name
-  creator: "Alice",          // Player who created lobby
-  winScore: 21,              // Target score (10, 21, or 50)
-  players: ["Alice", "Bob"], // Array of player names
-  status: "playing",         // waiting | playing | finished
-  currentTurn: 0,            // Current player index (0-3)
-  gameStarted: true,         // Whether game has begun
-  createdAt: Timestamp,      // Creation timestamp
-  playerScores: {            // Player scores map
-    "Alice": 15,
-    "Bob": 12
+  id: number,                // Auto-generated primary key
+  created_at: timestamp,     // Auto-generated timestamp
+  name: string,              // Lobby display name
+  creator: string,           // Player who created lobby
+  win_score: number,         // Target score (10, 21, or 50)
+  players: [string],         // Array of player names
+  status: string,            // 'waiting' | 'playing' | 'finished'
+  current_turn: number,      // Current player index (0-3)
+  game_started: boolean,     // Whether game has begun
+  player_scores: {           // JSONB object of player scores
+    [playerName]: number
   },
-  history: [{                // Game move history
-    player: "Alice",
-    roll: 5,
-    rerolls: 1,
-    score: 15,
-    timestamp: Timestamp
+  history: [{               // JSONB array of game moves
+    player: string,
+    roll: number,
+    rerolls: number,
+    score: number,
+    timestamp: string
   }]
 }
 ```
@@ -158,27 +152,31 @@ python3 -m http.server 8080
 http://localhost:8080/diceduel.html
 ```
 
-Note: Firebase functionality requires proper environment variables in production.
+Note: Supabase functionality requires proper environment variables in production.
 
 ### File Structure
 ```
-/diceduel.html          # Main game application
-/DICEDUEL_SETUP.md      # Firebase setup guide
-/api/firebase-config.js # Firebase config endpoint (existing)
-/api/get-password.js    # Password endpoint (existing)
+/diceduel.html                    # Main game application
+/DICEDUEL_README.md               # This file
+/DICEDUEL_SUPABASE_SETUP.md       # Supabase setup guide
+/api/supabase-config.js           # Supabase config endpoint
+/api/get-password.js              # Password endpoint (existing)
 ```
 
 ## 🐛 Troubleshooting
 
 ### "Failed to initialize database"
-- Verify Firebase environment variables are set in Vercel
-- Check Firebase project is active
-- Ensure Firestore is enabled
+- Verify Supabase environment variables are set in Vercel
+  - `SUPABASE_URL`
+  - `SUPABASE_ANON_KEY`
+- Check Supabase project is active (not paused)
+- Ensure table `diceduel_lobbies` exists
 
 ### Players can't see each other's moves
 - Check internet connection
-- Verify Firestore security rules allow read/write
-- Check browser console for errors
+- Verify Supabase Realtime is enabled
+- Check browser console for WebSocket errors
+- Ensure RLS policies allow read access
 
 ### Game not starting
 - Minimum 2 players required
@@ -188,21 +186,29 @@ Note: Firebase functionality requires proper environment variables in production
 ### Lobby disappeared
 - Lobbies auto-delete when all players leave
 - Creator leaving deletes the lobby
-- Check if game status changed
+- Check if game status changed to 'finished'
+
+### Database connection errors
+- Verify environment variables in Vercel
+- Check Supabase project isn't paused (free tier)
+- Ensure you're not exceeding free tier limits
+- Check Supabase Dashboard for errors
 
 ## 📝 Future Enhancements
 
 Possible additions:
+- [ ] User authentication via Supabase Auth
 - [ ] Player profiles and statistics
 - [ ] Leaderboards
 - [ ] Tournament mode
 - [ ] Custom dice faces
-- [ ] Sound effects
-- [ ] Chat system
+- [ ] Sound effects and music
+- [ ] In-game chat system
 - [ ] Spectator mode
 - [ ] Game replays
 - [ ] Multiple game variants (highest roll, lowest roll, etc.)
 - [ ] Achievements system
+- [ ] Player ratings (ELO system)
 
 ## 📄 License
 
@@ -215,11 +221,16 @@ This is a personal project but suggestions and bug reports are welcome!
 ## 📞 Support
 
 For issues:
-1. Check [DICEDUEL_SETUP.md](./DICEDUEL_SETUP.md)
-2. Review Firebase Console for errors
+1. Check [DICEDUEL_SUPABASE_SETUP.md](./DICEDUEL_SUPABASE_SETUP.md)
+2. Review Supabase Dashboard for errors
 3. Check browser console logs
-4. Verify environment variables
+4. Verify environment variables in Vercel
+5. Check Supabase Status page
 
 ## 🎲 Have Fun!
 
 Enjoy playing Dice Duel with your friends! May the best roller win! 🏆
+
+---
+
+**Tech Stack**: Supabase • PostgreSQL • Realtime • Vercel • Tailwind CSS

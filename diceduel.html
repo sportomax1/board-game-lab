@@ -326,37 +326,35 @@
     </div>
 
     <script type="module">
-        import { initializeApp } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-app.js';
-        import { getFirestore, collection, addDoc, getDocs, updateDoc, deleteDoc, doc, query, orderBy, where, onSnapshot, Timestamp, arrayUnion, arrayRemove, getDoc } from 'https://www.gstatic.com/firebasejs/10.7.1/firebase-firestore.js';
+        import { createClient } from 'https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2/+esm';
 
-        let db;
+        let supabase;
         let playerName = '';
         let currentLobbyId = null;
         let currentGameState = null;
         let selectedWinScore = 21;
-        let unsubscribeLobby = null;
+        let lobbySubscription = null;
         let currentRoll = 0;
         let rerollsRemaining = 2;
 
-        // Initialize Firebase
-        async function initFirebase() {
+        // Initialize Supabase
+        async function initSupabase() {
             try {
-                const configResponse = await fetch('/api/firebase-config');
-                if (!configResponse.ok) throw new Error('Failed to fetch Firebase config');
+                const configResponse = await fetch('/api/supabase-config');
+                if (!configResponse.ok) throw new Error('Failed to fetch Supabase config');
                 
-                const firebaseConfig = await configResponse.json();
+                const supabaseConfig = await configResponse.json();
                 
-                if (!firebaseConfig.apiKey || !firebaseConfig.projectId) {
-                    throw new Error('Invalid Firebase config');
+                if (!supabaseConfig.url || !supabaseConfig.anonKey) {
+                    throw new Error('Invalid Supabase config');
                 }
                 
-                const app = initializeApp(firebaseConfig);
-                db = getFirestore(app);
-                console.log('✅ Firebase initialized successfully');
+                supabase = createClient(supabaseConfig.url, supabaseConfig.anonKey);
+                console.log('✅ Supabase initialized successfully');
                 return true;
             } catch (error) {
-                console.error('Firebase init error:', error);
-                alert('Failed to initialize database. Please check Firebase configuration.');
+                console.error('Supabase init error:', error);
+                alert('Failed to initialize database. Please check Supabase configuration.');
                 return false;
             }
         }
@@ -381,8 +379,8 @@
             playerName = name;
             localStorage.setItem('diceduel_player_name', playerName);
             
-            const firebaseReady = await initFirebase();
-            if (!firebaseReady) return;
+            const supabaseReady = await initSupabase();
+            if (!supabaseReady) return;
             
             document.getElementById('playerNameDisplay').textContent = playerName;
             document.getElementById('passwordScreen').classList.add('hidden');
@@ -438,23 +436,30 @@
                 const lobbyData = {
                     name: lobbyName,
                     creator: playerName,
-                    winScore: selectedWinScore,
+                    win_score: selectedWinScore,
                     players: [playerName],
                     status: 'waiting', // waiting, playing, finished
-                    currentTurn: 0,
-                    gameStarted: false,
-                    createdAt: Timestamp.now(),
-                    playerScores: { [playerName]: 0 },
+                    current_turn: 0,
+                    game_started: false,
+                    created_at: new Date().toISOString(),
+                    player_scores: { [playerName]: 0 },
                     history: []
                 };
 
-                const docRef = await addDoc(collection(db, 'diceduel_lobbies'), lobbyData);
-                currentLobbyId = docRef.id;
+                const { data, error } = await supabase
+                    .from('diceduel_lobbies')
+                    .insert([lobbyData])
+                    .select()
+                    .single();
+
+                if (error) throw error;
+
+                currentLobbyId = data.id;
                 
                 document.getElementById('lobbyName').value = '';
                 document.getElementById('createLobbyView').classList.add('hidden');
                 
-                await joinLobbyView(docRef.id);
+                await joinLobbyView(data.id);
             } catch (error) {
                 console.error('Error creating lobby:', error);
                 alert('Failed to create lobby: ' + error.message);
@@ -464,20 +469,23 @@
         // Load lobbies
         async function loadLobbies() {
             try {
-                const lobbiesRef = collection(db, 'diceduel_lobbies');
-                const q = query(lobbiesRef, where('status', 'in', ['waiting', 'playing']), orderBy('createdAt', 'desc'));
-                const snapshot = await getDocs(q);
+                const { data, error } = await supabase
+                    .from('diceduel_lobbies')
+                    .select('*')
+                    .in('status', ['waiting', 'playing'])
+                    .order('created_at', { ascending: false });
+
+                if (error) throw error;
                 
                 const lobbyList = document.getElementById('lobbyList');
-                if (snapshot.empty) {
+                if (!data || data.length === 0) {
                     lobbyList.innerHTML = '<p class="text-gray-500 text-center py-4">No active lobbies. Create one!</p>';
                     return;
                 }
 
                 lobbyList.innerHTML = '';
-                snapshot.forEach(doc => {
-                    const lobby = doc.data();
-                    const lobbyElement = createLobbyElement(doc.id, lobby);
+                data.forEach(lobby => {
+                    const lobbyElement = createLobbyElement(lobby.id, lobby);
                     lobbyList.appendChild(lobbyElement);
                 });
             } catch (error) {
@@ -514,7 +522,7 @@
                 </div>
                 <div class="flex justify-between items-center text-sm">
                     <span class="text-gray-600">Players: ${lobby.players.length}/4</span>
-                    <span class="text-gray-600">Win: ${lobby.winScore}</span>
+                    <span class="text-gray-600">Win: ${lobby.win_score}</span>
                 </div>
             `;
             
@@ -532,39 +540,38 @@
 
         // Start lobby listener for real-time updates
         function startLobbyListener() {
-            const lobbiesRef = collection(db, 'diceduel_lobbies');
-            const q = query(lobbiesRef, where('status', 'in', ['waiting', 'playing']));
-            
-            onSnapshot(q, (snapshot) => {
-                if (document.getElementById('lobbyListView').classList.contains('hidden')) return;
-                
-                const lobbyList = document.getElementById('lobbyList');
-                if (snapshot.empty) {
-                    lobbyList.innerHTML = '<p class="text-gray-500 text-center py-4">No active lobbies. Create one!</p>';
-                    return;
-                }
-
-                lobbyList.innerHTML = '';
-                snapshot.forEach(doc => {
-                    const lobby = doc.data();
-                    const lobbyElement = createLobbyElement(doc.id, lobby);
-                    lobbyList.appendChild(lobbyElement);
-                });
-            });
+            const channel = supabase
+                .channel('lobby_changes')
+                .on(
+                    'postgres_changes',
+                    {
+                        event: '*',
+                        schema: 'public',
+                        table: 'diceduel_lobbies',
+                        filter: `status=in.(waiting,playing)`
+                    },
+                    async (payload) => {
+                        if (document.getElementById('lobbyListView').classList.contains('hidden')) return;
+                        await loadLobbies();
+                    }
+                )
+                .subscribe();
         }
 
         // Join lobby
         window.joinLobby = async (lobbyId) => {
             try {
-                const lobbyRef = doc(db, 'diceduel_lobbies', lobbyId);
-                const lobbySnap = await getDoc(lobbyRef);
+                const { data: lobby, error: fetchError } = await supabase
+                    .from('diceduel_lobbies')
+                    .select('*')
+                    .eq('id', lobbyId)
+                    .single();
                 
-                if (!lobbySnap.exists()) {
+                if (fetchError) throw fetchError;
+                if (!lobby) {
                     alert('Lobby not found');
                     return;
                 }
-                
-                const lobby = lobbySnap.data();
                 
                 if (lobby.players.length >= 4) {
                     alert('Lobby is full');
@@ -576,10 +583,18 @@
                     return;
                 }
                 
-                await updateDoc(lobbyRef, {
-                    players: arrayUnion(playerName),
-                    [`playerScores.${playerName}`]: 0
-                });
+                const updatedPlayers = [...lobby.players, playerName];
+                const updatedScores = { ...lobby.player_scores, [playerName]: 0 };
+
+                const { error: updateError } = await supabase
+                    .from('diceduel_lobbies')
+                    .update({
+                        players: updatedPlayers,
+                        player_scores: updatedScores
+                    })
+                    .eq('id', lobbyId);
+
+                if (updateError) throw updateError;
                 
                 currentLobbyId = lobbyId;
                 await joinLobbyView(lobbyId);
@@ -597,40 +612,61 @@
             document.getElementById('gameView').classList.remove('hidden');
             
             // Set up real-time listener for this lobby
-            const lobbyRef = doc(db, 'diceduel_lobbies', lobbyId);
-            
-            if (unsubscribeLobby) {
-                unsubscribeLobby();
+            if (lobbySubscription) {
+                supabase.removeChannel(lobbySubscription);
             }
             
-            unsubscribeLobby = onSnapshot(lobbyRef, (doc) => {
-                if (!doc.exists()) {
-                    alert('Lobby was deleted');
-                    leaveLobby();
-                    return;
-                }
-                
-                currentGameState = doc.data();
+            lobbySubscription = supabase
+                .channel(`lobby_${lobbyId}`)
+                .on(
+                    'postgres_changes',
+                    {
+                        event: '*',
+                        schema: 'public',
+                        table: 'diceduel_lobbies',
+                        filter: `id=eq.${lobbyId}`
+                    },
+                    async (payload) => {
+                        if (payload.eventType === 'DELETE') {
+                            alert('Lobby was deleted');
+                            leaveLobby();
+                            return;
+                        }
+                        currentGameState = payload.new;
+                        updateGameView(currentGameState);
+                    }
+                )
+                .subscribe();
+
+            // Load initial state
+            const { data, error } = await supabase
+                .from('diceduel_lobbies')
+                .select('*')
+                .eq('id', lobbyId)
+                .single();
+
+            if (data) {
+                currentGameState = data;
                 updateGameView(currentGameState);
-            });
+            }
         }
 
         // Update game view
         function updateGameView(gameState) {
             // Update header
             document.getElementById('gameLobbyName').textContent = gameState.name;
-            document.getElementById('gameWinScore').textContent = gameState.winScore;
+            document.getElementById('gameWinScore').textContent = gameState.win_score;
             
             // Update players list
             const playersList = document.getElementById('playersList');
             playersList.innerHTML = '';
             
-            const currentTurnPlayer = gameState.players[gameState.currentTurn];
-            const isMyTurn = currentTurnPlayer === playerName && gameState.gameStarted;
+            const currentTurnPlayer = gameState.players[gameState.current_turn];
+            const isMyTurn = currentTurnPlayer === playerName && gameState.game_started;
             
             gameState.players.forEach((player, index) => {
-                const isCurrentTurn = index === gameState.currentTurn && gameState.gameStarted;
-                const score = gameState.playerScores[player] || 0;
+                const isCurrentTurn = index === gameState.current_turn && gameState.game_started;
+                const score = gameState.player_scores[player] || 0;
                 
                 const playerCard = document.createElement('div');
                 playerCard.className = `player-card flex justify-between items-center p-3 rounded-lg ${
@@ -649,7 +685,7 @@
             });
             
             // Update game status
-            if (!gameState.gameStarted) {
+            if (!gameState.game_started) {
                 document.getElementById('gameStatus').textContent = 'Waiting to start';
                 document.getElementById('waitingMessage').classList.remove('hidden');
                 document.getElementById('diceArea').classList.add('hidden');
@@ -668,7 +704,7 @@
                 document.getElementById('diceArea').classList.add('hidden');
                 
                 // Show winner
-                const winner = Object.entries(gameState.playerScores)
+                const winner = Object.entries(gameState.player_scores)
                     .sort((a, b) => b[1] - a[1])[0];
                 document.getElementById('winnerName').textContent = winner[0];
                 document.getElementById('winnerScore').textContent = winner[1];
@@ -719,11 +755,15 @@
             if (!currentLobbyId) return;
             
             try {
-                const lobbyRef = doc(db, 'diceduel_lobbies', currentLobbyId);
-                await updateDoc(lobbyRef, {
-                    gameStarted: true,
-                    status: 'playing'
-                });
+                const { error } = await supabase
+                    .from('diceduel_lobbies')
+                    .update({
+                        game_started: true,
+                        status: 'playing'
+                    })
+                    .eq('id', currentLobbyId);
+
+                if (error) throw error;
             } catch (error) {
                 console.error('Error starting game:', error);
                 alert('Failed to start game: ' + error.message);
@@ -775,9 +815,8 @@
             if (!currentGameState || currentRoll === 0) return;
             
             try {
-                const lobbyRef = doc(db, 'diceduel_lobbies', currentLobbyId);
-                const currentPlayer = currentGameState.players[currentGameState.currentTurn];
-                const newScore = (currentGameState.playerScores[currentPlayer] || 0) + currentRoll;
+                const currentPlayer = currentGameState.players[currentGameState.current_turn];
+                const newScore = (currentGameState.player_scores[currentPlayer] || 0) + currentRoll;
                 const usedRerolls = 2 - rerollsRemaining;
                 
                 // Create history entry
@@ -786,25 +825,33 @@
                     roll: currentRoll,
                     rerolls: usedRerolls,
                     score: newScore,
-                    timestamp: Timestamp.now()
+                    timestamp: new Date().toISOString()
                 };
                 
                 // Check for winner
-                const isWinner = newScore >= currentGameState.winScore;
+                const isWinner = newScore >= currentGameState.win_score;
                 
                 // Update game state
-                const nextTurn = (currentGameState.currentTurn + 1) % currentGameState.players.length;
+                const nextTurn = (currentGameState.current_turn + 1) % currentGameState.players.length;
+                const updatedScores = { ...currentGameState.player_scores, [currentPlayer]: newScore };
+                const updatedHistory = [...(currentGameState.history || []), historyEntry];
+                
                 const updateData = {
-                    [`playerScores.${currentPlayer}`]: newScore,
-                    currentTurn: nextTurn,
-                    history: arrayUnion(historyEntry)
+                    player_scores: updatedScores,
+                    current_turn: nextTurn,
+                    history: updatedHistory
                 };
                 
                 if (isWinner) {
                     updateData.status = 'finished';
                 }
                 
-                await updateDoc(lobbyRef, updateData);
+                const { error } = await supabase
+                    .from('diceduel_lobbies')
+                    .update(updateData)
+                    .eq('id', currentLobbyId);
+
+                if (error) throw error;
                 
                 // Reset for next turn
                 currentRoll = 0;
@@ -825,25 +872,38 @@
             if (!currentLobbyId) return;
             
             try {
-                if (unsubscribeLobby) {
-                    unsubscribeLobby();
-                    unsubscribeLobby = null;
+                if (lobbySubscription) {
+                    supabase.removeChannel(lobbySubscription);
+                    lobbySubscription = null;
                 }
                 
-                const lobbyRef = doc(db, 'diceduel_lobbies', currentLobbyId);
-                const lobbySnap = await getDoc(lobbyRef);
+                const { data: lobby, error: fetchError } = await supabase
+                    .from('diceduel_lobbies')
+                    .select('*')
+                    .eq('id', currentLobbyId)
+                    .single();
                 
-                if (lobbySnap.exists()) {
-                    const lobby = lobbySnap.data();
-                    
-                    // Remove player
-                    await updateDoc(lobbyRef, {
-                        players: arrayRemove(playerName)
-                    });
+                if (lobby) {
+                    const updatedPlayers = lobby.players.filter(p => p !== playerName);
                     
                     // If no players left or creator left, delete lobby
-                    if (lobby.players.length <= 1 || lobby.creator === playerName) {
-                        await deleteDoc(lobbyRef);
+                    if (updatedPlayers.length === 0 || lobby.creator === playerName) {
+                        await supabase
+                            .from('diceduel_lobbies')
+                            .delete()
+                            .eq('id', currentLobbyId);
+                    } else {
+                        // Remove player from lobby
+                        const updatedScores = { ...lobby.player_scores };
+                        delete updatedScores[playerName];
+                        
+                        await supabase
+                            .from('diceduel_lobbies')
+                            .update({
+                                players: updatedPlayers,
+                                player_scores: updatedScores
+                            })
+                            .eq('id', currentLobbyId);
                     }
                 }
                 
