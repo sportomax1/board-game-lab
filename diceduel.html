@@ -389,6 +389,8 @@
         let hasRolledThisTurn = false;
         let lastTurnPlayer = null;
         let notificationPermission = false;
+        let lobbyListPollInterval = null;
+        let gamePollInterval = null;
 
         // Request notification permission
         async function requestNotificationPermission() {
@@ -486,10 +488,7 @@
 
             await loadLobbies();
             startLobbyListener();
-        };
-
-        // Logout
-        window.logout = async () => {
+            startLobbyListPolling();
             if (currentLobbyId) {
                 try { await leaveLobby(); } catch (e) { console.warn('Error leaving lobby during logout', e); }
             }
@@ -504,6 +503,10 @@
                 try { supabase.removeChannel(lobbySubscription); } catch (e) { console.warn('Failed to remove channel', e); }
                 lobbySubscription = null;
             }
+
+            // Clear polling intervals
+            stopLobbyListPolling();
+            stopGamePolling();
 
             // Show password screen without a full reload
             document.getElementById('app').classList.add('hidden');
@@ -539,7 +542,11 @@
                         await joinLobbyView(savedLobby);
                     } catch (e) {
                         console.warn('Failed to rejoin saved lobby', e);
+                        // Still start polling for lobby list if rejoin fails
+                        startLobbyListPolling();
                     }
+                } else {
+                    startLobbyListPolling();
                 }
             } catch (e) {
                 console.error('Failed to resume session:', e);
@@ -570,6 +577,73 @@
             document.getElementById('createLobbyView').classList.add('hidden');
             document.getElementById('lobbyListView').classList.remove('hidden');
         };
+
+        // Start polling lobby list (every 3 seconds)
+        function startLobbyListPolling() {
+            stopLobbyListPolling(); // Clear any existing interval
+            console.log('🔄 Starting lobby list auto-refresh (every 3s)');
+            lobbyListPollInterval = setInterval(async () => {
+                if (!document.getElementById('lobbyListView').classList.contains('hidden')) {
+                    await loadLobbies();
+                }
+            }, 3000);
+        }
+
+        function stopLobbyListPolling() {
+            if (lobbyListPollInterval) {
+                clearInterval(lobbyListPollInterval);
+                lobbyListPollInterval = null;
+                console.log('⏸️ Stopped lobby list polling');
+            }
+        }
+
+        // Start polling game state (every 3 seconds)
+        function startGamePolling() {
+            stopGamePolling(); // Clear any existing interval
+            console.log('🔄 Starting game state auto-refresh (every 3s)');
+            gamePollInterval = setInterval(async () => {
+                if (currentLobbyId && !document.getElementById('gameView').classList.contains('hidden')) {
+                    try {
+                        const { data, error } = await supabase
+                            .from('diceduel_lobbies')
+                            .select('*')
+                            .eq('id', currentLobbyId)
+                            .single();
+                        
+                        if (data && !error) {
+                            const oldState = currentGameState;
+                            currentGameState = data;
+                            
+                            // Check if turn changed to current player
+                            if (currentGameState && oldState) {
+                                const oldTurnPlayer = oldState.players?.[oldState.current_turn];
+                                const newTurnPlayer = currentGameState.players?.[currentGameState.current_turn];
+                                
+                                if (newTurnPlayer === playerName && oldTurnPlayer !== playerName && currentGameState.game_started) {
+                                    showTurnNotification();
+                                } else if (newTurnPlayer !== playerName) {
+                                    hideTurnNotification();
+                                }
+                            }
+                            
+                            updateGameView(currentGameState);
+                        } else if (error) {
+                            console.warn('Poll failed:', error);
+                        }
+                    } catch (e) {
+                        console.warn('Game polling error:', e);
+                    }
+                }
+            }, 3000);
+        }
+
+        function stopGamePolling() {
+            if (gamePollInterval) {
+                clearInterval(gamePollInterval);
+                gamePollInterval = null;
+                console.log('⏸️ Stopped game polling');
+            }
+        }
 
         // Create lobby
         window.createLobby = async () => {
@@ -760,6 +834,10 @@
             currentLobbyId = lobbyId;
             // Persist the lobby so we can soft-resume after refresh
             try { localStorage.setItem('diceduel_current_lobby', String(lobbyId)); } catch (e) { console.warn('Could not persist lobby id', e); }
+            
+            // Stop lobby list polling, start game polling
+            stopLobbyListPolling();
+            startGamePolling();
             
             document.getElementById('lobbyListView').classList.add('hidden');
             document.getElementById('gameView').classList.remove('hidden');
@@ -1201,11 +1279,15 @@
                 resetDiceUI();
                 hideTurnNotification();
                 
+                // Stop game polling, restart lobby list polling
+                stopGamePolling();
+                
                 document.getElementById('gameView').classList.add('hidden');
                 document.getElementById('waitingTurnArea').classList.add('hidden');
                 document.getElementById('lobbyListView').classList.remove('hidden');
                 
                 await loadLobbies();
+                startLobbyListPolling();
             } catch (error) {
                 console.error('Error leaving lobby:', error);
                 alert('Failed to leave lobby: ' + error.message);
