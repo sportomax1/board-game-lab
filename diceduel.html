@@ -214,9 +214,15 @@
                             <p class="text-sm text-gray-600">Player: <span id="playerNameDisplay" class="font-semibold"></span></p>
                         </div>
                     </div>
-                    <button onclick="logout()" class="text-gray-600 hover:text-gray-800 px-3 py-1 rounded">
-                        Logout
-                    </button>
+                    <div class="flex items-center space-x-3">
+                        <div id="realtimeStatus" class="flex items-center space-x-1">
+                            <span class="w-2 h-2 rounded-full bg-green-500 animate-pulse"></span>
+                            <span class="text-xs text-gray-600">Live</span>
+                        </div>
+                        <button onclick="logout()" class="text-gray-600 hover:text-gray-800 px-3 py-1 rounded">
+                            Logout
+                        </button>
+                    </div>
                 </div>
             </div>
 
@@ -302,7 +308,7 @@
                         <h3 class="text-lg font-bold text-gray-800 mb-3">Players</h3>
                         <div id="playersList" class="space-y-2"></div>
                         <div id="waitingMessage" class="hidden mt-4 text-center text-gray-600">
-                            <p class="mb-2">Waiting for players...</p>
+                            <p class="mb-2">Ready to start! (1-4 players)</p>
                             <button onclick="startGame()" id="startGameBtn" class="bg-green-600 hover:bg-green-700 text-white font-bold py-2 px-4 rounded-lg transition-colors">
                                 Start Game
                             </button>
@@ -618,6 +624,8 @@
 
         // Start lobby listener for real-time updates
         function startLobbyListener() {
+            console.log('🔔 Setting up lobby list real-time listener...');
+            
             const channel = supabase
                 .channel('lobby_changes')
                 .on(
@@ -625,15 +633,17 @@
                     {
                         event: '*',
                         schema: 'public',
-                        table: 'diceduel_lobbies',
-                        filter: `status=in.(waiting,playing)`
+                        table: 'diceduel_lobbies'
                     },
                     async (payload) => {
+                        console.log('🔔 Lobby change detected:', payload.eventType);
                         if (document.getElementById('lobbyListView').classList.contains('hidden')) return;
                         await loadLobbies();
                     }
                 )
-                .subscribe();
+                .subscribe((status) => {
+                    console.log('📡 Lobby subscription status:', status);
+                });
         }
 
         // Join lobby
@@ -694,6 +704,8 @@
                 supabase.removeChannel(lobbySubscription);
             }
             
+            console.log(`🔔 Setting up real-time listener for lobby ${lobbyId}...`);
+            
             lobbySubscription = supabase
                 .channel(`lobby_${lobbyId}`)
                 .on(
@@ -705,6 +717,8 @@
                         filter: `id=eq.${lobbyId}`
                     },
                     async (payload) => {
+                        console.log('🔔 Game update received:', payload.eventType, payload);
+                        
                         if (payload.eventType === 'DELETE') {
                             alert('Lobby was deleted');
                             leaveLobby();
@@ -719,7 +733,10 @@
                             const oldTurnPlayer = oldState.players?.[oldState.current_turn];
                             const newTurnPlayer = currentGameState.players?.[currentGameState.current_turn];
                             
+                            console.log(`👥 Turn update: ${oldTurnPlayer} -> ${newTurnPlayer}`);
+                            
                             if (newTurnPlayer === playerName && oldTurnPlayer !== playerName && currentGameState.game_started) {
+                                console.log('🎲 Your turn!');
                                 showTurnNotification();
                             } else if (newTurnPlayer !== playerName) {
                                 hideTurnNotification();
@@ -729,7 +746,21 @@
                         updateGameView(currentGameState);
                     }
                 )
-                .subscribe();
+                .subscribe((status) => {
+                    console.log('📡 Game subscription status:', status);
+                    if (status === 'SUBSCRIBED') {
+                        console.log('✅ Successfully subscribed to lobby updates');
+                    } else if (status === 'CHANNEL_ERROR') {
+                        console.error('❌ Subscription error - trying to reconnect...');
+                        // Try to resubscribe after a delay
+                        setTimeout(() => {
+                            if (currentLobbyId === lobbyId) {
+                                console.log('🔄 Attempting to resubscribe...');
+                                joinLobbyView(lobbyId);
+                            }
+                        }, 3000);
+                    }
+                });
 
             // Load initial state
             const { data, error } = await supabase
@@ -739,13 +770,18 @@
                 .single();
 
             if (data) {
+                console.log('📥 Initial game state loaded:', data);
                 currentGameState = data;
                 updateGameView(currentGameState);
+            } else if (error) {
+                console.error('❌ Failed to load initial state:', error);
             }
         }
 
         // Update game view
         function updateGameView(gameState) {
+            console.log('🔄 Updating game view with state:', gameState);
+            
             // Update header
             document.getElementById('gameLobbyName').textContent = gameState.name;
             document.getElementById('gameWinScore').textContent = gameState.win_score;
@@ -784,9 +820,9 @@
                 document.getElementById('diceArea').classList.add('hidden');
                 document.getElementById('winnerDisplay').classList.add('hidden');
                 
-                // Only show start button to creator
+                // Only show start button to creator (allow 1+ players)
                 const startBtn = document.getElementById('startGameBtn');
-                if (gameState.creator === playerName && gameState.players.length >= 2) {
+                if (gameState.creator === playerName && gameState.players.length >= 1) {
                     startBtn.classList.remove('hidden');
                 } else {
                     startBtn.classList.add('hidden');
@@ -921,6 +957,8 @@
                 const newScore = (currentGameState.player_scores[currentPlayer] || 0) + currentRoll;
                 const usedRerolls = 2 - rerollsRemaining;
                 
+                console.log(`🎲 ${currentPlayer} rolled ${currentRoll} (${usedRerolls} rerolls used), new score: ${newScore}`);
+                
                 // Create history entry
                 const historyEntry = {
                     player: currentPlayer,
@@ -946,7 +984,10 @@
                 
                 if (isWinner) {
                     updateData.status = 'finished';
+                    console.log(`🏆 ${currentPlayer} wins!`);
                 }
+                
+                console.log('📤 Updating game state...', updateData);
                 
                 const { error } = await supabase
                     .from('diceduel_lobbies')
@@ -954,6 +995,8 @@
                     .eq('id', currentLobbyId);
 
                 if (error) throw error;
+                
+                console.log('✅ Game state updated successfully');
                 
                 // Reset for next turn
                 currentRoll = 0;
