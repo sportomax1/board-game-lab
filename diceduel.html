@@ -103,6 +103,27 @@
             animation: fadeIn 0.5s ease-out;
         }
 
+        /* Turn notification */
+        @keyframes slideDown {
+            from {
+                opacity: 0;
+                transform: translateY(-20px);
+            }
+            to {
+                opacity: 1;
+                transform: translateY(0);
+            }
+        }
+
+        @keyframes glow {
+            0%, 100% { box-shadow: 0 0 5px rgba(139, 92, 246, 0.5); }
+            50% { box-shadow: 0 0 20px rgba(139, 92, 246, 0.8), 0 0 30px rgba(139, 92, 246, 0.6); }
+        }
+
+        .turn-notification {
+            animation: slideDown 0.5s ease-out, glow 2s ease-in-out infinite;
+        }
+
         /* Scroll animations */
         .scroll-container {
             max-height: 400px;
@@ -145,16 +166,17 @@
             </div>
             <div class="space-y-4">
                 <input 
-                    type="password" 
-                    id="appPassword" 
-                    placeholder="Password"
-                    class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
-                    onkeypress="if(event.key==='Enter') unlockApp()"
-                >
-                <input 
                     type="text" 
                     id="playerNameInput" 
                     placeholder="Your Name"
+                    class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
+                    onkeypress="if(event.key==='Enter') unlockApp()"
+                    autofocus
+                >
+                <input 
+                    type="password" 
+                    id="appPassword" 
+                    placeholder="Password"
                     class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                     onkeypress="if(event.key==='Enter') unlockApp()"
                 >
@@ -170,6 +192,18 @@
 
         <!-- Main App -->
         <div id="app" class="hidden">
+            <!-- Turn Notification Banner -->
+            <div id="turnNotification" class="hidden turn-notification bg-gradient-to-r from-purple-500 to-pink-500 rounded-lg shadow-lg p-4 mb-4 text-center">
+                <div class="flex items-center justify-center space-x-3">
+                    <span class="text-4xl">🎲</span>
+                    <div>
+                        <p class="text-white font-bold text-lg">It's Your Turn!</p>
+                        <p class="text-purple-100 text-sm">Roll the dice below</p>
+                    </div>
+                    <span class="text-4xl">🎲</span>
+                </div>
+            </div>
+
             <!-- Header -->
             <div class="bg-white rounded-lg shadow-lg p-4 mb-4">
                 <div class="flex items-center justify-between">
@@ -336,6 +370,47 @@
         let lobbySubscription = null;
         let currentRoll = 0;
         let rerollsRemaining = 2;
+        let lastTurnPlayer = null;
+        let notificationPermission = false;
+
+        // Request notification permission
+        async function requestNotificationPermission() {
+            if ('Notification' in window && Notification.permission === 'default') {
+                const permission = await Notification.requestPermission();
+                notificationPermission = permission === 'granted';
+            } else if ('Notification' in window && Notification.permission === 'granted') {
+                notificationPermission = true;
+            }
+        }
+
+        // Show turn notification
+        function showTurnNotification() {
+            // Show banner
+            const banner = document.getElementById('turnNotification');
+            banner.classList.remove('hidden');
+            
+            // Show browser notification if permitted
+            if (notificationPermission && document.hidden) {
+                try {
+                    new Notification('Dice Duel - Your Turn!', {
+                        body: 'It\'s your turn to roll the dice!',
+                        icon: 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><text y="75" font-size="70">🎲</text></svg>',
+                        tag: 'dice-duel-turn',
+                        requireInteraction: false
+                    });
+                } catch (e) {
+                    console.log('Notification failed:', e);
+                }
+            }
+            
+            // Scroll to top to show banner
+            window.scrollTo({ top: 0, behavior: 'smooth' });
+        }
+
+        // Hide turn notification
+        function hideTurnNotification() {
+            document.getElementById('turnNotification')?.classList.add('hidden');
+        }
 
         // Initialize Supabase
         async function initSupabase() {
@@ -385,6 +460,9 @@
             document.getElementById('playerNameDisplay').textContent = playerName;
             document.getElementById('passwordScreen').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
+            
+            // Request notification permission
+            await requestNotificationPermission();
             
             await loadLobbies();
             startLobbyListener();
@@ -632,7 +710,22 @@
                             leaveLobby();
                             return;
                         }
+                        
+                        const oldState = currentGameState;
                         currentGameState = payload.new;
+                        
+                        // Check if turn changed to current player
+                        if (currentGameState && oldState) {
+                            const oldTurnPlayer = oldState.players?.[oldState.current_turn];
+                            const newTurnPlayer = currentGameState.players?.[currentGameState.current_turn];
+                            
+                            if (newTurnPlayer === playerName && oldTurnPlayer !== playerName && currentGameState.game_started) {
+                                showTurnNotification();
+                            } else if (newTurnPlayer !== playerName) {
+                                hideTurnNotification();
+                            }
+                        }
+                        
                         updateGameView(currentGameState);
                     }
                 )
@@ -714,12 +807,21 @@
                 document.getElementById('waitingMessage').classList.add('hidden');
                 document.getElementById('winnerDisplay').classList.add('hidden');
                 
-                // Show dice area only if it's my turn
+                // Show dice area and notification only if it's my turn
                 if (isMyTurn) {
                     document.getElementById('diceArea').classList.remove('hidden');
+                    
+                    // Show notification if turn just changed to me
+                    if (lastTurnPlayer && lastTurnPlayer !== playerName) {
+                        showTurnNotification();
+                    }
                 } else {
                     document.getElementById('diceArea').classList.add('hidden');
+                    hideTurnNotification();
                 }
+                
+                // Track last turn player
+                lastTurnPlayer = currentTurnPlayer;
             }
             
             // Update history
