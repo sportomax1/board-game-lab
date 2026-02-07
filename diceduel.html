@@ -161,9 +161,9 @@
                 <!-- Login Form -->
                 <div id="loginForm" class="space-y-3">
                     <input 
-                        type="email" 
+                        type="text" 
                         id="loginEmail" 
-                        placeholder="Email"
+                        placeholder="Email or username"
                         class="w-full px-4 py-3 bg-gray-50 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-purple-500"
                         onkeypress="if(event.key==='Enter') handleLogin()"
                     >
@@ -180,6 +180,7 @@
                     >
                         Login
                     </button>
+                    <p class="text-sm text-center"><a href="#" onclick="promptPasswordReset(); return false;" class="text-purple-600 hover:underline">Forgot password?</a></p>
                     <p id="loginError" class="text-red-600 text-sm text-center hidden"></p>
                 </div>
                 
@@ -525,26 +526,60 @@
             }
         };
         
-        // Handle login
+        // Resolve an identifier (username or email) to an email address
+        async function resolveIdentifierToEmail(identifier) {
+            if (!identifier) return null;
+            // Quick heuristic: contains @ => treat as email
+            if (identifier.includes('@')) return identifier;
+
+            try {
+                const { data, error } = await supabase
+                    .from('diceduel_users_profile')
+                    .select('email')
+                    .eq('username', identifier)
+                    .maybeSingle();
+
+                if (error) throw error;
+                if (data && data.email) return data.email;
+                return null;
+            } catch (e) {
+                console.warn('Failed to resolve username to email:', e.message || e);
+                return null;
+            }
+        }
+
+        // Handle login (accepts email or username)
         window.handleLogin = async () => {
-            const email = document.getElementById('loginEmail').value.trim();
+            const identifier = document.getElementById('loginEmail').value.trim();
             const password = document.getElementById('loginPassword').value;
             const errorEl = document.getElementById('loginError');
-            
-            if (!email || !password) {
+
+            if (!identifier || !password) {
                 errorEl.textContent = 'Please fill in all fields';
                 errorEl.classList.remove('hidden');
                 return;
             }
-            
+
             try {
+                let email = null;
+                if (identifier.includes('@')) {
+                    email = identifier;
+                } else {
+                    email = await resolveIdentifierToEmail(identifier);
+                    if (!email) {
+                        errorEl.textContent = 'Username not found';
+                        errorEl.classList.remove('hidden');
+                        return;
+                    }
+                }
+
                 const { data, error } = await supabase.auth.signInWithPassword({
                     email,
                     password
                 });
-                
+
                 if (error) throw error;
-                
+
                 await loadUserProfile(data.user.id);
                 await enterApp();
             } catch (error) {
@@ -606,13 +641,14 @@
                     return;
                 }
                 
-                // Create user profile
+                // Create user profile (include email to enable username-login)
                 const { error: profileError } = await supabase
                     .from('diceduel_users_profile')
                     .insert({
                         user_id: data.user.id,
                         username: username,
-                        display_name: username
+                        display_name: username,
+                        email: email
                     });
                 
                 if (profileError) throw profileError;
@@ -647,9 +683,34 @@
                 id: userId,
                 username: data.username,
                 display_name: data.display_name,
-                email: data.email || session.user.email || '' // Use auth email as fallback
+                    email: data.email || session.user.email || '' // Use auth email as fallback
             };
         }
+
+        // Prompt user for password-reset (username or email)
+        window.promptPasswordReset = async () => {
+            const identifier = prompt('Enter your email or username to reset your password:');
+            if (!identifier) return;
+
+            // Resolve username to email if needed
+            let email = identifier.includes('@') ? identifier : await resolveIdentifierToEmail(identifier);
+            if (!email) {
+                alert('Could not find a user with that username');
+                return;
+            }
+
+            try {
+                const { data, error } = await supabase.auth.resetPasswordForEmail(email, {
+                    redirectTo: window.location.origin + window.location.pathname
+                });
+
+                if (error) throw error;
+                alert('Password reset email sent (check your inbox)');
+            } catch (e) {
+                console.error('Password reset error:', e);
+                alert('Failed to send password reset: ' + (e.message || e));
+            }
+        };
         
         // Restore existing Supabase session
         async function restoreSession(session) {
