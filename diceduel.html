@@ -470,29 +470,69 @@
             
             playerName = name;
             localStorage.setItem('diceduel_player_name', playerName);
-            
+
             const supabaseReady = await initSupabase();
             if (!supabaseReady) return;
-            
+
             document.getElementById('playerNameDisplay').textContent = playerName;
             document.getElementById('passwordScreen').classList.add('hidden');
             document.getElementById('app').classList.remove('hidden');
-            
+
+            // Mark session as authenticated so reloads/soft refreshes keep the user logged in
+            localStorage.setItem('diceduel_authenticated', 'true');
+
             // Request notification permission
             await requestNotificationPermission();
-            
+
             await loadLobbies();
             startLobbyListener();
         };
 
         // Logout
-        window.logout = () => {
+        window.logout = async () => {
             if (currentLobbyId) {
-                leaveLobby();
+                try { await leaveLobby(); } catch (e) { console.warn('Error leaving lobby during logout', e); }
             }
+
+            // Clear persisted session
             localStorage.removeItem('diceduel_player_name');
-            location.reload();
+            localStorage.removeItem('diceduel_authenticated');
+
+            // Remove any active subscriptions
+            if (lobbySubscription && supabase) {
+                try { supabase.removeChannel(lobbySubscription); } catch (e) { console.warn('Failed to remove channel', e); }
+                lobbySubscription = null;
+            }
+
+            // Show password screen without a full reload
+            document.getElementById('app').classList.add('hidden');
+            document.getElementById('passwordScreen').classList.remove('visible');
+            document.getElementById('passwordScreen').classList.remove('hidden');
+            document.getElementById('playerNameInput').value = '';
+            document.getElementById('appPassword').value = '';
+            playerName = '';
+            currentLobbyId = null;
+            currentGameState = null;
         };
+
+        // Resume a previously authenticated session (soft resume without password prompt)
+        async function resumeSession(savedName) {
+            try {
+                playerName = savedName;
+                document.getElementById('playerNameDisplay').textContent = playerName;
+                document.getElementById('passwordScreen').classList.add('hidden');
+                document.getElementById('app').classList.remove('hidden');
+
+                const supabaseReady = await initSupabase();
+                if (!supabaseReady) return;
+
+                await requestNotificationPermission();
+                await loadLobbies();
+                startLobbyListener();
+            } catch (e) {
+                console.error('Failed to resume session:', e);
+            }
+        }
 
         // Win score selection
         window.selectWinScore = (score) => {
@@ -1157,10 +1197,16 @@
             }
         };
 
-        // Initialize on load
+        // Initialize on load — prefill name and resume session if authenticated
         const savedName = localStorage.getItem('diceduel_player_name');
+        const authenticated = localStorage.getItem('diceduel_authenticated') === 'true';
         if (savedName) {
             document.getElementById('playerNameInput').value = savedName;
+        }
+
+        if (authenticated && savedName) {
+            // Soft-resume without asking for password
+            resumeSession(savedName).catch(err => console.error('Resume session failed', err));
         }
     </script>
 </body>
