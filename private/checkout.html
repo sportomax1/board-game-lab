@@ -432,6 +432,7 @@
         let allCheckouts = [];
         let currentCheckoutGame = null;
         let currentCheckinCheckout = null;
+        const PLAY_FETCH_PARALLEL = 100; // Fetch 100 pages in parallel (same as plays.html)
         let playsData = {}; // { gameId: { lastPlayDate, playCount } }
         let shouldLoadPlays = false; // Controlled by checkbox at login
         let checkoutDates = {}; // { gameId: lastCheckoutDate }
@@ -566,39 +567,20 @@
             }
         };
 
-        // Fetch plays data from BGG API (load all months in batches to avoid 100-record per-call limit)
+        // Fetch plays data from BGG API using 100x parallel batching (same pattern as plays.html)
         async function fetchPlaysData() {
             try {
                 playsData = {};
-                console.log('Loading plays data from plays.xml...');
+                console.log('Loading plays data from BGG API...');
                 
-                // Fetch local plays.xml file
-                const response = await fetch('plays.xml?t=' + Date.now());
-                if (!response.ok) {
-                    console.warn('plays.xml not found, skipping plays data');
-                    return;
-                }
+                const allPlays = await fetchAllPlays(bggUsername);
+                console.log(`Processing ${allPlays.length} plays from API...`);
                 
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                
-                // Check for parse errors
-                const parserError = xml.querySelector('parsererror');
-                if (parserError) {
-                    console.error('Error parsing plays.xml:', parserError.textContent);
-                    return;
-                }
-                
-                const plays = xml.querySelectorAll('play');
-                console.log(`Processing ${plays.length} plays from XML...`);
-                
-                plays.forEach(play => {
-                    const gameItem = play.querySelector('item');
-                    if (gameItem) {
-                        const gameId = gameItem.getAttribute('objectid');
-                        const playDate = play.getAttribute('date');
-                        
+                allPlays.forEach(play => {
+                    const gameId = play.gameId;
+                    const playDate = play.date;
+                    
+                    if (gameId) {
                         if (!playsData[gameId]) {
                             playsData[gameId] = {
                                 lastPlayDate: playDate ? new Date(playDate) : null,
@@ -617,10 +599,76 @@
                     }
                 });
                 
-                console.log(`✓ Loaded plays data for ${Object.keys(playsData).length} games from plays.xml`);
+                console.log(`✓ Loaded plays data for ${Object.keys(playsData).length} games from BGG API`);
                 
             } catch (error) {
-                console.error('Error fetching plays data from plays.xml:', error);
+                console.error('Error fetching plays data from BGG API:', error);
+            }
+        }
+
+        // Fetch all plays using 100x parallel batching (from plays.html pattern)
+        async function fetchAllPlays(username) {
+            const allPlays = [];
+            let currentPageStart = 1;
+            let stopFound = false;
+
+            while (!stopFound) {
+                const batchPromises = [];
+                for (let i = 0; i < PLAY_FETCH_PARALLEL; i++) {
+                    batchPromises.push(fetchPlayPage(username, currentPageStart + i));
+                }
+
+                const results = await Promise.all(batchPromises);
+                results.sort((a, b) => a.page - b.page);
+
+                for (const res of results) {
+                    if (res && res.plays && res.plays.length > 0) {
+                        allPlays.push(...res.plays);
+                    } else {
+                        stopFound = true;
+                    }
+                }
+
+                if (!stopFound) {
+                    currentPageStart += PLAY_FETCH_PARALLEL;
+                    console.log(`Fetched ${allPlays.length} plays so far...`);
+                    await new Promise(r => setTimeout(r, 600));
+                }
+            }
+            
+            return allPlays;
+        }
+
+        // Fetch a single page of plays from BGG API (from plays.html pattern)
+        async function fetchPlayPage(username, page) {
+            const url = `/api/bgg-helper?endpoint=plays&username=${encodeURIComponent(username)}&page=${page}`;
+            try {
+                const response = await fetch(url);
+                const text = await response.text();
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                const playNodes = xml.getElementsByTagName('play');
+                if (playNodes.length === 0) return { page, plays: [] };
+
+                const pagePlays = [];
+                for (let i = 0; i < playNodes.length; i++) {
+                    const node = playNodes[i];
+                    const item = node.getElementsByTagName('item')[0];
+                    pagePlays.push({
+                        id: node.getAttribute('id'),
+                        date: node.getAttribute('date'),
+                        quantity: node.getAttribute('quantity') || '1',
+                        length: node.getAttribute('length') || '0',
+                        incomplete: node.getAttribute('incomplete') || '0',
+                        nowinstats: node.getAttribute('nowinstats') || '0',
+                        location: node.getAttribute('location') || 'IRL',
+                        game: item ? item.getAttribute('name') : 'Unknown',
+                        gameId: item ? item.getAttribute('objectid') : null
+                    });
+                }
+                return { page, plays: pagePlays };
+            } catch (e) {
+                console.warn(`Error fetching page ${page}:`, e);
+                return { page, plays: [] };
             }
         }
 
