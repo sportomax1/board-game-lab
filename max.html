@@ -198,8 +198,8 @@
         
         <div class="bg-red-50 border-l-4 border-red-600 p-4 rounded">
           <h4 class="font-bold text-red-700 flex items-center gap-2"><i class="fa-solid fa-7"></i> Phase 7: Dense Batch Scan</h4>
-          <p class="text-sm text-slate-600 mt-2">Sequential batch scanning using 20 IDs per batch, only as final resort</p>
-          <p class="text-xs text-slate-500 mt-1">✓ Stops after 30 consecutive empty batches • Handles ID gaps safely</p>
+          <p class="text-sm text-slate-600 mt-2">Sequential batch scanning using 20 IDs per batch with 100x parallel, only as final resort</p>
+          <p class="text-xs text-slate-500 mt-1">✓ 3 rounds of 100 batches = 6000 IDs • Stops after 3 empty rounds</p>
         </div>
         
         <div class="bg-slate-50 border-l-4 border-slate-600 p-4 rounded">
@@ -683,44 +683,54 @@ async function findMaxId(startId) {
   
   if (shouldStop) return;
   
-  // Phase 7: Dense batch scan (only as final resort)
+  // Phase 7: Dense batch scan with 100x parallel (only as final resort)
   phaseStart('Phase 7: Dense Batch Scan');
-  log(`🔎 Phase 7: Dense verification from ${validatedMax.toLocaleString()}`, 'info');
+  log(`🔎 Phase 7: Dense verification from ${validatedMax.toLocaleString()} (100x parallel)`, 'info');
   
   let scanId = validatedMax + 1;
-  let consecutiveEmptyBatches = 0;
-  const MAX_EMPTY_BATCHES = 30;
+  let consecutiveEmptyRounds = 0;
+  const MAX_EMPTY_ROUNDS = 3; // 3 rounds of 100 batches = 6000 IDs checked
+  const PARALLEL_BATCHES = 100;
   
-  while (!shouldStop && consecutiveEmptyBatches < MAX_EMPTY_BATCHES) {
-    statusText.textContent = `Dense scan ${scanId.toLocaleString()}... (${consecutiveEmptyBatches}/${MAX_EMPTY_BATCHES} empty)`;
+  while (!shouldStop && consecutiveEmptyRounds < MAX_EMPTY_ROUNDS) {
+    statusText.textContent = `Dense scan ${scanId.toLocaleString()}... (round ${consecutiveEmptyRounds + 1}/${MAX_EMPTY_ROUNDS})`;
     
-    const batchIds = [];
-    for (let i = 0; i < BATCH_SIZE; i++) {
-      batchIds.push(scanId + i);
+    // Create 100 batches in parallel (2000 IDs per round)
+    const batchPromises = [];
+    for (let b = 0; b < PARALLEL_BATCHES; b++) {
+      const batchIds = [];
+      for (let i = 0; i < BATCH_SIZE; i++) {
+        batchIds.push(scanId + (b * BATCH_SIZE) + i);
+      }
+      batchPromises.push(checkIds(batchIds));
     }
     
-    const result = await checkIds(batchIds);
+    const results = await Promise.all(batchPromises);
     
-    if (result.maxFound > 0 && result.maxFound > validatedMax) {
-      validatedMax = result.maxFound;
+    // Find highest ID from this parallel round
+    let roundMax = 0;
+    for (const result of results) {
+      if (result.maxFound > roundMax) {
+        roundMax = result.maxFound;
+      }
+    }
+    
+    if (roundMax > validatedMax) {
+      validatedMax = roundMax;
       currentMax = validatedMax;
-      consecutiveEmptyBatches = 0;
+      consecutiveEmptyRounds = 0;
       scanId = validatedMax + 1;
       log(`✓ Dense scan hit → ${validatedMax.toLocaleString()}`, 'success');
     } else {
-      consecutiveEmptyBatches++;
-      scanId += BATCH_SIZE;
+      consecutiveEmptyRounds++;
+      scanId += PARALLEL_BATCHES * BATCH_SIZE;
     }
     
-    if (consecutiveEmptyBatches % 10 === 0) {
-      phaseProgress(`${consecutiveEmptyBatches}/${MAX_EMPTY_BATCHES} empty batches, scanned up to ${scanId.toLocaleString()}`);
-    }
+    phaseProgress(`Round ${consecutiveEmptyRounds}/${MAX_EMPTY_ROUNDS}, scanned up to ${scanId.toLocaleString()}`);
     
     updateMetrics();
-    const progress = Math.min(100, (consecutiveEmptyBatches / MAX_EMPTY_BATCHES) * 100);
+    const progress = Math.min(100, (consecutiveEmptyRounds / MAX_EMPTY_ROUNDS) * 100);
     progressBar.style.width = `${progress}%`;
-    
-    await new Promise(r => setTimeout(r, 100));
   }
   
   phaseEnd('Phase 7: Dense Batch Scan');
