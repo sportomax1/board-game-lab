@@ -198,8 +198,8 @@
         
         <div class="bg-red-50 border-l-4 border-red-600 p-4 rounded">
           <h4 class="font-bold text-red-700 flex items-center gap-2"><i class="fa-solid fa-7"></i> Phase 7: Dense Batch Scan</h4>
-          <p class="text-sm text-slate-600 mt-2">Sequential batch scanning using 20 IDs per batch with 100x parallel, only as final resort</p>
-          <p class="text-xs text-slate-500 mt-1">✓ 3 rounds of 100 batches = 6000 IDs • Stops after 3 empty rounds</p>
+          <p class="text-sm text-slate-600 mt-2">Dense scanning using 20 IDs per batch with 100x parallel, only as final resort</p>
+          <p class="text-xs text-slate-500 mt-1">✓ 1 round of 100 batches = 2000 IDs checked • Handles rare scattered gaps</p>
         </div>
         
         <div class="bg-slate-50 border-l-4 border-slate-600 p-4 rounded">
@@ -559,9 +559,9 @@ async function findMaxId(startId) {
   
   if (shouldStop) return;
   
-  // Phase 4: Third digit refinement
+  // Phase 4: Third digit refinement (with batched parallel execution)
   phaseStart('Phase 4: Third Digit Refinement');
-  log(`🎯 Phase 4: Third digit refinement from ${validatedMax.toLocaleString()}`, 'info');
+  log(`🎯 Phase 4: Third digit refinement from ${validatedMax.toLocaleString()} (batched 100x parallel)`, 'info');
   const mag4 = Math.pow(10, Math.floor(Math.log10(validatedMax)) - 2);
   if (mag4 >= 1) {
     const base4 = Math.floor(validatedMax / mag4) * mag4;
@@ -574,12 +574,21 @@ async function findMaxId(startId) {
     }
     
     if (candidates4.length > 0) {
-      statusText.textContent = `Testing third digit (${candidates4.length} checkpoints)...`;
-      for (let i = 0; i < candidates4.length; i += PARALLEL) {
+      // Group candidates into batches of 20 IDs
+      const batches = [];
+      for (let i = 0; i < candidates4.length; i += BATCH_SIZE) {
+        batches.push(candidates4.slice(i, i + BATCH_SIZE));
+      }
+      
+      statusText.textContent = `Testing third digit (${batches.length} batches)...`;
+      
+      // Process batches 100 at a time
+      for (let i = 0; i < batches.length; i += PARALLEL) {
         if (shouldStop) break;
-        const batch = candidates4.slice(i, i + PARALLEL);
-        const results4 = await Promise.all(batch.map(id => checkIds([id])));
-        results4.forEach((result, idx) => {
+        const parallelBatches = batches.slice(i, i + PARALLEL);
+        const results4 = await Promise.all(parallelBatches.map(batch => checkIds(batch)));
+        
+        results4.forEach((result) => {
           if (result.maxFound > 0 && result.maxFound > validatedMax) {
             validatedMax = result.maxFound;
             currentMax = validatedMax;
@@ -587,12 +596,11 @@ async function findMaxId(startId) {
           }
         });
         
-        if ((i + PARALLEL) % (PARALLEL * 10) === 0) {
-          phaseProgress(`Tested ${i + PARALLEL}/${candidates4.length} checkpoints`);
+        if ((i + PARALLEL) % (PARALLEL * 2) === 0) {
+          phaseProgress(`Tested ${Math.min(i + PARALLEL, batches.length)}/${batches.length} batches`);
         }
         
         updateMetrics();
-        await new Promise(r => setTimeout(r, 100));
       }
     }
   }
@@ -685,11 +693,11 @@ async function findMaxId(startId) {
   
   // Phase 7: Dense batch scan with 100x parallel (only as final resort)
   phaseStart('Phase 7: Dense Batch Scan');
-  log(`🔎 Phase 7: Dense verification from ${validatedMax.toLocaleString()} (100x parallel)`, 'info');
+  log(`🔎 Phase 7: Dense verification from ${validatedMax.toLocaleString()} (100x parallel, 2000 IDs)`, 'info');
   
   let scanId = validatedMax + 1;
   let consecutiveEmptyRounds = 0;
-  const MAX_EMPTY_ROUNDS = 3; // 3 rounds of 100 batches = 6000 IDs checked
+  const MAX_EMPTY_ROUNDS = 1; // 1 round of 100 batches = 2000 IDs checked
   const PARALLEL_BATCHES = 100;
   
   while (!shouldStop && consecutiveEmptyRounds < MAX_EMPTY_ROUNDS) {
@@ -737,34 +745,30 @@ async function findMaxId(startId) {
   
   if (shouldStop) return;
   
-  // Phase 8: Final verification jumps
+  // Phase 8: Final verification jumps (all parallel)
   phaseStart('Phase 8: Final Verification');
-  log(`✅ Phase 8: Final verification from ${validatedMax.toLocaleString()}`, 'info');
+  log(`✅ Phase 8: Final verification from ${validatedMax.toLocaleString()} (12 checks in parallel)`, 'info');
+  
+  statusText.textContent = `Verifying jumps...`;
   
   const verificationJumps = [1000, 10000, 100000, 1000000];
-  for (const jump of verificationJumps) {
-    if (shouldStop) break;
-    
-    const testIds = [
-      validatedMax + jump,
-      validatedMax + jump + 100,
-      validatedMax + jump + 500
-    ];
-    
-    statusText.textContent = `Verifying +${jump.toLocaleString()}...`;
-    
-    const results = await Promise.all(testIds.map(id => checkIds([id])));
-    
-    for (const result of results) {
-      if (result.maxFound > 0 && result.maxFound > validatedMax) {
-        log(`⚠️ Found ${result.maxFound.toLocaleString()} beyond expected! Re-scanning...`, 'warn');
-        return findMaxId(result.maxFound);
-      }
+  const allTestIds = verificationJumps.flatMap(jump => [
+    validatedMax + jump,
+    validatedMax + jump + 100,
+    validatedMax + jump + 500
+  ]);
+  
+  // Check all 12 IDs in parallel
+  const results = await Promise.all(allTestIds.map(id => checkIds([id])));
+  
+  for (const result of results) {
+    if (result.maxFound > 0 && result.maxFound > validatedMax) {
+      log(`⚠️ Found ${result.maxFound.toLocaleString()} beyond expected! Re-scanning...`, 'warn');
+      return findMaxId(result.maxFound);
     }
-    
-    updateMetrics();
-    await new Promise(r => setTimeout(r, 100));
   }
+  
+  updateMetrics();
   
   phaseEnd('Phase 8: Final Verification');
   
