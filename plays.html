@@ -87,7 +87,7 @@
                     <select id="buddySelect" onchange="onBuddyChange()" 
                         class="px-2 py-1 rounded border border-slate-200 text-[11px] font-semibold outline-none bg-white focus:ring-1 focus:ring-blue-500"
                         style="max-width: 120px;">
-                        <option value="">Their Plays ↓</option>
+                        <option value="">Buddies ↓</option>
                     </select>
                     
                     <div class="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded border border-slate-100">
@@ -359,13 +359,34 @@
         
         function populateBuddyDropdown() {
             const select = document.getElementById('buddySelect');
-            const baseUsername = document.getElementById('username').value.trim();
-            const friends = Array.from(playersMap.keys())
-                .filter(name => name !== baseUsername && name !== 'Unknown')
-                .sort();
-            
-            select.innerHTML = '<option value="">Their Plays ↓</option>' + 
-                friends.map(name => `<option value="${name}">${name}</option>`).join('');
+            const baseUsername = document.getElementById('username').value.trim() || 'sportomax';
+
+            // Try to fetch buddies using the same user API used in user.html
+            try {
+                fetch(`/api/bgg-helper?endpoint=user&name=${encodeURIComponent(baseUsername)}&buddies=1`) 
+                    .then(r => r.text())
+                    .then(text => {
+                        try {
+                            const doc = new DOMParser().parseFromString(text, 'text/xml');
+                            const buddies = Array.from(doc.querySelectorAll('buddy')).map(b => b.getAttribute('name')).filter(Boolean).sort();
+                            if (buddies.length > 0) {
+                                select.innerHTML = '<option value="">Buddies ↓</option>' + buddies.map(n => `<option value="${escapeHtmlAttr(n)}">${escapeHtml(n)}</option>`).join('');
+                                return;
+                            }
+                        } catch (e) { /* fall through to fallback */ }
+
+                        // fallback to building from playersMap
+                        const friends = Array.from(playersMap.keys()).filter(name => name !== baseUsername && name !== 'Unknown').sort();
+                        select.innerHTML = '<option value="">Buddies ↓</option>' + friends.map(name => `<option value="${escapeHtmlAttr(name)}">${escapeHtml(name)}</option>`).join('');
+                    })
+                    .catch(() => {
+                        const friends = Array.from(playersMap.keys()).filter(name => name !== baseUsername && name !== 'Unknown').sort();
+                        select.innerHTML = '<option value="">Buddies ↓</option>' + friends.map(name => `<option value="${escapeHtmlAttr(name)}">${escapeHtml(name)}</option>`).join('');
+                    });
+            } catch (e) {
+                const friends = Array.from(playersMap.keys()).filter(name => name !== baseUsername && name !== 'Unknown').sort();
+                select.innerHTML = '<option value="">Buddies ↓</option>' + friends.map(name => `<option value="${escapeHtmlAttr(name)}">${escapeHtml(name)}</option>`).join('');
+            }
         }
         
         async function onBuddyChange() {
@@ -1449,7 +1470,15 @@
                     const loc = (p.location || '').toLowerCase();
                     if (loc.includes('boardgamearena') || loc.includes('bga')) bga++; else irl++;
                 });
-                return { name, plays, total: plays.length, uniqueDays: uniqueDays.size, bga, irl };
+
+                // compute how many of the main user's owned games this player has played
+                const playedOwnedSet = new Set(plays.map(p => p.gameId).filter(id => id && ownedIds.has(id)));
+                const ownedPlayedCount = playedOwnedSet.size;
+                const totalOwned = collection.length || 0;
+                const percentOwnedPlayed = totalOwned ? Math.round((ownedPlayedCount / totalOwned) * 100) : 0;
+                const gamesLeft = totalOwned ? Math.max(0, totalOwned - ownedPlayedCount) : totalOwned ? totalOwned : '—';
+
+                return { name, plays, total: plays.length, uniqueDays: uniqueDays.size, bga, irl, ownedPlayedCount, percentOwnedPlayed, gamesLeft };
             }).filter(e => e.name.toLowerCase().includes(query)).sort((a,b)=>b.total-a.total);
 
             document.getElementById('playersCount').textContent = `${entries.length} players`;
@@ -1463,11 +1492,12 @@
                     <div class="flex-shrink-0 w-10 h-10 rounded bg-slate-50 border border-slate-200 overflow-hidden flex items-center justify-center">${playerAvatarHtml(e.name)}</div>
                     <div class="flex-1 min-w-0">
                         <div class="font-semibold text-[13px] truncate">${escapeHtml(e.name)}</div>
-                        <div class="text-[11px] text-slate-500 mt-0.5">${e.total} plays • ${e.uniqueDays} days</div>
+                        <div class="text-[11px] text-slate-500 mt-0.5">${e.total} plays • ${e.uniqueDays} days • ${e.percentOwnedPlayed}% of collection</div>
                     </div>
                     <div class="text-right">
                         <div class="text-[12px] font-bold text-slate-800">${e.total}</div>
                         <div class="text-[10px] text-slate-400">IRL ${e.irl} • BGA ${e.bga}</div>
+                        <div class="text-[10px] text-slate-400">Left ${e.gamesLeft}</div>
                     </div>
                 </div>
             `).join('');
