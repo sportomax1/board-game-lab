@@ -776,12 +776,14 @@
         // Backoff sequence per spec: immediate, 1s, 3s, 5s, 7s, 5s, 3s, 1s ... (repeat)
         const BACKOFF_SEQUENCE = [0, 1000, 3000, 5000, 7000, 5000, 3000, 1000];
 
-        function updateRetryLog(attempt, nextDelay, url) {
+        function updateRetryLog(attempt, nextDelay, url, elapsedMs) {
             try {
                 const el = document.getElementById('retryLog');
                 if (!el) return;
-                el.innerHTML = `<div style="font-weight:700;margin-bottom:6px">Fetch attempts: ${attempt}</div>` +
+                const elapsedHtml = (elapsedMs === undefined || elapsedMs === null) ? '' : `<div style="font-size:12px;color:#0f172a;margin-top:4px">Last attempt time: ${elapsedMs} ms</div>`;
+                el.innerHTML = `<div style="font-weight:700;margin-bottom:6px">Fetch attempt: ${attempt}</div>` +
                     `<div style="font-size:12px;color:#334155">Next try in: ${nextDelay} ms</div>` +
+                    `${elapsedHtml}` +
                     `<div style="font-size:11px;color:#64748b;margin-top:6px;word-break:break-all">${escapeHtml(url)}</div>`;
             } catch (e) { console.warn('retry log update failed', e); }
         }
@@ -792,18 +794,20 @@
                 const seqIndex = (attempt - 1) % BACKOFF_SEQUENCE.length;
                 const waitBefore = BACKOFF_SEQUENCE[seqIndex];
                 // show that we're about to try (or will try after wait)
-                updateRetryLog(attempt - 1, waitBefore, url);
+                updateRetryLog(attempt, waitBefore, url, null);
 
                 if (waitBefore > 0) await sleep(waitBefore);
 
+                const start = Date.now();
                 try {
                     const response = await fetch(url);
+                    const elapsed = Date.now() - start;
 
                     // BGG 202 processing: treat as transient and continue to next attempt
                     if (response.status === 202) {
                         const nextSeqIndex = (attempt) % BACKOFF_SEQUENCE.length;
                         const nextDelay = BACKOFF_SEQUENCE[nextSeqIndex];
-                        updateRetryLog(attempt, nextDelay, url);
+                        updateRetryLog(attempt, nextDelay, url, elapsed);
                         // if last attempt, throw
                         if (attempt === maxRetries) throw new Error('BGG processing, no more retries');
                         continue;
@@ -814,13 +818,14 @@
                     }
 
                     // success
-                    updateRetryLog(attempt, 0, url);
+                    updateRetryLog(attempt, 0, url, elapsed);
                     return await response.text();
                 } catch (err) {
+                    const elapsed = Date.now() - start;
                     const nextSeqIndex = (attempt) % BACKOFF_SEQUENCE.length;
                     const nextDelay = BACKOFF_SEQUENCE[nextSeqIndex];
                     console.warn(`[Attempt ${attempt}] Fetch error for ${url}: ${err.message}. Next in ${nextDelay}ms`);
-                    updateRetryLog(attempt, nextDelay, url);
+                    updateRetryLog(attempt, nextDelay, url, elapsed);
                     if (attempt === maxRetries) throw err;
                     // wait for nextDelay before next loop iteration
                     await sleep(nextDelay);
