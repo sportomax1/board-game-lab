@@ -71,6 +71,35 @@
             <!-- History Table -->
             <div id="historyContainer" class="hidden mt-8">
                 <h2 class="text-xl font-bold text-gray-900 mb-4">Rank History</h2>
+                
+                <!-- Filters -->
+                <div class="mb-4 flex gap-3">
+                    <input 
+                        type="text" 
+                        id="gameFilter" 
+                        placeholder="Filter by game name..."
+                        class="flex-1 px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        oninput="filterHistory()"
+                    />
+                    <select 
+                        id="dateFilter" 
+                        class="px-3 py-2 border border-gray-300 rounded-lg text-sm focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                        onchange="viewHistory()"
+                    >
+                        <option value="7">Last 7 days</option>
+                        <option value="30" selected>Last 30 days</option>
+                        <option value="90">Last 90 days</option>
+                        <option value="365">Last year</option>
+                        <option value="all">All time</option>
+                    </select>
+                    <button 
+                        onclick="exportHistory()" 
+                        class="px-4 py-2 bg-green-600 text-white rounded-lg text-sm font-semibold hover:bg-green-700 transition-colors"
+                    >
+                        Export CSV
+                    </button>
+                </div>
+
                 <div class="overflow-x-auto">
                     <table class="w-full border-collapse">
                         <thead>
@@ -91,11 +120,29 @@
 
     <script>
         // ===== CONFIGURATION =====
-        const SUPABASE_URL = 'YOUR_SUPABASE_URL_HERE';  // Replace with your Supabase URL
-        const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY_HERE';  // Replace with your anon key
+        let supabase = null;
 
-        // Initialize Supabase client
-        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+        // Initialize Supabase client from config endpoint
+        async function initSupabase() {
+            try {
+                const configResponse = await fetch('/api/supabase-config');
+                if (!configResponse.ok) throw new Error('Failed to fetch Supabase config');
+                
+                const supabaseConfig = await configResponse.json();
+                
+                if (!supabaseConfig.url || !supabaseConfig.anonKey) {
+                    throw new Error('Invalid Supabase config');
+                }
+                
+                supabase = window.supabase.createClient(supabaseConfig.url, supabaseConfig.anonKey);
+                console.log('✅ Supabase initialized successfully');
+                return true;
+            } catch (error) {
+                console.error('Supabase init error:', error);
+                showError('Failed to initialize database. Please check Supabase configuration.');
+                return false;
+            }
+        }
 
         // ===== UI HELPERS =====
         function showProgress(text, detail = '') {
@@ -133,6 +180,12 @@
             if (!username) {
                 showError('Please enter a BGG username');
                 return;
+            }
+
+            // Ensure Supabase is initialized
+            if (!supabase) {
+                const initialized = await initSupabase();
+                if (!initialized) return;
             }
 
             setButtonLoading(true);
@@ -217,39 +270,42 @@
         }
 
         async function viewHistory() {
+            // Ensure Supabase is initialized
+            if (!supabase) {
+                const initialized = await initSupabase();
+                if (!initialized) return;
+            }
+
             document.getElementById('historyContainer').classList.remove('hidden');
             showProgress('Loading history...', 'Fetching from Supabase');
 
             try {
-                const { data, error } = await supabase
+                // Get date filter value
+                const dateFilter = document.getElementById('dateFilter')?.value || '30';
+                let query = supabase
                     .from('rank_history')
                     .select('*')
                     .order('snapshot_date', { ascending: false })
-                    .order('bgg_rank', { ascending: true })
-                    .limit(100);
+                    .order('bgg_rank', { ascending: true });
+
+                // Apply date filter
+                if (dateFilter !== 'all') {
+                    const daysAgo = parseInt(dateFilter);
+                    const cutoffDate = new Date();
+                    cutoffDate.setDate(cutoffDate.getDate() - daysAgo);
+                    const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+                    query = query.gte('snapshot_date', cutoffDateStr);
+                }
+
+                const { data, error } = await query.limit(500);
 
                 if (error) {
                     throw new Error(`Supabase error: ${error.message}`);
                 }
 
-                const tbody = document.getElementById('historyBody');
-                tbody.innerHTML = '';
-
-                if (data.length === 0) {
-                    tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">No history found</td></tr>';
-                } else {
-                    data.forEach(row => {
-                        const tr = document.createElement('tr');
-                        tr.className = 'hover:bg-gray-50';
-                        tr.innerHTML = `
-                            <td class="px-4 py-2 text-sm">${row.bgg_id}</td>
-                            <td class="px-4 py-2 text-sm font-medium">${row.game_name}</td>
-                            <td class="px-4 py-2 text-sm">${row.bgg_rank || 'Not Ranked'}</td>
-                            <td class="px-4 py-2 text-sm text-gray-600">${row.snapshot_date}</td>
-                        `;
-                        tbody.appendChild(tr);
-                    });
-                }
+                // Store full data for filtering
+                window.historyData = data || [];
+                renderHistory(window.historyData);
 
                 hideProgress();
             } catch (err) {
@@ -258,8 +314,76 @@
             }
         }
 
-        // Auto-fill username from localStorage if available
-        window.addEventListener('DOMContentLoaded', () => {
+        function renderHistory(data) {
+            const tbody = document.getElementById('historyBody');
+            tbody.innerHTML = '';
+
+            if (data.length === 0) {
+                tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">No history found</td></tr>';
+            } else {
+                data.forEach(row => {
+                    const tr = document.createElement('tr');
+                    tr.className = 'hover:bg-gray-50';
+                    tr.innerHTML = `
+                        <td class="px-4 py-2 text-sm">${row.bgg_id}</td>
+                        <td class="px-4 py-2 text-sm font-medium">${row.game_name}</td>
+                        <td class="px-4 py-2 text-sm">${row.bgg_rank || 'Not Ranked'}</td>
+                        <td class="px-4 py-2 text-sm text-gray-600">${row.snapshot_date}</td>
+                    `;
+                    tbody.appendChild(tr);
+                });
+            }
+        }
+
+        function filterHistory() {
+            const searchTerm = document.getElementById('gameFilter').value.toLowerCase();
+            if (!window.historyData) return;
+
+            const filtered = window.historyData.filter(row => 
+                row.game_name.toLowerCase().includes(searchTerm)
+            );
+
+            renderHistory(filtered);
+        }
+
+        function exportHistory() {
+            if (!window.historyData || window.historyData.length === 0) {
+                showError('No data to export');
+                return;
+            }
+
+            // Create CSV content
+            const headers = ['BGG ID', 'Game Name', 'BGG Rank', 'Date'];
+            const rows = window.historyData.map(row => [
+                row.bgg_id,
+                `"${row.game_name.replace(/"/g, '""')}"`, // Escape quotes
+                row.bgg_rank || 'Not Ranked',
+                row.snapshot_date
+            ]);
+
+            const csvContent = [
+                headers.join(','),
+                ...rows.map(row => row.join(','))
+            ].join('\n');
+
+            // Download file
+            const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+            const link = document.createElement('a');
+            const url = URL.createObjectURL(blob);
+            link.setAttribute('href', url);
+            link.setAttribute('download', `bgg_rank_history_${new Date().toISOString().split('T')[0]}.csv`);
+            link.style.visibility = 'hidden';
+            document.body.appendChild(link);
+            link.click();
+            document.body.removeChild(link);
+        }
+
+        // Auto-fill username from localStorage if available and load history
+        window.addEventListener('DOMContentLoaded', async () => {
+            // Initialize Supabase
+            await initSupabase();
+
+            // Auto-fill username
             const savedUsername = localStorage.getItem('bgg_username');
             if (savedUsername) {
                 document.getElementById('username').value = savedUsername;
@@ -268,6 +392,9 @@
             document.getElementById('username').addEventListener('change', (e) => {
                 localStorage.setItem('bgg_username', e.target.value);
             });
+
+            // Auto-load history on page load
+            viewHistory();
         });
     </script>
 </body>
