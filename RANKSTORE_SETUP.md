@@ -61,11 +61,7 @@ CREATE POLICY "Allow authenticated updates"
 
 ### Get your Supabase credentials
 
-1. Go to your Supabase project dashboard
-2. Click **Settings** → **API**
-3. Copy:
-   - **Project URL** (e.g., `https://xxxxx.supabase.co`)
-   - **anon public** API key
+**Note:** `rankstore.html` uses the same Supabase configuration as your existing diceduel project via the `/api/supabase-config` endpoint. No manual credential configuration needed!
 
 ---
 
@@ -352,39 +348,51 @@ Create a new file `rankstore.html` in your project root:
 
 ---
 
-## 3. Configuration Steps
-
-### Update Supabase credentials in `rankstore.html`
-
-1. Open `rankstore.html`
-2. Find these lines near the top of the `<script>` section:
-   ```javascript
-   const SUPABASE_URL = 'YOUR_SUPABASE_URL_HERE';
-   const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY_HERE';
-   ```
-3. Replace with your actual Supabase URL and anon key
-
----
-
-## 4. Usage
+## 3. Usage
 
 ### First-time setup
 1. Complete **Step 1** (Supabase database setup)
-2. Complete **Step 3** (configure credentials)
-3. Deploy or open `rankstore.html` locally
+2. Deploy or open `rankstore.html` (credentials auto-loaded from `/api/supabase-config`)
 
 ### Daily usage
 1. Open `rankstore.html` in your browser
-2. Enter your BGG username
-3. Click **"Fetch & Store Ranks"**
-4. Wait for completion (progress shown)
-5. Click **"View History"** to see stored data
+2. History automatically loads on page open
+3. Enter your BGG username (auto-saved to localStorage)
+4. Click **"Fetch & Store Ranks"**
+5. Wait for completion (progress shown)
+6. Filter results by game name or date range
+7. Export data as CSV if needed
 
 ### Automation (optional)
 To automatically store ranks daily, you can:
 - Use a Vercel cron job (requires API route)
 - Use GitHub Actions scheduled workflow
 - Use a simple Node.js script with cron
+
+---
+
+## 4. Features
+
+### Auto-load History
+- History automatically loads when page opens
+- Shows last 30 days by default
+
+### Date Filters
+- **Last 7 days** - Recent snapshot history
+- **Last 30 days** - Default view (1 month)
+- **Last 90 days** - Quarterly trends
+- **Last year** - Annual history
+- **All time** - Complete history
+
+### Game Search
+- Live filter by game name
+- Case-insensitive search
+- Updates table in real-time
+
+### CSV Export
+- Export visible data to CSV file
+- Includes all filtered results
+- Downloads as `bgg_rank_history_YYYY-MM-DD.csv`
 
 ---
 
