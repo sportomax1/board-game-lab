@@ -244,135 +244,146 @@ async function findMaxId(startId) {
   const BATCH_SIZE = parseInt(document.getElementById('batchInput').value) || 20;
   const PARALLEL = parseInt(document.getElementById('parallelInput').value) || 100;
   
-  let currentId = startId;
-  let consecutiveEmpty = 0;
   let highestFound = 0;
   
-  // Phase 1: Exponential search upward to find approximate boundary
-  log(`📈 Phase 1: Exponential search from ${currentId.toLocaleString()}`, 'info');
-  let step = 10000; // Start with 10k jumps
+  // Phase 1: Sparse bucket sampling to find approximate range
+  log(`📈 Phase 1: Sparse bucket sampling from ${startId.toLocaleString()}`, 'info');
   
-  while (!shouldStop) {
-    statusText.textContent = `Searching range ${currentId.toLocaleString()} - ${(currentId + step).toLocaleString()}...`;
+  // Generate sparse checkpoints: 1, 10, 100, 1000, 10000, 100000, 1000000...
+  const buckets = [];
+  for (let exp = 0; exp <= 7; exp++) {
+    const bucket = Math.pow(10, exp);
+    if (bucket >= startId) buckets.push(bucket);
+  }
+  
+  // Add intermediate buckets for better coverage
+  const expandedBuckets = [];
+  buckets.forEach((bucket, idx) => {
+    expandedBuckets.push(bucket);
+    if (idx < buckets.length - 1) {
+      const nextBucket = buckets[idx + 1];
+      // Add midpoint and quarter points
+      expandedBuckets.push(Math.floor(bucket + (nextBucket - bucket) * 0.25));
+      expandedBuckets.push(Math.floor(bucket + (nextBucket - bucket) * 0.5));
+      expandedBuckets.push(Math.floor(bucket + (nextBucket - bucket) * 0.75));
+    }
+  });
+  
+  const sampledBuckets = expandedBuckets.filter(b => b >= startId).sort((a, b) => a - b);
+  log(`🎯 Checking ${sampledBuckets.length} sparse checkpoints: ${sampledBuckets.slice(0, 5).join(', ')}... → ${sampledBuckets[sampledBuckets.length - 1].toLocaleString()}`, 'info');
+  
+  // Check buckets in parallel batches
+  for (let i = 0; i < sampledBuckets.length; i += PARALLEL) {
+    if (shouldStop) return;
     
-    const foundInRange = await checkRange(currentId, currentId + step, BATCH_SIZE, PARALLEL);
+    const group = sampledBuckets.slice(i, i + PARALLEL);
+    statusText.textContent = `Sampling checkpoints ${group[0].toLocaleString()} - ${group[group.length - 1].toLocaleString()}...`;
     
-    if (foundInRange > 0) {
-      highestFound = Math.max(highestFound, foundInRange);
-      currentMax = highestFound;
-      log(`✓ Found IDs in range, highest so far: ${highestFound.toLocaleString()}`, 'success');
-      currentId += step;
-      step = Math.min(step * 2, 100000); // Exponentially increase step, cap at 100k
-      consecutiveEmpty = 0;
-    } else {
-      log(`⊘ No IDs found in range ${currentId.toLocaleString()}-${(currentId + step).toLocaleString()}`, 'warn');
-      consecutiveEmpty++;
-      
-      if (consecutiveEmpty >= 2) {
-        log(`🔍 Phase 2: Detailed verification from ${highestFound.toLocaleString()}`, 'info');
-        break;
+    const results = await Promise.all(group.map(id => checkIds([id])));
+    
+    results.forEach((result, idx) => {
+      if (result.maxFound > 0) {
+        const found = result.maxFound;
+        if (found > highestFound) {
+          highestFound = found;
+          currentMax = highestFound;
+          log(`✓ Hit at checkpoint ${group[idx].toLocaleString()}! Found ID: ${found.toLocaleString()}`, 'success');
+        }
       }
-      
-      currentId += step;
-      step = Math.min(step * 2, 100000);
+    });
+    
+    updateMetrics();
+    await new Promise(r => setTimeout(r, 200));
+  }
+  
+  if (highestFound === 0) {
+    log(`⊘ No IDs found in any checkpoint ranges`, 'warn');
+    return;
+  }
+  
+  log(`📍 Highest checkpoint hit: ${highestFound.toLocaleString()}`, 'success');
+  
+  if (shouldStop) return;
+  
+  // Phase 2: Binary search from highest found to narrow down true max
+  log(`🔍 Phase 2: Binary search from ${highestFound.toLocaleString()}`, 'info');
+  
+  let searchStart = highestFound;
+  let searchEnd = Math.min(highestFound + 1000000, 10000000); // Cap at 10M
+  let trueMax = highestFound;
+  
+  while (!shouldStop && searchEnd - searchStart > 100) {
+    const mid = Math.floor((searchStart + searchEnd) / 2);
+    statusText.textContent = `Binary searching: ${searchStart.toLocaleString()} - ${searchEnd.toLocaleString()} (testing ${mid.toLocaleString()})...`;
+    
+    // Sample around midpoint
+    const testIds = [mid - 10, mid, mid + 10, mid + 50, mid + 100].filter(id => id > trueMax);
+    const results = await Promise.all(testIds.map(id => checkIds([id])));
+    
+    let foundInUpper = false;
+    for (const result of results) {
+      if (result.maxFound > 0) {
+        foundInUpper = true;
+        if (result.maxFound > trueMax) {
+          trueMax = result.maxFound;
+          currentMax = trueMax;
+          log(`✓ Found ID ${result.maxFound.toLocaleString()} in upper range`, 'success');
+        }
+      }
+    }
+    
+    if (foundInUpper) {
+      searchStart = mid;
+    } else {
+      searchEnd = mid;
     }
     
     updateMetrics();
+    await new Promise(r => setTimeout(r, 200));
   }
   
   if (shouldStop) return;
   
-  // Phase 2: Fine-grained search from highest found
-  log(`🔬 Phase 2: Finding true maximum from ${highestFound.toLocaleString()}...`, 'info');
-  currentId = highestFound;
-  let gapsSeen = 0;
-  const MAX_GAPS = 50; // Stop after 50 consecutive gaps
+  // Phase 3: Dense verification around found maximum
+  log(`🔬 Phase 3: Dense verification from ${trueMax.toLocaleString()}`, 'info');
   
-  while (!shouldStop && gapsSeen < MAX_GAPS) {
-    statusText.textContent = `Verifying around ${currentId.toLocaleString()}...`;
+  let verifyId = trueMax;
+  let consecutiveGaps = 0;
+  const MAX_GAPS = 100;
+  
+  while (!shouldStop && consecutiveGaps < MAX_GAPS) {
+    statusText.textContent = `Verifying ${verifyId.toLocaleString()}... (${consecutiveGaps}/${MAX_GAPS} gaps)`;
     
     const batchIds = [];
-    for (let i = 0; i < BATCH_SIZE; i++) {
-      batchIds.push(currentId + i);
+    for (let i = 1; i <= BATCH_SIZE; i++) {
+      batchIds.push(verifyId + i);
     }
     
     const results = await checkIds(batchIds);
     
-    if (results.maxFound > 0) {
-      highestFound = Math.max(highestFound, results.maxFound);
-      currentMax = highestFound;
-      log(`✓ Found ID ${results.maxFound.toLocaleString()} (${results.foundCount} in batch)`, 'success');
-      gapsSeen = 0;
-      currentId = results.maxFound + 1;
+    if (results.maxFound > 0 && results.maxFound > trueMax) {
+      trueMax = results.maxFound;
+      currentMax = trueMax;
+      consecutiveGaps = 0;
+      verifyId = trueMax;
+      log(`✓ Found higher ID ${trueMax.toLocaleString()}!`, 'success');
     } else {
-      gapsSeen++;
-      currentId += BATCH_SIZE;
+      consecutiveGaps++;
+      verifyId += BATCH_SIZE;
     }
     
     updateMetrics();
-    
-    const progress = Math.min(100, (gapsSeen / MAX_GAPS) * 100);
+    const progress = Math.min(100, (consecutiveGaps / MAX_GAPS) * 100);
     progressBar.style.width = `${progress}%`;
+    
+    await new Promise(r => setTimeout(r, 100));
   }
   
-  // Phase 3: Verification - check higher ranges to be absolutely sure
-  log(`🎯 Phase 3: Final verification checks...`, 'info');
-  const verifyRanges = [
-    highestFound + 1000,
-    highestFound + 10000,
-    highestFound + 50000,
-    highestFound + 100000
-  ];
-  
-  for (const checkId of verifyRanges) {
-    if (shouldStop) break;
-    statusText.textContent = `Verifying ${checkId.toLocaleString()}...`;
-    const found = await checkRange(checkId, checkId + 1000, BATCH_SIZE, PARALLEL);
-    if (found > 0) {
-      log(`⚠️ Found higher ID ${found.toLocaleString()}! Continuing search...`, 'warn');
-      currentMax = found;
-      highestFound = found;
-      // Restart from this new max
-      return findMaxId(found);
-    }
-    updateMetrics();
-  }
-  
-  currentMax = highestFound;
-  log(`✅ Verified maximum ID: ${highestFound.toLocaleString()}`, 'success');
+  currentMax = trueMax;
+  log(`✅ Verified maximum ID: ${trueMax.toLocaleString()} (after ${consecutiveGaps} consecutive gaps)`, 'success');
 }
 
-async function checkRange(startId, endId, batchSize, parallel) {
-  const ids = [];
-  for (let i = startId; i < endId; i++) {
-    ids.push(i);
-  }
-  
-  const batches = [];
-  for (let i = 0; i < ids.length; i += batchSize) {
-    batches.push(ids.slice(i, i + batchSize));
-  }
-  
-  let maxFound = 0;
-  
-  for (let i = 0; i < batches.length; i += parallel) {
-    if (shouldStop) break;
-    const group = batches.slice(i, Math.min(i + parallel, batches.length));
-    
-    const results = await Promise.all(group.map(batch => checkIds(batch)));
-    
-    for (const result of results) {
-      if (result.maxFound > maxFound) {
-        maxFound = result.maxFound;
-      }
-    }
-    
-    updateMetrics();
-    await new Promise(r => setTimeout(r, 300));
-  }
-  
-  return maxFound;
-}
+// Removed checkRange - no longer using dense range checking
 
 async function checkIds(ids) {
   const idsParam = ids.join(',');
