@@ -247,121 +247,197 @@ async function findMaxId(startId) {
   let validatedMax = 0;
   
   // Phase 1: Check powers of 10
-  log(`📊 Phase 1: Checking powers of 10`, 'info');
+  log(`📊 Phase 1: Powers of 10 checkpoint`, 'info');
   const powersOf10 = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000];
   
-  // Check all powers in parallel
   const powerResults = await Promise.all(powersOf10.map(id => checkIds([id])));
   
   let highestPowerIndex = -1;
   powerResults.forEach((result, idx) => {
-    if (result.maxFound > 0) {
-      if (result.maxFound > validatedMax) {
-        validatedMax = result.maxFound;
-        currentMax = validatedMax;
-        highestPowerIndex = idx;
-        log(`✓ Power of 10 hit: ${powersOf10[idx].toLocaleString()} → Found ${result.maxFound.toLocaleString()}`, 'success');
-      }
+    if (result.maxFound > 0 && result.maxFound > validatedMax) {
+      validatedMax = result.maxFound;
+      currentMax = validatedMax;
+      highestPowerIndex = idx;
+      log(`✓ Power hit: 10^${idx} → Found ${result.maxFound.toLocaleString()}`, 'success');
     }
   });
   
   if (validatedMax === 0) {
-    log(`⊘ No IDs found in powers of 10`, 'warn');
+    log(`⊘ No IDs found`, 'warn');
     return;
   }
   
   updateMetrics();
+  if (shouldStop) return;
+  
+  // Phase 2: Leading digit sweep (1x, 2x, 3x...9x of magnitude)
+  log(`🔢 Phase 2: Leading digit sweep from ${validatedMax.toLocaleString()}`, 'info');
+  const magnitude = Math.pow(10, Math.floor(Math.log10(validatedMax)));
+  const candidates2 = [];
+  for (let digit = 1; digit <= 9; digit++) {
+    const candidate = digit * magnitude;
+    if (candidate > validatedMax) candidates2.push(candidate);
+  }
+  
+  if (candidates2.length > 0) {
+    statusText.textContent = `Testing leading digits (${candidates2.length} checkpoints)...`;
+    const results2 = await Promise.all(candidates2.map(id => checkIds([id])));
+    results2.forEach((result, idx) => {
+      if (result.maxFound > 0 && result.maxFound > validatedMax) {
+        validatedMax = result.maxFound;
+        currentMax = validatedMax;
+        log(`✓ Leading digit ${Math.floor(candidates2[idx] / magnitude)} hit → ${result.maxFound.toLocaleString()}`, 'success');
+      }
+    });
+    updateMetrics();
+  }
   
   if (shouldStop) return;
   
-  // Phase 2: Progressive digit refinement
-  log(`🔢 Phase 2: Progressive digit refinement from ${validatedMax.toLocaleString()}`, 'info');
-  
-  // Determine the magnitude we're working with
-  let currentPower = powersOf10[highestPowerIndex];
-  let nextPower = powersOf10[highestPowerIndex + 1] || currentPower * 10;
-  
-  // Keep refining by adding digits progressively
-  while (!shouldStop && currentPower >= 1) {
-    // Check leading digits 1-9 for current magnitude
-    const candidates = [];
-    
-    // Generate candidates based on current validated max
-    const orderOfMagnitude = Math.floor(Math.log10(validatedMax));
-    const step = Math.pow(10, orderOfMagnitude);
-    
-    // Check multiples of current step above validated max
-    for (let mult = 1; mult <= 9; mult++) {
-      const candidate = mult * step;
-      if (candidate > validatedMax && candidate <= nextPower) {
-        candidates.push(candidate);
-      }
+  // Phase 3: Second digit refinement (add second digit 0-9)
+  log(`🔍 Phase 3: Second digit refinement from ${validatedMax.toLocaleString()}`, 'info');
+  const mag3 = Math.pow(10, Math.floor(Math.log10(validatedMax)) - 1);
+  const base3 = Math.floor(validatedMax / mag3) * mag3;
+  const candidates3 = [];
+  for (let i = 1; i <= 90; i++) {
+    const candidate = base3 + (i * mag3);
+    if (candidate > validatedMax && candidate <= base3 + (100 * mag3)) {
+      candidates3.push(candidate);
     }
-    
-    // Also check intermediate steps (one digit to the right)
-    if (step >= 10) {
-      const smallerStep = step / 10;
-      const baseValue = Math.floor(validatedMax / smallerStep) * smallerStep;
-      
-      for (let i = 1; i <= 90; i++) {
-        const candidate = baseValue + (i * smallerStep);
-        if (candidate > validatedMax && candidate <= nextPower && !candidates.includes(candidate)) {
-          candidates.push(candidate);
-        }
-      }
-    }
-    
-    if (candidates.length === 0) break;
-    
-    candidates.sort((a, b) => a - b);
-    const uniqueCandidates = [...new Set(candidates)].filter(c => c > validatedMax);
-    
-    if (uniqueCandidates.length === 0) break;
-    
-    log(`🎯 Testing ${uniqueCandidates.length} candidates from ${uniqueCandidates[0].toLocaleString()} to ${uniqueCandidates[uniqueCandidates.length - 1].toLocaleString()}`, 'info');
-    statusText.textContent = `Testing range ${uniqueCandidates[0].toLocaleString()} - ${uniqueCandidates[uniqueCandidates.length - 1].toLocaleString()}...`;
-    
-    let foundHigher = false;
-    
-    // Check candidates in parallel batches
-    for (let i = 0; i < uniqueCandidates.length; i += PARALLEL) {
+  }
+  
+  if (candidates3.length > 0) {
+    statusText.textContent = `Testing second digit (${candidates3.length} checkpoints)...`;
+    for (let i = 0; i < candidates3.length; i += PARALLEL) {
       if (shouldStop) break;
-      
-      const batch = uniqueCandidates.slice(i, i + PARALLEL);
-      const results = await Promise.all(batch.map(id => checkIds([id])));
-      
-      results.forEach((result, idx) => {
+      const batch = candidates3.slice(i, i + PARALLEL);
+      const results3 = await Promise.all(batch.map(id => checkIds([id])));
+      results3.forEach((result, idx) => {
         if (result.maxFound > 0 && result.maxFound > validatedMax) {
           validatedMax = result.maxFound;
           currentMax = validatedMax;
-          foundHigher = true;
-          log(`✓ Found higher ID: ${result.maxFound.toLocaleString()} (tested ${batch[idx].toLocaleString()})`, 'success');
+          log(`✓ Second digit hit → ${result.maxFound.toLocaleString()}`, 'success');
         }
       });
-      
       updateMetrics();
       await new Promise(r => setTimeout(r, 100));
-    }
-    
-    if (!foundHigher) {
-      log(`→ No higher IDs in this magnitude`, 'info');
-      break;
     }
   }
   
   if (shouldStop) return;
   
-  // Phase 3: Fine-grained forward scan with batches
-  log(`🔍 Phase 3: Fine-grained scan from ${validatedMax.toLocaleString()}`, 'info');
+  // Phase 4: Third digit refinement
+  log(`🎯 Phase 4: Third digit refinement from ${validatedMax.toLocaleString()}`, 'info');
+  const mag4 = Math.pow(10, Math.floor(Math.log10(validatedMax)) - 2);
+  if (mag4 >= 1) {
+    const base4 = Math.floor(validatedMax / mag4) * mag4;
+    const candidates4 = [];
+    for (let i = 1; i <= 900; i++) {
+      const candidate = base4 + (i * mag4);
+      if (candidate > validatedMax && candidate <= base4 + (1000 * mag4)) {
+        candidates4.push(candidate);
+      }
+    }
+    
+    if (candidates4.length > 0) {
+      statusText.textContent = `Testing third digit (${candidates4.length} checkpoints)...`;
+      for (let i = 0; i < candidates4.length; i += PARALLEL) {
+        if (shouldStop) break;
+        const batch = candidates4.slice(i, i + PARALLEL);
+        const results4 = await Promise.all(batch.map(id => checkIds([id])));
+        results4.forEach((result, idx) => {
+          if (result.maxFound > 0 && result.maxFound > validatedMax) {
+            validatedMax = result.maxFound;
+            currentMax = validatedMax;
+            log(`✓ Third digit hit → ${result.maxFound.toLocaleString()}`, 'success');
+          }
+        });
+        updateMetrics();
+        await new Promise(r => setTimeout(r, 100));
+      }
+    }
+  }
+  
+  if (shouldStop) return;
+  
+  // Phase 5: Hundred-step sweep (jumping by 100s)
+  log(`📍 Phase 5: Hundred-step sweep from ${validatedMax.toLocaleString()}`, 'info');
+  const candidates5 = [];
+  for (let i = 100; i <= 10000; i += 100) {
+    candidates5.push(validatedMax + i);
+  }
+  
+  statusText.textContent = `Testing by hundreds (${candidates5.length} checkpoints)...`;
+  for (let i = 0; i < candidates5.length; i += PARALLEL) {
+    if (shouldStop) break;
+    const batch = candidates5.slice(i, i + PARALLEL);
+    const results5 = await Promise.all(batch.map(id => checkIds([id])));
+    
+    let foundHigher = false;
+    results5.forEach((result, idx) => {
+      if (result.maxFound > 0 && result.maxFound > validatedMax) {
+        validatedMax = result.maxFound;
+        currentMax = validatedMax;
+        foundHigher = true;
+        log(`✓ Hundred-step hit → ${result.maxFound.toLocaleString()}`, 'success');
+      }
+    });
+    
+    if (!foundHigher && i > candidates5.length * 0.3) {
+      log(`→ No hits after 30% of hundred-step sweep, moving to dense scan`, 'info');
+      break;
+    }
+    
+    updateMetrics();
+    await new Promise(r => setTimeout(r, 100));
+  }
+  
+  if (shouldStop) return;
+  
+  // Phase 6: Ten-step sweep (jumping by 10s from last found)
+  log(`🔬 Phase 6: Ten-step sweep from ${validatedMax.toLocaleString()}`, 'info');
+  const candidates6 = [];
+  for (let i = 10; i <= 1000; i += 10) {
+    candidates6.push(validatedMax + i);
+  }
+  
+  statusText.textContent = `Testing by tens (${candidates6.length} checkpoints)...`;
+  for (let i = 0; i < candidates6.length; i += PARALLEL) {
+    if (shouldStop) break;
+    const batch = candidates6.slice(i, i + PARALLEL);
+    const results6 = await Promise.all(batch.map(id => checkIds([id])));
+    
+    let foundHigher = false;
+    results6.forEach((result, idx) => {
+      if (result.maxFound > 0 && result.maxFound > validatedMax) {
+        validatedMax = result.maxFound;
+        currentMax = validatedMax;
+        foundHigher = true;
+        log(`✓ Ten-step hit → ${result.maxFound.toLocaleString()}`, 'success');
+      }
+    });
+    
+    if (!foundHigher && i > candidates6.length * 0.3) {
+      log(`→ No hits after 30% of ten-step sweep, moving to dense scan`, 'info');
+      break;
+    }
+    
+    updateMetrics();
+    await new Promise(r => setTimeout(r, 100));
+  }
+  
+  if (shouldStop) return;
+  
+  // Phase 7: Dense batch scan (only as final resort)
+  log(`🔎 Phase 7: Dense verification from ${validatedMax.toLocaleString()}`, 'info');
   
   let scanId = validatedMax + 1;
   let consecutiveEmptyBatches = 0;
-  const MAX_EMPTY_BATCHES = 50;
+  const MAX_EMPTY_BATCHES = 30;
   
   while (!shouldStop && consecutiveEmptyBatches < MAX_EMPTY_BATCHES) {
-    statusText.textContent = `Scanning ${scanId.toLocaleString()}... (${consecutiveEmptyBatches}/${MAX_EMPTY_BATCHES} empty batches)`;
+    statusText.textContent = `Dense scan ${scanId.toLocaleString()}... (${consecutiveEmptyBatches}/${MAX_EMPTY_BATCHES} empty)`;
     
-    // Build batch of IDs to check
     const batchIds = [];
     for (let i = 0; i < BATCH_SIZE; i++) {
       batchIds.push(scanId + i);
@@ -374,7 +450,7 @@ async function findMaxId(startId) {
       currentMax = validatedMax;
       consecutiveEmptyBatches = 0;
       scanId = validatedMax + 1;
-      log(`✓ Found higher ID: ${validatedMax.toLocaleString()}`, 'success');
+      log(`✓ Dense scan hit → ${validatedMax.toLocaleString()}`, 'success');
     } else {
       consecutiveEmptyBatches++;
       scanId += BATCH_SIZE;
@@ -387,33 +463,29 @@ async function findMaxId(startId) {
     await new Promise(r => setTimeout(r, 100));
   }
   
-  // Phase 4: Verification jumps to ensure nothing higher exists
-  log(`🎯 Phase 4: Verification jumps from ${validatedMax.toLocaleString()}`, 'info');
+  if (shouldStop) return;
   
-  const verificationJumps = [1000, 10000, 50000, 100000, 500000, 1000000];
+  // Phase 8: Final verification jumps
+  log(`✅ Phase 8: Final verification from ${validatedMax.toLocaleString()}`, 'info');
+  
+  const verificationJumps = [1000, 10000, 100000, 1000000];
   for (const jump of verificationJumps) {
     if (shouldStop) break;
     
-    const testId = validatedMax + jump;
-    statusText.textContent = `Verifying ${testId.toLocaleString()}...`;
+    const testIds = [
+      validatedMax + jump,
+      validatedMax + jump + 100,
+      validatedMax + jump + 500
+    ];
     
-    // Check a small range around the jump point
-    const testIds = [];
-    for (let i = -5; i <= 5; i++) {
-      testIds.push(testId + i);
-    }
+    statusText.textContent = `Verifying +${jump.toLocaleString()}...`;
     
     const results = await Promise.all(testIds.map(id => checkIds([id])));
     
-    let foundHigher = false;
     for (const result of results) {
       if (result.maxFound > 0 && result.maxFound > validatedMax) {
-        log(`⚠️ Found ID ${result.maxFound.toLocaleString()} beyond expected range! Re-scanning...`, 'warn');
-        validatedMax = result.maxFound;
-        currentMax = validatedMax;
-        foundHigher = true;
-        // Restart from phase 3 with new max
-        return findMaxId(validatedMax);
+        log(`⚠️ Found ${result.maxFound.toLocaleString()} beyond expected! Re-scanning...`, 'warn');
+        return findMaxId(result.maxFound);
       }
     }
     
@@ -423,7 +495,7 @@ async function findMaxId(startId) {
   
   currentMax = validatedMax;
   progressBar.style.width = '100%';
-  log(`✅ Verified maximum ID: ${validatedMax.toLocaleString()}`, 'success');
+  log(`✅ Verified maximum: ${validatedMax.toLocaleString()}`, 'success');
 }
 
 // Removed checkRange - no longer using dense range checking
