@@ -27,6 +27,12 @@
         </div>
       </div>
       <div class="flex items-center gap-4">
+        <button onclick="openHistoryModal()" class="px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg transition-all text-xs font-medium flex items-center gap-1.5">
+          <i class="fa-solid fa-clock-rotate-left"></i> History
+        </button>
+        <button onclick="openYearModal()" id="yearBtn" class="hidden px-3 py-1.5 bg-slate-100 hover:bg-slate-200 rounded-lg transition-all text-xs font-medium flex items-center gap-1.5">
+          <i class="fa-solid fa-chart-column"></i> Years
+        </button>
         <div id="controlsSection" class="hidden flex items-center gap-3">
           <select id="sortSelect" onchange="onSort()" class="px-3 py-1.5 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none bg-white font-medium text-xs">
             <option value="original">Original</option>
@@ -123,6 +129,46 @@
     <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-4"></div>
   </main>
 
+  <!-- History Modal -->
+  <div id="historyModal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-3xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+      <div class="p-4 border-b flex items-center justify-between bg-slate-50">
+        <div class="flex items-center gap-2">
+          <i class="fa-solid fa-clock-rotate-left text-indigo-600"></i>
+          <h3 class="font-bold text-lg">Session History</h3>
+        </div>
+        <button onclick="closeHistoryModal()" class="text-slate-400 hover:text-slate-600 text-xl">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div id="historyContent" class="p-4 overflow-y-auto flex-1">
+        <p class="text-slate-400 text-center py-8">No runs yet this session</p>
+      </div>
+    </div>
+  </div>
+
+  <!-- Year Distribution Modal -->
+  <div id="yearModal" class="hidden fixed inset-0 bg-black/50 backdrop-blur-sm z-50 flex items-center justify-center p-4">
+    <div class="bg-white rounded-2xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden flex flex-col">
+      <div class="p-4 border-b flex items-center justify-between bg-slate-50">
+        <div class="flex items-center gap-3">
+          <i class="fa-solid fa-chart-column text-indigo-600"></i>
+          <h3 class="font-bold text-lg">Year Distribution</h3>
+          <select id="yearSort" onchange="updateYearStats()" class="px-2 py-1 rounded border text-sm">
+            <option value="asc">Oldest→Newest</option>
+            <option value="desc">Newest→Oldest</option>
+          </select>
+        </div>
+        <button onclick="closeYearModal()" class="text-slate-400 hover:text-slate-600 text-xl">
+          <i class="fa-solid fa-xmark"></i>
+        </button>
+      </div>
+      <div id="yearContent" class="p-4 overflow-y-auto flex-1">
+        <p class="text-slate-400 text-center py-8">No year data available</p>
+      </div>
+    </div>
+  </div>
+
 <script>
 const API_BASE = '/api/bgg-helper';
 const BATCH_SIZE = 20;
@@ -145,6 +191,10 @@ const metricBatches = document.getElementById('metricBatches');
 const metricElapsed = document.getElementById('metricElapsed');
 const metricRate = document.getElementById('metricRate');
 const metricETA = document.getElementById('metricETA');
+const yearBtn = document.getElementById('yearBtn');
+
+// Session history
+const runHistory = [];
 
 function parseIds(text){
   if(!text) return [];
@@ -187,6 +237,7 @@ async function onRun(){
   inputSection.classList.remove('hidden');
   controlsSection.classList.remove('hidden');
   statsBox.classList.remove('hidden');
+  yearBtn.classList.remove('hidden');
   
   const foundCount = [...results.values()].filter(v=>v).length;
   document.getElementById('resultCount').textContent = foundCount;
@@ -291,6 +342,20 @@ async function fetchAllThingIds(ids){
   metricETA.textContent = 'Done';
 
   progressBar.style.width = '100%';
+  
+  // Save to history
+  const foundCount = [...resultsMap.values()].filter(v=>v).length;
+  runHistory.push({
+    timestamp: new Date(),
+    idsRequested: ids.length,
+    idsFound: foundCount,
+    batches: batches.length,
+    batchSize: BATCH_SIZE,
+    parallel: PARALLEL_BATCHES,
+    elapsed: parseFloat(totalTime),
+    rate: finalRate
+  });
+  
   return resultsMap;
 }
 
@@ -347,6 +412,148 @@ function renderCards({ids, map}){
 function escapeHtml(s){ 
   return (s+'').replace(/[&<>"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'})[c] || c); 
 }
+
+// History Modal
+function openHistoryModal() {
+  const modal = document.getElementById('historyModal');
+  const content = document.getElementById('historyContent');
+  
+  if (runHistory.length === 0) {
+    content.innerHTML = '<p class="text-slate-400 text-center py-8">No runs yet this session</p>';
+  } else {
+    let html = '<div class="space-y-3">';
+    runHistory.forEach((run, idx) => {
+      const time = run.timestamp.toLocaleTimeString();
+      const percent = ((run.idsFound / run.idsRequested) * 100).toFixed(1);
+      html += `
+        <div class="bg-slate-50 border border-slate-200 rounded-lg p-3">
+          <div class="flex items-start justify-between mb-2">
+            <div class="font-bold text-slate-700">Run #${idx + 1}</div>
+            <div class="text-xs text-slate-500">${time}</div>
+          </div>
+          <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 text-sm">
+            <div>
+              <div class="text-xs text-slate-500 uppercase font-bold">IDs Requested</div>
+              <div class="font-bold text-indigo-600">${run.idsRequested.toLocaleString()}</div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 uppercase font-bold">Found</div>
+              <div class="font-bold text-emerald-600">${run.idsFound.toLocaleString()} <span class="text-xs text-slate-400">(${percent}%)</span></div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 uppercase font-bold">Time</div>
+              <div class="font-bold text-purple-600">${run.elapsed}s <span class="text-xs text-slate-400">(${run.rate} IDs/s)</span></div>
+            </div>
+            <div>
+              <div class="text-xs text-slate-500 uppercase font-bold">Config</div>
+              <div class="font-mono text-xs text-slate-600">${run.batches}×${run.batchSize} @ ${run.parallel}x</div>
+            </div>
+          </div>
+        </div>
+      `;
+    });
+    html += '</div>';
+    content.innerHTML = html;
+  }
+  
+  modal.classList.remove('hidden');
+}
+
+function closeHistoryModal() {
+  document.getElementById('historyModal').classList.add('hidden');
+}
+
+// Year Distribution Modal
+function openYearModal() {
+  updateYearStats();
+  document.getElementById('yearModal').classList.remove('hidden');
+}
+
+function closeYearModal() {
+  document.getElementById('yearModal').classList.add('hidden');
+}
+
+function updateYearStats() {
+  const content = document.getElementById('yearContent');
+  const sortOrder = document.getElementById('yearSort').value;
+  
+  if (!window._lastResults) {
+    content.innerHTML = '<p class="text-slate-400 text-center py-8">No data available</p>';
+    return;
+  }
+  
+  const yearCounts = new Map();
+  let unknownCount = 0;
+  
+  for (const [id, data] of window._lastResults.map) {
+    if (data && data.yearpublished) {
+      const year = data.yearpublished;
+      yearCounts.set(year, (yearCounts.get(year) || 0) + 1);
+    } else if (data) {
+      unknownCount++;
+    }
+  }
+  
+  const years = Array.from(yearCounts.entries()).sort((a, b) => {
+    if (sortOrder === 'asc') return parseInt(a[0]) - parseInt(b[0]);
+    return parseInt(b[0]) - parseInt(a[0]);
+  });
+  
+  if (years.length === 0 && unknownCount === 0) {
+    content.innerHTML = '<p class="text-slate-400 text-center py-8">No year data available</p>';
+    return;
+  }
+  
+  const maxCount = Math.max(...years.map(y => y[1]), unknownCount);
+  
+  let html = '<div class="space-y-2">';
+  
+  years.forEach(([year, count]) => {
+    const barWidth = (count / maxCount * 100).toFixed(1);
+    html += `
+      <div class="flex items-center gap-3">
+        <div class="w-16 text-sm font-mono font-bold text-slate-700 text-right">${year}</div>
+        <div class="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden relative">
+          <div class="bg-indigo-500 h-full transition-all" style="width: ${barWidth}%"></div>
+          <div class="absolute inset-0 flex items-center justify-end px-2">
+            <span class="text-xs font-bold text-slate-700">${count}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  });
+  
+  if (unknownCount > 0) {
+    const barWidth = (unknownCount / maxCount * 100).toFixed(1);
+    html += `
+      <div class="flex items-center gap-3">
+        <div class="w-16 text-sm font-mono font-bold text-slate-400 text-right">Unknown</div>
+        <div class="flex-1 bg-slate-100 rounded-full h-6 overflow-hidden relative">
+          <div class="bg-slate-300 h-full transition-all" style="width: ${barWidth}%"></div>
+          <div class="absolute inset-0 flex items-center justify-end px-2">
+            <span class="text-xs font-bold text-slate-600">${unknownCount}</span>
+          </div>
+        </div>
+      </div>
+    `;
+  }
+  
+  html += '</div>';
+  html += `<div class="mt-4 text-center text-sm text-slate-500">
+    Total: ${years.reduce((sum, y) => sum + y[1], 0) + unknownCount} games across ${years.length} years
+  </div>`;
+  
+  content.innerHTML = html;
+}
+
+// Close modals on outside click
+document.getElementById('historyModal').addEventListener('click', (e) => {
+  if (e.target.id === 'historyModal') closeHistoryModal();
+});
+
+document.getElementById('yearModal').addEventListener('click', (e) => {
+  if (e.target.id === 'yearModal') closeYearModal();
+});
 </script>
 </body>
 </html>
