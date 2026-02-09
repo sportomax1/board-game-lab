@@ -151,14 +151,14 @@
       <div class="p-4 border-b flex items-center justify-between bg-gradient-to-r from-emerald-50 to-slate-50">
         <div class="flex items-center gap-2">
           <i class="fa-solid fa-circle-info text-emerald-600 text-xl"></i>
-          <h3 class="font-bold text-lg">8-Phase Search Algorithm</h3>
+          <h3 class="font-bold text-lg">7-Phase Search Algorithm</h3>
         </div>
         <button onclick="closeInfoModal()" class="text-slate-400 hover:text-slate-600 text-xl">
           <i class="fa-solid fa-xmark"></i>
         </button>
       </div>
       <div class="p-6 overflow-y-auto flex-1 space-y-4">
-        <p class="text-slate-700 font-semibold">Maximum ID finder uses 8 progressive phases to efficiently locate the highest BGG Thing ID, never checking IDs below validated maximum.</p>
+        <p class="text-slate-700 font-semibold">Maximum ID finder uses 7 progressive phases to efficiently locate the highest BGG Thing ID, never checking IDs below validated maximum.</p>
         
         <div class="bg-emerald-50 border-l-4 border-emerald-600 p-4 rounded">
           <h4 class="font-bold text-emerald-700 flex items-center gap-2"><i class="fa-solid fa-1"></i> Phase 1: Powers of 10</h4>
@@ -185,26 +185,20 @@
         </div>
         
         <div class="bg-amber-50 border-l-4 border-amber-600 p-4 rounded">
-          <h4 class="font-bold text-amber-700 flex items-center gap-2"><i class="fa-solid fa-5"></i> Phase 5: Hundred-Step Sweep</h4>
-          <p class="text-sm text-slate-600 mt-2">Tests +100, +200, +300...+10000 checkpoints above validated max</p>
-          <p class="text-xs text-slate-500 mt-1">✓ ~100 checkpoints • Early exit if 30% checked with no hits</p>
+          <h4 class="font-bold text-amber-700 flex items-center gap-2"><i class="fa-solid fa-5"></i> Phase 5: Gap Sweep</h4>
+          <p class="text-sm text-slate-600 mt-2">Combines ten-steps (+10 to +1000) and hundred-steps (+1100 to +10000) in 2 parallel waves</p>
+          <p class="text-xs text-slate-500 mt-1">✓ 190 checkpoints • 100x parallel • Early exit if 30% checked with no hits</p>
         </div>
         
         <div class="bg-orange-50 border-l-4 border-orange-600 p-4 rounded">
-          <h4 class="font-bold text-orange-700 flex items-center gap-2"><i class="fa-solid fa-6"></i> Phase 6: Ten-Step Sweep</h4>
-          <p class="text-sm text-slate-600 mt-2">Tests +10, +20, +30...+1000 checkpoints above validated max</p>
-          <p class="text-xs text-slate-500 mt-1">✓ ~100 checkpoints • Early exit if 30% checked with no hits</p>
+          <h4 class="font-bold text-orange-700 flex items-center gap-2"><i class="fa-solid fa-6"></i> Phase 6: Dense Batch Scan</h4>
+          <p class="text-sm text-slate-600 mt-2">Dense scanning using 20 IDs per batch with 50x parallel, only as final resort</p>
+          <p class="text-xs text-slate-500 mt-1">✓ 1 round of 50 batches = 1000 IDs • Handles rare scattered gaps</p>
         </div>
         
         <div class="bg-red-50 border-l-4 border-red-600 p-4 rounded">
-          <h4 class="font-bold text-red-700 flex items-center gap-2"><i class="fa-solid fa-7"></i> Phase 7: Dense Batch Scan</h4>
-          <p class="text-sm text-slate-600 mt-2">Dense scanning using 20 IDs per batch with 100x parallel, only as final resort</p>
-          <p class="text-xs text-slate-500 mt-1">✓ 1 round of 100 batches = 2000 IDs checked • Handles rare scattered gaps</p>
-        </div>
-        
-        <div class="bg-slate-50 border-l-4 border-slate-600 p-4 rounded">
-          <h4 class="font-bold text-slate-700 flex items-center gap-2"><i class="fa-solid fa-8"></i> Phase 8: Final Verification</h4>
-          <p class="text-sm text-slate-600 mt-2">Spot checks at +1K, +10K, +100K, +1M to ensure no scattered higher IDs</p>
+          <h4 class="font-bold text-red-700 flex items-center gap-2"><i class="fa-solid fa-7"></i> Phase 7: Final Verification</h4>
+          <p class="text-sm text-slate-600 mt-2">Spot checks at +1K, +10K, +100K, +1M in single parallel wave (12 checks)</p>
           <p class="text-xs text-slate-500 mt-1">✓ If higher ID found, restarts search from new max</p>
         </div>
         
@@ -214,9 +208,9 @@
             <li>✓ <strong>Never checks below validated max</strong> throughout all phases</li>
             <li>✓ <strong>100x parallel</strong> processing on checkpoint phases</li>
             <li>✓ <strong>Early exits</strong> when sparse sweeps show no hits</li>
-            <li>✓ <strong>Dense scanning delayed</strong> until Phase 7 (sparse phases exhausted)</li>
+            <li>✓ <strong>Dense scanning delayed</strong> until Phase 6 (sparse phases exhausted)</li>
             <li>✓ <strong>Handles gaps</strong> like ID 33 missing but 34 existing</li>
-            <li>✓ <strong>Estimated ~1,200 API calls</strong> vs 40K+ sequential checks</li>
+            <li>✓ <strong>Estimated ~1,100 API calls</strong> vs 40K+ sequential checks</li>
           </ul>
         </div>
       </div>
@@ -609,15 +603,20 @@ async function findMaxId(startId) {
   
   if (shouldStop) return;
   
-  // Phase 5: Hundred-step sweep (jumping by 100s)
-  phaseStart('Phase 5: Hundred-Step Sweep');
-  log(`📍 Phase 5: Hundred-step sweep from ${validatedMax.toLocaleString()}`, 'info');
+  // Phase 5: Gap Sweep (combined tens and hundreds - 190 checkpoints, 2 waves)
+  phaseStart('Phase 5: Gap Sweep');
+  log(`🔍 Phase 5: Gap sweep from ${validatedMax.toLocaleString()} (+10 to +10K in 2 waves)`, 'info');
   const candidates5 = [];
-  for (let i = 100; i <= 10000; i += 100) {
+  // First: by 10s from +10 to +1000
+  for (let i = 10; i <= 1000; i += 10) {
+    candidates5.push(validatedMax + i);
+  }
+  // Then: by 100s from +1100 to +10000 (avoiding duplicate at +1000)
+  for (let i = 1100; i <= 10000; i += 100) {
     candidates5.push(validatedMax + i);
   }
   
-  statusText.textContent = `Testing by hundreds (${candidates5.length} checkpoints)...`;
+  statusText.textContent = `Testing gap sweep (${candidates5.length} checkpoints)...`;
   for (let i = 0; i < candidates5.length; i += PARALLEL) {
     if (shouldStop) break;
     const batch = candidates5.slice(i, i + PARALLEL);
@@ -629,7 +628,7 @@ async function findMaxId(startId) {
         validatedMax = result.maxFound;
         currentMax = validatedMax;
         foundHigher = true;
-        log(`✓ Hundred-step hit → ${result.maxFound.toLocaleString()}`, 'success');
+        log(`✓ Gap sweep hit → ${result.maxFound.toLocaleString()}`, 'success');
       }
     });
     
@@ -638,67 +637,25 @@ async function findMaxId(startId) {
       break;
     }
     
-    if ((i + PARALLEL) % (PARALLEL * 5) === 0) {
+    if ((i + PARALLEL) === PARALLEL || (i + PARALLEL) === candidates5.length) {
       phaseProgress(`Tested ${i + PARALLEL}/${candidates5.length} checkpoints`);
     }
     
     updateMetrics();
-    await new Promise(r => setTimeout(r, 100));
   }
   
-  phaseEnd('Phase 5: Hundred-Step Sweep');
+  phaseEnd('Phase 5: Gap Sweep');
   
   if (shouldStop) return;
   
-  // Phase 6: Ten-step sweep (jumping by 10s from last found)
-  phaseStart('Phase 6: Ten-Step Sweep');
-  log(`🔬 Phase 6: Ten-step sweep from ${validatedMax.toLocaleString()}`, 'info');
-  const candidates6 = [];
-  for (let i = 10; i <= 1000; i += 10) {
-    candidates6.push(validatedMax + i);
-  }
-  
-  statusText.textContent = `Testing by tens (${candidates6.length} checkpoints)...`;
-  for (let i = 0; i < candidates6.length; i += PARALLEL) {
-    if (shouldStop) break;
-    const batch = candidates6.slice(i, i + PARALLEL);
-    const results6 = await Promise.all(batch.map(id => checkIds([id])));
-    
-    let foundHigher = false;
-    results6.forEach((result, idx) => {
-      if (result.maxFound > 0 && result.maxFound > validatedMax) {
-        validatedMax = result.maxFound;
-        currentMax = validatedMax;
-        foundHigher = true;
-        log(`✓ Ten-step hit → ${result.maxFound.toLocaleString()}`, 'success');
-      }
-    });
-    
-    if (!foundHigher && i > candidates6.length * 0.3) {
-      phaseProgress(`No hits after 30%, early exit`);
-      break;
-    }
-    
-    if ((i + PARALLEL) % (PARALLEL * 5) === 0) {
-      phaseProgress(`Tested ${i + PARALLEL}/${candidates6.length} checkpoints`);
-    }
-    
-    updateMetrics();
-    await new Promise(r => setTimeout(r, 100));
-  }
-  
-  phaseEnd('Phase 6: Ten-Step Sweep');
-  
-  if (shouldStop) return;
-  
-  // Phase 7: Dense batch scan with 100x parallel (only as final resort)
-  phaseStart('Phase 7: Dense Batch Scan');
-  log(`🔎 Phase 7: Dense verification from ${validatedMax.toLocaleString()} (100x parallel, 2000 IDs)`, 'info');
+  // Phase 6: Dense batch scan with 100x parallel (only as final resort)
+  phaseStart('Phase 6: Dense Batch Scan');
+  log(`🔎 Phase 6: Dense verification from ${validatedMax.toLocaleString()} (50x parallel, 1000 IDs)`, 'info');
   
   let scanId = validatedMax + 1;
   let consecutiveEmptyRounds = 0;
-  const MAX_EMPTY_ROUNDS = 1; // 1 round of 100 batches = 2000 IDs checked
-  const PARALLEL_BATCHES = 100;
+  const MAX_EMPTY_ROUNDS = 1; // 1 round of 50 batches = 1000 IDs checked
+  const PARALLEL_BATCHES = 50;
   
   while (!shouldStop && consecutiveEmptyRounds < MAX_EMPTY_ROUNDS) {
     statusText.textContent = `Dense scan ${scanId.toLocaleString()}... (round ${consecutiveEmptyRounds + 1}/${MAX_EMPTY_ROUNDS})`;
@@ -741,13 +698,13 @@ async function findMaxId(startId) {
     progressBar.style.width = `${progress}%`;
   }
   
-  phaseEnd('Phase 7: Dense Batch Scan');
+  phaseEnd('Phase 6: Dense Batch Scan');
   
   if (shouldStop) return;
   
-  // Phase 8: Final verification jumps (all parallel)
-  phaseStart('Phase 8: Final Verification');
-  log(`✅ Phase 8: Final verification from ${validatedMax.toLocaleString()} (12 checks in parallel)`, 'info');
+  // Phase 7: Final verification jumps (all parallel)
+  phaseStart('Phase 7: Final Verification');
+  log(`✅ Phase 7: Final verification from ${validatedMax.toLocaleString()} (12 checks in parallel)`, 'info');
   
   statusText.textContent = `Verifying jumps...`;
   
@@ -770,7 +727,7 @@ async function findMaxId(startId) {
   
   updateMetrics();
   
-  phaseEnd('Phase 8: Final Verification');
+  phaseEnd('Phase 7: Final Verification');
   
   currentMax = validatedMax;
   progressBar.style.width = '100%';
