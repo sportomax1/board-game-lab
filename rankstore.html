@@ -1,0 +1,274 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>BGG Rank Store</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+</head>
+<body class="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 p-8">
+    <div class="max-w-4xl mx-auto">
+        <div class="bg-white rounded-2xl shadow-xl p-8">
+            <h1 class="text-3xl font-bold text-gray-900 mb-2">BGG Rank Store</h1>
+            <p class="text-gray-600 mb-6">Fetch collection and store rank history to Supabase</p>
+
+            <!-- Username Input -->
+            <div class="mb-6">
+                <label class="block text-sm font-semibold text-gray-700 mb-2">BGG Username</label>
+                <input 
+                    type="text" 
+                    id="username" 
+                    placeholder="Enter BGG username"
+                    class="w-full px-4 py-3 border border-gray-300 rounded-xl focus:ring-2 focus:ring-blue-500 focus:outline-none"
+                />
+            </div>
+
+            <!-- Action Buttons -->
+            <div class="flex gap-3 mb-6">
+                <button 
+                    onclick="fetchAndStore()" 
+                    class="flex-1 bg-blue-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-blue-700 transition-colors disabled:opacity-50 disabled:cursor-not-allowed"
+                    id="fetchBtn"
+                >
+                    Fetch & Store Ranks
+                </button>
+                <button 
+                    onclick="viewHistory()" 
+                    class="flex-1 bg-gray-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-gray-700 transition-colors"
+                >
+                    View History
+                </button>
+            </div>
+
+            <!-- Progress -->
+            <div id="progress" class="hidden mb-6">
+                <div class="bg-blue-50 border border-blue-200 rounded-xl p-4">
+                    <div class="flex items-center gap-3 mb-2">
+                        <div class="animate-spin rounded-full h-5 w-5 border-b-2 border-blue-600"></div>
+                        <span class="font-semibold text-blue-900" id="progressText">Processing...</span>
+                    </div>
+                    <div class="text-sm text-blue-700" id="progressDetail"></div>
+                </div>
+            </div>
+
+            <!-- Results -->
+            <div id="results" class="hidden">
+                <div class="bg-green-50 border border-green-200 rounded-xl p-4">
+                    <h3 class="font-bold text-green-900 mb-2">✓ Success</h3>
+                    <div class="text-sm text-green-700" id="resultsText"></div>
+                </div>
+            </div>
+
+            <!-- Error -->
+            <div id="error" class="hidden">
+                <div class="bg-red-50 border border-red-200 rounded-xl p-4">
+                    <h3 class="font-bold text-red-900 mb-2">✗ Error</h3>
+                    <div class="text-sm text-red-700" id="errorText"></div>
+                </div>
+            </div>
+
+            <!-- History Table -->
+            <div id="historyContainer" class="hidden mt-8">
+                <h2 class="text-xl font-bold text-gray-900 mb-4">Rank History</h2>
+                <div class="overflow-x-auto">
+                    <table class="w-full border-collapse">
+                        <thead>
+                            <tr class="bg-gray-100">
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG ID</th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Game Name</th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG Rank</th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Date</th>
+                            </tr>
+                        </thead>
+                        <tbody id="historyBody" class="divide-y divide-gray-200">
+                        </tbody>
+                    </table>
+                </div>
+            </div>
+        </div>
+    </div>
+
+    <script>
+        // ===== CONFIGURATION =====
+        const SUPABASE_URL = 'YOUR_SUPABASE_URL_HERE';  // Replace with your Supabase URL
+        const SUPABASE_ANON_KEY = 'YOUR_SUPABASE_ANON_KEY_HERE';  // Replace with your anon key
+
+        // Initialize Supabase client
+        const supabase = window.supabase.createClient(SUPABASE_URL, SUPABASE_ANON_KEY);
+
+        // ===== UI HELPERS =====
+        function showProgress(text, detail = '') {
+            document.getElementById('progress').classList.remove('hidden');
+            document.getElementById('progressText').textContent = text;
+            document.getElementById('progressDetail').textContent = detail;
+            document.getElementById('results').classList.add('hidden');
+            document.getElementById('error').classList.add('hidden');
+        }
+
+        function hideProgress() {
+            document.getElementById('progress').classList.add('hidden');
+        }
+
+        function showResults(text) {
+            document.getElementById('results').classList.remove('hidden');
+            document.getElementById('resultsText').textContent = text;
+            hideProgress();
+        }
+
+        function showError(text) {
+            document.getElementById('error').classList.remove('hidden');
+            document.getElementById('errorText').textContent = text;
+            hideProgress();
+        }
+
+        function setButtonLoading(loading) {
+            const btn = document.getElementById('fetchBtn');
+            btn.disabled = loading;
+        }
+
+        // ===== MAIN LOGIC =====
+        async function fetchAndStore() {
+            const username = document.getElementById('username').value.trim();
+            if (!username) {
+                showError('Please enter a BGG username');
+                return;
+            }
+
+            setButtonLoading(true);
+            showProgress('Fetching collection...', `User: ${username}`);
+
+            try {
+                // Step 1: Fetch collection from BGG API
+                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                showProgress('Fetching collection...', 'Requesting data from BGG API');
+
+                const response = await fetch(collectionUrl);
+                if (!response.ok) {
+                    throw new Error(`BGG API error: ${response.status}`);
+                }
+
+                const xmlText = await response.text();
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+
+                // Step 2: Parse collection items
+                const items = xmlDoc.querySelectorAll('item');
+                if (items.length === 0) {
+                    throw new Error('No items found in collection');
+                }
+
+                showProgress(`Processing ${items.length} games...`, 'Extracting rank data');
+
+                // Step 3: Extract rank data
+                const today = new Date().toISOString().split('T')[0];
+                const rankData = [];
+
+                items.forEach(item => {
+                    const bggId = parseInt(item.getAttribute('objectid'));
+                    const gameName = item.querySelector('name')?.textContent || 'Unknown';
+                    
+                    // Extract Board Game Rank (rank with type="subtype" and name="boardgame")
+                    const ranks = item.querySelectorAll('rank');
+                    let bggRank = null;
+
+                    for (const rank of ranks) {
+                        const rankType = rank.getAttribute('type');
+                        const rankName = rank.getAttribute('name');
+                        const rankValue = rank.getAttribute('value');
+
+                        if (rankType === 'subtype' && rankName === 'boardgame') {
+                            bggRank = rankValue === 'Not Ranked' ? null : parseInt(rankValue);
+                            break;
+                        }
+                    }
+
+                    rankData.push({
+                        bgg_id: bggId,
+                        game_name: gameName,
+                        bgg_rank: bggRank,
+                        snapshot_date: today
+                    });
+                });
+
+                showProgress(`Storing ${rankData.length} records...`, 'Saving to Supabase');
+
+                // Step 4: Store in Supabase (upsert to handle duplicates for same day)
+                const { data, error } = await supabase
+                    .from('rank_history')
+                    .upsert(rankData, { 
+                        onConflict: 'bgg_id,snapshot_date',
+                        ignoreDuplicates: false 
+                    });
+
+                if (error) {
+                    throw new Error(`Supabase error: ${error.message}`);
+                }
+
+                // Success!
+                showResults(`Successfully stored ${rankData.length} rank records for ${today}`);
+                
+            } catch (err) {
+                console.error('Error:', err);
+                showError(err.message);
+            } finally {
+                setButtonLoading(false);
+            }
+        }
+
+        async function viewHistory() {
+            document.getElementById('historyContainer').classList.remove('hidden');
+            showProgress('Loading history...', 'Fetching from Supabase');
+
+            try {
+                const { data, error } = await supabase
+                    .from('rank_history')
+                    .select('*')
+                    .order('snapshot_date', { ascending: false })
+                    .order('bgg_rank', { ascending: true })
+                    .limit(100);
+
+                if (error) {
+                    throw new Error(`Supabase error: ${error.message}`);
+                }
+
+                const tbody = document.getElementById('historyBody');
+                tbody.innerHTML = '';
+
+                if (data.length === 0) {
+                    tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">No history found</td></tr>';
+                } else {
+                    data.forEach(row => {
+                        const tr = document.createElement('tr');
+                        tr.className = 'hover:bg-gray-50';
+                        tr.innerHTML = `
+                            <td class="px-4 py-2 text-sm">${row.bgg_id}</td>
+                            <td class="px-4 py-2 text-sm font-medium">${row.game_name}</td>
+                            <td class="px-4 py-2 text-sm">${row.bgg_rank || 'Not Ranked'}</td>
+                            <td class="px-4 py-2 text-sm text-gray-600">${row.snapshot_date}</td>
+                        `;
+                        tbody.appendChild(tr);
+                    });
+                }
+
+                hideProgress();
+            } catch (err) {
+                console.error('Error:', err);
+                showError(err.message);
+            }
+        }
+
+        // Auto-fill username from localStorage if available
+        window.addEventListener('DOMContentLoaded', () => {
+            const savedUsername = localStorage.getItem('bgg_username');
+            if (savedUsername) {
+                document.getElementById('username').value = savedUsername;
+            }
+
+            document.getElementById('username').addEventListener('change', (e) => {
+                localStorage.setItem('bgg_username', e.target.value);
+            });
+        });
+    </script>
+</body>
+</html>
