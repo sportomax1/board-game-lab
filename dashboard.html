@@ -557,6 +557,47 @@
             }
         }
 
+        // Cache of id -> subtype (e.g., 'boardgame', 'boardgameexpansion')
+        const subtypeCache = {};
+
+        // Given an array of item objects (may include .id and/or .subtype), return a filtered array
+        // with expansions removed. Will batch-query thing API for unknown ids to populate subtype info.
+        async function filterOutExpansions(items) {
+            if (!items || items.length === 0) return items;
+            const toCheck = [];
+            items.forEach(it => {
+                if (!it) return;
+                if (it.subtype) return; // already known
+                if (it.id && !subtypeCache[it.id]) toCheck.push(it.id);
+            });
+
+            if (toCheck.length > 0) {
+                // batch fetch (single call)
+                try {
+                    const xml = await fetchAPI('thing', `&id=${toCheck.join(',')}&stats=1`);
+                    if (xml) {
+                        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+                        Array.from(doc.querySelectorAll('item')).forEach(node => {
+                            const id = node.getAttribute('id');
+                            const subtype = node.getAttribute('subtype') || node.getAttribute('type') || '';
+                            subtypeCache[id] = subtype;
+                        });
+                    }
+                } catch (e) { console.warn('filterOutExpansions thing fetch failed', e); }
+            }
+
+            // annotate items from cache if possible
+            const filtered = items.filter(it => {
+                if (!it) return false;
+                const st = it.subtype || (it.id ? subtypeCache[it.id] : null);
+                // If known expansion, exclude
+                if (st && st.toLowerCase() === 'boardgameexpansion') return false;
+                // otherwise include (unknowns kept)
+                return true;
+            });
+            return filtered;
+        }
+
         async function loadData() {
             console.log('Fetching all dashboard data...');
             
@@ -1018,7 +1059,9 @@
             }
 
             // SHOW DASHBOARD
-            const data = cache[type] || [];
+            const rawData = cache[type] || [];
+            // filter out expansions before rendering (will fetch thing metadata for unknown ids as needed)
+            const data = await filterOutExpansions(rawData);
             els.guide.style.opacity = '0';
             setTimeout(() => els.guide.classList.add('hidden'), 300);
             els.grid.style.opacity = '1';
