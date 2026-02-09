@@ -1,0 +1,227 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>ID Lookup — Thing API</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🎲</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: #f8fafc; font-family: Inter, ui-sans-serif, system-ui, -apple-system, 'Helvetica Neue', Arial; }
+    .card { transition: box-shadow .15s ease, transform .12s ease; }
+    .card:hover{ transform: translateY(-4px); box-shadow: 0 10px 30px rgba(2,6,23,0.08);}    
+  </style>
+</head>
+<body class="min-h-screen antialiased text-slate-700">
+  <header class="sticky top-0 bg-white/75 backdrop-blur-md border-b z-30">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div>
+        <h1 class="text-lg font-semibold">Thing ID Lookup</h1>
+        <div class="text-xs text-slate-500">Enter IDs (comma or newline separated) — uses /api/bgg-helper proxy</div>
+      </div>
+      <div class="text-xs text-slate-500">iPhone-friendly • 20x batches • 100x parallel</div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto px-4 py-6">
+    <section class="bg-white rounded-2xl shadow-sm border p-4 mb-4">
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 items-start">
+        <textarea id="idInput" rows="4" placeholder="e.g. 12345,67890 or one per line" class="col-span-2 p-3 border rounded-lg text-sm resize-none w-full"></textarea>
+        <div class="space-y-2">
+          <div>
+            <label class="text-xs font-bold text-slate-600">Limit (optional)</label>
+            <input id="limitInput" type="number" min="1" placeholder="Max IDs to process" class="mt-1 w-full p-2 border rounded-lg text-sm">
+          </div>
+          <div>
+            <label class="text-xs font-bold text-slate-600">Sort</label>
+            <select id="sortSelect" class="mt-1 w-full p-2 border rounded-lg text-sm">
+              <option value="original">Original Order</option>
+              <option value="alpha">Name (A→Z)</option>
+              <option value="year">Year Published (asc)</option>
+              <option value="id">ID (asc)</option>
+            </select>
+          </div>
+          <div class="flex gap-2">
+            <button id="runBtn" class="flex-1 bg-indigo-600 hover:bg-indigo-700 text-white py-2 rounded-lg font-bold">Run API</button>
+            <button id="clearBtn" class="w-20 bg-slate-100 hover:bg-slate-200 text-slate-700 py-2 rounded-lg">Clear</button>
+          </div>
+        </div>
+      </div>
+      <div class="mt-3 text-xs text-slate-500">Note: blank filler cards will appear for IDs with no results. API requests are batched and retried.</div>
+    </section>
+
+    <section class="mb-8">
+      <div id="statusBar" class="mb-3 text-sm text-slate-600">Idle</div>
+      <div id="grid" class="grid grid-cols-2 sm:grid-cols-3 gap-3"></div>
+    </section>
+  </main>
+
+<script>
+const API_BASE = '/api/bgg-helper';
+const BATCH_SIZE = 20;
+const PARALLEL_BATCHES = 100;
+const MAX_RETRIES = 5;
+
+const runBtn = document.getElementById('runBtn');
+const clearBtn = document.getElementById('clearBtn');
+const idInput = document.getElementById('idInput');
+const grid = document.getElementById('grid');
+const statusBar = document.getElementById('statusBar');
+const sortSelect = document.getElementById('sortSelect');
+
+runBtn.addEventListener('click', onRun);
+clearBtn.addEventListener('click', () => { idInput.value=''; grid.innerHTML=''; statusBar.textContent='Cleared'; });
+sortSelect.addEventListener('change', () => { if(window._lastResults) renderCards(window._lastResults); });
+
+function parseIds(text){
+  if(!text) return [];
+  return Array.from(new Set(text.split(/[,\n\s]+/).map(s=>s.trim()).filter(Boolean))).filter(x=>/^\d+$/.test(x));
+}
+
+async function onRun(){
+  const raw = idInput.value;
+  let ids = parseIds(raw);
+  const limit = parseInt(document.getElementById('limitInput').value || '') || null;
+  if (limit && limit > 0) ids = ids.slice(0, limit);
+  if (ids.length === 0){ statusBar.textContent = 'No valid numeric IDs provided'; return; }
+
+  statusBar.textContent = `Processing ${ids.length} ids...`;
+  grid.innerHTML = '';
+
+  // Prepare placeholders for original order
+  ids.forEach(id => {
+    const el = createCardPlaceholder(id);
+    grid.appendChild(el);
+  });
+
+  const results = await fetchAllThingIds(ids);
+  window._lastResults = { ids, map: results };
+  renderCards({ ids, map: results });
+  statusBar.textContent = `Done: ${ids.length} requested, ${[...results.values()].filter(v=>v).length} found`;
+}
+
+function createCardPlaceholder(id){
+  const card = document.createElement('div');
+  card.className = 'card bg-white border rounded-lg p-3 flex flex-col items-start gap-2';
+  card.id = 'card-' + id;
+  card.innerHTML = `
+    <div class="w-full h-36 bg-slate-100 rounded overflow-hidden flex items-center justify-center text-slate-300">...</div>
+    <div class="w-full">
+      <div class="font-semibold truncate">ID ${id}</div>
+      <div class="text-xs text-slate-400">Loading…</div>
+    </div>`;
+  return card;
+}
+
+function createBlankCard(id){
+  const card = document.createElement('div');
+  card.className = 'card bg-white border rounded-lg p-3 flex flex-col items-start gap-2';
+  card.innerHTML = `
+    <div class="w-full h-36 bg-slate-50 rounded overflow-hidden flex items-center justify-center text-slate-300">No Image</div>
+    <div class="w-full">
+      <div class="font-semibold truncate">ID ${id}</div>
+      <div class="text-xs text-slate-400">No result</div>
+    </div>`;
+  return card;
+}
+
+function createCard(data){
+  const card = document.createElement('div');
+  card.className = 'card bg-white border rounded-lg p-3 flex flex-col items-start gap-2';
+  const thumb = data.thumbnail ? `<img src="${data.thumbnail}" class="w-full h-36 object-cover rounded">` : `<div class="w-full h-36 bg-slate-50 rounded flex items-center justify-center text-slate-300">No Image</div>`;
+  card.innerHTML = `
+    ${thumb}
+    <div class="w-full">
+      <div class="font-semibold truncate">${escapeHtml(data.name || 'Unknown')}</div>
+      <div class="text-xs text-slate-500 mt-1">Year: <span class="font-mono">${data.yearpublished || '—'}</span> • ID: <span class="font-mono">${data.id}</span></div>
+    </div>`;
+  return card;
+}
+
+function escapeHtml(s){ return (s+'').replace(/[&<>\"]/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','\"':'&quot;'})[c] || c); }
+
+async function fetchWithRetry(url, attempt=1){
+  try{
+    const res = await fetch(url);
+    if (res.status === 202){
+      // backoff and retry
+      await new Promise(r=>setTimeout(r, 2000 * attempt));
+      if (attempt < MAX_RETRIES) return fetchWithRetry(url, attempt+1);
+      throw new Error('Accepted but not ready after retries');
+    }
+    if (!res.ok){
+      if (attempt < MAX_RETRIES){
+        await new Promise(r=>setTimeout(r, 500 * Math.pow(2, attempt)));
+        return fetchWithRetry(url, attempt+1);
+      }
+      throw new Error('HTTP ' + res.status);
+    }
+    return await res.text();
+  } catch (e){
+    if (attempt < MAX_RETRIES){
+      await new Promise(r=>setTimeout(r, 500 * Math.pow(2, attempt)));
+      return fetchWithRetry(url, attempt+1);
+    }
+    throw e;
+  }
+}
+
+async function fetchAllThingIds(ids){
+  // ids: array of numeric ids (strings)
+  const batches = [];
+  for (let i = 0; i < ids.length; i += BATCH_SIZE) batches.push(ids.slice(i, i + BATCH_SIZE));
+
+  const resultsMap = new Map();
+  ids.forEach(id => resultsMap.set(id, null));
+
+  for (let i = 0; i < batches.length; i += PARALLEL_BATCHES){
+    const group = batches.slice(i, i + PARALLEL_BATCHES);
+    statusBar.textContent = `Fetching batches ${i} - ${i + group.length} / ${batches.length}`;
+    await Promise.all(group.map(async batch => {
+      const idsParam = batch.join(',');
+      try{
+        const url = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(idsParam)}&stats=1`;
+        const txt = await fetchWithRetry(url);
+        const doc = new DOMParser().parseFromString(txt, 'text/xml');
+        const items = Array.from(doc.querySelectorAll('item'));
+        // map items by id
+        items.forEach(it => {
+          const id = it.getAttribute('id');
+          const name = it.querySelector('name[type="primary"]')?.getAttribute('value') || it.querySelector('name')?.textContent || '';
+          const thumb = it.querySelector('thumbnail')?.textContent || '';
+          const year = it.querySelector('yearpublished')?.getAttribute('value') || it.querySelector('yearpublished')?.textContent || '';
+          resultsMap.set(id, { id, name, thumbnail: thumb, yearpublished: year });
+        });
+      } catch (e){
+        console.warn('Batch fetch failed', batch, e);
+        // leave map entries as null so filler cards show
+      }
+    }));
+    // small throttle between large groups
+    if (i + PARALLEL_BATCHES < batches.length) await new Promise(r=>setTimeout(r, 500));
+  }
+
+  return resultsMap;
+}
+
+function renderCards({ids, map}){
+  const entries = ids.map(id => ({ id, data: map.get(id) }));
+  const sort = sortSelect.value;
+
+  let sorted = entries.slice();
+  if (sort === 'alpha') sorted.sort((a,b)=>( (a.data?.name||'').toLowerCase().localeCompare((b.data?.name||'').toLowerCase()) ));
+  else if (sort === 'year') sorted.sort((a,b)=>( (parseInt(a.data?.yearpublished)||0) - (parseInt(b.data?.yearpublished)||0) ));
+  else if (sort === 'id') sorted.sort((a,b)=> parseInt(a.id) - parseInt(b.id));
+
+  grid.innerHTML = '';
+  sorted.forEach(entry => {
+    if (entry.data){
+      grid.appendChild(createCard(entry.data));
+    } else {
+      grid.appendChild(createBlankCard(entry.id));
+    }
+  });
+}
+</script>
+</body>
+</html>
