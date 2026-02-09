@@ -773,31 +773,57 @@
         }
 
         // ============ API HELPERS ============
-        async function fetchWithRetry(url, maxRetries = 5, initialDelay = 1000) {
-            let delay = initialDelay;
-            
+        // Backoff sequence per spec: immediate, 1s, 3s, 5s, 7s, 5s, 3s, 1s ... (repeat)
+        const BACKOFF_SEQUENCE = [0, 1000, 3000, 5000, 7000, 5000, 3000, 1000];
+
+        function updateRetryLog(attempt, nextDelay, url) {
+            try {
+                const el = document.getElementById('retryLog');
+                if (!el) return;
+                el.innerHTML = `<div style="font-weight:700;margin-bottom:6px">Fetch attempts: ${attempt}</div>` +
+                    `<div style="font-size:12px;color:#334155">Next try in: ${nextDelay} ms</div>` +
+                    `<div style="font-size:11px;color:#64748b;margin-top:6px;word-break:break-all">${escapeHtml(url)}</div>`;
+            } catch (e) { console.warn('retry log update failed', e); }
+        }
+
+        async function fetchWithRetry(url, maxRetries = 12) {
+            // use a repeating backoff sequence; attempt=1 uses BACKOFF_SEQUENCE[0] (immediate)
             for (let attempt = 1; attempt <= maxRetries; attempt++) {
+                const seqIndex = (attempt - 1) % BACKOFF_SEQUENCE.length;
+                const waitBefore = BACKOFF_SEQUENCE[seqIndex];
+                // show that we're about to try (or will try after wait)
+                updateRetryLog(attempt - 1, waitBefore, url);
+
+                if (waitBefore > 0) await sleep(waitBefore);
+
                 try {
                     const response = await fetch(url);
-                    
-                    // Handle BGG's 202 "processing" response
+
+                    // BGG 202 processing: treat as transient and continue to next attempt
                     if (response.status === 202) {
-                        console.log(`[Retry ${attempt}] BGG processing, waiting ${delay}ms...`);
-                        await sleep(delay);
-                        delay = Math.min(delay * 1.5, 10000);
+                        const nextSeqIndex = (attempt) % BACKOFF_SEQUENCE.length;
+                        const nextDelay = BACKOFF_SEQUENCE[nextSeqIndex];
+                        updateRetryLog(attempt, nextDelay, url);
+                        // if last attempt, throw
+                        if (attempt === maxRetries) throw new Error('BGG processing, no more retries');
                         continue;
                     }
-                    
+
                     if (!response.ok) {
                         throw new Error(`HTTP ${response.status}`);
                     }
-                    
+
+                    // success
+                    updateRetryLog(attempt, 0, url);
                     return await response.text();
-                } catch (error) {
-                    console.warn(`[Attempt ${attempt}/${maxRetries}] Error: ${error.message}`);
-                    if (attempt === maxRetries) throw error;
-                    await sleep(delay);
-                    delay = Math.min(delay * 2, 15000);
+                } catch (err) {
+                    const nextSeqIndex = (attempt) % BACKOFF_SEQUENCE.length;
+                    const nextDelay = BACKOFF_SEQUENCE[nextSeqIndex];
+                    console.warn(`[Attempt ${attempt}] Fetch error for ${url}: ${err.message}. Next in ${nextDelay}ms`);
+                    updateRetryLog(attempt, nextDelay, url);
+                    if (attempt === maxRetries) throw err;
+                    // wait for nextDelay before next loop iteration
+                    await sleep(nextDelay);
                 }
             }
         }
@@ -1824,5 +1850,6 @@
                 `${selectedGeeklists.length} GeekList${selectedGeeklists.length !== 1 ? 's' : ''} selected`;
         }
     </script>
+    <div id="retryLog" style="position:fixed;left:12px;right:12px;bottom:56px;z-index:2200;background:#ffffffcc;backdrop-filter:blur(6px);border:1px solid rgba(0,0,0,0.06);padding:8px;border-radius:8px;font-size:13px;color:#0f172a;max-width:calc(100% - 24px);margin:0 auto;box-shadow:0 6px 24px rgba(2,6,23,0.08)"></div>
 </body>
 </html>
