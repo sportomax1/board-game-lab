@@ -244,143 +244,186 @@ async function findMaxId(startId) {
   const BATCH_SIZE = parseInt(document.getElementById('batchInput').value) || 20;
   const PARALLEL = parseInt(document.getElementById('parallelInput').value) || 100;
   
-  let highestFound = 0;
+  let validatedMax = 0;
   
-  // Phase 1: Sparse bucket sampling to find approximate range
-  log(`📈 Phase 1: Sparse bucket sampling from ${startId.toLocaleString()}`, 'info');
+  // Phase 1: Check powers of 10
+  log(`📊 Phase 1: Checking powers of 10`, 'info');
+  const powersOf10 = [1, 10, 100, 1000, 10000, 100000, 1000000, 10000000, 100000000, 1000000000];
   
-  // Generate sparse checkpoints: 1, 10, 100, 1000, 10000, 100000, 1000000...
-  const buckets = [];
-  for (let exp = 0; exp <= 7; exp++) {
-    const bucket = Math.pow(10, exp);
-    if (bucket >= startId) buckets.push(bucket);
-  }
+  // Check all powers in parallel
+  const powerResults = await Promise.all(powersOf10.map(id => checkIds([id])));
   
-  // Add intermediate buckets for better coverage
-  const expandedBuckets = [];
-  buckets.forEach((bucket, idx) => {
-    expandedBuckets.push(bucket);
-    if (idx < buckets.length - 1) {
-      const nextBucket = buckets[idx + 1];
-      // Add midpoint and quarter points
-      expandedBuckets.push(Math.floor(bucket + (nextBucket - bucket) * 0.25));
-      expandedBuckets.push(Math.floor(bucket + (nextBucket - bucket) * 0.5));
-      expandedBuckets.push(Math.floor(bucket + (nextBucket - bucket) * 0.75));
+  let highestPowerIndex = -1;
+  powerResults.forEach((result, idx) => {
+    if (result.maxFound > 0) {
+      if (result.maxFound > validatedMax) {
+        validatedMax = result.maxFound;
+        currentMax = validatedMax;
+        highestPowerIndex = idx;
+        log(`✓ Power of 10 hit: ${powersOf10[idx].toLocaleString()} → Found ${result.maxFound.toLocaleString()}`, 'success');
+      }
     }
   });
   
-  const sampledBuckets = expandedBuckets.filter(b => b >= startId).sort((a, b) => a - b);
-  log(`🎯 Checking ${sampledBuckets.length} sparse checkpoints: ${sampledBuckets.slice(0, 5).join(', ')}... → ${sampledBuckets[sampledBuckets.length - 1].toLocaleString()}`, 'info');
-  
-  // Check buckets in parallel batches
-  for (let i = 0; i < sampledBuckets.length; i += PARALLEL) {
-    if (shouldStop) return;
-    
-    const group = sampledBuckets.slice(i, i + PARALLEL);
-    statusText.textContent = `Sampling checkpoints ${group[0].toLocaleString()} - ${group[group.length - 1].toLocaleString()}...`;
-    
-    const results = await Promise.all(group.map(id => checkIds([id])));
-    
-    results.forEach((result, idx) => {
-      if (result.maxFound > 0) {
-        const found = result.maxFound;
-        if (found > highestFound) {
-          highestFound = found;
-          currentMax = highestFound;
-          log(`✓ Hit at checkpoint ${group[idx].toLocaleString()}! Found ID: ${found.toLocaleString()}`, 'success');
-        }
-      }
-    });
-    
-    updateMetrics();
-    await new Promise(r => setTimeout(r, 200));
-  }
-  
-  if (highestFound === 0) {
-    log(`⊘ No IDs found in any checkpoint ranges`, 'warn');
+  if (validatedMax === 0) {
+    log(`⊘ No IDs found in powers of 10`, 'warn');
     return;
   }
   
-  log(`📍 Highest checkpoint hit: ${highestFound.toLocaleString()}`, 'success');
+  updateMetrics();
   
   if (shouldStop) return;
   
-  // Phase 2: Binary search from highest found to narrow down true max
-  log(`🔍 Phase 2: Binary search from ${highestFound.toLocaleString()}`, 'info');
+  // Phase 2: Progressive digit refinement
+  log(`🔢 Phase 2: Progressive digit refinement from ${validatedMax.toLocaleString()}`, 'info');
   
-  let searchStart = highestFound;
-  let searchEnd = Math.min(highestFound + 1000000, 10000000); // Cap at 10M
-  let trueMax = highestFound;
+  // Determine the magnitude we're working with
+  let currentPower = powersOf10[highestPowerIndex];
+  let nextPower = powersOf10[highestPowerIndex + 1] || currentPower * 10;
   
-  while (!shouldStop && searchEnd - searchStart > 100) {
-    const mid = Math.floor((searchStart + searchEnd) / 2);
-    statusText.textContent = `Binary searching: ${searchStart.toLocaleString()} - ${searchEnd.toLocaleString()} (testing ${mid.toLocaleString()})...`;
+  // Keep refining by adding digits progressively
+  while (!shouldStop && currentPower >= 1) {
+    // Check leading digits 1-9 for current magnitude
+    const candidates = [];
     
-    // Sample around midpoint
-    const testIds = [mid - 10, mid, mid + 10, mid + 50, mid + 100].filter(id => id > trueMax);
-    const results = await Promise.all(testIds.map(id => checkIds([id])));
+    // Generate candidates based on current validated max
+    const orderOfMagnitude = Math.floor(Math.log10(validatedMax));
+    const step = Math.pow(10, orderOfMagnitude);
     
-    let foundInUpper = false;
-    for (const result of results) {
-      if (result.maxFound > 0) {
-        foundInUpper = true;
-        if (result.maxFound > trueMax) {
-          trueMax = result.maxFound;
-          currentMax = trueMax;
-          log(`✓ Found ID ${result.maxFound.toLocaleString()} in upper range`, 'success');
+    // Check multiples of current step above validated max
+    for (let mult = 1; mult <= 9; mult++) {
+      const candidate = mult * step;
+      if (candidate > validatedMax && candidate <= nextPower) {
+        candidates.push(candidate);
+      }
+    }
+    
+    // Also check intermediate steps (one digit to the right)
+    if (step >= 10) {
+      const smallerStep = step / 10;
+      const baseValue = Math.floor(validatedMax / smallerStep) * smallerStep;
+      
+      for (let i = 1; i <= 90; i++) {
+        const candidate = baseValue + (i * smallerStep);
+        if (candidate > validatedMax && candidate <= nextPower && !candidates.includes(candidate)) {
+          candidates.push(candidate);
         }
       }
     }
     
-    if (foundInUpper) {
-      searchStart = mid;
-    } else {
-      searchEnd = mid;
+    if (candidates.length === 0) break;
+    
+    candidates.sort((a, b) => a - b);
+    const uniqueCandidates = [...new Set(candidates)].filter(c => c > validatedMax);
+    
+    if (uniqueCandidates.length === 0) break;
+    
+    log(`🎯 Testing ${uniqueCandidates.length} candidates from ${uniqueCandidates[0].toLocaleString()} to ${uniqueCandidates[uniqueCandidates.length - 1].toLocaleString()}`, 'info');
+    statusText.textContent = `Testing range ${uniqueCandidates[0].toLocaleString()} - ${uniqueCandidates[uniqueCandidates.length - 1].toLocaleString()}...`;
+    
+    let foundHigher = false;
+    
+    // Check candidates in parallel batches
+    for (let i = 0; i < uniqueCandidates.length; i += PARALLEL) {
+      if (shouldStop) break;
+      
+      const batch = uniqueCandidates.slice(i, i + PARALLEL);
+      const results = await Promise.all(batch.map(id => checkIds([id])));
+      
+      results.forEach((result, idx) => {
+        if (result.maxFound > 0 && result.maxFound > validatedMax) {
+          validatedMax = result.maxFound;
+          currentMax = validatedMax;
+          foundHigher = true;
+          log(`✓ Found higher ID: ${result.maxFound.toLocaleString()} (tested ${batch[idx].toLocaleString()})`, 'success');
+        }
+      });
+      
+      updateMetrics();
+      await new Promise(r => setTimeout(r, 100));
     }
     
-    updateMetrics();
-    await new Promise(r => setTimeout(r, 200));
+    if (!foundHigher) {
+      log(`→ No higher IDs in this magnitude`, 'info');
+      break;
+    }
   }
   
   if (shouldStop) return;
   
-  // Phase 3: Dense verification around found maximum
-  log(`🔬 Phase 3: Dense verification from ${trueMax.toLocaleString()}`, 'info');
+  // Phase 3: Fine-grained forward scan with batches
+  log(`🔍 Phase 3: Fine-grained scan from ${validatedMax.toLocaleString()}`, 'info');
   
-  let verifyId = trueMax;
-  let consecutiveGaps = 0;
-  const MAX_GAPS = 100;
+  let scanId = validatedMax + 1;
+  let consecutiveEmptyBatches = 0;
+  const MAX_EMPTY_BATCHES = 50;
   
-  while (!shouldStop && consecutiveGaps < MAX_GAPS) {
-    statusText.textContent = `Verifying ${verifyId.toLocaleString()}... (${consecutiveGaps}/${MAX_GAPS} gaps)`;
+  while (!shouldStop && consecutiveEmptyBatches < MAX_EMPTY_BATCHES) {
+    statusText.textContent = `Scanning ${scanId.toLocaleString()}... (${consecutiveEmptyBatches}/${MAX_EMPTY_BATCHES} empty batches)`;
     
+    // Build batch of IDs to check
     const batchIds = [];
-    for (let i = 1; i <= BATCH_SIZE; i++) {
-      batchIds.push(verifyId + i);
+    for (let i = 0; i < BATCH_SIZE; i++) {
+      batchIds.push(scanId + i);
     }
     
-    const results = await checkIds(batchIds);
+    const result = await checkIds(batchIds);
     
-    if (results.maxFound > 0 && results.maxFound > trueMax) {
-      trueMax = results.maxFound;
-      currentMax = trueMax;
-      consecutiveGaps = 0;
-      verifyId = trueMax;
-      log(`✓ Found higher ID ${trueMax.toLocaleString()}!`, 'success');
+    if (result.maxFound > 0 && result.maxFound > validatedMax) {
+      validatedMax = result.maxFound;
+      currentMax = validatedMax;
+      consecutiveEmptyBatches = 0;
+      scanId = validatedMax + 1;
+      log(`✓ Found higher ID: ${validatedMax.toLocaleString()}`, 'success');
     } else {
-      consecutiveGaps++;
-      verifyId += BATCH_SIZE;
+      consecutiveEmptyBatches++;
+      scanId += BATCH_SIZE;
     }
     
     updateMetrics();
-    const progress = Math.min(100, (consecutiveGaps / MAX_GAPS) * 100);
+    const progress = Math.min(100, (consecutiveEmptyBatches / MAX_EMPTY_BATCHES) * 100);
     progressBar.style.width = `${progress}%`;
     
     await new Promise(r => setTimeout(r, 100));
   }
   
-  currentMax = trueMax;
-  log(`✅ Verified maximum ID: ${trueMax.toLocaleString()} (after ${consecutiveGaps} consecutive gaps)`, 'success');
+  // Phase 4: Verification jumps to ensure nothing higher exists
+  log(`🎯 Phase 4: Verification jumps from ${validatedMax.toLocaleString()}`, 'info');
+  
+  const verificationJumps = [1000, 10000, 50000, 100000, 500000, 1000000];
+  for (const jump of verificationJumps) {
+    if (shouldStop) break;
+    
+    const testId = validatedMax + jump;
+    statusText.textContent = `Verifying ${testId.toLocaleString()}...`;
+    
+    // Check a small range around the jump point
+    const testIds = [];
+    for (let i = -5; i <= 5; i++) {
+      testIds.push(testId + i);
+    }
+    
+    const results = await Promise.all(testIds.map(id => checkIds([id])));
+    
+    let foundHigher = false;
+    for (const result of results) {
+      if (result.maxFound > 0 && result.maxFound > validatedMax) {
+        log(`⚠️ Found ID ${result.maxFound.toLocaleString()} beyond expected range! Re-scanning...`, 'warn');
+        validatedMax = result.maxFound;
+        currentMax = validatedMax;
+        foundHigher = true;
+        // Restart from phase 3 with new max
+        return findMaxId(validatedMax);
+      }
+    }
+    
+    updateMetrics();
+    await new Promise(r => setTimeout(r, 100));
+  }
+  
+  currentMax = validatedMax;
+  progressBar.style.width = '100%';
+  log(`✅ Verified maximum ID: ${validatedMax.toLocaleString()}`, 'success');
 }
 
 // Removed checkRange - no longer using dense range checking
