@@ -41,6 +41,12 @@
             <option value="4">4</option>
             <option value="5">5</option>
             <option value="6">6</option>
+            <option value="7">7</option>
+            <option value="8">8</option>
+            <option value="9">9</option>
+            <option value="10">10</option>
+            <option value="11">11</option>
+            <option value="12">12</option>
           </select>
           <select id="playerModeSelect" onchange="filterGames()" class="px-2 py-2 rounded border border-slate-200 bg-white text-sm">
             <option value="bestwith">Best With</option>
@@ -75,6 +81,15 @@
           <select id="sortSelect" onchange="sortGames()" class="px-3 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm bg-white font-bold">
             <option value="name">Name</option>
             <option value="rating">BGG Rating</option>
+            <option value="bayesaverage">Bayes Average</option>
+            <option value="usersrated">Users Rated</option>
+            <option value="owned">Owned</option>
+            <option value="trading">Trading</option>
+            <option value="wanting">Wanting</option>
+            <option value="wishing">Wishing</option>
+            <option value="numcomments">Comments</option>
+            <option value="numweights">Weight Votes</option>
+            <option value="averageweight">Average Weight</option>
             <option value="bggRank">Board Game Rank</option>
             <option value="abstractRank">Abstract Game Rank</option>
             <option value="familyRank">Family Game Rank</option>
@@ -290,12 +305,13 @@ async function fetchCollection() {
           const allRanks = {};
           if (ranksNode) {
             Array.from(ranksNode.querySelectorAll('rank')).forEach(r => {
-              const fname = r.getAttribute('friendlyname') || r.getAttribute('name') || '';
-              const value = r.getAttribute('value') || '';
-              if (fname && value) {
-                allRanks[fname] = value;
-              }
-            });
+                const fnameRaw = r.getAttribute('friendlyname') || r.getAttribute('name') || '';
+                const value = r.getAttribute('value') || '';
+                const fname = (fnameRaw || '').trim();
+                if (fname && value) {
+                  allRanks[fname] = value;
+                }
+              });
           }
           
           // Categories & Mechanics
@@ -373,6 +389,23 @@ async function fetchCollection() {
     document.getElementById('controlsSection').classList.remove('hidden');
     document.getElementById('gamesSection').classList.remove('hidden');
     document.getElementById('statsBox').classList.remove('hidden');
+
+    // dynamically add rank-based sort options based on collected friendly names
+    try {
+      const sortSelect = document.getElementById('sortSelect');
+      if (sortSelect) {
+        // remove previously added dynamic rank:* options
+        Array.from(sortSelect.querySelectorAll('option')).forEach(opt => { if (opt.value && opt.value.startsWith('rank:')) opt.remove(); });
+        const rankNames = new Set();
+        allGames.forEach(g => { if (g.allRanks) Object.keys(g.allRanks).forEach(fn => rankNames.add(fn)); });
+        Array.from(rankNames).forEach(fn => {
+          const opt = document.createElement('option');
+          opt.value = 'rank:' + encodeURIComponent(fn);
+          opt.text = fn;
+          sortSelect.appendChild(opt);
+        });
+      }
+    } catch (e) { console.warn('rank options populate', e); }
 
     // default sort: BGG average (rating) descending
     try { document.getElementById('sortSelect').value = 'rating'; } catch(e){}
@@ -538,8 +571,29 @@ function sortGames() {
       const vb = rb !== null ? rb : 999999;
       res = va - vb;
     }
+    else if (sortBy && sortBy.startsWith('rank:')) {
+      try {
+        const friendly = decodeURIComponent(sortBy.slice(5));
+        const raRaw = a.allRanks ? (a.allRanks[friendly] || a.allRanks[friendly.trim()]) : null;
+        const rbRaw = b.allRanks ? (b.allRanks[friendly] || b.allRanks[friendly.trim()]) : null;
+        const ra = raRaw ? parseInt(raRaw) : null;
+        const rb = rbRaw ? parseInt(rbRaw) : null;
+        const va = ra !== null && !isNaN(ra) ? ra : 999999;
+        const vb = rb !== null && !isNaN(rb) ? rb : 999999;
+        res = va - vb;
+      } catch (e) { res = 0; }
+    }
     else if (sortBy === 'year') res = (b.year || 0) - (a.year || 0);
     else if (sortBy === 'weight') res = (b.avgweight || 0) - (a.avgweight || 0);
+    else if (sortBy === 'bayesaverage') res = (b.bayesaverage || 0) - (a.bayesaverage || 0);
+    else if (sortBy === 'usersrated') res = (b.userRated || 0) - (a.userRated || 0);
+    else if (sortBy === 'owned') res = (b.owned || 0) - (a.owned || 0);
+    else if (sortBy === 'trading') res = (b.trading || 0) - (a.trading || 0);
+    else if (sortBy === 'wanting') res = (b.wanting || 0) - (a.wanting || 0);
+    else if (sortBy === 'wishing') res = (b.wishing || 0) - (a.wishing || 0);
+    else if (sortBy === 'numcomments') res = (b.numcomments || 0) - (a.numcomments || 0);
+    else if (sortBy === 'numweights') res = (b.numweights || 0) - (a.numweights || 0);
+    else if (sortBy === 'averageweight') res = (b.avgweight || 0) - (a.avgweight || 0);
     else if (sortBy === 'playingtime') {
       const ta = ((a.minplaytime||0) + (a.maxplaytime||0)) / 2;
       const tb = ((b.minplaytime||0) + (b.maxplaytime||0)) / 2;
@@ -700,8 +754,17 @@ function renderGames(games) {
             <span class="bg-pink-100 text-pink-700 px-1.5 py-0.5 rounded">❤️ ${wishing.toLocaleString()}</span>
             <span class="bg-orange-100 text-orange-700 px-1.5 py-0.5 rounded">⚖️ ${avgweight.toFixed(2)}</span>
             ${primaryRank ? `<span class="bg-yellow-100 text-yellow-800 px-1 py-0.5 rounded">🏆 BGG Rank: ${primaryRank}</span>` : ''}
-            ${(g.allRanks && g.allRanks['Abstract Game Rank']) ? `<span class="bg-amber-100 text-amber-800 px-1 py-0.5 rounded">🎯 Abstract: ${g.allRanks['Abstract Game Rank']}</span>` : ''}
-            ${(g.allRanks && g.allRanks['Family Game Rank']) ? `<span class="bg-rose-100 text-rose-800 px-1 py-0.5 rounded">👨‍👩‍👧‍👦 Family: ${g.allRanks['Family Game Rank']}</span>` : ''}
+            ${(() => {
+              if (!g.allRanks) return '';
+              return Object.keys(g.allRanks).map(k => {
+                const v = g.allRanks[k];
+                const safeKey = (k || '').toLowerCase();
+                // choose small color hints for known types
+                const cls = safeKey.includes('abstract') ? 'bg-amber-100 text-amber-800' : (safeKey.includes('family') ? 'bg-rose-100 text-rose-800' : 'bg-slate-100 text-slate-800');
+                const shortLabel = k.replace(/\s*Rank\s*$/i, '').trim();
+                return `<span class="${cls} px-1 py-0.5 rounded">🏷️ ${shortLabel}: ${v}</span>`;
+              }).join('');
+            })()}
           </div>
           
           <!-- Status Badges -->
