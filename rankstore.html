@@ -332,35 +332,55 @@
                     });
                 }
 
-                // Filter: only insert if game is NEW or rank CHANGED
-                const recordsToInsert = rankData.filter(record => {
+                // Categorize records
+                const newRecords = [];
+                const changedRecords = [];
+                const unchangedCount = 0;
+
+                rankData.forEach(record => {
                     const existingRank = existingByBggId[record.bgg_id];
-                    // Insert if: no existing record, OR rank is different
-                    return !existingByBggId[record.bgg_id] || existingRank !== record.bgg_rank;
+                    
+                    if (!existingByBggId[record.bgg_id]) {
+                        // Condition 1: ID does NOT exist → ADD as NEW
+                        newRecords.push(record);
+                        console.log(`NEW: ${record.game_name} (${record.bgg_id}) - Rank: ${record.bgg_rank}`);
+                    } else if (existingRank !== record.bgg_rank) {
+                        // Condition 2: ID exists but rank is DIFFERENT → ADD as CHANGED
+                        changedRecords.push(record);
+                        console.log(`CHANGED: ${record.game_name} (${record.bgg_id}) - Rank: ${existingRank} → ${record.bgg_rank}`);
+                    }
+                    // Condition 3: Otherwise IGNORE (don't log to reduce spam)
                 });
 
+                const recordsToInsert = [...newRecords, ...changedRecords];
+                const unchangedCount_final = rankData.length - recordsToInsert.length;
+
+                console.log(`📊 Summary: ${newRecords.length} NEW | ${changedRecords.length} CHANGED | ${unchangedCount_final} UNCHANGED`);
+
                 if (recordsToInsert.length === 0) {
-                    showResults('✅ No rank changes detected - all games maintain their ranks');
+                    showResults(`✅ All games up-to-date | NEW: 0 | CHANGED: 0 | UNCHANGED: ${rankData.length}`);
                     setButtonLoading(false);
                     return;
                 }
 
-                showProgress(`Inserting ${recordsToInsert.length} changed/new records...`, `${rankData.length - recordsToInsert.length} unchanged`);
+                showProgress(`Inserting ${recordsToInsert.length} records...`, `NEW: ${newRecords.length} | CHANGED: ${changedRecords.length} | UNCHANGED: ${unchangedCount_final}`);
 
-                // Step 5: Insert in batches of 500 (Supabase limit)
+                // Step 5: Upsert in batches of 500 (use upsert to handle duplicates for same day)
                 for (let i = 0; i < recordsToInsert.length; i += 500) {
                     const batch = recordsToInsert.slice(i, i + 500);
                     const { error } = await dbClient
                         .from('rank_history')
-                        .insert(batch);
+                        .upsert(batch, { 
+                            onConflict: 'bgg_id,snapshot_date'
+                        });
 
                     if (error) {
                         throw new Error(`Supabase error: ${error.message}`);
                     }
                 }
 
-                // Success!
-                showResults(`✅ Inserted ${recordsToInsert.length} new/changed rank records | Unchanged: ${rankData.length - recordsToInsert.length}`);
+                // Success with detailed metrics!
+                showResults(`✅ Inserted/Updated Records | NEW: ${newRecords.length} | CHANGED: ${changedRecords.length} | UNCHANGED: ${unchangedCount_final}`);
                 
             } catch (err) {
                 console.error('Error:', err);
