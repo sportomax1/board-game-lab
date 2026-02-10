@@ -504,6 +504,10 @@
             updateStatus(`Scanning History...`);
             await fetchAllPlays(baseUsername);
 
+            // Fetch user's collection ratings WITHOUT own=1 so history shows the user's rated value stored in their collection
+            updateStatus(`Fetching user collection ratings (no own filter)...`);
+            await fetchCollectionRatings(baseUsername);
+
             // Populate Venues unique list
             const venues = [...new Set(totalPlays.map(p => p.location))].filter(v => v).sort();
             const venueSelect = document.getElementById('venueFilter');
@@ -576,17 +580,37 @@
                 for (let i = 0; i < items.length; i++) {
                     const id = items[i].getAttribute('objectid');
                     const name = items[i].getElementsByTagName('name')[0]?.textContent;
-                    // capture collection item and user's rating (if present)
                     collection.push({ id, name });
                     ownedIds.add(id);
-                    const ratingNode = items[i].getElementsByTagName('rating')[0];
-                    if (ratingNode) {
-                        const rv = parseFloat(ratingNode.getAttribute('value') || ratingNode.textContent || '0') || 0;
-                        if (rv > 0) collectionRatings.set(id, rv);
-                    }
                 }
                 document.getElementById('collectionCounter').textContent = `${collection.length} Owned`;
             } catch (e) { console.error(e); }
+        }
+
+        // Fetch the user's collection WITHOUT the own=1 filter to capture ratings stored by username (BGG collection v2)
+        async function fetchCollectionRatings(username) {
+            if (!username) return;
+            try {
+                const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
+                const response = await fetch(url);
+                if (response.status === 202) {
+                    await new Promise(r => setTimeout(r, 2000));
+                    return fetchCollectionRatings(username);
+                }
+                const text = await response.text();
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                const items = xml.getElementsByTagName('item');
+                for (let i = 0; i < items.length; i++) {
+                    const id = items[i].getAttribute('objectid');
+                    // capture rating element if present (value attribute often holds user's rating)
+                    const ratingNode = items[i].getElementsByTagName('rating')[0];
+                    if (ratingNode) {
+                        const rv = parseFloat(ratingNode.getAttribute('value') || ratingNode.textContent || '0') || 0;
+                        // allow 0 but store it; rendering will blank 0s
+                        collectionRatings.set(id, rv);
+                    }
+                }
+            } catch (e) { console.warn('collection ratings fetch failed', e); }
         }
 
         async function fetchPage(username, page) {
@@ -739,12 +763,11 @@
                     return '';
                 })();
 
-                // Prefer the thing API's parent rating (global/collection-less), then the user's collection rating, then the user's play rating
-                const detailsRating = details.rating;
+                // Prefer the user's collection rating (from collection API v2 without own=1), then the thing API parent rating, then the user's play rating
                 const collRating = collectionRatings.get(p.gameId);
-                const displayRating = (detailsRating && detailsRating > 0)
-                    ? detailsRating.toFixed(1)
-                    : ((collRating && collRating > 0) ? collRating.toFixed(1) : (getUserRating || ''));
+                const detailsRating = details.rating;
+                const ratingValue = (collRating && collRating > 0) ? collRating : ((detailsRating && detailsRating > 0) ? detailsRating : null);
+                const displayRating = ratingValue ? ratingValue.toFixed(1) : (getUserRating || '');
                 return `
                 <tr class="hover:bg-slate-50 transition-colors cursor-pointer" onclick="showPlayDetail('${p.id}')">
                     <td class="px-4 py-1.5">
