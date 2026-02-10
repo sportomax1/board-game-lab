@@ -182,6 +182,27 @@ function renderList() {
 }
 
 /* ────────── BGG Resolution (efficient batched) ────────── */
+/* ────────── Concurrent Execution Helper ────────── */
+async function runConcurrent(tasks, maxConcurrent = 100) {
+  const results = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const taskIdx = index++;
+      try {
+        results[taskIdx] = await tasks[taskIdx]();
+      } catch (e) {
+        results[taskIdx] = undefined;
+      }
+    }
+  }
+
+  const workers = Array(Math.min(maxConcurrent, tasks.length)).fill(null).map(() => worker());
+  await Promise.all(workers);
+  return results;
+}
+
 async function resolveAllBGG() {
   isLoading = true;
   document.getElementById('loadingSection').classList.remove('hidden');
@@ -194,16 +215,16 @@ async function resolveAllBGG() {
   const gameNames = Object.values(uniqueGames);
   updateStatus(`Searching BGG for ${gameNames.length} unique games…`);
 
-  // Search ALL games in parallel (not sequential batches)
+  // Search games with 100x concurrency
   let searchedCount = 0;
-  const searchPromises = gameNames.map(g => 
+  const searchTasks = gameNames.map(g => () => 
     searchBGG(g).finally(() => {
       searchedCount++;
       updateProgress((searchedCount / gameNames.length) * 50);
       updateStatus(`Searched ${searchedCount}/${gameNames.length} games…`);
     })
   );
-  await Promise.all(searchPromises);
+  await runConcurrent(searchTasks, 100);
 
   allEntries.forEach(e => {
     const cached = gameCache[normalize(e.game)];
@@ -211,7 +232,7 @@ async function resolveAllBGG() {
   });
   renderList();
 
-  // Batch fetch thumbnails: 20 IDs per batch, ALL batches in parallel (100x true parallelism)
+  // Batch fetch thumbnails: 20 IDs per batch, 100x concurrent batches
   const uniqueIds = [...new Set(allEntries.filter(e => e.bggId).map(e => e.bggId))];
   updateStatus(`Fetching thumbnails for ${uniqueIds.length} games…`);
   const BATCH_SIZE = 20;
@@ -220,8 +241,8 @@ async function resolveAllBGG() {
     batches.push(uniqueIds.slice(i, i + BATCH_SIZE));
   }
 
-  // Process all batches in parallel (truly parallel, not sequential groups)
-  await Promise.all(batches.map(async (batch, batchIndex) => {
+  // Fetch thumbnails with 100x concurrent batches
+  const thumbTasks = batches.map((batch, batchIndex) => async () => {
     try {
       const ids = batch.join(',');
       const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}`);
@@ -233,12 +254,31 @@ async function resolveAllBGG() {
           if (gameCache[key].bggId === id) { gameCache[key].thumb = thumb; break; }
         }
       });
-      // Update progress: batches completed
-      const completed = batches.filter((_, idx) => idx <= batchIndex).length;
-      updateProgress(50 + ((completed / batches.length) * 50));
-      updateStatus(`Thumbnails ${completed}/${batches.length} batches…`);
     } catch (e) { console.error('Batch thumb error', e); }
-  }));
+  });
+
+  let thumbsCompleted = 0;
+  const thumbTasksWithProgress = batches.map((batch, batchIndex) => async () => {
+    try {
+      const ids = batch.join(',');
+      const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}`);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      Array.from(doc.querySelectorAll('item')).forEach(item => {
+        const id = item.getAttribute('id');
+        const thumb = item.querySelector('thumbnail')?.textContent || '';
+        for (const key of Object.keys(gameCache)) {
+          if (gameCache[key].bggId === id) { gameCache[key].thumb = thumb; break; }
+        }
+      });
+    } catch (e) { console.error('Batch thumb error', e); }
+    finally {
+      thumbsCompleted++;
+      updateProgress(50 + ((thumbsCompleted / batches.length) * 50));
+      updateStatus(`Thumbnails ${thumbsCompleted}/${batches.length} batches…`);
+    }
+  });
+
+  await runConcurrent(thumbTasksWithProgress, 100);
 
   allEntries.forEach(e => {
     const cached = gameCache[normalize(e.game)];
