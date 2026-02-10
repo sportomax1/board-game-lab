@@ -224,44 +224,48 @@
         // ===== THUMBNAIL FETCHER (100x parallel, 20 per batch) =====
         async function fetchThumbnailsParallel(games) {
             const thumbnailMap = {};
-            const gameQueue = games.filter(g => g.bgg_id); // Only games with IDs
-            const maxConcurrent = 100;
-            const batchSize = 20;
-            
-            console.log(`📸 Fetching thumbnails for ${gameQueue.length} games (100x parallel, 20 per batch)`);
+            // Prepare a unique list of IDs to fetch
+            const ids = Array.from(new Set(games.map(g => g.bgg_id).filter(Boolean)));
+            const batchSize = 20; // 20 ids per thing request
+            const maxConcurrent = 100; // up to 100 concurrent batch requests
 
-            // Process games in batches
-            for (let batchStart = 0; batchStart < gameQueue.length; batchStart += batchSize) {
-                const batchEnd = Math.min(batchStart + batchSize, gameQueue.length);
-                const batchGames = gameQueue.slice(batchStart, batchEnd);
-                
-                // Create up to 100 concurrent fetch promises for this batch
-                const promises = batchGames.map(game => 
-                    (async () => {
-                        try {
-                            const response = await fetch(
-                                `/api/bgg-helper?endpoint=thing&id=${game.bgg_id}`
-                            );
-                            if (!response.ok) throw new Error(`Status ${response.status}`);
-                            
-                            const xmlText = await response.text();
-                            const parser = new DOMParser();
-                            const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-                            
-                            const thumbnail = xmlDoc.querySelector('image')?.textContent || null;
-                            thumbnailMap[game.bgg_id] = thumbnail;
-                            console.log(`✓ Fetched thumbnail for ${game.game_name} (ID: ${game.bgg_id})`);
-                        } catch (err) {
-                            console.warn(`⚠ Failed to fetch thumbnail for ID ${game.bgg_id}:`, err.message);
-                            thumbnailMap[game.bgg_id] = null;
-                        }
-                    })()
-                );
-                
-                await Promise.all(promises);
+            if (ids.length === 0) return thumbnailMap;
+            console.log(`📸 Fetching thumbnails for ${ids.length} unique IDs (${batchSize} per request, up to ${maxConcurrent} concurrent)`);
+
+            // Create batches of ids
+            const batches = [];
+            for (let i = 0; i < ids.length; i += batchSize) {
+                batches.push(ids.slice(i, i + batchSize));
             }
-            
-            console.log(`✅ Thumbnails fetched: ${Object.values(thumbnailMap).filter(t => t).length}/${gameQueue.length}`);
+
+            // Process batches in parallel chunks to limit concurrency
+            for (let i = 0; i < batches.length; i += maxConcurrent) {
+                const chunk = batches.slice(i, i + maxConcurrent);
+                await Promise.all(chunk.map(async (batchIds) => {
+                    try {
+                        const url = `/api/bgg-helper?endpoint=thing&id=${batchIds.join(',')}&stats=1`;
+                        const resp = await fetch(url);
+                        if (!resp.ok) throw new Error(`Status ${resp.status}`);
+                        const text = await resp.text();
+                        const xml = new DOMParser().parseFromString(text, 'text/xml');
+                        const items = xml.getElementsByTagName('item');
+                        for (let j = 0; j < items.length; j++) {
+                            const id = items[j].getAttribute('id');
+                            const thumbNode = items[j].getElementsByTagName('thumbnail')[0];
+                            const thumb = thumbNode ? thumbNode.textContent : null;
+                            thumbnailMap[id] = thumb ? (thumb.startsWith('//') ? 'https:' + thumb : thumb) : null;
+                        }
+                        console.log(`✓ Batch fetched: ${batchIds.length} ids`);
+                    } catch (err) {
+                        console.warn('⚠ Batch thumbnail fetch failed for ids', batchIds, err.message || err);
+                        // mark ids as null to avoid refetch attempts
+                        batchIds.forEach(id => { if (!thumbnailMap[id]) thumbnailMap[id] = null; });
+                    }
+                }));
+            }
+
+            const found = Object.values(thumbnailMap).filter(t => t).length;
+            console.log(`✅ Thumbnails fetched: ${found}/${ids.length}`);
             return thumbnailMap;
         }
 
