@@ -112,6 +112,7 @@
                     <table class="w-full border-collapse">
                         <thead>
                             <tr class="bg-gray-100">
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Thumbnail</th>
                                 <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG ID</th>
                                 <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Game Name</th>
                                 <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG Rank</th>
@@ -220,8 +221,49 @@
             btn.disabled = loading;
         }
 
-        // ===== MAIN LOGIC =====
-        async function fetchAndStore() {
+        // ===== THUMBNAIL FETCHER (100x parallel, 20 per batch) =====
+        async function fetchThumbnailsParallel(games) {
+            const thumbnailMap = {};
+            const gameQueue = games.filter(g => g.bgg_id); // Only games with IDs
+            const maxConcurrent = 100;
+            const batchSize = 20;
+            
+            console.log(`📸 Fetching thumbnails for ${gameQueue.length} games (100x parallel, 20 per batch)`);
+
+            // Process games in batches
+            for (let batchStart = 0; batchStart < gameQueue.length; batchStart += batchSize) {
+                const batchEnd = Math.min(batchStart + batchSize, gameQueue.length);
+                const batchGames = gameQueue.slice(batchStart, batchEnd);
+                
+                // Create up to 100 concurrent fetch promises for this batch
+                const promises = batchGames.map(game => 
+                    (async () => {
+                        try {
+                            const response = await fetch(
+                                `/api/bgg-helper?endpoint=thing&id=${game.bgg_id}`
+                            );
+                            if (!response.ok) throw new Error(`Status ${response.status}`);
+                            
+                            const xmlText = await response.text();
+                            const parser = new DOMParser();
+                            const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
+                            
+                            const thumbnail = xmlDoc.querySelector('image')?.textContent || null;
+                            thumbnailMap[game.bgg_id] = thumbnail;
+                            console.log(`✓ Fetched thumbnail for ${game.game_name} (ID: ${game.bgg_id})`);
+                        } catch (err) {
+                            console.warn(`⚠ Failed to fetch thumbnail for ID ${game.bgg_id}:`, err.message);
+                            thumbnailMap[game.bgg_id] = null;
+                        }
+                    })()
+                );
+                
+                await Promise.all(promises);
+            }
+            
+            console.log(`✅ Thumbnails fetched: ${Object.values(thumbnailMap).filter(t => t).length}/${gameQueue.length}`);
+            return thumbnailMap;
+        }
             const username = document.getElementById('username').value.trim();
             if (!username) {
                 showError('Please enter a BGG username');
@@ -309,20 +351,53 @@
                 const rankData = Array.from(rankMap.values());
                 console.log(`Extracted ${rankData.length} unique games from ${items.length} items`);
 
+                showProgress(`Fetching thumbnails...`, `Processing ${rankData.length} games in parallel`);
+
+                // Fetch thumbnails (100x parallel, 20 per batch)
+                const thumbnailMap = await fetchThumbnailsParallel(rankData);
+
+                // Add thumbnail_url to each record
+                rankData.forEach(record => {
+                    record.thumbnail_url = thumbnailMap[record.bgg_id] || null;
+                });
+
                 showProgress(`Storing ${rankData.length} records...`, 'Saving to Supabase');
 
-                // Step 4: Fetch ALL existing records once (not per-game) for performance
-                const { data: allExisting, error: fetchAllError } = await dbClient
-                    .from('rank_history')
-                    .select('bgg_id, bgg_rank, snapshot_date')
-                    .order('snapshot_date', { ascending: false });
+                // Step 4: Fetch ALL existing records (with pagination to handle >1000 records)
+                const existingByBggId = {};
+                let allExisting = [];
+                let offset = 0;
+                const pageSize = 1000;
+                let hasMore = true;
 
-                if (fetchAllError && fetchAllError.code !== 'PGRST116') {
-                    console.error('Error fetching existing records:', fetchAllError);
+                showProgress(`Storing ${rankData.length} records...`, 'Fetching existing records (paginating)...');
+
+                while (hasMore) {
+                    const { data: pageData, error: fetchPageError } = await dbClient
+                        .from('rank_history')
+                        .select('bgg_id, bgg_rank, snapshot_date')
+                        .order('snapshot_date', { ascending: false })
+                        .range(offset, offset + pageSize - 1);
+
+                    if (fetchPageError && fetchPageError.code !== 'PGRST116') {
+                        console.error(`Error fetching records at offset ${offset}:`, fetchPageError);
+                    }
+
+                    if (!pageData || pageData.length === 0) {
+                        hasMore = false;
+                    } else {
+                        allExisting = allExisting.concat(pageData);
+                        offset += pageSize;
+                        
+                        if (pageData.length < pageSize) {
+                            hasMore = false;
+                        }
+                    }
                 }
 
+                console.log(`✅ Fetched ${allExisting.length} existing records from database`);
+
                 // Build lookup map: bgg_id -> most recent rank
-                const existingByBggId = {};
                 if (allExisting && allExisting.length > 0) {
                     allExisting.forEach(record => {
                         // Only keep the first (most recent) for each bgg_id
@@ -440,12 +515,15 @@
             tbody.innerHTML = '';
 
             if (data.length === 0) {
-                tbody.innerHTML = '<tr><td colspan="4" class="px-4 py-8 text-center text-gray-500">No history found</td></tr>';
+                tbody.innerHTML = '<tr><td colspan="5" class="px-4 py-8 text-center text-gray-500">No history found</td></tr>';
             } else {
                 data.forEach(row => {
                     const tr = document.createElement('tr');
                     tr.className = 'hover:bg-gray-50';
                     tr.innerHTML = `
+                        <td class="px-4 py-2 text-sm">
+                            ${row.thumbnail_url ? `<img src="${row.thumbnail_url}" alt="${row.game_name}" class="h-12 w-12 object-cover rounded" onerror="this.style.display='none'">` : '<span class="text-gray-400">No image</span>'}
+                        </td>
                         <td class="px-4 py-2 text-sm">${row.bgg_id}</td>
                         <td class="px-4 py-2 text-sm font-medium">${row.game_name}</td>
                         <td class="px-4 py-2 text-sm">${row.bgg_rank || 'Not Ranked'}</td>
@@ -474,11 +552,12 @@
             }
 
             // Create CSV content
-            const headers = ['BGG ID', 'Game Name', 'BGG Rank', 'Date'];
+            const headers = ['BGG ID', 'Game Name', 'BGG Rank', 'Thumbnail URL', 'Date'];
             const rows = window.historyData.map(row => [
                 row.bgg_id,
                 `"${row.game_name.replace(/"/g, '""')}"`, // Escape quotes
                 row.bgg_rank || 'Not Ranked',
+                row.thumbnail_url || '',
                 row.snapshot_date
             ]);
 
