@@ -7,6 +7,7 @@
     <!-- v2.0 - Fixed deployment -->
     <script src="https://cdn.tailwindcss.com"></script>
     <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <script src="https://cdn.jsdelivr.net/npm/chart.js@4"></script>
 </head>
 <body class="min-h-screen bg-gradient-to-br from-slate-50 to-blue-50 p-8">
     <div class="max-w-4xl mx-auto">
@@ -39,6 +40,12 @@
                     class="flex-1 bg-gray-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-gray-700 transition-colors"
                 >
                     View History
+                </button>
+                <button 
+                    onclick="viewTrends()" 
+                    class="flex-1 bg-purple-600 text-white px-6 py-3 rounded-xl font-semibold hover:bg-purple-700 transition-colors"
+                >
+                    View Trends
                 </button>
             </div>
 
@@ -109,7 +116,45 @@
                                 <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Game Name</th>
                                 <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG Rank</th>
                                 <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Date</th>
-                            </tr>
+                  
+
+            <!-- Trends Container -->
+            <div id="trendsContainer" class="hidden mt-8">
+                <h2 class="text-xl font-bold text-gray-900 mb-6">Rank Trends & Analysis</h2>
+                
+                <!-- Top Movers -->
+                <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 mb-8">
+                    <!-- Most Improved -->
+                    <div class="bg-gradient-to-br from-green-50 to-green-100 rounded-xl p-6">
+                        <h3 class="text-lg font-bold text-green-900 mb-4">📈 Most Improved (Lowest Rank)</h3>
+                        <div id="topMovers" class="space-y-2">
+                            <p class="text-sm text-gray-600">Loading...</p>
+                        </div>
+                    </div>
+                    
+                    <!-- Most Declined -->
+                    <div class="bg-gradient-to-br from-red-50 to-red-100 rounded-xl p-6">
+                        <h3 class="text-lg font-bold text-red-900 mb-4">📉 Most Declined (Highest Rank)</h3>
+                        <div id="bottomMovers" class="space-y-2">
+                            <p class="text-sm text-gray-600">Loading...</p>
+                        </div>
+                    </div>
+                </div>
+
+                <!-- Rank Change Chart -->
+                <div class="bg-white rounded-xl border border-gray-200 p-6 mb-8">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4">Rank Change Over Time</h3>
+                    <canvas id="rankChart" style="max-height: 400px;"></canvas>
+                </div>
+
+                <!-- Game Volatility -->
+                <div class="bg-white rounded-xl border border-gray-200 p-6">
+                    <h3 class="text-lg font-bold text-gray-900 mb-4">🎲 Game Volatility (Most Rank Changes)</h3>
+                    <div id="volatilityList" class="space-y-2">
+                        <p class="text-sm text-gray-600">Loading...</p>
+                    </div>
+                </div>
+            </div>          </tr>
                         </thead>
                         <tbody id="historyBody" class="divide-y divide-gray-200">
                         </tbody>
@@ -194,7 +239,7 @@
 
             try {
                 // Step 1: Fetch collection from BGG API
-                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`;
+                const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
                 showProgress('Fetching collection...', 'Requesting data from BGG API');
 
                 const response = await fetch(collectionUrl);
@@ -254,20 +299,52 @@
 
                 showProgress(`Storing ${rankData.length} records...`, 'Saving to Supabase');
 
-                // Step 4: Store in Supabase (upsert to handle duplicates for same day)
+                // Step 4: Check which records are actually new or changed
+                let recordsToInsert = [];
+                
+                for (const record of rankData) {
+                    // Get most recent record for this bgg_id
+                    const { data: existing, error: fetchError } = await dbClient
+                        .from('rank_history')
+                        .select('bgg_rank, snapshot_date')
+                        .eq('bgg_id', record.bgg_id)
+                        .order('snapshot_date', { ascending: false })
+                        .limit(1);
+
+                    if (fetchError && fetchError.code !== 'PGRST116') {
+                        console.error('Error checking existing record:', fetchError);
+                        continue;
+                    }
+
+                    // Insert if:
+                    // 1. No existing record for this game, OR
+                    // 2. Rank is different from most recent
+                    if (!existing || existing.length === 0) {
+                        recordsToInsert.push(record);
+                    } else if (existing[0].bgg_rank !== record.bgg_rank) {
+                        recordsToInsert.push(record);
+                    }
+                }
+
+                if (recordsToInsert.length === 0) {
+                    showResults('No rank changes detected - all games maintain their ranks');
+                    setButtonLoading(false);
+                    return;
+                }
+
+                showProgress(`Inserting ${recordsToInsert.length} changed/new records...`, `${rankData.length - recordsToInsert.length} unchanged`);
+
+                // Step 5: Insert only changed records
                 const { data, error } = await dbClient
                     .from('rank_history')
-                    .upsert(rankData, { 
-                        onConflict: 'bgg_id,snapshot_date',
-                        ignoreDuplicates: false 
-                    });
+                    .insert(recordsToInsert);
 
                 if (error) {
                     throw new Error(`Supabase error: ${error.message}`);
                 }
 
                 // Success!
-                showResults(`Successfully stored ${rankData.length} rank records for ${today}`);
+                showResults(`✅ Inserted ${recordsToInsert.length} new/changed rank records | Unchanged: ${rankData.length - recordsToInsert.length}`);
                 
             } catch (err) {
                 console.error('Error:', err);
@@ -384,6 +461,166 @@
             document.body.appendChild(link);
             link.click();
             document.body.removeChild(link);
+        }
+
+        async function viewTrends() {
+            // Ensure Supabase is initialized
+            if (!dbClient) {
+                const initialized = await initSupabase();
+                if (!initialized) return;
+            }
+
+            document.getElementById('historyContainer').classList.add('hidden');
+            document.getElementById('trendsContainer').classList.remove('hidden');
+            showProgress('Analyzing trends...', 'Fetching data from Supabase');
+
+            try {
+                // Get all history data
+                const { data: allHistory, error } = await dbClient
+                    .from('rank_history')
+                    .select('*')
+                    .order('snapshot_date', { ascending: true });
+
+                if (error) throw new Error(`Supabase error: ${error.message}`);
+                if (!allHistory || allHistory.length === 0) {
+                    showError('No data available for trend analysis');
+                    return;
+                }
+
+                hideProgress();
+                analyzeTrends(allHistory);
+            } catch (err) {
+                console.error('Error:', err);
+                showError(err.message);
+            }
+        }
+
+        function analyzeTrends(data) {
+            // Group by bgg_id
+            const gameData = {};
+            data.forEach(record => {
+                if (!gameData[record.bgg_id]) {
+                    gameData[record.bgg_id] = {
+                        name: record.game_name,
+                        ranks: []
+                    };
+                }
+                gameData[record.bgg_id].ranks.push({
+                    rank: record.bgg_rank,
+                    date: record.snapshot_date
+                });
+            });
+
+            // Calculate metrics
+            const gameMetrics = Object.entries(gameData).map(([bggId, game]) => {
+                const ranks = game.ranks.filter(r => r.rank !== null).map(r => r.rank);
+                if (ranks.length === 0) return null;
+                
+                const rankChange = ranks[ranks.length - 1] - ranks[0]; // Negative = improved (lower rank number)
+                const maxRank = Math.max(...ranks);
+                const minRank = Math.min(...ranks);
+                const avgRank = Math.round(ranks.reduce((a, b) => a + b, 0) / ranks.length);
+                const volatility = maxRank - minRank; // How much rank bounced around
+                
+                return {
+                    bggId,
+                    name: game.name,
+                    rankChange,
+                    minRank,
+                    maxRank,
+                    avgRank,
+                    volatility,
+                    current: ranks[ranks.length - 1],
+                    initial: ranks[0],
+                    dataPoints: ranks.length
+                };
+            }).filter(m => m !== null);
+
+            // Sort for different views
+            const mostImproved = gameMetrics.slice().sort((a, b) => a.rankChange - b.rankChange).slice(0, 5);
+            const mostDeclined = gameMetrics.slice().sort((a, b) => b.rankChange - a.rankChange).slice(0, 5);
+            const mostVolatile = gameMetrics.slice().sort((a, b) => b.volatility - a.volatility).slice(0, 5);
+
+            // Render top movers
+            const topMoversDiv = document.getElementById('topMovers');
+            topMoversDiv.innerHTML = mostImproved.map(g => `
+                <div class="bg-white rounded-lg p-3">
+                    <div class="font-semibold text-green-700">${g.name}</div>
+                    <div class="text-sm text-gray-600">
+                        Rank: ${g.initial} → ${g.current} ${g.rankChange < 0 ? `<span class="text-green-600">⬆ ${Math.abs(g.rankChange)}</span>` : `<span class="text-red-600">⬇ +${g.rankChange}</span>`}
+                    </div>
+                </div>
+            `).join('');
+
+            const bottomMoversDiv = document.getElementById('bottomMovers');
+            bottomMoversDiv.innerHTML = mostDeclined.map(g => `
+                <div class="bg-white rounded-lg p-3">
+                    <div class="font-semibold text-red-700">${g.name}</div>
+                    <div class="text-sm text-gray-600">
+                        Rank: ${g.initial} → ${g.current} ${g.rankChange < 0 ? `<span class="text-green-600">⬆ ${Math.abs(g.rankChange)}</span>` : `<span class="text-red-600">⬇ +${g.rankChange}</span>`}
+                    </div>
+                </div>
+            `).join('');
+
+            const volatilityDiv = document.getElementById('volatilityList');
+            volatilityDiv.innerHTML = mostVolatile.map(g => `
+                <div class="bg-white rounded-lg p-3 border-l-4 border-purple-600">
+                    <div class="font-semibold text-gray-800">${g.name}</div>
+                    <div class="text-sm text-gray-600">
+                        Range: ${g.minRank}-${g.maxRank} (Spread: ${g.volatility}) | Average: ${g.avgRank}
+                    </div>
+                </div>
+            `).join('');
+
+            // Create chart
+            createRankChart(gameMetrics);
+        }
+
+        function createRankChart(gameMetrics) {
+            // Get top 5 improved and declined games
+            const topImproved = gameMetrics.slice().sort((a, b) => a.rankChange - b.rankChange).slice(0, 3);
+            const topDeclined = gameMetrics.slice().sort((a, b) => b.rankChange - a.rankChange).slice(0, 3);
+            const chartGames = [...topImproved, ...topDeclined];
+
+            if (chartGames.length === 0) return;
+
+            const ctx = document.getElementById('rankChart').getContext('2d');
+            
+            // Destroy existing chart if any
+            if (window.rankChartInstance) {
+                window.rankChartInstance.destroy();
+            }
+
+            const datasets = chartGames.map((game, idx) => ({
+                label: game.name,
+                data: [game.initial, game.avgRank, game.current],
+                borderColor: ['rgb(34, 197, 94)', 'rgb(59, 130, 246)', 'rgb(239, 68, 68)', 'rgb(168, 85, 247)', 'rgb(249, 115, 22)', 'rgb(236, 72, 153)'][idx % 6],
+                backgroundColor: ['rgba(34, 197, 94, 0.1)', 'rgba(59, 130, 246, 0.1)', 'rgba(239, 68, 68, 0.1)', 'rgba(168, 85, 247, 0.1)', 'rgba(249, 115, 22, 0.1)', 'rgba(236, 72, 153, 0.1)'][idx % 6],
+                tension: 0.4,
+                fill: true
+            }));
+
+            window.rankChartInstance = new Chart(ctx, {
+                type: 'line',
+                data: {
+                    labels: ['Initial', 'Average', 'Current'],
+                    datasets
+                },
+                options: {
+                    responsive: true,
+                    maintainAspectRatio: true,
+                    plugins: {
+                        legend: { display: true, position: 'top' }
+                    },
+                    scales: {
+                        y: {
+                            reverse: true, // Lower rank (better) is at top
+                            title: { display: true, text: 'Rank (lower is better)' },
+                            beginAtZero: false
+                        }
+                    }
+                }
+            });
         }
 
         // Auto-fill username from localStorage if available and load history
