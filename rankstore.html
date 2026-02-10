@@ -311,48 +311,52 @@
 
                 showProgress(`Storing ${rankData.length} records...`, 'Saving to Supabase');
 
-                // Step 4: Check which records are actually new or changed
-                let recordsToInsert = [];
-                
-                for (const record of rankData) {
-                    // Get most recent record for this bgg_id
-                    const { data: existing, error: fetchError } = await dbClient
-                        .from('rank_history')
-                        .select('bgg_rank, snapshot_date')
-                        .eq('bgg_id', record.bgg_id)
-                        .order('snapshot_date', { ascending: false })
-                        .limit(1);
+                // Step 4: Fetch ALL existing records once (not per-game) for performance
+                const { data: allExisting, error: fetchAllError } = await dbClient
+                    .from('rank_history')
+                    .select('bgg_id, bgg_rank, snapshot_date')
+                    .order('snapshot_date', { ascending: false });
 
-                    if (fetchError && fetchError.code !== 'PGRST116') {
-                        console.error('Error checking existing record:', fetchError);
-                        continue;
-                    }
-
-                    // Insert if:
-                    // 1. No existing record for this game, OR
-                    // 2. Rank is different from most recent
-                    if (!existing || existing.length === 0) {
-                        recordsToInsert.push(record);
-                    } else if (existing[0].bgg_rank !== record.bgg_rank) {
-                        recordsToInsert.push(record);
-                    }
+                if (fetchAllError && fetchAllError.code !== 'PGRST116') {
+                    console.error('Error fetching existing records:', fetchAllError);
                 }
 
+                // Build lookup map: bgg_id -> most recent rank
+                const existingByBggId = {};
+                if (allExisting && allExisting.length > 0) {
+                    allExisting.forEach(record => {
+                        // Only keep the first (most recent) for each bgg_id
+                        if (!existingByBggId[record.bgg_id]) {
+                            existingByBggId[record.bgg_id] = record.bgg_rank;
+                        }
+                    });
+                }
+
+                // Filter: only insert if game is NEW or rank CHANGED
+                const recordsToInsert = rankData.filter(record => {
+                    const existingRank = existingByBggId[record.bgg_id];
+                    // Insert if: no existing record, OR rank is different
+                    return !existingByBggId[record.bgg_id] || existingRank !== record.bgg_rank;
+                });
+
                 if (recordsToInsert.length === 0) {
-                    showResults('No rank changes detected - all games maintain their ranks');
+                    showResults('✅ No rank changes detected - all games maintain their ranks');
                     setButtonLoading(false);
                     return;
                 }
 
                 showProgress(`Inserting ${recordsToInsert.length} changed/new records...`, `${rankData.length - recordsToInsert.length} unchanged`);
 
-                // Step 5: Insert only changed records
-                const { data, error } = await dbClient
-                    .from('rank_history')
-                    .insert(recordsToInsert);
+                // Step 5: Insert in batches of 500 (Supabase limit)
+                for (let i = 0; i < recordsToInsert.length; i += 500) {
+                    const batch = recordsToInsert.slice(i, i + 500);
+                    const { error } = await dbClient
+                        .from('rank_history')
+                        .insert(batch);
 
-                if (error) {
-                    throw new Error(`Supabase error: ${error.message}`);
+                    if (error) {
+                        throw new Error(`Supabase error: ${error.message}`);
+                    }
                 }
 
                 // Success!
