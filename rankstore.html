@@ -95,10 +95,10 @@
                         onchange="viewHistory()"
                     >
                         <option value="7">Last 7 days</option>
-                        <option value="30" selected>Last 30 days</option>
+                        <option value="30">Last 30 days</option>
                         <option value="90">Last 90 days</option>
                         <option value="365">Last year</option>
-                        <option value="all">All time</option>
+                        <option value="all" selected>All time</option>
                     </select>
                     <button 
                         onclick="exportHistory()" 
@@ -521,30 +521,55 @@
 
             try {
                 // Get date filter value
-                const dateFilter = document.getElementById('dateFilter')?.value || '30';
-                let query = dbClient
-                    .from('rank_history')
-                    .select('*')
-                    .order('snapshot_date', { ascending: false })
-                    .order('bgg_rank', { ascending: true });
+                const dateFilter = document.getElementById('dateFilter')?.value || 'all';
 
-                // Apply date filter
-                if (dateFilter !== 'all') {
-                    const daysAgo = parseInt(dateFilter);
-                    const cutoffDate = new Date();
-                    cutoffDate.setDate(cutoffDate.getDate() - daysAgo);
-                    const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
-                    query = query.gte('snapshot_date', cutoffDateStr);
+                // We'll paginate through Supabase to fetch ALL matching records
+                const pageSize = 1000;
+                let offset = 0;
+                let allData = [];
+                let hasMore = true;
+
+                while (hasMore) {
+                    // Build base query each loop to allow range pagination
+                    let pageQuery = dbClient
+                        .from('rank_history')
+                        .select('*')
+                        .order('snapshot_date', { ascending: false })
+                        .order('bgg_rank', { ascending: true })
+                        .range(offset, offset + pageSize - 1);
+
+                    // Apply date filter when requested
+                    if (dateFilter !== 'all') {
+                        const daysAgo = parseInt(dateFilter);
+                        const cutoffDate = new Date();
+                        cutoffDate.setDate(cutoffDate.getDate() - daysAgo);
+                        const cutoffDateStr = cutoffDate.toISOString().split('T')[0];
+                        pageQuery = dbClient
+                            .from('rank_history')
+                            .select('*')
+                            .order('snapshot_date', { ascending: false })
+                            .order('bgg_rank', { ascending: true })
+                            .gte('snapshot_date', cutoffDateStr)
+                            .range(offset, offset + pageSize - 1);
+                    }
+
+                    const { data: pageData, error: pageError } = await pageQuery;
+                    if (pageError) {
+                        throw new Error(`Supabase error: ${pageError.message}`);
+                    }
+
+                    if (!pageData || pageData.length === 0) {
+                        hasMore = false;
+                        break;
+                    }
+
+                    allData = allData.concat(pageData);
+                    offset += pageSize;
+                    if (pageData.length < pageSize) hasMore = false;
                 }
 
-                const { data, error } = await query.limit(500);
-
-                if (error) {
-                    throw new Error(`Supabase error: ${error.message}`);
-                }
-
-                // Store full data for filtering
-                window.historyData = data || [];
+                // Store full data for filtering (may contain multiple entries per game)
+                window.historyData = allData || [];
                 
                 // Fetch thumbnails only when viewing history (100x parallel, 20 per batch)
                 if (window.historyData.length > 0) {
