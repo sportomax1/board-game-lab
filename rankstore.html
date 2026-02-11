@@ -112,11 +112,31 @@
                     <table class="w-full border-collapse">
                         <thead>
                             <tr class="bg-gray-100">
-                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Thumbnail</th>
-                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG ID</th>
-                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Game Name</th>
-                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">BGG Rank</th>
-                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">Date</th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">
+                                    <button onclick="toggleSort('thumbnail')" class="flex items-center gap-2">
+                                        Thumbnail <span id="sortIndicator-thumbnail"></span>
+                                    </button>
+                                </th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">
+                                    <button onclick="toggleSort('bgg_id')" class="flex items-center gap-2">
+                                        BGG ID <span id="sortIndicator-bgg_id"></span>
+                                    </button>
+                                </th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">
+                                    <button onclick="toggleSort('game_name')" class="flex items-center gap-2">
+                                        Game Name <span id="sortIndicator-game_name"></span>
+                                    </button>
+                                </th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">
+                                    <button onclick="toggleSort('bgg_rank')" class="flex items-center gap-2">
+                                        BGG Rank <span id="sortIndicator-bgg_rank"></span>
+                                    </button>
+                                </th>
+                                <th class="px-4 py-2 text-left text-sm font-semibold text-gray-700">
+                                    <button onclick="toggleSort('snapshot_date')" class="flex items-center gap-2">
+                                        Date <span id="sortIndicator-snapshot_date"></span>
+                                    </button>
+                                </th>
                             </tr>
                         </thead>
                         <tbody id="historyBody" class="divide-y divide-gray-200">
@@ -169,12 +189,39 @@
         // ===== CONFIGURATION v4.0 - 2026-02-10 =====
         let dbClient = null;
 
+        // ===== NETWORK HELPERS =====
+        // Fetch wrapper with exponential backoff and jitter
+        async function fetchWithBackoff(url, options = {}, retries = 5, baseMs = 500) {
+            let attempt = 0;
+            while (true) {
+                try {
+                    const resp = await fetch(url, options);
+                    // Retry on server errors and rate limits
+                    if (resp.ok) return resp;
+                    if (resp.status >= 500 || resp.status === 429) {
+                        throw new Error(`HTTP ${resp.status}`);
+                    }
+                    // For client errors do not retry
+                    return resp;
+                } catch (err) {
+                    attempt++;
+                    if (attempt > retries) throw err;
+                    const backoff = Math.round(baseMs * Math.pow(2, attempt - 1));
+                    // jitter ±25%
+                    const jitter = Math.round((Math.random() * 0.5 + 0.75) * backoff) - (backoff);
+                    const wait = Math.max(100, backoff + jitter);
+                    console.warn(`Request failed (attempt ${attempt}/${retries}). Retrying in ${wait}ms...`, err.message || err);
+                    await new Promise(r => setTimeout(r, wait));
+                }
+            }
+        }
+
         // Initialize Supabase client from config endpoint
         async function initSupabase() {
             try {
-                const configResponse = await fetch('/api/supabase-config');
+                const configResponse = await fetchWithBackoff('/api/supabase-config', {}, 4, 400);
                 if (!configResponse.ok) throw new Error('Failed to fetch Supabase config');
-                
+
                 const supabaseConfig = await configResponse.json();
                 
                 if (!supabaseConfig.url || !supabaseConfig.anonKey) {
@@ -244,7 +291,7 @@
                 await Promise.all(chunk.map(async (batchIds) => {
                     try {
                         const url = `/api/bgg-helper?endpoint=thing&id=${batchIds.join(',')}&stats=1`;
-                        const resp = await fetch(url);
+                        const resp = await fetchWithBackoff(url, {}, 3, 300);
                         if (!resp.ok) throw new Error(`Status ${resp.status}`);
                         const text = await resp.text();
                         const xml = new DOMParser().parseFromString(text, 'text/xml');
@@ -291,7 +338,7 @@
                 const collectionUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
                 showProgress('Fetching collection...', 'Requesting data from BGG API');
 
-                const response = await fetch(collectionUrl);
+                const response = await fetchWithBackoff(collectionUrl, {}, 5, 800);
                 if (!response.ok) {
                     throw new Error(`BGG API error: ${response.status}`);
                 }
@@ -508,7 +555,8 @@
                     });
                 }
                 
-                renderHistory(window.historyData);
+                // Apply current sort and render
+                applySortAndRender();
 
                 hideProgress();
             } catch (err) {
@@ -541,6 +589,59 @@
             }
         }
 
+        // ===== SORTING HELPERS =====
+        const sortState = { key: 'snapshot_date', dir: 'desc' }; // default: newest first
+
+        function toggleSort(key) {
+            if (sortState.key === key) {
+                sortState.dir = sortState.dir === 'asc' ? 'desc' : 'asc';
+            } else {
+                sortState.key = key;
+                sortState.dir = key === 'game_name' ? 'asc' : 'desc';
+            }
+            applySortAndRender();
+        }
+
+        function applySortAndRender() {
+            if (!window.historyData) return;
+            const data = window.historyData.slice(); // copy
+            data.sort((a, b) => compareByKey(a, b, sortState.key, sortState.dir));
+            // update indicators
+            ['thumbnail','bgg_id','game_name','bgg_rank','snapshot_date'].forEach(k => {
+                const el = document.getElementById('sortIndicator-' + k);
+                if (!el) return;
+                el.textContent = (k === sortState.key) ? (sortState.dir === 'asc' ? ' ▲' : ' ▼') : '';
+            });
+            renderHistory(data);
+        }
+
+        function compareByKey(a, b, key, dir = 'asc') {
+            const mult = dir === 'asc' ? 1 : -1;
+            const av = a[key];
+            const bv = b[key];
+            // handle nulls
+            if (av == null && bv == null) return 0;
+            if (av == null) return 1 * mult;
+            if (bv == null) return -1 * mult;
+
+            // numeric keys
+            if (key === 'bgg_id' || key === 'bgg_rank') {
+                const na = Number(av) || 0;
+                const nb = Number(bv) || 0;
+                return (na - nb) * mult;
+            }
+
+            // date
+            if (key === 'snapshot_date') {
+                const da = new Date(av).getTime();
+                const db = new Date(bv).getTime();
+                return (da - db) * mult;
+            }
+
+            // string fallback
+            return String(av).localeCompare(String(bv)) * mult;
+        }
+
         function filterHistory() {
             const searchTerm = document.getElementById('gameFilter').value.toLowerCase();
             if (!window.historyData) return;
@@ -549,6 +650,8 @@
                 row.game_name.toLowerCase().includes(searchTerm)
             );
 
+            // Apply current sort to filtered results
+            filtered.sort((a, b) => compareByKey(a, b, sortState.key, sortState.dir));
             renderHistory(filtered);
         }
 
