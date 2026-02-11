@@ -216,6 +216,9 @@
             }
         }
 
+        // Session-wide thumbnail cache to avoid refetching same images
+        window.thumbnailCache = window.thumbnailCache || {};
+
         // Initialize Supabase client from config endpoint
         async function initSupabase() {
             try {
@@ -271,18 +274,31 @@
         // ===== THUMBNAIL FETCHER (100x parallel, 20 per batch) =====
         async function fetchThumbnailsParallel(games) {
             const thumbnailMap = {};
-            // Prepare a unique list of IDs to fetch
+            // Prepare a unique list of IDs requested
             const ids = Array.from(new Set(games.map(g => g.bgg_id).filter(Boolean)));
             const batchSize = 20; // 20 ids per thing request
-            const maxConcurrent = 400; // up to 400 concurrent batch requests (4x parallelization boost!)
+            const maxConcurrent = 400; // up to 400 concurrent batch requests
 
             if (ids.length === 0) return thumbnailMap;
-            console.log(`📸 Fetching thumbnails for ${ids.length} unique IDs (${batchSize} per request, up to ${maxConcurrent} concurrent)`);
 
-            // Create batches of ids
+            // Ensure session cache exists
+            window.thumbnailCache = window.thumbnailCache || {};
+
+            // Only fetch IDs that are not already cached
+            const idsToFetch = ids.filter(id => !Object.prototype.hasOwnProperty.call(window.thumbnailCache, id));
+            if (idsToFetch.length === 0) {
+                // Populate thumbnailMap from cache
+                ids.forEach(id => { thumbnailMap[id] = window.thumbnailCache[id] || null; });
+                console.log(`📸 All ${ids.length} thumbnails satisfied from cache`);
+                return thumbnailMap;
+            }
+
+            console.log(`📸 Fetching thumbnails for ${idsToFetch.length}/${ids.length} IDs (batch ${batchSize})`);
+
+            // Create batches of idsToFetch
             const batches = [];
-            for (let i = 0; i < ids.length; i += batchSize) {
-                batches.push(ids.slice(i, i + batchSize));
+            for (let i = 0; i < idsToFetch.length; i += batchSize) {
+                batches.push(idsToFetch.slice(i, i + batchSize));
             }
 
             // Process batches in parallel chunks to limit concurrency
@@ -300,19 +316,23 @@
                             const id = items[j].getAttribute('id');
                             const thumbNode = items[j].getElementsByTagName('thumbnail')[0];
                             const thumb = thumbNode ? thumbNode.textContent : null;
-                            thumbnailMap[id] = thumb ? (thumb.startsWith('//') ? 'https:' + thumb : thumb) : null;
+                            const normalized = thumb ? (thumb.startsWith('//') ? 'https:' + thumb : thumb) : null;
+                            // Save into session cache
+                            window.thumbnailCache[id] = normalized;
                         }
                         console.log(`✓ Batch fetched: ${batchIds.length} ids`);
                     } catch (err) {
                         console.warn('⚠ Batch thumbnail fetch failed for ids', batchIds, err.message || err);
-                        // mark ids as null to avoid refetch attempts
-                        batchIds.forEach(id => { if (!thumbnailMap[id]) thumbnailMap[id] = null; });
+                        // mark ids as null in cache to avoid refetch attempts
+                        batchIds.forEach(id => { if (!Object.prototype.hasOwnProperty.call(window.thumbnailCache, id)) window.thumbnailCache[id] = null; });
                     }
                 }));
             }
 
+            // Build thumbnailMap from cache for all requested ids
+            ids.forEach(id => { thumbnailMap[id] = window.thumbnailCache[id] || null; });
             const found = Object.values(thumbnailMap).filter(t => t).length;
-            console.log(`✅ Thumbnails fetched: ${found}/${ids.length}`);
+            console.log(`✅ Thumbnails available: ${found}/${ids.length}`);
             return thumbnailMap;
         }
 
@@ -725,13 +745,31 @@
             showProgress('Analyzing trends...', 'Fetching data from Supabase');
 
             try {
-                // Get all history data
-                const { data: allHistory, error } = await dbClient
-                    .from('rank_history')
-                    .select('*')
-                    .order('snapshot_date', { ascending: true });
+                // Get all history data (paginate to ensure we fetch everything)
+                const pageSize = 1000;
+                let offset = 0;
+                let allHistory = [];
+                let hasMore = true;
 
-                if (error) throw new Error(`Supabase error: ${error.message}`);
+                while (hasMore) {
+                    const { data: pageData, error: pageError } = await dbClient
+                        .from('rank_history')
+                        .select('*')
+                        .order('snapshot_date', { ascending: true })
+                        .order('bgg_id', { ascending: true })
+                        .range(offset, offset + pageSize - 1);
+
+                    if (pageError) throw new Error(`Supabase error: ${pageError.message}`);
+                    if (!pageData || pageData.length === 0) {
+                        hasMore = false;
+                        break;
+                    }
+
+                    allHistory = allHistory.concat(pageData);
+                    offset += pageSize;
+                    if (pageData.length < pageSize) hasMore = false;
+                }
+
                 if (!allHistory || allHistory.length === 0) {
                     showError('No data available for trend analysis');
                     return;
