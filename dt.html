@@ -70,6 +70,15 @@
                 <input type="checkbox" id="neverPlayedToggle" class="w-4 h-4 text-orange-600 rounded focus:ring-orange-500 border-gray-300">
                 <span class="text-xs font-bold text-gray-700">Never Played</span>
             </label>
+            <select id="playerCountFilter" class="px-3 py-2 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all focus:ring-2 focus:ring-indigo-500 outline-none">
+                <option value="all">Players: All</option>
+                <option value="1">Best w/ 1</option>
+                <option value="2">Best w/ 2</option>
+                <option value="3">Best w/ 3</option>
+                <option value="4">Best w/ 4</option>
+                <option value="5">Best w/ 5</option>
+                <option value="6">Best w/ 6+</option>
+            </select>
         </div>
         
         <!-- Row 3: Sort options -->
@@ -940,6 +949,7 @@
                 thumb, plays, rank, desire, myRating,
                 averageweight: 0, // Will be populated from thing API
                 weightLoaded: false,
+                playerCounts: [], // Will be populated from thing API
                 locations: []
             };
         }
@@ -1317,6 +1327,23 @@
                                 const weight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
                                 game.averageweight = weight;
                                 game.weightLoaded = true;
+
+                                // Parse player count recommendations
+                                const polls = Array.from(thingItem.querySelectorAll('poll'));
+                                const playerPoll = polls.find(p => p.getAttribute('name') === 'suggested_numplayers');
+                                
+                                if (playerPoll) {
+                                    const results = Array.from(playerPoll.querySelectorAll('results'));
+                                    game.playerCounts = results.map(result => {
+                                        const numplayers = result.getAttribute('numplayers');
+                                        const voteElements = Array.from(result.querySelectorAll('result'));
+                                        const votes = {};
+                                        voteElements.forEach(v => {
+                                            votes[v.getAttribute('value')] = parseInt(v.getAttribute('numvotes') || '0');
+                                        });
+                                        return { numplayers, votes };
+                                    }).filter(pc => pc.numplayers);
+                                }
                             }
                         });
                         
@@ -1364,7 +1391,33 @@
             
             // Create YouTube search URL for "How to Play" + game name
             const youtubeSearchUrl = `https://www.youtube.com/results?search_query=How+to+Play+${encodeURIComponent(g.name)}`;
+
+            // Calculate best and recommended player counts
+            let bestCounts = [];
+            let recommendedCounts = [];
+            if (g.playerCounts && g.playerCounts.length > 0) {
+                g.playerCounts.forEach(pc => {
+                    const best = pc.votes['Best'] || 0;
+                    const recommended = pc.votes['Recommended'] || 0;
+                    const notRecommended = pc.votes['Not Recommended'] || 0;
+                    const total = best + recommended + notRecommended;
+                    
+                    if (total > 0) {
+                        const bestPercent = (best / total);
+                        const recPercent = ((best + recommended) / total);
+                        
+                        if (bestPercent >= 0.5) {
+                            bestCounts.push({ num: pc.numplayers, votes: pc.votes, total });
+                        } else if (recPercent >= 0.5) {
+                            recommendedCounts.push({ num: pc.numplayers, votes: pc.votes, total });
+                        }
+                    }
+                });
+            }
             
+            const bestCountString = bestCounts.map(bc => bc.num).join(', ');
+            const recCountString = recommendedCounts.map(rc => rc.num).join(', ');
+
             return `
             <div class="game-card bg-white p-3 rounded-2xl shadow-sm border border-gray-100 flex gap-3 relative overflow-hidden ${cardClickable}" ${gameDataAttrs}>
                 <div class="w-20 h-20 bg-gray-100 rounded-xl flex-shrink-0 overflow-hidden relative game-card-thumb" ${thumbDataAttrs}>
@@ -1392,6 +1445,8 @@
                         <span class="flex items-center gap-1" title="Play Count"><i data-lucide="play" class="w-3 h-3 text-green-500"></i> ${g.plays}</span>
                         ${g.weightLoaded && g.averageweight > 0 ? `<span class="flex items-center gap-1 ${g.averageweight < 2 ? 'text-green-600' : g.averageweight < 3.5 ? 'text-amber-600' : 'text-red-600'}" title="Complexity Weight"><i data-lucide="weight" class="w-3 h-3"></i> ${g.averageweight.toFixed(2)}</span>` : ''}
                     </div>
+                    ${bestCountString ? `<div class="text-xs text-gray-600"><strong class="text-green-600">Best:</strong> ${bestCountString}p</div>` : ''}
+                    ${recCountString ? `<div class="text-xs text-gray-600"><strong class="text-blue-600">Rec:</strong> ${recCountString}p</div>` : ''}
                     ${g.matchStatus === 'miss' ? `<div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1"><strong>Match failed:</strong> ${g.matchReason || 'unknown reason'}</div>` : g.matchReason ? `<div class="text-[10px] text-gray-500 px-2 py-1 rounded mt-1"><strong>Match:</strong> ${g.matchReason}</div>` : ''}
                     <div class="flex flex-wrap gap-y-1">${locs}</div>
                 </div>
@@ -1464,6 +1519,7 @@
             const onlyWantToPlay = document.getElementById('wantToPlayToggle').checked;
             const onlyBoardGameArena = document.getElementById('boardGameArenaToggle').checked;
             const onlyNeverPlayed = document.getElementById('neverPlayedToggle').checked;
+            const playerCountFilter = document.getElementById('playerCountFilter').value;
             
             // Log Terraforming Mars info before filtering
             const tmGames = allGames.filter(g => g.name.toLowerCase().includes('terraforming mars'));
@@ -1501,6 +1557,28 @@
                 if (onlyNeverPlayed && g.plays > 0) {
                     if (isTM) console.log(`[DEBUG] Filtered out by Never Played (plays: ${g.plays})`);
                     return false;
+                }
+
+                // Player Count filter
+                if (playerCountFilter !== 'all') {
+                    const targetCount = parseInt(playerCountFilter);
+                    const isPlus = playerCountFilter.includes('+');
+                    
+                    const isBest = g.playerCounts.some(pc => {
+                        const best = pc.votes['Best'] || 0;
+                        const total = best + (pc.votes['Recommended'] || 0) + (pc.votes['Not Recommended'] || 0);
+                        if (total === 0) return false;
+
+                        const num = parseInt(pc.numplayers);
+                        const isMatch = isPlus ? num >= targetCount : num === targetCount;
+                        
+                        return isMatch && (best / total) >= 0.5;
+                    });
+
+                    if (!isBest) {
+                        if (isTM) console.log(`[DEBUG] Filtered out by player count filter (target: ${playerCountFilter})`);
+                        return false;
+                    }
                 }
                 
                 // Desire Level Filters - check individual desire level
