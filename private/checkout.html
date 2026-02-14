@@ -497,13 +497,55 @@
             await loadGames();
         };
 
-        // BGG API helper
+        // BGG API helper with retry and exponential backoff
         async function fetchBGG(endpoint, params = {}) {
             const queryString = new URLSearchParams(params).toString();
             const url = `/api/bgg-helper?endpoint=${endpoint}&${queryString}`;
-            const response = await fetch(url);
-            if (!response.ok) throw new Error('BGG API error');
-            return await response.text();
+            
+            const maxRetries = 5;
+            const baseBackoff = 2000; // 2 seconds
+            
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(url);
+                    
+                    // Handle 202 (Accepted) - BGG is still building the collection
+                    if (response.status === 202) {
+                        const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                        console.log(`[Retry] BGG returned 202, waiting ${waitTime}ms before retry ${attempt + 1}/${maxRetries}`);
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
+                    // If response is OK, return the text
+                    if (response.ok) {
+                        return await response.text();
+                    }
+                    
+                    // If it's another error and not the last attempt, retry with backoff
+                    if (attempt < maxRetries - 1) {
+                        const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                        console.log(`[Retry] HTTP ${response.status}, waiting ${waitTime}ms before retry ${attempt + 1}/${maxRetries}`);
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
+                    throw new Error(`BGG API error: HTTP ${response.status}`);
+                    
+                } catch (error) {
+                    // If it's the last attempt, throw the error
+                    if (attempt === maxRetries - 1) {
+                        throw new Error(`BGG API error after ${maxRetries} attempts: ${error.message}`);
+                    }
+                    
+                    // Otherwise, wait and retry
+                    const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                    console.log(`[Retry] Error occurred, waiting ${waitTime}ms before retry ${attempt + 1}/${maxRetries}`, error);
+                    await new Promise(r => setTimeout(r, waitTime));
+                }
+            }
+            
+            throw new Error('Max retries reached');
         }
 
         // Load games from BGG collection
@@ -1715,9 +1757,34 @@
             
             for (const game of games) {
                 try {
-                    // Fetch game details from BGG thing API
-                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&type=boardgame`);
-                    if (!response.ok) {
+                    // Fetch game details from BGG thing API with retry
+                    const maxRetries = 3;
+                    const baseBackoff = 1000;
+                    let response = null;
+                    
+                    for (let attempt = 0; attempt < maxRetries; attempt++) {
+                        try {
+                            response = await fetch(`/api/bgg-helper?endpoint=thing&id=${game.id}&type=boardgame`);
+                            
+                            if (response.status === 202) {
+                                const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                                await new Promise(r => setTimeout(r, waitTime));
+                                continue;
+                            }
+                            
+                            if (response.ok) break;
+                            
+                            if (attempt < maxRetries - 1) {
+                                const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                                await new Promise(r => setTimeout(r, waitTime));
+                            }
+                        } catch (err) {
+                            if (attempt === maxRetries - 1) throw err;
+                            await new Promise(r => setTimeout(r, baseBackoff));
+                        }
+                    }
+                    
+                    if (!response || !response.ok) {
                         filtered.push(game); // Include if fetch fails
                         continue;
                     }
@@ -1923,29 +1990,59 @@
             }
         };
 
-        // Helper: Fetch game details from BGG by ID
+        // Helper: Fetch game details from BGG by ID with retry
         async function fetchGameDetails(gameId) {
-            try {
-                const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame`);
-                if (!response.ok) return null;
-                
-                const text = await response.text();
-                const parser = new DOMParser();
-                const xml = parser.parseFromString(text, 'text/xml');
-                
-                const item = xml.querySelector('item');
-                if (!item) return null;
-                
-                const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 
-                             item.querySelector('name')?.getAttribute('value') || 
-                             'Unknown Game';
-                const image = item.querySelector('image')?.textContent || 
-                             'https://via.placeholder.com/100?text=No+Image';
-                
-                return { name, image };
-            } catch (error) {
-                console.error('Error fetching game details:', error);
-                return null;
+            const maxRetries = 5;
+            const baseBackoff = 2000;
+            
+            for (let attempt = 0; attempt < maxRetries; attempt++) {
+                try {
+                    const response = await fetch(`/api/bgg-helper?endpoint=thing&id=${gameId}&type=boardgame`);
+                    
+                    // Handle 202 (Accepted) status
+                    if (response.status === 202) {
+                        const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                        console.log(`[fetchGameDetails] BGG returned 202 for game ${gameId}, waiting ${waitTime}ms`);
+                        await new Promise(r => setTimeout(r, waitTime));
+                        continue;
+                    }
+                    
+                    if (!response.ok) {
+                        if (attempt < maxRetries - 1) {
+                            const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                            console.log(`[fetchGameDetails] HTTP ${response.status} for game ${gameId}, retrying...`);
+                            await new Promise(r => setTimeout(r, waitTime));
+                            continue;
+                        }
+                        return null;
+                    }
+                    
+                    const text = await response.text();
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(text, 'text/xml');
+                    
+                    const item = xml.querySelector('item');
+                    if (!item) return null;
+                    
+                    const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 
+                                 item.querySelector('name')?.getAttribute('value') || 
+                                 'Unknown Game';
+                    const image = item.querySelector('image')?.textContent || 
+                                 'https://via.placeholder.com/100?text=No+Image';
+                    
+                    return { name, image };
+                    
+                } catch (error) {
+                    if (attempt === maxRetries - 1) {
+                        console.error('Error fetching game details after retries:', error);
+                        return null;
+                    }
+                    const waitTime = baseBackoff * Math.pow(1.5, attempt);
+                    await new Promise(r => setTimeout(r, waitTime));
+                }
+            }
+            
+            return null;
             }
         }
 

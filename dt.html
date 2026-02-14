@@ -80,6 +80,7 @@
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="bgg_rating">Rating</button>
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="rank">Rank</button>
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="time">Playing Time</button>
+            <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="weight">Weight</button>
             <button class="sort-chip active whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-indigo-600 text-white ring-2 ring-indigo-200 transition-all" data-sort="desire">Desire</button>
             <button class="sort-chip whitespace-nowrap px-3 py-1.5 rounded-full text-xs font-bold bg-gray-100 text-gray-600 hover:bg-gray-200 transition-all" data-sort="dynamic">Smart Pick</button>
             <button id="showSortInfo" class="p-1.5 text-gray-600 bg-gray-100 rounded-full hover:bg-gray-200 transition-colors" title="Sort Info">
@@ -937,6 +938,8 @@
                 average: parseFloat(bggRating), // Store as float for sorting
                 minP, maxP, time,
                 thumb, plays, rank, desire, myRating,
+                averageweight: 0, // Will be populated from thing API
+                weightLoaded: false,
                 locations: []
             };
         }
@@ -1252,9 +1255,95 @@
                 loadingBar.style.width = '100%';
                 runFilters();
                 document.getElementById('statusText').textContent = `Updated: ${new Date().toLocaleTimeString()} (${allGames.length} games)`;
+                
+                // Fetch weight data in background after initial load
+                fetchWeightData();
             } catch (e) {
                 console.error(e);
                 document.getElementById('statusText').textContent = `Error: ${e.message}`;
+            }
+        }
+
+        // --- Fetch Weight Data in Parallel Batches ---
+        async function fetchWeightData() {
+            console.log('[Weight] Starting background weight fetch...');
+            const loadingBar = document.getElementById('topLoadingBar');
+            const statusText = document.getElementById('statusText');
+            
+            // Filter games that have valid BGG IDs (no DTE placeholders)
+            const gamesNeedingWeight = allGames.filter(g => g.id && !g.id.startsWith('dte-'));
+            if (gamesNeedingWeight.length === 0) {
+                console.log('[Weight] No games need weight data');
+                return;
+            }
+            
+            console.log(`[Weight] Fetching weight for ${gamesNeedingWeight.length} games`);
+            
+            // Batch games into groups of 20 IDs
+            const batchSize = 20;
+            const parallelBatches = 100; // Process 100 batches in parallel
+            const batches = [];
+            for (let i = 0; i < gamesNeedingWeight.length; i += batchSize) {
+                batches.push(gamesNeedingWeight.slice(i, i + batchSize));
+            }
+            
+            // Process batches in parallel groups
+            for (let i = 0; i < batches.length; i += parallelBatches) {
+                const batchGroup = batches.slice(i, i + parallelBatches);
+                const progress = Math.min(i + parallelBatches, batches.length);
+                
+                console.log(`[Weight] Loading batch ${progress}/${batches.length}...`);
+                
+                await Promise.all(batchGroup.map(async (batch) => {
+                    const ids = batch.map(g => g.id).join(',');
+                    
+                    try {
+                        const url = `/api/bgg-helper?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`;
+                        const res = await fetch(url);
+                        
+                        if (!res.ok) {
+                            console.warn(`[Weight] Failed to fetch batch: ${res.status}`);
+                            return;
+                        }
+                        
+                        const thingXml = await res.text();
+                        const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                        const thingItems = Array.from(thingDoc.querySelectorAll('item'));
+                        
+                        thingItems.forEach(thingItem => {
+                            const id = thingItem.getAttribute('id');
+                            const game = allGames.find(g => g.id === id);
+                            if (game) {
+                                const weight = parseFloat(thingItem.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
+                                game.averageweight = weight;
+                                game.weightLoaded = true;
+                            }
+                        });
+                        
+                    } catch (e) {
+                        console.error('[Weight] Batch error:', e);
+                    }
+                }));
+                
+                // Update display after each parallel group
+                if (filters.sort === 'weight') {
+                    runFilters(); // Re-render with updated weights
+                } else {
+                    // Just update the cards without changing order
+                    const container = document.getElementById('gameList');
+                    if (container && container.children.length > 0) {
+                        const currentGames = filteredGames.slice(0, container.children.length);
+                        container.innerHTML = currentGames.map((g, idx) => renderGameCard(g, idx)).join('');
+                        lucide.createIcons();
+                    }
+                }
+                
+                await new Promise(r => setTimeout(r, 500)); // Throttle between parallel groups
+            }
+            
+            console.log('[Weight] Weight fetch complete');
+            runFilters(); // Final render to ensure everything is up to date
+        }
             }
         }
 
@@ -1303,6 +1392,7 @@
                         <span class="flex items-center gap-1"><i data-lucide="users" class="w-3 h-3"></i> ${g.minP}-${g.maxP}</span>
                         <span class="flex items-center gap-1"><i data-lucide="clock" class="w-3 h-3"></i> ${g.time}m</span>
                         <span class="flex items-center gap-1" title="Play Count"><i data-lucide="play" class="w-3 h-3 text-green-500"></i> ${g.plays}</span>
+                        ${g.weightLoaded && g.averageweight > 0 ? `<span class="flex items-center gap-1 ${g.averageweight < 2 ? 'text-green-600' : g.averageweight < 3.5 ? 'text-amber-600' : 'text-red-600'}" title="Complexity Weight"><i data-lucide="weight" class="w-3 h-3"></i> ${g.averageweight.toFixed(2)}</span>` : ''}
                     </div>
                     ${g.matchStatus === 'miss' ? `<div class="text-[10px] text-amber-600 bg-amber-50 px-2 py-1 rounded mt-1"><strong>Match failed:</strong> ${g.matchReason || 'unknown reason'}</div>` : g.matchReason ? `<div class="text-[10px] text-gray-500 px-2 py-1 rounded mt-1"><strong>Match:</strong> ${g.matchReason}</div>` : ''}
                     <div class="flex flex-wrap gap-y-1">${locs}</div>
@@ -1437,6 +1527,11 @@
                     case 'time':
                         // Sort by playing time ASC, then BGG rating DESC, then name ASC
                         return (a.time || 0) - (b.time || 0) ||
+                               (b.average || 0) - (a.average || 0) ||
+                               a.name.localeCompare(b.name);
+                    case 'weight':
+                        // Sort by weight DESC (heavy to light), then BGG rating DESC, then name ASC
+                        return (b.averageweight || 0) - (a.averageweight || 0) ||
                                (b.average || 0) - (a.average || 0) ||
                                a.name.localeCompare(b.name);
                     case 'desire': 
