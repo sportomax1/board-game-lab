@@ -91,11 +91,13 @@
         .modal-title{font-size:18px;font-weight:700;margin-bottom:4px}
         .modal-subtitle{font-size:13px;color:var(--muted);margin-bottom:16px}
 
-        /* ===== Toast ===== */
-        .toast{position:fixed;top:72px;left:16px;right:16px;z-index:100;padding:14px 16px;border-radius:12px;font-size:14px;font-weight:500;transform:translateY(-120%);opacity:0;transition:all .35s cubic-bezier(.4,0,.2,1);pointer-events:none}
-        .toast.show{transform:translateY(0);opacity:1;pointer-events:auto}
-        .toast-success{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.25)}
-        .toast-error{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.25)}
+        /* ===== Toasts (compact stacked) ===== */
+        .toasts{position:fixed;top:16px;right:16px;z-index:110;display:flex;flex-direction:column;gap:8px;max-width:360px}
+        .toast-item{background:rgba(15,17,23,0.9);color:var(--text);padding:8px 12px;border-radius:10px;font-size:13px;font-weight:600;box-shadow:0 6px 18px rgba(2,6,23,0.6);transform:translateY(-6px) scale(.995);opacity:0;transition:all .28s ease;pointer-events:auto}
+        .toast-item.show{transform:translateY(0) scale(1);opacity:1}
+        .toast-item.success{background:linear-gradient(90deg,rgba(34,197,94,1),rgba(34,197,94,0.9));color:#04260a}
+        .toast-item.error{background:linear-gradient(90deg,rgba(239,68,68,1),rgba(239,68,68,0.9));color:#2a0606}
+        .toast-item.info{background:rgba(99,102,241,0.12);color:var(--accent2);border:1px solid rgba(99,102,241,0.18)}
 
         /* ===== Utility ===== */
         .flex{display:flex}.gap-8{gap:8px}.gap-12{gap:12px}.mb-12{margin-bottom:12px}.mb-16{margin-bottom:16px}
@@ -135,7 +137,7 @@
         <span class="top-bar-stat" id="statsBar"></span>
     </div>
 
-    <div class="toast" id="toast"></div>
+    <div id="toasts" class="toasts" aria-live="polite"></div>
 
     <div class="views" id="views" style="display:none">
         <div class="view active" id="view-games">
@@ -275,8 +277,9 @@ async function loadCollection(username) {
 
                 // Stats (when stats=1)
                 const statsEl = item.querySelector('stats');
-                const average = statsEl ? (statsEl.querySelector('average') || {}).textContent || '' : '';
-                const averageweight = statsEl ? (statsEl.querySelector('averageweight') || {}).textContent || '' : '';
+                const avgNode = statsEl ? (statsEl.querySelector('average') || {}) : null;
+                const average = avgNode ? parseFloat(avgNode.getAttribute && avgNode.getAttribute('value') || avgNode.textContent) || 0 : 0;
+                const averageweight = statsEl ? parseFloat((statsEl.querySelector('averageweight') || {}).textContent || 0) || 0 : 0;
                 // rank may be nested under ranks -> rank
                 let rank = '';
                 if (statsEl) {
@@ -284,7 +287,10 @@ async function loadCollection(username) {
                     if (rankEl) rank = rankEl.getAttribute('value') || rankEl.textContent || '';
                 }
 
-                allGames.push({ bgg_id: bggId, game_name: name, thumbnail_url: thumbUrl, year, playingtime, average, averageweight, rank });
+                // User rating from collection status (when own=1)
+                const userRating = parseFloat(item.querySelector('status')?.getAttribute('rating') || '0') || 0;
+
+                allGames.push({ bgg_id: bggId, game_name: name, thumbnail_url: thumbUrl, year, playingtime, average, averageweight, rank, myRating: userRating });
             });
         
         document.getElementById('gamesLoading').style.display = 'none';
@@ -339,8 +345,9 @@ function renderGames() {
         const tags = gameTagsMap.get(g.bgg_id) || [];
         const tagsHtml = tags.map(t => '<span class="badge">' + esc(t) + '</span>').join('');
         const metaPieces = [];
+        if (g.myRating && Number(g.myRating) > 0) metaPieces.push('⭐ ' + Number(g.myRating).toFixed(1));
         if (g.playingtime) metaPieces.push(esc(g.playingtime) + ' min');
-        if (g.average) metaPieces.push(esc(g.average) + ' avg');
+        if (g.average && Number(g.average) > 0) metaPieces.push(Number(g.average).toFixed(1) + ' avg');
         if (g.averageweight) metaPieces.push('wt ' + esc(g.averageweight));
         if (g.rank) metaPieces.push('rank #' + esc(g.rank));
         const metaHtml = '<div class="game-meta"><span>#' + g.bgg_id + '</span>' + (metaPieces.length ? ' • ' + metaPieces.join(' • ') : '') + '</div>';
@@ -385,6 +392,49 @@ function openModal(bggId) {
             </div>
         </div>
     `;
+    // Quick Assign section (list existing tags with multi-select)
+    const quickHtml = `
+        <div class="card" style="margin-top:12px">
+            <div class="card-title">Quick Assign</div>
+            <div id="quickAssignContainer" style="max-height:160px;overflow-y:auto;padding:6px;display:flex;flex-wrap:wrap;gap:6px"></div>
+            <div style="margin-top:8px;display:flex;gap:8px">
+                <button class="btn btn-primary btn-sm" onclick="assignSelectedTags(${bggId})">Assign Selected</button>
+                <button class="btn btn-outline btn-sm" onclick="document.querySelectorAll('.quick-tag-checkbox').forEach(c=>c.checked=false)">Clear</button>
+            </div>
+        </div>
+    `;
+    document.getElementById('modalContent').insertAdjacentHTML('beforeend', quickHtml);
+
+    // Populate quick assign checkboxes (unique tag names)
+    const uniq = Array.from(new Set(allTags.map(t => t.tag_name))).sort((a,b)=>a.localeCompare(b));
+    const container = document.getElementById('quickAssignContainer');
+    if (uniq.length === 0) {
+        container.innerHTML = '<div class="text-muted text-sm">No tags available</div>';
+    } else {
+        container.innerHTML = '';
+        uniq.forEach(tagName => {
+            const id = 'qa_' + bggId + '_' + tagName.replace(/[^a-z0-9]/gi,'_');
+            const wrapper = document.createElement('label');
+            wrapper.style.display = 'inline-flex';
+            wrapper.style.alignItems = 'center';
+            wrapper.style.gap = '6px';
+            wrapper.style.padding = '6px 8px';
+            wrapper.style.border = '1px solid var(--border)';
+            wrapper.style.borderRadius = '10px';
+            wrapper.style.cursor = 'pointer';
+            const input = document.createElement('input');
+            input.type = 'checkbox';
+            input.className = 'quick-tag-checkbox';
+            input.value = tagName;
+            input.id = id;
+            const span = document.createElement('span');
+            span.textContent = tagName;
+            span.style.fontSize = '13px';
+            wrapper.appendChild(input);
+            wrapper.appendChild(span);
+            container.appendChild(wrapper);
+        });
+    }
     document.getElementById('gameModal').classList.add('open');
 }
 
@@ -595,12 +645,51 @@ function loadUntagged() {
     document.getElementById('untaggedList').innerHTML = html;
 }
 
-function toast(msg, type = 'info') {
-    const el = document.getElementById('toast');
-    el.className = 'toast show toast-' + type;
-    el.textContent = msg;
-    clearTimeout(el._t);
-    el._t = setTimeout(() => el.classList.remove('show'), 3500);
+function toast(msg, type = 'info', timeout = 3500) {
+    // create a compact toast item and append to container
+    try {
+        const container = document.getElementById('toasts');
+        if (!container) return;
+        const item = document.createElement('div');
+        item.className = 'toast-item ' + (type || 'info');
+        item.textContent = msg;
+        container.appendChild(item);
+        // force reflow for animation
+        requestAnimationFrame(() => item.classList.add('show'));
+        // auto remove
+        const t = setTimeout(() => {
+            item.classList.remove('show');
+            setTimeout(() => { try { container.removeChild(item); } catch (e){} }, 300);
+        }, timeout || 3500);
+        item._t = t;
+    } catch (e) {
+        console.error('Toast error', e);
+    }
+}
+
+// Assign multiple selected tags to a game (from modal)
+async function assignSelectedTags(bggId) {
+    const checkboxes = Array.from(document.querySelectorAll('.quick-tag-checkbox:checked'));
+    if (!checkboxes.length) { toast('Select at least one tag', 'error'); return; }
+    const tagsToAdd = checkboxes.map(cb => cb.value).filter(t => t && !(gameTagsMap.get(bggId) || []).includes(t));
+    if (!tagsToAdd.length) { toast('No new tags selected', 'info'); return; }
+
+    try {
+        const inserts = tagsToAdd.map(t => ({ owner: owner, bgg_id: bggId, tag_name: t }));
+        await dbClient.from('game_tags').insert(inserts);
+        // update local maps
+        if (!gameTagsMap.has(bggId)) gameTagsMap.set(bggId, []);
+        tagsToAdd.forEach(t => {
+            gameTagsMap.get(bggId).push(t);
+            allTags.push({ owner: owner, bgg_id: bggId, tag_name: t });
+        });
+        renderGames();
+        openModal(bggId);
+        toast('Tags assigned', 'success');
+    } catch (e) {
+        console.error('Assign tags error', e);
+        toast('Error assigning tags: ' + (e.message || e), 'error');
+    }
 }
 
 function showProgress() {
