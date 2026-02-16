@@ -146,6 +146,17 @@
                 <select id="tagFilter" class="input" style="flex:0 0 120px" onchange="filterGames()">
                     <option value="">All Tags</option>
                 </select>
+                <select id="sortSelect" class="input" style="flex:0 0 160px;margin-left:8px" onchange="filterGames()">
+                    <option value="name">Sort: Name</option>
+                    <option value="rating">Sort: BGG Rating</option>
+                    <option value="myRating">Sort: My Rating</option>
+                    <option value="rank">Sort: Rank</option>
+                    <option value="year">Sort: Year Published</option>
+                </select>
+                <div style="display:flex;align-items:center;gap:8px;margin-left:8px">
+                    <button id="bulkAssignBtn" class="btn btn-sm btn-outline" onclick="openBulkAssignModal()">Bulk Assign</button>
+                    <span id="selectedCount" class="text-sm text-muted">0 selected</span>
+                </div>
             </div>
             <span class="text-sm text-muted" id="gamesCount">0 games</span>
             <div id="gamesList" style="margin-top:12px"></div>
@@ -219,6 +230,7 @@ let owner = '';
 let allGames = [];
 let allTags = [];
 let gameTagsMap = new Map();
+let selectedGames = new Set();
 
 async function unlockApp() {
     const password = document.getElementById('appPassword').value;
@@ -333,6 +345,21 @@ function renderGames() {
         const tagMatch = !tagFilter || (gameTagsMap.has(g.bgg_id) && gameTagsMap.get(g.bgg_id).includes(tagFilter));
         return nameMatch && tagMatch;
     });
+
+    // Sorting
+    const sortBy = (document.getElementById('sortSelect') && document.getElementById('sortSelect').value) || 'name';
+    filtered.sort((a,b) => {
+        if (sortBy === 'name') return a.game_name.localeCompare(b.game_name);
+        if (sortBy === 'rating') return (b.average||0) - (a.average||0);
+        if (sortBy === 'myRating') return (b.myRating||0) - (a.myRating||0);
+        if (sortBy === 'rank') {
+            const ra = a.rank ? parseInt(a.rank) : 999999;
+            const rb = b.rank ? parseInt(b.rank) : 999999;
+            return ra - rb; // lower rank number is better
+        }
+        if (sortBy === 'year') return (b.year||0) - (a.year||0);
+        return 0;
+    });
     
     document.getElementById('gamesCount').textContent = filtered.length + ' game' + (filtered.length!==1?'s':'');
     
@@ -353,6 +380,9 @@ function renderGames() {
         const metaHtml = '<div class="game-meta"><span>#' + g.bgg_id + '</span>' + (metaPieces.length ? ' • ' + metaPieces.join(' • ') : '') + '</div>';
 
         return `<div class="game-row" onclick="openModal(${g.bgg_id})">
+            <div style="width:28px;flex-shrink:0;display:flex;align-items:center;justify-content:center;margin-right:6px">
+                <input type="checkbox" class="game-select-checkbox" onchange="toggleSelectGame(${g.bgg_id}, event)" onclick="event.stopPropagation()" ${selectedGames.has(g.bgg_id)?'checked':''}>
+            </div>
             ${g.thumbnail_url ? '<img class="game-thumb" src="' + g.thumbnail_url + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=game-thumb-empty>🎲</div>\'">' : '<div class="game-thumb-empty">🎲</div>'}
             <div class="game-info">
                 <div class="game-name">${esc(g.game_name)}</div>
@@ -440,6 +470,80 @@ function openModal(bggId) {
 
 function closeModal() {
     document.getElementById('gameModal').classList.remove('open');
+}
+
+function toggleSelectGame(bggId, e) {
+    if (selectedGames.has(bggId)) selectedGames.delete(bggId);
+    else selectedGames.add(bggId);
+    updateSelectedCount();
+}
+
+function updateSelectedCount() {
+    const el = document.getElementById('selectedCount');
+    if (!el) return;
+    el.textContent = selectedGames.size + ' selected';
+}
+
+function openBulkAssignModal() {
+    if (selectedGames.size === 0) { toast('Select games first', 'info'); return; }
+    // Build modal content listing selected games and tag checkboxes
+    const ids = Array.from(selectedGames);
+    const gamesListHtml = ids.map(id => {
+        const g = allGames.find(x => x.bgg_id === id) || { game_name: id };
+        return `<div style="padding:6px 0;border-bottom:1px solid var(--border)">${esc(g.game_name)} <span class="text-xs text-muted">#${id}</span></div>`;
+    }).join('');
+
+    const uniq = Array.from(new Set(allTags.map(t => t.tag_name))).sort((a,b)=>a.localeCompare(b));
+    const tagsHtml = uniq.length ? uniq.map(t => `<label style="display:inline-flex;align-items:center;gap:6px;padding:6px 8px;border:1px solid var(--border);border-radius:10px;margin:4px"><input type=checkbox class="bulk-tag-checkbox" value="${esc(t)}"> <span>${esc(t)}</span></label>`).join('') : '<div class="text-muted">No tags available</div>';
+
+    document.getElementById('modalContent').innerHTML = `
+        <div style="margin-bottom:12px">
+            <div class="modal-title">Bulk Assign Tags</div>
+            <div class="modal-subtitle">${ids.length} selected games</div>
+        </div>
+        <div class="card" style="max-height:220px;overflow:auto;margin-bottom:12px">${gamesListHtml}</div>
+        <div class="card" style="margin-bottom:12px">
+            <div class="card-title">Choose Tags</div>
+            <div style="padding:8px;display:flex;flex-wrap:wrap;gap:6px">${tagsHtml}</div>
+        </div>
+        <div style="display:flex;gap:8px">
+            <button class="btn btn-primary" onclick="bulkAssignSelected()">Assign to Selected</button>
+            <button class="btn btn-outline" onclick="closeModal()">Cancel</button>
+        </div>
+    `;
+    document.getElementById('gameModal').classList.add('open');
+}
+
+async function bulkAssignSelected() {
+    const checkboxes = Array.from(document.querySelectorAll('.bulk-tag-checkbox:checked'));
+    if (!checkboxes.length) { toast('Select tags to assign', 'error'); return; }
+    const tagsToAdd = checkboxes.map(cb => cb.value);
+    const ids = Array.from(selectedGames);
+    // Compute inserts for DB, avoiding duplicates
+    const inserts = [];
+    ids.forEach(id => {
+        const existing = new Set((gameTagsMap.get(id) || []));
+        tagsToAdd.forEach(t => { if (!existing.has(t)) inserts.push({ owner: owner, bgg_id: id, tag_name: t }); });
+    });
+    if (!inserts.length) { toast('No new tags to add', 'info'); return; }
+
+    try {
+        await dbClient.from('game_tags').insert(inserts);
+        // update local maps
+        inserts.forEach(i => {
+            if (!gameTagsMap.has(i.bgg_id)) gameTagsMap.set(i.bgg_id, []);
+            gameTagsMap.get(i.bgg_id).push(i.tag_name);
+            allTags.push({ owner: owner, bgg_id: i.bgg_id, tag_name: i.tag_name });
+        });
+        renderGames();
+        toast('Assigned tags to ' + ids.length + ' games', 'success');
+        selectedGames.clear();
+        updateSelectedCount();
+        closeModal();
+    } catch (e) {
+        console.error('Bulk assign error', e);
+        toast('Bulk assign failed: ' + (e.message || e), 'error');
+    }
 }
 
 async function addTag(bggId) {
