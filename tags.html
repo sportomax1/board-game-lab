@@ -1,0 +1,549 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="apple-mobile-web-app-capable" content="yes">
+    <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+    <title>Game Tags Manager</title>
+    <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+    <style>
+        /* ===== CSS Reset & Variables ===== */
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        :root{
+            --bg:#0f1117;--surface:#1a1d27;--card:#22252f;--border:#2e3140;
+            --text:#e4e6ed;--muted:#8b8fa3;--accent:#6366f1;--accent2:#818cf8;
+            --green:#22c55e;--red:#ef4444;--orange:#f59e0b;
+            --radius:14px;--safe-b:env(safe-area-inset-bottom,0px);--tab-h:64px;
+        }
+        html{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;background:var(--bg);color:var(--text);-webkit-tap-highlight-color:transparent}
+        body{min-height:100dvh;display:flex;flex-direction:column;overscroll-behavior:none}
+        input,select,button,textarea{font-family:inherit;font-size:inherit}
+
+        /* ===== Password Screen ===== */
+        .password-screen{position:fixed;inset:0;z-index:200;background:var(--bg);display:flex;align-items:center;justify-content:center;padding:20px}
+        .password-screen.hidden{display:none}
+        .password-box{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:32px;max-width:400px;width:100%}
+        .password-box h1{font-size:20px;font-weight:700;margin-bottom:8px;text-align:center}
+        .password-box p{font-size:13px;color:var(--muted);text-align:center;margin-bottom:24px}
+        .password-error{font-size:12px;color:var(--red);margin-bottom:12px;text-align:center;display:none}
+        .password-field{margin-bottom:12px}
+        .password-field label{display:block;font-size:12px;font-weight:600;color:var(--muted);margin-bottom:6px}
+        .password-field input{width:100%;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;outline:none}
+        .password-field input:focus{border-color:var(--accent)}
+
+        /* ===== Top Bar ===== */
+        .top-bar{position:sticky;top:0;z-index:50;backdrop-filter:blur(20px);background:rgba(15,17,23,.82);border-bottom:1px solid var(--border);padding:12px 16px;display:flex;align-items:center;justify-content:space-between}
+        .top-bar h1{font-size:18px;font-weight:700}
+        .top-bar-stat{font-size:11px;color:var(--muted);background:var(--surface);padding:4px 8px;border-radius:6px}
+
+        /* ===== Views ===== */
+        .views{flex:1;overflow:hidden;position:relative}
+        .view{position:absolute;inset:0;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px 16px calc(var(--tab-h) + var(--safe-b) + 16px);opacity:0;pointer-events:none;transition:opacity .25s}
+        .view.active{opacity:1;pointer-events:auto}
+
+        /* ===== Tabs ===== */
+        .tab-bar{position:fixed;bottom:0;left:0;right:0;z-index:50;backdrop-filter:blur(20px);background:rgba(15,17,23,.88);border-top:1px solid var(--border);display:flex;justify-content:space-around;padding:6px 0 calc(6px + var(--safe-b));height:calc(var(--tab-h) + var(--safe-b))}
+        .tab-btn{display:flex;flex-direction:column;align-items:center;gap:2px;padding:4px 12px;border:none;background:none;color:var(--muted);font-size:10px;font-weight:600;cursor:pointer}
+        .tab-btn.active{color:var(--accent2)}
+
+        /* ===== Cards & Elements ===== */
+        .card{background:var(--card);border-radius:var(--radius);border:1px solid var(--border);padding:16px;margin-bottom:12px}
+        .card-title{font-size:15px;font-weight:700;margin-bottom:12px;display:flex;align-items:center;gap:8px}
+        .badge{display:inline-flex;align-items:center;padding:4px 10px;border-radius:20px;font-size:11px;font-weight:600;background:rgba(99,102,241,.15);color:var(--accent2)}
+        .badge-green{background:rgba(34,197,94,.15);color:var(--green)}
+        .badge-muted{background:rgba(139,143,163,.12);color:var(--muted)}
+
+        /* ===== Inputs ===== */
+        .input{width:100%;padding:12px 14px;background:var(--surface);border:1px solid var(--border);border-radius:10px;color:var(--text);font-size:15px;outline:none}
+        .input:focus{border-color:var(--accent)}
+
+        /* ===== Buttons ===== */
+        .btn{display:inline-flex;align-items:center;justify-content:center;gap:8px;padding:12px 20px;border-radius:10px;font-size:15px;font-weight:600;border:none;cursor:pointer}
+        .btn:active{transform:scale(.97)}
+        .btn-primary{background:var(--accent);color:#fff}
+        .btn-outline{background:transparent;color:var(--accent2);border:1px solid var(--border)}
+        .btn-sm{padding:8px 14px;font-size:13px;border-radius:8px}
+        .btn-block{width:100%}
+        .btn-icon{width:40px;height:40px;padding:0}
+
+        /* ===== Game Row ===== */
+        .game-row{display:grid;grid-template-columns:48px 1fr auto;gap:12px;align-items:center;padding:12px 0;border-bottom:1px solid var(--border);cursor:pointer}
+        .game-row:last-child{border-bottom:none}
+        .game-thumb{width:48px;height:48px;border-radius:8px;object-fit:cover;background:var(--surface);border:1px solid var(--border)}
+        .game-thumb-empty{width:48px;height:48px;border-radius:8px;background:var(--surface);border:1px solid var(--border);display:flex;align-items:center;justify-content:center;color:var(--muted);font-size:20px}
+        .game-info{min-width:0}
+        .game-name{font-size:14px;font-weight:600;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+        .game-meta{font-size:12px;color:var(--muted);margin-top:2px;display:flex;gap:6px}
+        .game-tags{display:flex;flex-wrap:wrap;gap:4px;margin-top:4px}
+        .game-tags .badge{font-size:10px;padding:2px 6px}
+
+        /* ===== Tag Pills ===== */
+        .tag-pill{display:inline-flex;align-items:center;gap:6px;padding:6px 12px;border-radius:20px;background:var(--surface);border:1px solid var(--border);font-size:12px;cursor:pointer;margin:4px 4px 4px 0}
+        .tag-pill.active{background:var(--accent);color:#fff;border-color:var(--accent)}
+        .tag-pill-close{width:16px;height:16px;display:flex;align-items:center;justify-content:center;font-weight:700}
+
+        /* ===== Modal ===== */
+        .modal{position:fixed;inset:0;z-index:150;background:rgba(0,0,0,.6);opacity:0;pointer-events:none;transition:opacity .25s;display:flex;align-items:flex-end}
+        .modal.open{opacity:1;pointer-events:auto}
+        .modal-sheet{position:relative;background:var(--bg);border-radius:16px 16px 0 0;max-height:90dvh;overflow-y:auto;width:100%;padding:0 16px calc(16px + var(--safe-b))}
+        .modal-handle{width:36px;height:4px;border-radius:2px;background:var(--border);margin:12px auto 16px}
+        .modal-title{font-size:18px;font-weight:700;margin-bottom:4px}
+        .modal-subtitle{font-size:13px;color:var(--muted);margin-bottom:16px}
+
+        /* ===== Toast ===== */
+        .toast{position:fixed;top:72px;left:16px;right:16px;z-index:100;padding:14px 16px;border-radius:12px;font-size:14px;font-weight:500;transform:translateY(-120%);opacity:0;transition:all .35s cubic-bezier(.4,0,.2,1);pointer-events:none}
+        .toast.show{transform:translateY(0);opacity:1;pointer-events:auto}
+        .toast-success{background:rgba(34,197,94,.15);color:var(--green);border:1px solid rgba(34,197,94,.25)}
+        .toast-error{background:rgba(239,68,68,.15);color:var(--red);border:1px solid rgba(239,68,68,.25)}
+
+        /* ===== Utility ===== */
+        .flex{display:flex}.gap-8{gap:8px}.gap-12{gap:12px}.mb-12{margin-bottom:12px}.mb-16{margin-bottom:16px}
+        .text-sm{font-size:13px}.text-xs{font-size:11px}.text-muted{color:var(--muted)}.hidden{display:none}
+        .empty-state{text-align:center;padding:40px 20px;color:var(--muted)}
+        .empty-state-icon{font-size:48px;margin-bottom:12px}
+
+        /* ===== Skeleton ===== */
+        .skeleton{background:linear-gradient(90deg,var(--surface) 25%,var(--card) 50%,var(--surface) 75%);background-size:200% 100%;animation:shimmer 1.5s infinite;border-radius:8px;height:68px}
+        @keyframes shimmer{0%{background-position:200% 0}100%{background-position:-200% 0}}
+    </style>
+</head>
+<body>
+    <!-- Password Screen -->
+    <div class="password-screen" id="passwordScreen">
+        <div class="password-box">
+            <h1>🏷️ Game Tags</h1>
+            <p>Manage your collection tags</p>
+            <div class="password-error" id="passwordError"></div>
+            <div class="password-field">
+                <label>Password</label>
+                <input type="password" id="appPassword" placeholder="Enter password" onkeypress="if(event.key==='Enter')unlockApp()">
+            </div>
+            <div class="password-field">
+                <label>BGG Username<span class="text-muted"> (default: sportomax)</span></label>
+                <input type="text" id="bggUsername" placeholder="sportomax" value="sportomax" onkeypress="if(event.key==='Enter')unlockApp()">
+            </div>
+            <button class="btn btn-primary btn-block" onclick="unlockApp()">Unlock</button>
+        </div>
+    </div>
+
+    <div class="top-bar" id="topBar" style="display:none">
+        <h1>🏷️ Tags</h1>
+        <span class="top-bar-stat" id="statsBar"></span>
+    </div>
+
+    <div class="toast" id="toast"></div>
+
+    <div class="views" id="views" style="display:none">
+        <div class="view active" id="view-games">
+            <div class="flex gap-8 mb-12">
+                <input type="text" id="gameFilter" class="input" style="flex:1;min-width:120px" placeholder="Search..." oninput="filterGames()">
+                <select id="tagFilter" class="input" style="flex:0 0 120px" onchange="filterGames()">
+                    <option value="">All Tags</option>
+                </select>
+            </div>
+            <span class="text-sm text-muted" id="gamesCount">0 games</span>
+            <div id="gamesList" style="margin-top:12px"></div>
+            <div id="gamesLoading"><div class="skeleton" style="margin-bottom:8px"></div><div class="skeleton" style="margin-bottom:8px"></div></div>
+        </div>
+
+        <div class="view" id="view-manage">
+            <div class="card">
+                <div class="card-title">➕ Add to Game</div>
+                <input type="text" id="newGameSearch" class="input mb-12" placeholder="Find a game..." oninput="filterQuickAddGames()">
+                <div id="quickAddList" style="max-height:250px;overflow-y:auto"></div>
+            </div>
+            <div class="card">
+                <div class="card-title">🏷️ All Tags</div>
+                <div id="allTagsContainer"></div>
+                <p class="text-xs text-muted" style="text-align:center;margin-top:12px">Click to delete from all games</p>
+            </div>
+        </div>
+
+        <div class="view" id="view-untagged">
+            <span class="text-sm text-muted" id="untaggedCount">0 untagged</span>
+            <div id="untaggedList" style="margin-top:12px"></div>
+        </div>
+
+        <div class="view" id="view-stats">
+            <div class="card">
+                <div class="card-title">📊 Quick Stats</div>
+                <div style="display:grid;grid-template-columns:repeat(2,1fr);gap:8px">
+                    <div style="background:var(--surface);padding:12px;border-radius:10px;text-align:center">
+                        <div style="font-size:22px;font-weight:800" id="stat1">0</div>
+                        <div class="text-xs text-muted" style="margin-top:2px">Total Games</div>
+                    </div>
+                    <div style="background:var(--surface);padding:12px;border-radius:10px;text-align:center">
+                        <div style="font-size:22px;font-weight:800" id="stat2">0</div>
+                        <div class="text-xs text-muted" style="margin-top:2px">Tagged</div>
+                    </div>
+                    <div style="background:var(--surface);padding:12px;border-radius:10px;text-align:center">
+                        <div style="font-size:22px;font-weight:800" id="stat3">0</div>
+                        <div class="text-xs text-muted" style="margin-top:2px">Total Tags</div>
+                    </div>
+                    <div style="background:var(--surface);padding:12px;border-radius:10px;text-align:center">
+                        <div style="font-size:22px;font-weight:800" id="stat4">0%</div>
+                        <div class="text-xs text-muted" style="margin-top:2px">Coverage</div>
+                    </div>
+                </div>
+            </div>
+            <div class="card">
+                <div class="card-title">☁️ Top Tags</div>
+                <div id="tagsCloudContainer"></div>
+            </div>
+        </div>
+    </div>
+
+    <nav class="tab-bar" id="tabBar" style="display:none">
+        <button class="tab-btn active" data-view="games" onclick="switchTab(this)">Games</button>
+        <button class="tab-btn" data-view="manage" onclick="switchTab(this)">Manage</button>
+        <button class="tab-btn" data-view="untagged" onclick="switchTab(this)">Untagged</button>
+        <button class="tab-btn" data-view="stats" onclick="switchTab(this)">Stats</button>
+    </nav>
+
+    <div class="modal" id="gameModal" onclick="if(event.target===this)closeModal()">
+        <div class="modal-sheet">
+            <div class="modal-handle"></div>
+            <div id="modalContent"></div>
+        </div>
+    </div>
+
+<script>
+let dbClient = null;
+let owner = '';
+let allGames = [];
+let allTags = [];
+let gameTagsMap = new Map();
+
+async function unlockApp() {
+    const password = document.getElementById('appPassword').value;
+    const username = document.getElementById('bggUsername').value.trim() || 'sportomax';
+    const errEl = document.getElementById('passwordError');
+    
+    try {
+        const cfgResp = await fetch('/api/supabase-config');
+        if (!cfgResp.ok) throw new Error('Config failed');
+        const cfg = await cfgResp.json();
+        dbClient = window.supabase.createClient(cfg.url, cfg.anonKey);
+        
+        const collResp = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&stats=1');
+        if (!collResp.ok) throw new Error('BGG username not found');
+        
+        owner = username;
+        
+        document.getElementById('passwordScreen').classList.add('hidden');
+        document.getElementById('topBar').style.display = 'flex';
+        document.getElementById('tabBar').style.display = 'flex';
+        document.getElementById('views').style.display = 'block';
+        
+        toast('Loading ' + username + '...', 'info');
+        
+        await loadCollection(username);
+        await loadTags();
+        
+        toast('Ready! ✓', 'success');
+        
+    } catch (e) {
+        console.error(e);
+        errEl.textContent = e.message;
+        errEl.style.display = 'block';
+    }
+}
+
+async function loadCollection(username) {
+    document.getElementById('gamesLoading').style.display = 'block';
+    try {
+        const resp = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&stats=1');
+        if (!resp.ok) throw new Error('BGG API failed');
+        
+        const xml = new DOMParser().parseFromString(await resp.text(), 'text/xml');
+        const items = xml.querySelectorAll('item');
+        
+        allGames = [];
+        items.forEach(item => {
+            const bggId = parseInt(item.getAttribute('objectid'));
+            const name = (item.querySelector('name') || {}).textContent || 'Unknown';
+            const thumb = (item.querySelector('thumbnail') || {}).textContent || '';
+            const thumbUrl = thumb ? (thumb.startsWith('//') ? 'https:' + thumb : thumb) : null;
+            allGames.push({ bgg_id: bggId, game_name: name, thumbnail_url: thumbUrl });
+        });
+        
+        document.getElementById('gamesLoading').style.display = 'none';
+        renderGames();
+        updateStats();
+    } catch (e) {
+        document.getElementById('gamesLoading').style.display = 'none';
+        toast('Error loading collection: ' + e.message, 'error');
+    }
+}
+
+async function loadTags() {
+    try {
+        const { data, error } = await dbClient.from('game_tags').select('*').eq('owner', owner);
+        if (error) throw error;
+        
+        allTags = data || [];
+        gameTagsMap.clear();
+        allTags.forEach(t => {
+            if (!gameTagsMap.has(t.bgg_id)) gameTagsMap.set(t.bgg_id, []);
+            gameTagsMap.get(t.bgg_id).push(t.tag_name);
+        });
+        
+        renderGames();
+        updateAllTags();
+        updateTagFilter();
+        updateStats();
+    } catch (e) {
+        console.error('Load tags error:', e);
+        toast('Error loading tags', 'error');
+    }
+}
+
+function renderGames() {
+    const filter = document.getElementById('gameFilter').value.toLowerCase();
+    const tagFilter = document.getElementById('tagFilter').value;
+    
+    let filtered = allGames.filter(g => {
+        const nameMatch = g.game_name.toLowerCase().includes(filter);
+        const tagMatch = !tagFilter || (gameTagsMap.has(g.bgg_id) && gameTagsMap.get(g.bgg_id).includes(tagFilter));
+        return nameMatch && tagMatch;
+    });
+    
+    document.getElementById('gamesCount').textContent = filtered.length + ' game' + (filtered.length!==1?'s':'');
+    
+    if (!filtered.length) {
+        document.getElementById('gamesList').innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎲</div><p>No games found</p></div>';
+        return;
+    }
+    
+    const html = filtered.map(g => {
+        const tags = gameTagsMap.get(g.bgg_id) || [];
+        const tagsHtml = tags.map(t => '<span class="badge">' + esc(t) + '</span>').join('');
+        return `<div class="game-row" onclick="openModal(${g.bgg_id})">
+            ${g.thumbnail_url ? '<img class="game-thumb" src="' + g.thumbnail_url + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=game-thumb-empty>🎲</div>\'">' : '<div class="game-thumb-empty">🎲</div>'}
+            <div class="game-info">
+                <div class="game-name">${esc(g.game_name)}</div>
+                <div class="game-meta"><span>#${g.bgg_id}</span></div>
+                <div class="game-tags">${tagsHtml}</div>
+            </div>
+            <span class="badge ${tags.length ? 'badge-green' : 'badge-muted'}">${tags.length}</span>
+        </div>`;
+    }).join('');
+    
+    document.getElementById('gamesList').innerHTML = html;
+}
+
+function filterGames() {
+    renderGames();
+}
+
+function openModal(bggId) {
+    const game = allGames.find(g => g.bgg_id === bggId);
+    if (!game) return;
+    
+    const tags = gameTagsMap.get(bggId) || [];
+    const tagsHtml = tags.map(t => `<span class="tag-pill">${esc(t)} <span class="tag-pill-close" onclick="removeTag(${bggId},'${esc(t).replace(/'/g,"\\'")}')" style="cursor:pointer">×</span></span>`).join('');
+    
+    document.getElementById('modalContent').innerHTML = `
+        <div style="text-align:center;margin-bottom:16px">
+            ${game.thumbnail_url ? '<img src="' + game.thumbnail_url + '" alt="" style="width:100%;max-width:120px;border-radius:10px;margin-bottom:12px">' : ''}
+            <div class="modal-title">${esc(game.game_name)}</div>
+            <div class="modal-subtitle">#${bggId}</div>
+        </div>
+        <div class="card">
+            <div class="card-title">Current Tags</div>
+            <div style="margin-bottom:12px">${tagsHtml || '<span class="text-muted text-sm">No tags</span>'}</div>
+            <div class="flex gap-8">
+                <input type="text" id="newTagInput" class="input" style="flex:1" placeholder="New tag..." onkeypress="if(event.key==='Enter')addTag(${bggId})">
+                <button class="btn btn-primary btn-sm" onclick="addTag(${bggId})">Add</button>
+            </div>
+        </div>
+    `;
+    document.getElementById('gameModal').classList.add('open');
+}
+
+function closeModal() {
+    document.getElementById('gameModal').classList.remove('open');
+}
+
+async function addTag(bggId) {
+    const input = document.getElementById('newTagInput');
+    const tag = input.value.trim();
+    if (!tag) { toast('Enter a tag', 'error'); return; }
+    
+    try {
+        await dbClient.from('game_tags').insert([{ owner: owner, bgg_id: bggId, tag_name: tag }]);
+        
+        input.value = '';
+        if (!gameTagsMap.has(bggId)) gameTagsMap.set(bggId, []);
+        gameTagsMap.get(bggId).push(tag);
+        allTags.push({ owner: owner, bgg_id: bggId, tag_name: tag });
+        
+        openModal(bggId);
+        renderGames();
+        updateAllTags();
+        updateTagFilter();
+        updateStats();
+        toast('Tag added!', 'success');
+    } catch (e) {
+        console.error(e);
+        if (e.message.includes('unique')) toast('Tag already exists', 'error');
+        else toast('Error: ' + e.message, 'error');
+    }
+}
+
+async function removeTag(bggId, tagName) {
+    try {
+        await dbClient.from('game_tags').delete().eq('owner', owner).eq('bgg_id', bggId).eq('tag_name', tagName);
+        
+        const tags = gameTagsMap.get(bggId);
+        if (tags) tags.splice(tags.indexOf(tagName), 1);
+        allTags = allTags.filter(t => !(t.bgg_id === bggId && t.tag_name === tagName));
+        
+        openModal(bggId);
+        renderGames();
+        updateAllTags();
+        updateTagFilter();
+        updateStats();
+        toast('Removed', 'success');
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+function updateAllTags() {
+    const unique = [...new Set(allTags.map(t => t.tag_name))].sort();
+    const container = document.getElementById('allTagsContainer');
+    
+    if (!unique.length) { container.innerHTML = '<span class="text-muted text-sm">No tags yet</span>'; return; }
+    
+    const html = unique.map(tag => {
+        const count = allTags.filter(t => t.tag_name === tag).length;
+        return `<span class="tag-pill" title="Click to delete from all" onclick="deleteTagGlobally('${esc(tag).replace(/'/g,"\\'")}')">${esc(tag)} (${count}) <span class="tag-pill-close">×</span></span>`;
+    }).join('');
+    
+    container.innerHTML = html;
+}
+
+async function deleteTagGlobally(tagName) {
+    if (!confirm('Delete "' + tagName + '" from all games?')) return;
+    
+    try {
+        await dbClient.from('game_tags').delete().eq('owner', owner).eq('tag_name', tagName);
+        
+        gameTagsMap.forEach((tags, bggId) => {
+            const idx = tags.indexOf(tagName);
+            if (idx !== -1) tags.splice(idx, 1);
+        });
+        allTags = allTags.filter(t => t.tag_name !== tagName);
+        
+        renderGames();
+        updateAllTags();
+        updateTagFilter();
+        updateStats();
+        toast('Deleted from all games', 'success');
+    } catch (e) {
+        toast('Error: ' + e.message, 'error');
+    }
+}
+
+function updateTagFilter() {
+    const unique = [...new Set(allTags.map(t => t.tag_name))].sort();
+    const select = document.getElementById('tagFilter');
+    const current = select.value;
+    
+    select.innerHTML = '<option value="">All Tags</option>' + unique.map(tag => '<option value="' + esc(tag) + '">' + esc(tag) + '</option>').join('');
+    select.value = current;
+}
+
+function filterQuickAddGames() {
+    const filter = document.getElementById('newGameSearch').value.toLowerCase();
+    const filtered = allGames.filter(g => g.game_name.toLowerCase().includes(filter)).slice(0, 8);
+    
+    const html = filtered.map(g => {
+        const tags = gameTagsMap.get(g.bgg_id) || [];
+        return `<div style="padding:8px;border-bottom:1px solid var(--border);display:flex;justify-content:space-between;align-items:center">
+            <div>
+                <div class="text-sm" style="font-weight:600">${esc(g.game_name)}</div>
+                <div class="text-xs text-muted">#${g.bgg_id}</div>
+            </div>
+            <button class="btn btn-primary btn-sm btn-icon" onclick="openModal(${g.bgg_id})">+</button>
+        </div>`;
+    }).join('');
+    
+    document.getElementById('quickAddList').innerHTML = html || '<span class="text-muted text-sm">No games found</span>';
+}
+
+function updateStats() {
+    const tagged = allGames.filter(g => gameTagsMap.has(g.bgg_id) && gameTagsMap.get(g.bgg_id).length > 0).length;
+    const coverage = allGames.length ? Math.round(tagged / allGames.length * 100) : 0;
+    const uniqueTags = new Set(allTags.map(t => t.tag_name)).size;
+    
+    document.getElementById('stat1').textContent = allGames.length;
+    document.getElementById('stat2').textContent = tagged;
+    document.getElementById('stat3').textContent = allTags.length;
+    document.getElementById('stat4').textContent = coverage + '%';
+    document.getElementById('statsBar').textContent = coverage + '% coverage';
+    
+    const counts = {};
+    allTags.forEach(t => { counts[t.tag_name] = (counts[t.tag_name] || 0) + 1; });
+    const sorted = Object.entries(counts).sort((a,b) => b[1] - a[1]).slice(0, 12);
+    const max = sorted[0]?.[1] || 1;
+    
+    const cloud = sorted.map(([tag, count]) => {
+        const size = 90 + (count / max) * 80;
+        return `<span class="tag-pill" style="font-size:${size}%;opacity:${0.6 + count/max*0.4}">${esc(tag)}</span>`;
+    }).join('');
+    
+    document.getElementById('tagsCloudContainer').innerHTML = cloud || '<span class="text-muted">No tags</span>';
+}
+
+function switchTab(btn) {
+    document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+    document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+    btn.classList.add('active');
+    
+    const viewId = 'view-' + btn.dataset.view;
+    document.getElementById(viewId).classList.add('active');
+    
+    if (btn.dataset.view === 'untagged') loadUntagged();
+    if (btn.dataset.view === 'manage') filterQuickAddGames();
+}
+
+function loadUntagged() {
+    const untagged = allGames.filter(g => !gameTagsMap.has(g.bgg_id) || gameTagsMap.get(g.bgg_id).length === 0);
+    document.getElementById('untaggedCount').textContent = untagged.length + ' game' + (untagged.length!==1?'s':'') + ' without tags';
+    
+    if (!untagged.length) {
+        document.getElementById('untaggedList').innerHTML = '<div class="empty-state"><div class="empty-state-icon">✅</div><p>All tagged!</p></div>';
+        return;
+    }
+    
+    const html = untagged.map(g => `<div class="game-row" onclick="openModal(${g.bgg_id})">
+        ${g.thumbnail_url ? '<img class="game-thumb" src="' + g.thumbnail_url + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=game-thumb-empty>🎲</div>\'">' : '<div class="game-thumb-empty">🎲</div>'}
+        <div class="game-info">
+            <div class="game-name">${esc(g.game_name)}</div>
+            <div class="game-meta"><span>#${g.bgg_id}</span></div>
+        </div>
+        <button class="btn btn-primary btn-sm btn-icon" onclick="openModal(${g.bgg_id});event.stopPropagation()">+</button>
+    </div>`).join('');
+    
+    document.getElementById('untaggedList').innerHTML = html;
+}
+
+function toast(msg, type = 'info') {
+    const el = document.getElementById('toast');
+    el.className = 'toast show toast-' + type;
+    el.textContent = msg;
+    clearTimeout(el._t);
+    el._t = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+function esc(str) {
+    const div = document.createElement('div');
+    div.textContent = str;
+    return div.innerHTML;
+}
+</script>
+</body>
+</html>
