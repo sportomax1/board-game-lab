@@ -126,6 +126,9 @@
             <button class="btn btn-primary btn-block" onclick="unlockApp()">Unlock</button>
         </div>
     </div>
+    <div id="progressWrap" style="height:3px;overflow:hidden;background:transparent;margin-top:0">
+        <div id="progressBar" style="height:3px;width:0;background:linear-gradient(90deg,var(--accent),var(--accent2));transition:width .35s,opacity .35s;opacity:0"></div>
+    </div>
 
     <div class="top-bar" id="topBar" style="display:none">
         <h1>🏷️ Tags</h1>
@@ -226,7 +229,7 @@ async function unlockApp() {
         const cfg = await cfgResp.json();
         dbClient = window.supabase.createClient(cfg.url, cfg.anonKey);
         
-        const collResp = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&stats=1');
+        const collResp = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&stats=1&own=1');
         if (!collResp.ok) throw new Error('BGG username not found');
         
         owner = username;
@@ -236,11 +239,13 @@ async function unlockApp() {
         document.getElementById('tabBar').style.display = 'flex';
         document.getElementById('views').style.display = 'block';
         
+        showProgress();
         toast('Loading ' + username + '...', 'info');
-        
+
         await loadCollection(username);
         await loadTags();
-        
+        hideProgress();
+
         toast('Ready! ✓', 'success');
         
     } catch (e) {
@@ -253,20 +258,34 @@ async function unlockApp() {
 async function loadCollection(username) {
     document.getElementById('gamesLoading').style.display = 'block';
     try {
-        const resp = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&stats=1');
+        const resp = await fetch('/api/bgg-helper?endpoint=collection&username=' + encodeURIComponent(username) + '&stats=1&own=1');
         if (!resp.ok) throw new Error('BGG API failed');
         
-        const xml = new DOMParser().parseFromString(await resp.text(), 'text/xml');
-        const items = xml.querySelectorAll('item');
-        
-        allGames = [];
-        items.forEach(item => {
-            const bggId = parseInt(item.getAttribute('objectid'));
-            const name = (item.querySelector('name') || {}).textContent || 'Unknown';
-            const thumb = (item.querySelector('thumbnail') || {}).textContent || '';
-            const thumbUrl = thumb ? (thumb.startsWith('//') ? 'https:' + thumb : thumb) : null;
-            allGames.push({ bgg_id: bggId, game_name: name, thumbnail_url: thumbUrl });
-        });
+            const xml = new DOMParser().parseFromString(await resp.text(), 'text/xml');
+            const items = xml.querySelectorAll('item');
+
+            allGames = [];
+            items.forEach(item => {
+                const bggId = parseInt(item.getAttribute('objectid'));
+                const name = (item.querySelector('name') || {}).textContent || 'Unknown';
+                const thumb = (item.querySelector('thumbnail') || {}).textContent || '';
+                const thumbUrl = thumb ? (thumb.startsWith('//') ? 'https:' + thumb : thumb) : null;
+                const year = (item.querySelector('yearpublished') || {}).textContent || '';
+                const playingtime = (item.querySelector('playingtime') || {}).textContent || '';
+
+                // Stats (when stats=1)
+                const statsEl = item.querySelector('stats');
+                const average = statsEl ? (statsEl.querySelector('average') || {}).textContent || '' : '';
+                const averageweight = statsEl ? (statsEl.querySelector('averageweight') || {}).textContent || '' : '';
+                // rank may be nested under ranks -> rank
+                let rank = '';
+                if (statsEl) {
+                    const rankEl = statsEl.querySelector('rank');
+                    if (rankEl) rank = rankEl.getAttribute('value') || rankEl.textContent || '';
+                }
+
+                allGames.push({ bgg_id: bggId, game_name: name, thumbnail_url: thumbUrl, year, playingtime, average, averageweight, rank });
+            });
         
         document.getElementById('gamesLoading').style.display = 'none';
         renderGames();
@@ -319,11 +338,18 @@ function renderGames() {
     const html = filtered.map(g => {
         const tags = gameTagsMap.get(g.bgg_id) || [];
         const tagsHtml = tags.map(t => '<span class="badge">' + esc(t) + '</span>').join('');
+        const metaPieces = [];
+        if (g.playingtime) metaPieces.push(esc(g.playingtime) + ' min');
+        if (g.average) metaPieces.push(esc(g.average) + ' avg');
+        if (g.averageweight) metaPieces.push('wt ' + esc(g.averageweight));
+        if (g.rank) metaPieces.push('rank #' + esc(g.rank));
+        const metaHtml = '<div class="game-meta"><span>#' + g.bgg_id + '</span>' + (metaPieces.length ? ' • ' + metaPieces.join(' • ') : '') + '</div>';
+
         return `<div class="game-row" onclick="openModal(${g.bgg_id})">
             ${g.thumbnail_url ? '<img class="game-thumb" src="' + g.thumbnail_url + '" alt="" loading="lazy" onerror="this.outerHTML=\'<div class=game-thumb-empty>🎲</div>\'">' : '<div class="game-thumb-empty">🎲</div>'}
             <div class="game-info">
                 <div class="game-name">${esc(g.game_name)}</div>
-                <div class="game-meta"><span>#${g.bgg_id}</span></div>
+                ${metaHtml}
                 <div class="game-tags">${tagsHtml}</div>
             </div>
             <span class="badge ${tags.length ? 'badge-green' : 'badge-muted'}">${tags.length}</span>
@@ -419,7 +445,14 @@ function updateAllTags() {
     
     const html = unique.map(tag => {
         const count = allTags.filter(t => t.tag_name === tag).length;
-        return `<span class="tag-pill" title="Click to delete from all" onclick="deleteTagGlobally('${esc(tag).replace(/'/g,"\\'")}')">${esc(tag)} (${count}) <span class="tag-pill-close">×</span></span>`;
+        // pill includes rename (✎) and delete (×)
+        return `<span class="tag-pill" title="Tag: ${esc(tag)}">
+            <span style="font-weight:600">${esc(tag)} <span style="color:var(--muted);font-size:11px">(${count})</span></span>
+            <span style="margin-left:8px;display:inline-flex;gap:8px">
+                <button class="btn btn-sm" onclick="event.stopPropagation(); renameTag('${esc(tag).replace(/'/g,"\\'")}')">✎</button>
+                <button class="btn btn-sm" onclick="event.stopPropagation(); deleteTagGlobally('${esc(tag).replace(/'/g,"\\'")}')">×</button>
+            </span>
+        </span>`;
     }).join('');
     
     container.innerHTML = html;
@@ -454,6 +487,37 @@ function updateTagFilter() {
     
     select.innerHTML = '<option value="">All Tags</option>' + unique.map(tag => '<option value="' + esc(tag) + '">' + esc(tag) + '</option>').join('');
     select.value = current;
+}
+
+async function renameTag(oldName) {
+    const newName = prompt('Rename tag', oldName);
+    if (!newName || newName.trim() === '' || newName === oldName) return;
+    const sanitizedNew = newName.trim();
+    try {
+        // fetch all rows with oldName for this owner
+        const { data: rows, error: selErr } = await dbClient.from('game_tags').select('id,bgg_id').eq('owner', owner).eq('tag_name', oldName);
+        if (selErr) throw selErr;
+
+        for (const row of rows) {
+            // check if a row with newName exists for same game
+            const { data: exists, error: exErr } = await dbClient.from('game_tags').select('id').eq('owner', owner).eq('bgg_id', row.bgg_id).eq('tag_name', sanitizedNew).limit(1);
+            if (exErr) throw exErr;
+            if (exists && exists.length) {
+                // delete the old row (duplicate would occur)
+                await dbClient.from('game_tags').delete().eq('id', row.id);
+            } else {
+                // rename old row
+                await dbClient.from('game_tags').update({ tag_name: sanitizedNew }).eq('id', row.id);
+            }
+        }
+
+        // refresh client state
+        await loadTags();
+        toast('Tag renamed', 'success');
+    } catch (e) {
+        console.error('Rename tag error', e);
+        toast('Error renaming tag: ' + (e.message || e), 'error');
+    }
 }
 
 function filterQuickAddGames() {
@@ -537,6 +601,21 @@ function toast(msg, type = 'info') {
     el.textContent = msg;
     clearTimeout(el._t);
     el._t = setTimeout(() => el.classList.remove('show'), 3500);
+}
+
+function showProgress() {
+    const bar = document.getElementById('progressBar');
+    bar.style.opacity = '1';
+    bar.style.width = '24%';
+    // animate forward
+    setTimeout(() => { if (bar) bar.style.width = '64%'; }, 250);
+}
+
+function hideProgress() {
+    const bar = document.getElementById('progressBar');
+    if (!bar) return;
+    bar.style.width = '100%';
+    setTimeout(() => { bar.style.opacity = '0'; bar.style.width = '0'; }, 300);
 }
 
 function esc(str) {
