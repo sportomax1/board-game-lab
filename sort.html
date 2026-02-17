@@ -38,10 +38,28 @@
 
     <!-- Fetch Section -->
     <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
-      <h2 class="text-lg font-bold mb-3">Load Collection</h2>
-      <div class="flex gap-2">
-        <input id="username" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-        <button onclick="fetchCollection()" id="fetchBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
+      <div class="flex gap-2 mb-4 border-b">
+        <button id="tabCollection" onclick="switchTab('collection')" class="px-4 py-2 font-bold border-b-2 border-indigo-600 text-indigo-600">BGG Collection</button>
+        <button id="tabCSV" onclick="switchTab('csv')" class="px-4 py-2 font-bold text-slate-500 hover:text-slate-700">CSV Upload</button>
+      </div>
+      
+      <!-- BGG Collection Tab -->
+      <div id="collectionTab">
+        <h2 class="text-lg font-bold mb-3">Load BGG Collection</h2>
+        <div class="flex gap-2">
+          <input id="username" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
+          <button onclick="fetchCollection()" id="fetchBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
+        </div>
+      </div>
+      
+      <!-- CSV Upload Tab -->
+      <div id="csvTab" class="hidden">
+        <h2 class="text-lg font-bold mb-3">Upload CSV File</h2>
+        <p class="text-sm text-slate-600 mb-3">CSV must contain an <code class="bg-slate-100 px-1 rounded">objectid</code> column. Other columns will be available for sorting.</p>
+        <div class="flex gap-2">
+          <input type="file" id="csvFile" accept=".csv" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 text-sm">
+          <button onclick="loadCSV()" id="csvBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
+        </div>
       </div>
     </div>
 
@@ -142,7 +160,7 @@ let displayedGames = [];
 let sortAsc = false;
 let tiebreakerSortAsc = false;
 
-const sortFields = [
+let sortFields = [
     { value: 'name', label: 'Name' },
     { value: 'bggRating', label: 'BGG Rating' },
     { value: 'bayesaverage', label: 'Bayes Average' },
@@ -156,13 +174,20 @@ const sortFields = [
     { value: 'numcomments', label: 'Comments' },
     { value: 'numweights', label: 'Weight Votes' },
     { value: 'averageweight', label: 'Average Weight' },
-    { value: 'year', label: 'Year' },
+    { value: 'year', label: 'Year Published' },
     { value: 'playingtime', label: 'Playing Time' }
 ];
+
+let isCSVMode = false;
+let csvColumns = [];
 
 function populateSortOptions() {
     const sortSelect = document.getElementById('sortSelect');
     const tiebreakerSortSelect = document.getElementById('tiebreakerSortSelect');
+    
+    // Clear existing options
+    sortSelect.innerHTML = '';
+    tiebreakerSortSelect.innerHTML = '';
     
     sortFields.forEach(field => {
         const option = new Option(field.label, field.value);
@@ -177,11 +202,156 @@ function populateSortOptions() {
 
 window.addEventListener('DOMContentLoaded', populateSortOptions);
 
+function switchTab(tab) {
+    const collectionTab = document.getElementById('collectionTab');
+    const csvTab = document.getElementById('csvTab');
+    const tabCollectionBtn = document.getElementById('tabCollection');
+    const tabCSVBtn = document.getElementById('tabCSV');
+    
+    if (tab === 'collection') {
+        collectionTab.classList.remove('hidden');
+        csvTab.classList.add('hidden');
+        tabCollectionBtn.classList.add('border-b-2', 'border-indigo-600', 'text-indigo-600');
+        tabCollectionBtn.classList.remove('text-slate-500');
+        tabCSVBtn.classList.remove('border-b-2', 'border-indigo-600', 'text-indigo-600');
+        tabCSVBtn.classList.add('text-slate-500');
+    } else {
+        csvTab.classList.remove('hidden');
+        collectionTab.classList.add('hidden');
+        tabCSVBtn.classList.add('border-b-2', 'border-indigo-600', 'text-indigo-600');
+        tabCSVBtn.classList.remove('text-slate-500');
+        tabCollectionBtn.classList.remove('border-b-2', 'border-indigo-600', 'text-indigo-600');
+        tabCollectionBtn.classList.add('text-slate-500');
+    }
+}
+
+async function loadCSV() {
+  const fileInput = document.getElementById('csvFile');
+  const file = fileInput.files[0];
+  
+  if (!file) {
+    alert('Please select a CSV file');
+    return;
+  }
+  
+  document.getElementById('csvBtn').disabled = true;
+  document.getElementById('fetchSection').classList.add('hidden');
+  document.getElementById('loadingSection').classList.remove('hidden');
+  
+  try {
+    updateLoadingStatus('Reading CSV file...');
+    updateProgress(0);
+    
+    const text = await file.text();
+    const lines = text.trim().split('\n');
+    
+    if (lines.length < 2) {
+      throw new Error('CSV file must have headers and at least one row');
+    }
+    
+    // Parse CSV headers
+    const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+    const objectIdIdx = headers.findIndex(h => h.toLowerCase() === 'objectid');
+    
+    if (objectIdIdx === -1) {
+      throw new Error('CSV must contain an "objectid" column');
+    }
+    
+    updateLoadingStatus('Parsing CSV data...');
+    updateProgress(10);
+    
+    // Parse CSV rows
+    const csvData = [];
+    for (let i = 1; i < lines.length; i++) {
+      const values = lines[i].split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+      const row = {};
+      headers.forEach((header, idx) => {
+        row[header] = values[idx] || '';
+      });
+      csvData.push(row);
+    }
+    
+    // Extract objectIds
+    const objectIds = csvData.map(row => row.objectid || row.objectId).filter(id => id);
+    
+    if (objectIds.length === 0) {
+      throw new Error('No valid objectids found in CSV');
+    }
+    
+    updateLoadingStatus(`Found ${objectIds.length} games. Fetching thumbnails...`);
+    updateProgress(20);
+    
+    // Fetch thing data for thumbnails
+    allGames = [];
+    const batchSize = 20;
+    const batches = [];
+    for (let i = 0; i < objectIds.length; i += batchSize) {
+      batches.push(objectIds.slice(i, i + batchSize));
+    }
+    
+    await batchFetchWithLimitCSV(batches, csvData, 100);
+    
+    // Set up dynamic sort fields from CSV columns
+    isCSVMode = true;
+    csvColumns = headers.filter(h => h.toLowerCase() !== 'objectid');
+    
+    // Build sort fields from CSV columns + basic BGG fields
+    sortFields = [
+      { value: 'name', label: 'Name' },
+      { value: 'year', label: 'Year Published' }
+    ];
+    
+    csvColumns.forEach(col => {
+      if (!['name', 'year'].includes(col.toLowerCase())) {
+        sortFields.push({ value: col, label: col });
+      }
+    });
+    
+    updateLoadingStatus('Complete!');
+    document.getElementById('controlsSection').classList.remove('hidden');
+    document.getElementById('actionButtons').classList.remove('hidden');
+    document.getElementById('gamesGrid').classList.remove('hidden');
+    document.getElementById('gameCount').textContent = allGames.length;
+    
+    populateSortOptions();
+    displayedGames = [...allGames];
+    sortGames();
+    
+    setTimeout(() => { document.getElementById('loadingSection').classList.add('hidden'); }, 500);
+  } catch (err) {
+    console.error(err);
+    updateLoadingStatus(`Error: ${err.message}`);
+    alert(`Error: ${err.message}`);
+  } finally {
+    document.getElementById('csvBtn').disabled = false;
+  }
+}
+
 async function fetchCollection() {
   const username = document.getElementById('username').value.trim() || 'sportomax';
   document.getElementById('fetchBtn').disabled = true;
   document.getElementById('fetchSection').classList.add('hidden');
   document.getElementById('loadingSection').classList.remove('hidden');
+
+  // Reset to BGG collection mode
+  isCSVMode = false;
+  sortFields = [
+    { value: 'name', label: 'Name' },
+    { value: 'bggRating', label: 'BGG Rating' },
+    { value: 'bayesaverage', label: 'Bayes Average' },
+    { value: 'stddev', label: 'Std Dev' },
+    { value: 'minage', label: 'Min Age' },
+    { value: 'usersrated', label: 'Users Rated' },
+    { value: 'owned', label: 'Owned' },
+    { value: 'trading', label: 'Trading' },
+    { value: 'wanting', label: 'Wanting' },
+    { value: 'wishing', label: 'Wishing' },
+    { value: 'numcomments', label: 'Comments' },
+    { value: 'numweights', label: 'Weight Votes' },
+    { value: 'averageweight', label: 'Average Weight' },
+    { value: 'year', label: 'Year Published' },
+    { value: 'playingtime', label: 'Playing Time' }
+  ];
 
   try {
     updateLoadingStatus('Fetching collection...');
@@ -222,6 +392,7 @@ async function fetchCollection() {
     document.getElementById('gamesGrid').classList.remove('hidden');
     document.getElementById('gameCount').textContent = allGames.length;
     
+    populateSortOptions();
     displayedGames = [...allGames];
     sortGames();
     
@@ -309,6 +480,66 @@ async function batchFetchWithLimit(batches, maxConcurrent = 100) {
   });
 }
 
+async function batchFetchWithLimitCSV(batches, csvData, maxConcurrent = 100) {
+  const results = new Array(batches.length);
+  let activeCount = 0;
+  let batchIndex = 0;
+
+  return new Promise((resolve, reject) => {
+    async function processBatch(idx, batch) {
+      try {
+        const ids = batch.join(',');
+        const fetchUrl = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`;
+        const xml = await fetchWithRetry(fetchUrl);
+        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+        
+        Array.from(doc.querySelectorAll('item')).forEach(item => {
+          const id = item.getAttribute('id');
+          const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'N/A';
+          const thumb = item.querySelector('thumbnail')?.textContent || '';
+          const year = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0');
+          
+          // Find matching CSV row
+          const csvRow = csvData.find(row => (row.objectid || row.objectId) === id);
+          
+          if (csvRow) {
+            const gameData = {
+              id,
+              name,
+              thumb,
+              year,
+              ...csvRow  // Merge all CSV columns
+            };
+            allGames.push(gameData);
+          }
+        });
+        
+        results[idx] = true;
+        updateProgress(20 + ((allGames.length / (batches.length * 20)) * 80));
+        updateLoadingStatus(`Fetching thumbnails ${allGames.length} items…`);
+      } catch (e) {
+        console.error('Batch error', e);
+        results[idx] = false;
+      }
+
+      activeCount--;
+      if (batchIndex < batches.length) {
+        const nextIdx = batchIndex++;
+        activeCount++;
+        processBatch(nextIdx, batches[nextIdx]);
+      } else if (activeCount === 0) {
+        resolve();
+      }
+    }
+
+    // Start up to maxConcurrent batches
+    for (let i = 0; i < Math.min(maxConcurrent, batches.length); i++) {
+      activeCount++;
+      processBatch(batchIndex++, batches[i]);
+    }
+  });
+}
+
 function sortGames() {
   const sortBy = document.getElementById('sortSelect').value;
   const tiebreakerSortBy = document.getElementById('tiebreakerSortSelect').value;
@@ -333,11 +564,22 @@ function sortGames() {
   displayedGames.sort((a, b) => {
     let res = 0;
     
-    const valA = a[sortBy] || 0;
-    const valB = b[sortBy] || 0;
+    let valA = a[sortBy];
+    let valB = b[sortBy];
     
-    if (sortBy === 'name') {
-        res = valA.localeCompare(valB);
+    // Try to parse as numbers if they're strings
+    if (typeof valA === 'string' && !isNaN(valA) && valA !== '') {
+      valA = parseFloat(valA);
+    }
+    if (typeof valB === 'string' && !isNaN(valB) && valB !== '') {
+      valB = parseFloat(valB);
+    }
+    
+    valA = valA || 0;
+    valB = valB || 0;
+    
+    if (sortBy === 'name' || typeof valA === 'string') {
+        res = String(valA).localeCompare(String(valB));
     } else {
         res = valB - valA;
     }
@@ -345,11 +587,22 @@ function sortGames() {
     if (sortAsc) res = -res;
 
     if (res === 0) {
-        const tieValA = a[tiebreakerSortBy] || 0;
-        const tieValB = b[tiebreakerSortBy] || 0;
+        let tieValA = a[tiebreakerSortBy];
+        let tieValB = b[tiebreakerSortBy];
         
-        if (tiebreakerSortBy === 'name') {
-            res = tieValA.localeCompare(tieValB);
+        // Try to parse as numbers
+        if (typeof tieValA === 'string' && !isNaN(tieValA) && tieValA !== '') {
+          tieValA = parseFloat(tieValA);
+        }
+        if (typeof tieValB === 'string' && !isNaN(tieValB) && tieValB !== '') {
+          tieValB = parseFloat(tieValB);
+        }
+        
+        tieValA = tieValA || 0;
+        tieValB = tieValB || 0;
+        
+        if (tiebreakerSortBy === 'name' || typeof tieValA === 'string') {
+            res = String(tieValA).localeCompare(String(tieValB));
         } else {
             res = tieValB - tieValA;
         }
@@ -392,6 +645,8 @@ function renderGames() {
     let displayValue = '';
     if (typeof sortValue === 'number') {
         displayValue = sortValue.toFixed(2).replace(/\.00$/, '');
+    } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
+        displayValue = parseFloat(sortValue).toFixed(2).replace(/\.00$/, '');
     } else {
         displayValue = String(sortValue || '');
     }
@@ -424,6 +679,8 @@ function printTop120() {
         let displayValue = '';
         if (typeof sortValue === 'number') {
             displayValue = sortValue.toFixed(1).replace(/\.0$/, '');
+        } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
+            displayValue = parseFloat(sortValue).toFixed(1).replace(/\.0$/, '');
         } else {
             displayValue = String(sortValue || '');
         }
