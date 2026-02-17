@@ -645,7 +645,16 @@ async function batchFetchWithLimitCSV(batches, csvData, maxConcurrent = 100) {
 function categorizeGame(game, targetPlayerCount) {
     if (!game.playerCountData) return 'supported';
     
-    const playerData = game.playerCountData[targetPlayerCount.toString()];
+    // Handle 8+ special case - check for both '8' and '8+' in the data
+    let playerKey = targetPlayerCount.toString();
+    let playerData = game.playerCountData[playerKey];
+    
+    // For 8 players, also try '8+' key
+    if (!playerData && targetPlayerCount >= 8) {
+        playerData = game.playerCountData['8+'];
+        if (!playerData) playerData = game.playerCountData['8'];
+    }
+    
     if (!playerData) {
         // Check if game supports this player count within min/max range
         if (targetPlayerCount >= game.minPlayers && targetPlayerCount <= game.maxPlayers) {
@@ -685,11 +694,13 @@ function categorizeGame(game, targetPlayerCount) {
 
 function getPlayerCountScore(game, targetPlayerCount) {
     const category = categorizeGame(game, targetPlayerCount);
-    if (category === 'perfect') return 5;
-    if (category === 'best') return 4;
-    if (category === 'recommended') return 3;
-    if (category === 'supported') return 2;
-    return 0; // null or unsupported
+    // Return category priority (lower is better) plus bayesaverage for tiebreaking
+    // We'll multiply priority by 1000 and subtract bayesaverage to sort category first, then rating
+    const categoryOrder = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4, null: 999 };
+    const priority = categoryOrder[category] || 999;
+    const bayesAvg = game.bayesaverage || 0;
+    // Return negative so higher bayesaverage within same category sorts first (descending)
+    return -(priority * 1000 - bayesAvg);
 }
 
 function sortGames() {
@@ -724,6 +735,11 @@ function sortGames() {
       const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
       valA = getPlayerCountScore(a, playerCount);
       valB = getPlayerCountScore(b, playerCount);
+      // Player count score already includes bayesaverage tiebreaking
+      // Sort descending (higher score = better)
+      res = valB - valA;
+      if (sortAsc) res = -res;
+      return res; // Skip tiebreaker for player count sorts
     } else {
       // Try to parse as numbers if they're strings
       if (typeof valA === 'string' && !isNaN(valA) && valA !== '') {
@@ -754,6 +770,8 @@ function sortGames() {
           const playerCount = tiebreakerSortBy === 'bestAt8' ? 8 : parseInt(tiebreakerSortBy.replace('bestAt', ''));
           tieValA = getPlayerCountScore(a, playerCount);
           tieValB = getPlayerCountScore(b, playerCount);
+          // Already includes bayesaverage, sort descending
+          res = tieValB - tieValA;
         } else {
           // Try to parse as numbers
           if (typeof tieValA === 'string' && !isNaN(tieValA) && tieValA !== '') {
@@ -765,12 +783,12 @@ function sortGames() {
           
           tieValA = tieValA || 0;
           tieValB = tieValB || 0;
-        }
-        
-        if (tiebreakerSortBy === 'name' || (typeof tieValA === 'string' && !tiebreakerSortBy.startsWith('bestAt'))) {
-            res = String(tieValA).localeCompare(String(tieValB));
-        } else {
-            res = tieValB - tieValA;
+          
+          if (tiebreakerSortBy === 'name' || typeof tieValA === 'string') {
+              res = String(tieValA).localeCompare(String(tieValB));
+          } else {
+              res = tieValB - tieValA;
+          }
         }
         if (tiebreakerSortAsc) res = -res;
     }
@@ -809,22 +827,38 @@ function renderGames() {
   container.innerHTML = displayedGames.map(g => {
     const sortValue = g[sortBy];
     let displayValue = '';
-    if (typeof sortValue === 'number') {
+    
+    // Handle player count display
+    if (sortBy.startsWith('bestAt')) {
+      const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
+      const category = categorizeGame(g, playerCount);
+      const categoryLabels = { 'perfect': 'Perfect', 'best': 'Best', 'recommended': 'Rec.', 'supported': 'OK', null: 'N/A' };
+      displayValue = categoryLabels[category] || 'N/A';
+    } else if (typeof sortValue === 'number') {
         displayValue = sortValue.toFixed(2).replace(/\.00$/, '');
     } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
         displayValue = parseFloat(sortValue).toFixed(2).replace(/\.00$/, '');
     } else {
         displayValue = String(sortValue || '');
     }
+    
     // Secondary (tiebreaker) value display
     const tieBy = document.getElementById('tiebreakerSortSelect').value;
     let tieValue = g[tieBy];
-    if (typeof tieValue === 'string' && !isNaN(tieValue) && tieValue !== '') tieValue = parseFloat(tieValue);
     let displayTie = '';
-    if (typeof tieValue === 'number') {
-      displayTie = tieValue.toFixed(2).replace(/\.00$/, '');
+    
+    if (tieBy.startsWith('bestAt')) {
+      const playerCount = tieBy === 'bestAt8' ? 8 : parseInt(tieBy.replace('bestAt', ''));
+      const category = categorizeGame(g, playerCount);
+      const categoryLabels = { 'perfect': 'Perfect', 'best': 'Best', 'recommended': 'Rec.', 'supported': 'OK', null: 'N/A' };
+      displayTie = categoryLabels[category] || 'N/A';
     } else {
-      displayTie = String(tieValue || '');
+      if (typeof tieValue === 'string' && !isNaN(tieValue) && tieValue !== '') tieValue = parseFloat(tieValue);
+      if (typeof tieValue === 'number') {
+        displayTie = tieValue.toFixed(2).replace(/\.00$/, '');
+      } else {
+        displayTie = String(tieValue || '');
+      }
     }
 
     return `
@@ -854,7 +888,13 @@ function printTop120() {
     const tilesHtml = gamesToPrint.map((game, index) => {
         const sortValue = game[sortBy];
         let displayValue = '';
-        if (typeof sortValue === 'number') {
+        
+        if (sortBy.startsWith('bestAt')) {
+          const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
+          const category = categorizeGame(game, playerCount);
+          const categoryLabels = { 'perfect': 'Perf', 'best': 'Best', 'recommended': 'Rec', 'supported': 'OK', null: '—' };
+          displayValue = categoryLabels[category] || '—';
+        } else if (typeof sortValue === 'number') {
             displayValue = sortValue.toFixed(1).replace(/\.0$/, '');
         } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
             displayValue = parseFloat(sortValue).toFixed(1).replace(/\.0$/, '');
@@ -872,15 +912,14 @@ function printTop120() {
     }).join('');
 
     printOutput.innerHTML = `
-      <div style="padding: 0.25in; font-family: Arial, sans-serif; background: white;">
-        <div style="text-align: center; margin-bottom: 0.25in;">
-          <h1 style="font-size: 16px; font-weight: bold; margin: 0 0 4px 0; color: #333;">Top 120 Games - Sorted by ${sortLabel}</h1>
-          <p style="font-size: 11px; color: #666; margin: 0;">Sort Direction: ${sortDir}</p>
+      <div style="padding: 0.2in 0.25in; font-family: Arial, sans-serif; background: white; page-break-after: always;">
+        <div style="text-align: center; margin-bottom: 0.15in;">
+          <h1 style="font-size: 14px; font-weight: bold; margin: 0 0 3px 0; color: #333;">Top 120 Games - Sorted by ${sortLabel}</h1>
+          <p style="font-size: 10px; color: #666; margin: 0;">Sort Direction: ${sortDir} | Generated: ${today}</p>
         </div>
-        <div style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; width: 100%; max-width: 100%;">
+        <div style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; width: 100%; max-width: 100%;">
           ${tilesHtml}
         </div>
-        <div style="text-align: right; margin-top: 0.2in; font-size: 10px; color: #666;">Generated: ${today}</div>
       </div>
     `;
 
@@ -899,9 +938,12 @@ function printAllOnePage() {
   const sortDir = sortAsc ? 'Ascending' : 'Descending';
   const today = new Date().toLocaleDateString('en-US', { year: 'numeric', month: 'long', day: 'numeric' });
   
-  // Calculate grid dimensions to fit all games (aim for square-ish grid)
+  // Calculate grid dimensions optimized for letter size (8.5" x 11")
+  // With 0.25" margins, printable area is ~8" x 10.5"
+  // Aspect ratio ~1.31 (taller than wide)
   const totalGames = gamesToPrint.length;
-  const cols = Math.ceil(Math.sqrt(totalGames * 1.3)); // Slightly wider than tall for letter size
+  const targetRatio = 10.5 / 8.0; // height/width ratio for optimal fit
+  const cols = Math.ceil(Math.sqrt(totalGames / targetRatio));
   const rows = Math.ceil(totalGames / cols);
   
   const tilesHtml = gamesToPrint.map((game) => {
@@ -913,12 +955,12 @@ function printAllOnePage() {
   }).join('');
 
   printOutput.innerHTML = `
-    <div style="padding: 0.25in; font-family: Arial, sans-serif; background: white;">
-      <div style="text-align: center; margin-bottom: 0.15in;">
-        <h1 style="font-size: 14px; font-weight: bold; margin: 0 0 2px 0; color: #333;">All ${totalGames} Games - Sorted by ${sortLabel}</h1>
-        <p style="font-size: 9px; color: #666; margin: 0;">Sort Direction: ${sortDir} | Generated: ${today}</p>
+    <div style="padding: 0.2in 0.25in; font-family: Arial, sans-serif; background: white; height: 100vh; display: flex; flex-direction: column;">
+      <div style="text-align: center; margin-bottom: 0.1in; flex-shrink: 0;">
+        <h1 style="font-size: 12px; font-weight: bold; margin: 0 0 2px 0; color: #333;">All ${totalGames} Games - Sorted by ${sortLabel}</h1>
+        <p style="font-size: 8px; color: #666; margin: 0;">Sort Direction: ${sortDir} | Generated: ${today}</p>
       </div>
-      <div style="display: grid; grid-template-columns: repeat(${cols}, 1fr); gap: 2px; width: 100%; max-width: 100%;">
+      <div style="display: grid; grid-template-columns: repeat(${cols}, 1fr); gap: 2px; width: 100%; flex: 1;">
         ${tilesHtml}
       </div>
     </div>
@@ -952,7 +994,13 @@ function printAll120PerPage() {
     const tilesHtml = pageGames.map((game, index) => {
         const sortValue = game[sortBy];
         let displayValue = '';
-        if (typeof sortValue === 'number') {
+        
+        if (sortBy.startsWith('bestAt')) {
+          const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
+          const category = categorizeGame(game, playerCount);
+          const categoryLabels = { 'perfect': 'Perf', 'best': 'Best', 'recommended': 'Rec', 'supported': 'OK', null: '—' };
+          displayValue = categoryLabels[category] || '—';
+        } else if (typeof sortValue === 'number') {
             displayValue = sortValue.toFixed(1).replace(/\.0$/, '');
         } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
             displayValue = parseFloat(sortValue).toFixed(1).replace(/\.0$/, '');
@@ -970,15 +1018,14 @@ function printAll120PerPage() {
     }).join('');
     
     pagesHtml += `
-      <div style="page-break-after: ${page < numPages - 1 ? 'always' : 'auto'}; padding: 0.25in; font-family: Arial, sans-serif; background: white;">
-        <div style="text-align: center; margin-bottom: 0.25in;">
-          <h1 style="font-size: 16px; font-weight: bold; margin: 0 0 4px 0; color: #333;">Games ${startIdx + 1}-${endIdx} - Sorted by ${sortLabel}</h1>
-          <p style="font-size: 11px; color: #666; margin: 0;">Sort Direction: ${sortDir} | Page ${page + 1} of ${numPages}</p>
+      <div style="page-break-after: ${page < numPages - 1 ? 'always' : 'auto'}; padding: 0.2in 0.25in; font-family: Arial, sans-serif; background: white;">
+        <div style="text-align: center; margin-bottom: 0.15in;">
+          <h1 style="font-size: 14px; font-weight: bold; margin: 0 0 3px 0; color: #333;">Games ${startIdx + 1}-${endIdx} - Sorted by ${sortLabel}</h1>
+          <p style="font-size: 10px; color: #666; margin: 0;">Sort Direction: ${sortDir} | Page ${page + 1} of ${numPages} | Generated: ${today}</p>
         </div>
-        <div style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 4px; width: 100%; max-width: 100%;">
+        <div style="display: grid; grid-template-columns: repeat(10, 1fr); gap: 3px; width: 100%; max-width: 100%;">
           ${tilesHtml}
         </div>
-        <div style="text-align: right; margin-top: 0.2in; font-size: 10px; color: #666;">Generated: ${today}</div>
       </div>
     `;
   }
