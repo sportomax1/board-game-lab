@@ -60,7 +60,7 @@
 
     <!-- Controls -->
     <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4 space-y-3">
-        <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
+        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
             <div>
                 <label class="text-xs font-bold text-slate-500">Primary Sort</label>
                 <div class="flex">
@@ -75,11 +75,24 @@
                     <button id="tiebreakerSortDirBtn" onclick="toggleTiebreakerSortDir()" class="px-3 py-2 rounded-r-lg border border-l-0 border-slate-200 bg-white text-sm">▼</button>
                 </div>
             </div>
+            <div class="flex items-end">
+                 <label class="flex items-center gap-2 cursor-pointer">
+                    <input type="checkbox" id="ignoreExpansions" onchange="sortGames()" class="form-checkbox text-indigo-600 rounded" checked>
+                    <span class="text-sm font-semibold text-slate-700">Ignore Expansions</span>
+                </label>
+            </div>
         </div>
     </div>
 
+    <!-- Action Buttons -->
+    <div id="actionButtons" class="hidden mt-4 space-y-2">
+        <button onclick="printTop130()" class="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-bold transition flex items-center justify-center gap-2">
+            <i class="fa-solid fa-print"></i> Print Top 130
+        </button>
+    </div>
+
     <!-- Games Grid -->
-    <div id="gamesGrid" class="hidden grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4"></div>
+    <div id="gamesGrid" class="hidden flex flex-col gap-2"></div>
 
     <!-- Empty State -->
     <div id="emptyState" class="hidden text-center py-12">
@@ -88,6 +101,19 @@
     </div>
 
   </main>
+
+<div id="print-output" class="hidden"></div>
+
+<style>
+@media print {
+  body > *:not(#print-output) {
+    display: none;
+  }
+  #print-output {
+    display: block;
+  }
+}
+</style>
 
 <script>
 const API_BASE = '/api/bgg-helper';
@@ -168,43 +194,11 @@ async function fetchCollection() {
       batches.push(objectIds.slice(i, i + batchSize));
     }
 
-    await Promise.all(batches.map(async (batch, idx) => {
-      try {
-        const ids = batch.join(',');
-        const fetchUrl = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`;
-        const xml = await fetchWithRetry(fetchUrl);
-        const doc = new DOMParser().parseFromString(xml, 'text/xml');
-        Array.from(doc.querySelectorAll('item')).forEach(item => {
-          const id = item.getAttribute('id');
-          const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'N/A';
-          const thumb = item.querySelector('thumbnail')?.textContent || '';
-          const year = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0');
-          const ratings = item.querySelector('statistics ratings');
-          const gameData = {
-            id, name, thumb, year,
-            bggRating: parseFloat(ratings?.querySelector('average')?.getAttribute('value') || '0'),
-            bayesaverage: parseFloat(ratings?.querySelector('bayesaverage')?.getAttribute('value') || '0'),
-            stddev: parseFloat(ratings?.querySelector('stddev')?.getAttribute('value') || '0'),
-            minage: parseInt(item.querySelector('minage')?.getAttribute('value') || '0'),
-            usersrated: parseInt(ratings?.querySelector('usersrated')?.getAttribute('value') || '0'),
-            owned: parseInt(ratings?.querySelector('owned')?.getAttribute('value') || '0'),
-            trading: parseInt(ratings?.querySelector('trading')?.getAttribute('value') || '0'),
-            wanting: parseInt(ratings?.querySelector('wanting')?.getAttribute('value') || '0'),
-            wishing: parseInt(ratings?.querySelector('wishing')?.getAttribute('value') || '0'),
-            numcomments: parseInt(ratings?.querySelector('numcomments')?.getAttribute('value') || '0'),
-            numweights: parseInt(ratings?.querySelector('numweights')?.getAttribute('value') || '0'),
-            averageweight: parseFloat(ratings?.querySelector('averageweight')?.getAttribute('value') || '0'),
-            playingtime: (parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0') + parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0')) / 2,
-          };
-          allGames.push(gameData);
-        });
-        updateProgress(10 + ((idx + 1) / batches.length) * 90);
-        updateLoadingStatus(`Fetching details ${idx + 1}/${batches.length}…`);
-      } catch (e) { console.error('Batch error', e); }
-    }));
+    await batchFetchWithLimit(batches, 100);
 
     updateLoadingStatus('Complete!');
     document.getElementById('controlsSection').classList.remove('hidden');
+    document.getElementById('actionButtons').classList.remove('hidden');
     document.getElementById('gamesGrid').classList.remove('hidden');
     document.getElementById('gameCount').textContent = allGames.length;
     
@@ -232,9 +226,81 @@ async function fetchWithRetry(url, maxRetries = 5) {
   throw new Error('Failed to fetch');
 }
 
+async function batchFetchWithLimit(batches, maxConcurrent = 100) {
+  const results = new Array(batches.length);
+  let activeCount = 0;
+  let batchIndex = 0;
+
+  return new Promise((resolve, reject) => {
+    async function processBatch(idx, batch) {
+      try {
+        const ids = batch.join(',');
+        const fetchUrl = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`;
+        const xml = await fetchWithRetry(fetchUrl);
+        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+        Array.from(doc.querySelectorAll('item')).forEach(item => {
+          const id = item.getAttribute('id');
+          const type = item.getAttribute('type');
+          const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'N/A';
+          const thumb = item.querySelector('thumbnail')?.textContent || '';
+          const year = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0');
+          const ratings = item.querySelector('statistics ratings');
+          const gameData = {
+            id, name, thumb, year, type,
+            bggRating: parseFloat(ratings?.querySelector('average')?.getAttribute('value') || '0'),
+            bayesaverage: parseFloat(ratings?.querySelector('bayesaverage')?.getAttribute('value') || '0'),
+            stddev: parseFloat(ratings?.querySelector('stddev')?.getAttribute('value') || '0'),
+            minage: parseInt(item.querySelector('minage')?.getAttribute('value') || '0'),
+            usersrated: parseInt(ratings?.querySelector('usersrated')?.getAttribute('value') || '0'),
+            owned: parseInt(ratings?.querySelector('owned')?.getAttribute('value') || '0'),
+            trading: parseInt(ratings?.querySelector('trading')?.getAttribute('value') || '0'),
+            wanting: parseInt(ratings?.querySelector('wanting')?.getAttribute('value') || '0'),
+            wishing: parseInt(ratings?.querySelector('wishing')?.getAttribute('value') || '0'),
+            numcomments: parseInt(ratings?.querySelector('numcomments')?.getAttribute('value') || '0'),
+            numweights: parseInt(ratings?.querySelector('numweights')?.getAttribute('value') || '0'),
+            averageweight: parseFloat(ratings?.querySelector('averageweight')?.getAttribute('value') || '0'),
+            playingtime: (parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0') + parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0')) / 2,
+          };
+          allGames.push(gameData);
+        });
+        results[idx] = true;
+        updateProgress(10 + ((allGames.length / (batches.length * 20)) * 90));
+        updateLoadingStatus(`Fetching details ${allGames.length} items…`);
+      } catch (e) {
+        console.error('Batch error', e);
+        results[idx] = false;
+      }
+
+      activeCount--;
+      if (batchIndex < batches.length) {
+        const nextIdx = batchIndex++;
+        activeCount++;
+        processBatch(nextIdx, batches[nextIdx]);
+      } else if (activeCount === 0) {
+        resolve();
+      }
+    }
+
+    // Start up to maxConcurrent batches
+    for (let i = 0; i < Math.min(maxConcurrent, batches.length); i++) {
+      activeCount++;
+      processBatch(batchIndex++, batches[i]);
+    }
+  });
+}
+
 function sortGames() {
   const sortBy = document.getElementById('sortSelect').value;
   const tiebreakerSortBy = document.getElementById('tiebreakerSortSelect').value;
+  const ignoreExpansions = document.getElementById('ignoreExpansions').checked;
+
+  let gamesToDisplay = [...allGames];
+
+  if (ignoreExpansions) {
+      gamesToDisplay = gamesToDisplay.filter(g => g.type !== 'boardgameexpansion');
+  }
+
+  displayedGames = gamesToDisplay;
 
   displayedGames.sort((a, b) => {
     let res = 0;
@@ -299,19 +365,45 @@ function renderGames() {
     if (typeof sortValue === 'number') {
         displayValue = sortValue.toFixed(2).replace(/\.00$/, '');
     } else {
-        displayValue = sortValue;
+        displayValue = String(sortValue || '');
     }
 
     return `
-      <div class="game-card bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden p-2 flex flex-col items-center text-center cursor-pointer" title="${g.name}">
-        <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()">
-          <img src="${g.thumb}" alt="${g.name}" class="w-24 h-24 rounded-md object-cover bg-slate-200">
+      <div class="game-card bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden p-2 flex items-center text-left cursor-pointer w-full" title="${g.name}">
+        <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="flex-shrink-0">
+          <img src="${g.thumb}" alt="${g.name}" class="w-16 h-16 rounded-md object-cover bg-slate-200">
         </a>
-        <h3 class="font-bold text-xs text-slate-800 mt-2 h-8 line-clamp-2">${g.name}</h3>
-        <div class="text-xs text-indigo-600 font-bold mt-1 bg-indigo-50 px-2 py-0.5 rounded-full">${displayValue}</div>
+        <div class="flex-grow ml-3">
+            <h3 class="font-bold text-sm text-slate-800 line-clamp-2">${g.name}</h3>
+            <div class="text-xs text-slate-500">${g.year > 0 ? g.year : ''}</div>
+        </div>
+        <div class="text-lg text-indigo-600 font-bold ml-3 bg-indigo-50 px-3 py-1 rounded-lg">${displayValue}</div>
       </div>
     `;
   }).join('');
+}
+
+function printTop130() {
+    const gamesToPrint = displayedGames.slice(0, 130);
+    const printOutput = document.getElementById('print-output');
+    
+    const listHtml = gamesToPrint.map((game, index) => `
+        <div class="flex items-center p-1 border-b">
+            <div class="w-8 text-right mr-2 font-bold text-slate-600">${index + 1}.</div>
+            <div class="flex-1 font-semibold text-slate-800">${game.name}</div>
+        </div>
+    `).join('');
+
+    printOutput.innerHTML = `
+        <div class="p-4">
+            <h1 class="text-2xl font-bold mb-4 text-center">Top 130 Games</h1>
+            <div class="grid grid-cols-2 gap-x-4">
+                ${listHtml}
+            </div>
+        </div>
+    `;
+
+    window.print();
 }
 
 function updateLoadingStatus(status) {
