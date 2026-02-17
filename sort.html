@@ -46,9 +46,23 @@
       <!-- BGG Collection Tab -->
       <div id="collectionTab">
         <h2 class="text-lg font-bold mb-3">Load BGG Collection</h2>
-        <div class="flex gap-2">
+        <div class="flex gap-2 mb-2">
           <input id="username" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
           <button onclick="fetchCollection()" id="fetchBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
+        </div>
+        <div class="flex items-center gap-2">
+          <label class="text-sm font-semibold text-slate-700">Filter by Player Count:</label>
+          <select id="playerCountFilter" onchange="sortGames()" class="px-3 py-1 rounded-lg border border-slate-200 text-sm bg-white">
+            <option value="">All</option>
+            <option value="1">1 Player (Best/Recommended)</option>
+            <option value="2">2 Players (Best/Recommended)</option>
+            <option value="3">3 Players (Best/Recommended)</option>
+            <option value="4">4 Players (Best/Recommended)</option>
+            <option value="5">5 Players (Best/Recommended)</option>
+            <option value="6">6 Players (Best/Recommended)</option>
+            <option value="7">7 Players (Best/Recommended)</option>
+            <option value="8">8+ Players (Best/Recommended)</option>
+          </select>
         </div>
       </div>
       
@@ -56,9 +70,14 @@
       <div id="csvTab" class="hidden">
         <h2 class="text-lg font-bold mb-3">Upload CSV File</h2>
         <p class="text-sm text-slate-600 mb-3">CSV must contain an <code class="bg-slate-100 px-1 rounded">objectid</code> column. Other columns will be available for sorting.</p>
-        <div class="flex gap-2">
+        <div class="flex gap-2 mb-3">
           <input type="file" id="csvFile" accept=".csv" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 text-sm">
           <button onclick="loadCSV()" id="csvBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
+        </div>
+        <div class="bg-blue-50 border border-blue-200 rounded-lg p-3 text-sm">
+          <p class="text-blue-900 font-semibold mb-2">💾 Quick Export from BGG</p>
+          <a href="https://boardgamegeek.com/geekcollection.php?action=exportcsv&subtype=boardgame&all=1" target="_blank" class="text-blue-600 hover:text-blue-700 hover:underline font-medium">Export your collection as CSV from BGG →</a>
+          <p class="text-blue-700 text-xs mt-2">Then upload the file above to sort by any column in your collection data.</p>
         </div>
       </div>
     </div>
@@ -249,8 +268,39 @@ async function loadCSV() {
       throw new Error('CSV file must have headers and at least one row');
     }
     
+    // Helper function to parse CSV line respecting quotes
+    function parseCSVLine(line) {
+      const result = [];
+      let current = '';
+      let inQuotes = false;
+      
+      for (let i = 0; i < line.length; i++) {
+        const char = line[i];
+        const nextChar = line[i + 1];
+        
+        if (char === '"') {
+          if (inQuotes && nextChar === '"') {
+            // Escaped quote
+            current += '"';
+            i++; // Skip next quote
+          } else {
+            // Toggle quote mode
+            inQuotes = !inQuotes;
+          }
+        } else if (char === ',' && !inQuotes) {
+          // End of field
+          result.push(current.trim());
+          current = '';
+        } else {
+          current += char;
+        }
+      }
+      result.push(current.trim()); // Add last field
+      return result;
+    }
+    
     // Parse CSV headers
-    const headers = lines[0].split(',').map(h => h.trim().replace(/^["']|["']$/g, ''));
+    const headers = parseCSVLine(lines[0]).map(h => h.replace(/^["']|["']$/g, ''));
     const objectIdIdx = headers.findIndex(h => h.toLowerCase() === 'objectid');
     
     if (objectIdIdx === -1) {
@@ -263,10 +313,11 @@ async function loadCSV() {
     // Parse CSV rows
     const csvData = [];
     for (let i = 1; i < lines.length; i++) {
-      const values = lines[i].split(',').map(v => v.trim().replace(/^["']|["']$/g, ''));
+      const values = parseCSVLine(lines[i]).map(v => v.replace(/^["']|["']$/g, ''));
       const row = {};
       headers.forEach((header, idx) => {
-        row[header] = values[idx] || '';
+        // Preserve blanks/empty values - don't set to empty string if index doesn't exist
+        row[header] = idx < values.length ? values[idx] : '';
       });
       csvData.push(row);
     }
@@ -436,6 +487,26 @@ async function batchFetchWithLimit(batches, maxConcurrent = 100) {
           const thumb = item.querySelector('thumbnail')?.textContent || '';
           const year = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0');
           const ratings = item.querySelector('statistics ratings');
+          
+          // Parse player count poll data
+          const playerCountData = {};
+          const playerPoll = item.querySelector('poll[name="suggested_numplayers"]');
+          if (playerPoll) {
+            Array.from(playerPoll.querySelectorAll('results')).forEach(results => {
+              const numPlayers = results.getAttribute('numplayers');
+              const bestVotes = parseInt(results.querySelector('result[value="Best"]')?.getAttribute('numvotes') || '0');
+              const recommendedVotes = parseInt(results.querySelector('result[value="Recommended"]')?.getAttribute('numvotes') || '0');
+              const notRecommendedVotes = parseInt(results.querySelector('result[value="Not Recommended"]')?.getAttribute('numvotes') || '0');
+              
+              playerCountData[numPlayers] = {
+                best: bestVotes,
+                recommended: recommendedVotes,
+                notRecommended: notRecommendedVotes,
+                total: bestVotes + recommendedVotes + notRecommendedVotes
+              };
+            });
+          }
+          
           const gameData = {
             id, name, thumb, year, type,
             bggRating: parseFloat(ratings?.querySelector('average')?.getAttribute('value') || '0'),
@@ -451,6 +522,9 @@ async function batchFetchWithLimit(batches, maxConcurrent = 100) {
             numweights: parseInt(ratings?.querySelector('numweights')?.getAttribute('value') || '0'),
             averageweight: parseFloat(ratings?.querySelector('averageweight')?.getAttribute('value') || '0'),
             playingtime: (parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0') + parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0')) / 2,
+            minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value') || '0'),
+            maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value') || '0'),
+            playerCountData
           };
           allGames.push(gameData);
         });
@@ -545,6 +619,7 @@ function sortGames() {
   const tiebreakerSortBy = document.getElementById('tiebreakerSortSelect').value;
   const ignoreExpansions = document.getElementById('ignoreExpansions').checked;
   const ignoreZeroValues = document.getElementById('ignoreZeroValues').checked;
+  const playerCountFilter = document.getElementById('playerCountFilter')?.value || '';
 
   let gamesToDisplay = [...allGames];
 
@@ -556,6 +631,50 @@ function sortGames() {
       gamesToDisplay = gamesToDisplay.filter(g => {
           const val = g[sortBy];
           return val !== 0 && val !== '0' && val !== '' && val != null;
+      });
+  }
+
+  // Apply player count filtering for BGG collection mode
+  if (playerCountFilter && !isCSVMode) {
+      const targetPlayerCount = parseInt(playerCountFilter);
+      gamesToDisplay = gamesToDisplay.filter(g => {
+          // Check if game has player count data
+          if (!g.playerCountData || !g.playerCountData[targetPlayerCount]) {
+              // No poll data - check if within min/max range
+              if (g.minPlayers && g.maxPlayers && targetPlayerCount >= g.minPlayers && targetPlayerCount <= g.maxPlayers) {
+                  return true; // Supports this player count
+              }
+              return false;
+          }
+          
+          const playerData = g.playerCountData[targetPlayerCount];
+          const totalVotes = playerData.total;
+          
+          // Must have at least 3 votes to be considered
+          if (totalVotes < 3) {
+              // If no votes but within range, include it
+              if (g.minPlayers && g.maxPlayers && targetPlayerCount >= g.minPlayers && targetPlayerCount <= g.maxPlayers) {
+                  return true;
+              }
+              return false;
+          }
+          
+          const bestVotes = playerData.best;
+          const recommendedVotes = playerData.recommended;
+          const notRecommendedVotes = playerData.notRecommended;
+          
+          // Calculate percentages
+          const bestPercent = (bestVotes / totalVotes) * 100;
+          const recommendedPercent = (recommendedVotes / totalVotes) * 100;
+          
+          // Include if Best or Recommended for this player count
+          if (bestPercent >= 50 || (bestVotes > recommendedVotes && bestVotes > notRecommendedVotes)) {
+              return true; // Best
+          } else if ((bestPercent + recommendedPercent) >= 50 || recommendedVotes > notRecommendedVotes) {
+              return true; // Recommended
+          }
+          
+          return false; // Not recommended
       });
   }
 
