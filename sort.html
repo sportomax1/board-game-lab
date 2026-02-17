@@ -179,6 +179,7 @@ const collectionSortFields = [
     { value: 'stddev', label: 'Std Dev' },
     { value: 'minage', label: 'Min Age' },
     { value: 'usersrated', label: 'Users Rated' },
+    { value: 'plays', label: 'Plays' },
     { value: 'owned', label: 'Owned' },
     { value: 'trading', label: 'Trading' },
     { value: 'wanting', label: 'Wanting' },
@@ -441,6 +442,17 @@ async function fetchCollection() {
       return;
     }
 
+    // Capture number of plays from the collection response so we can sort by it
+    const playsMap = {};
+    collItems.forEach(item => {
+      const oid = item.getAttribute('objectid');
+      let plays = 0;
+      const numplaysNode = item.querySelector('numplays');
+      if (numplaysNode) plays = parseInt(numplaysNode.textContent || '0') || 0;
+      else plays = parseInt(item.getAttribute('numplays') || '0') || 0;
+      playsMap[oid] = plays;
+    });
+
     const objectIds = collItems.map(i => i.getAttribute('objectid'));
     updateLoadingStatus(`Found ${objectIds.length} owned games. Fetching details…`);
     updateProgress(10);
@@ -453,6 +465,15 @@ async function fetchCollection() {
     }
 
     await batchFetchWithLimit(batches, 100);
+
+    // Merge plays from the collection into the fetched game objects
+    try {
+      allGames.forEach(g => {
+        g.plays = (playsMap && playsMap[g.id]) ? playsMap[g.id] : 0;
+      });
+    } catch (e) {
+      console.warn('Failed to merge plays map:', e);
+    }
 
     updateLoadingStatus('Complete!');
     document.getElementById('controlsSection').classList.remove('hidden');
@@ -715,7 +736,14 @@ function sortGames() {
       gamesToDisplay = gamesToDisplay.filter(g => g.type !== 'boardgameexpansion');
   }
 
-  if (ignoreZeroValues) {
+  // Filter by player count if sorting by bestAt (only show games that support that player count)
+  if (sortBy.startsWith('bestAt')) {
+      const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
+      gamesToDisplay = gamesToDisplay.filter(g => {
+          const category = categorizeGame(g, playerCount);
+          return category !== null; // Only keep games that support this player count
+      });
+  } else if (ignoreZeroValues) {
       gamesToDisplay = gamesToDisplay.filter(g => {
           const val = g[sortBy];
           return val !== 0 && val !== '0' && val !== '' && val != null;
@@ -733,11 +761,21 @@ function sortGames() {
     // Handle player count sorting (bestAt1, bestAt2, etc.)
     if (sortBy.startsWith('bestAt')) {
       const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
-      valA = getPlayerCountScore(a, playerCount);
-      valB = getPlayerCountScore(b, playerCount);
-      // Player count score already includes bayesaverage tiebreaking
-      // Sort descending (higher score = better)
-      res = valB - valA;
+      const categoryA = categorizeGame(a, playerCount);
+      const categoryB = categorizeGame(b, playerCount);
+      
+      const categoryOrder = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4 };
+      
+      // Sort by category priority first
+      if (categoryOrder[categoryA] !== categoryOrder[categoryB]) {
+        res = categoryOrder[categoryA] - categoryOrder[categoryB];
+      } else {
+        // If same category, sort by bayesaverage descending
+        const bayesA = a.bayesaverage || 0;
+        const bayesB = b.bayesaverage || 0;
+        res = bayesB - bayesA;
+      }
+      
       if (sortAsc) res = -res;
       return res; // Skip tiebreaker for player count sorts
     } else {
