@@ -10,7 +10,7 @@ CREATE TABLE IF NOT EXISTS game_ratings (
     owner TEXT NOT NULL,
     bgg_id INTEGER NOT NULL,
     rating_name TEXT NOT NULL,
-    rating_value NUMERIC(4,1) NOT NULL CHECK (rating_value >= 1 AND rating_value <= 10),
+    rating_value BIGINT NOT NULL,
     created_at TIMESTAMP WITH TIME ZONE DEFAULT NOW(),
     updated_at TIMESTAMP WITH TIME ZONE DEFAULT NOW()
 );
