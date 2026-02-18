@@ -853,6 +853,38 @@ function closeModal() {
     document.getElementById('gameModal').classList.remove('open');
 }
 
+function openRatingsModal(dimensionName, ratingValue) {
+    const games = allRatings
+        .filter(r => r.rating_name === dimensionName && parseInt(r.rating_value, 10) === ratingValue)
+        .map(r => allGames.find(g => g.bgg_id === r.bgg_id))
+        .filter(Boolean)
+        .sort((a, b) => (b.average || 0) - (a.average || 0));
+
+    const gamesHtml = games.length ? games.map(g => `
+        <div class="game-row" onclick="openModal(${g.bgg_id})">
+            ${g.thumbnail_url ? `<img class="game-thumb" src="${g.thumbnail_url}" alt="" loading="lazy" onerror="this.outerHTML='<div class=game-thumb-empty>🎲</div>'">` : '<div class="game-thumb-empty">🎲</div>'}
+            <div class="game-info" style="flex:1">
+                <div class="game-name">${esc(g.game_name)}</div>
+                <div class="game-meta">${g.average?Number(g.average).toFixed(1)+' avg':''} ${g.rank?'· rank #'+esc(g.rank):''}</div>
+            </div>
+        </div>
+    `).join('') : '<div class="empty-state"><p>No games</p></div>';
+
+    document.getElementById('modalContent').innerHTML = `
+        <div class="modal-header">
+            <div>
+                <div class="modal-title">⭐ ${esc(dimensionName)}: ${ratingValue}</div>
+                <div class="modal-subtitle">${games.length} game${games.length!==1?'s':''}</div>
+            </div>
+            <button class="modal-close" onclick="closeModal()">✕</button>
+        </div>
+        <div class="modal-body" style="max-height:60vh;overflow-y:auto">
+            ${gamesHtml}
+        </div>
+    `;
+    document.getElementById('gameModal').classList.add('open');
+}
+
 function toggleSelectGame(bggId, e) {
     if (selectedGames.has(bggId)) selectedGames.delete(bggId);
     else selectedGames.add(bggId);
@@ -1116,22 +1148,11 @@ function updateStats() {
         const mn = Math.min(...vals).toFixed(1);
         const mx = Math.max(...vals).toFixed(1);
 
-        // Distribution buckets 1-2, 3-4, 5-6, 7-8, 9-10
-        const buckets = [0,0,0,0,0];
-        vals.forEach(v => { buckets[Math.min(4, Math.floor((v-1)/2))]++; });
-        const bucketLabels = ['1-2','3-4','5-6','7-8','9-10'];
-        const bucketMax = Math.max(...buckets);
-
-        // Top 5 + Bottom 5
-        const sorted2 = rows.slice().sort((a,b)=>parseInt(b.rating_value,10)-parseInt(a.rating_value,10));
-        const top5 = sorted2.slice(0,5).map(r => {
-            const g = allGames.find(x=>x.bgg_id===r.bgg_id);
-            return `<span class="rating-pill" style="cursor:pointer" onclick="openModal(${r.bgg_id})" title="${g?esc(g.game_name):'#'+r.bgg_id}">${g?esc(g.game_name.substring(0,18)):'#'+r.bgg_id} <strong>${parseInt(r.rating_value,10)}</strong></span>`;
-        }).join('');
-        const bot5 = sorted2.slice(-5).reverse().map(r => {
-            const g = allGames.find(x=>x.bgg_id===r.bgg_id);
-            return `<span class="rating-pill" style="cursor:pointer;background:color-mix(in srgb,var(--muted) 15%,transparent);color:var(--muted)" onclick="openModal(${r.bgg_id})" title="${g?esc(g.game_name):'#'+r.bgg_id}">${g?esc(g.game_name.substring(0,18)):'#'+r.bgg_id} <strong>${parseInt(r.rating_value,10)}</strong></span>`;
-        }).join('');
+        // Distribution by individual values
+        const valCounts = {};
+        vals.forEach(v => { valCounts[v] = (valCounts[v] || 0) + 1; });
+        const allIndividualVals = [...new Set(vals)].sort((a,b)=>a-b);
+        const countMax = Math.max(...Object.values(valCounts));
 
         html += `<div class="card" style="margin-bottom:12px">
             <div class="card-title">⭐ ${esc(dim)}</div>
@@ -1140,17 +1161,13 @@ function updateStats() {
                 <div class="stat-card"><div class="stat-val">${mn}</div><div class="stat-label">Min</div></div>
                 <div class="stat-card"><div class="stat-val">${mx}</div><div class="stat-label">Max</div></div>
             </div>
-            <div style="margin-bottom:8px">${bucketLabels.map((l,i)=>`
-                <div class="ratings-heatmap-row">
-                    <span style="min-width:36px;color:var(--muted)">${l}</span>
-                    <div class="heatmap-bar" style="width:${bucketMax?Math.max(6,(buckets[i]/bucketMax)*180):0}px"></div>
-                    <span style="color:var(--muted)">${buckets[i]}</span>
+            <div style="margin-bottom:8px">${allIndividualVals.map(val=>`
+                <div class="ratings-heatmap-row" style="cursor:pointer" onclick="openRatingsModal('${dim}', ${val})">
+                    <span style="min-width:32px;color:var(--muted);font-weight:600">${val}</span>
+                    <div class="heatmap-bar" style="width:${countMax?Math.max(6,(valCounts[val]/countMax)*180):0}px;background:color-mix(in srgb,var(--accent) ${50+(valCounts[val]/countMax)*50}%,transparent);cursor:pointer"></div>
+                    <span style="color:var(--muted)">${valCounts[val]}</span>
                 </div>`).join('')}
             </div>
-            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600">TOP ↑</div>
-            <div style="margin-bottom:8px">${top5||'—'}</div>
-            <div style="font-size:11px;color:var(--muted);margin-bottom:4px;font-weight:600">BOTTOM ↓</div>
-            <div>${bot5||'—'}</div>
         </div>`;
     });
     rSection.innerHTML = html;
