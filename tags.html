@@ -425,6 +425,8 @@
                                 <option value="highRating">Highest Rating</option>
                                 <option value="lowRating">Lowest Rating</option>
                                 <option value="ratingCount">Most Rated</option>
+                                <option value="newest">Newest Rating</option>
+                                <option value="oldest">Oldest Rating</option>
                             </select>
                         </div>
                     </div>
@@ -1275,7 +1277,7 @@ async function loadRatings() {
         gameRatingsMap.clear();
         allRatings.forEach(r => {
             if (!gameRatingsMap.has(r.bgg_id)) gameRatingsMap.set(r.bgg_id, {});
-            gameRatingsMap.get(r.bgg_id)[r.rating_name] = parseFloat(r.rating_value);
+            gameRatingsMap.get(r.bgg_id)[r.rating_name] = { value: parseFloat(r.rating_value), date: r.updated_at };
         });
         ratingDimensions = [...new Set(allRatings.map(r => r.rating_name))].sort();
         renderRatingDefinitions();
@@ -1283,6 +1285,21 @@ async function loadRatings() {
     } catch(e) {
         console.error('Load ratings error:', e);
     }
+}
+
+function getLatestRatingDate(bggId) {
+    const ratings = gameRatingsMap.get(bggId) || {};
+    const dates = Object.values(ratings).map(r => r.date).filter(d => d);
+    if (!dates.length) return null;
+    return new Date(Math.max(...dates.map(d => new Date(d).getTime())));
+}
+
+function formatRatingDate(dateStr) {
+    if (!dateStr) return '—';
+    const d = new Date(dateStr);
+    const today = new Date();
+    const showYear = d.getFullYear() !== today.getFullYear();
+    return d.toLocaleDateString('en-US', { month: 'short', day: 'numeric', year: showYear ? '2-digit' : undefined });
 }
 
 function renderRatingDefinitions() {
@@ -1312,12 +1329,11 @@ function renderRatingsView() {
     const filterDim = document.getElementById('ratingsFilterDim')?.value || '';
     const sortBy = document.getElementById('ratingsSort')?.value || 'name';
 
-    let games = allGames.filter(g => {
-        const nameOk = g.game_name.toLowerCase().includes(filterText);
-        if (!nameOk) return false;
-        if (filterDim) return gameRatingsMap.has(g.bgg_id) && filterDim in gameRatingsMap.get(g.bgg_id);
-        return gameRatingsMap.has(g.bgg_id) && Object.keys(gameRatingsMap.get(g.bgg_id)).length > 0;
-    });
+    // Show ALL games, filtered by search
+    let games = allGames.filter(g => g.game_name.toLowerCase().includes(filterText));
+    if (filterDim) {
+        games = games.filter(g => gameRatingsMap.has(g.bgg_id) && filterDim in gameRatingsMap.get(g.bgg_id));
+    }
 
     // Sort
     games.sort((a, b) => {
@@ -1325,28 +1341,48 @@ function renderRatingsView() {
         const ra = gameRatingsMap.get(a.bgg_id) || {};
         const rb = gameRatingsMap.get(b.bgg_id) || {};
         const dimsToCheck = filterDim ? [filterDim] : ratingDimensions;
-        const avgA = dimsToCheck.length ? dimsToCheck.reduce((s,d)=>s+(ra[d]||0),0)/dimsToCheck.length : 0;
-        const avgB = dimsToCheck.length ? dimsToCheck.reduce((s,d)=>s+(rb[d]||0),0)/dimsToCheck.length : 0;
+        const avgA = dimsToCheck.length ? dimsToCheck.reduce((s,d)=>s+(ra[d]?.value || 0),0)/dimsToCheck.length : 0;
+        const avgB = dimsToCheck.length ? dimsToCheck.reduce((s,d)=>s+(rb[d]?.value || 0),0)/dimsToCheck.length : 0;
         if (sortBy === 'highRating') return avgB - avgA;
         if (sortBy === 'lowRating') return avgA - avgB;
         if (sortBy === 'ratingCount') return Object.keys(rb).length - Object.keys(ra).length;
+        if (sortBy === 'newest') {
+            const dateA = getLatestRatingDate(a.bgg_id);
+            const dateB = getLatestRatingDate(b.bgg_id);
+            if (!dateA && !dateB) return 0;
+            if (!dateA) return 1;
+            if (!dateB) return -1;
+            return dateB - dateA;
+        }
+        if (sortBy === 'oldest') {
+            const dateA = getLatestRatingDate(a.bgg_id);
+            const dateB = getLatestRatingDate(b.bgg_id);
+            if (!dateA && !dateB) return 0;
+            if (!dateA) return 1;
+            if (!dateB) return -1;
+            return dateA - dateB;
+        }
         return 0;
     });
 
     const el = document.getElementById('ratingsGamesList');
-    if (!games.length) { el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">⭐</div><p>No rated games found</p></div>'; return; }
+    if (!games.length) { el.innerHTML = '<div class="empty-state"><div class="empty-state-icon">🎲</div><p>No games found</p></div>'; return; }
 
     const dimsToShow = filterDim ? [filterDim] : ratingDimensions;
     el.innerHTML = games.map(g => {
         const ratings = gameRatingsMap.get(g.bgg_id) || {};
-        const ratingBadges = dimsToShow.filter(d => d in ratings).map(d =>
-            `<span class="rating-pill" title="${esc(d)}">${esc(d.length>14?d.substring(0,13)+'…':d)}: <strong>${ratings[d].toFixed(1)}</strong></span>`
-        ).join('');
+        const ratingBadges = dimsToShow.filter(d => d in ratings).map(d => {
+            const r = ratings[d];
+            return `<span class="rating-pill" title="${esc(d)}: ${r.value.toFixed(1)} (${formatRatingDate(r.date)})">${esc(d.length>14?d.substring(0,13)+'…':d)}: <strong>${r.value.toFixed(1)}</strong> <span style="font-size:9px;opacity:.7">${formatRatingDate(r.date)}</span></span>`;
+        }).join('');
+        const latestDate = getLatestRatingDate(g.bgg_id);
+        const dateStr = latestDate ? formatRatingDate(latestDate.toISOString()) : '<span style="color:var(--muted)">Not rated</span>';
         return `<div class="game-row" onclick="openModal(${g.bgg_id})">
             ${g.thumbnail_url ? `<img class="game-thumb" src="${g.thumbnail_url}" alt="" loading="lazy" onerror="this.outerHTML='<div class=game-thumb-empty>🎲</div>'">` : '<div class="game-thumb-empty">🎲</div>'}
             <div class="game-info">
                 <div class="game-name">${esc(g.game_name)}</div>
-                <div class="game-tags" style="margin-top:4px">${ratingBadges}</div>
+                <div class="game-meta" style="font-size:11px;color:var(--muted);margin-top:2px">Last rated: ${dateStr}</div>
+                <div class="game-tags" style="margin-top:4px">${ratingBadges || '<span style="color:var(--muted);font-size:11px">No ratings</span>'}</div>
             </div>
         </div>`;
     }).join('');
@@ -1365,7 +1401,8 @@ async function setRating(bggId, dimName, value) {
             allRatings.push(data[0]);
         }
         if (!gameRatingsMap.has(bggId)) gameRatingsMap.set(bggId, {});
-        gameRatingsMap.get(bggId)[dimName] = value;
+        const now = new Date().toISOString();
+        gameRatingsMap.get(bggId)[dimName] = { value, date: now };
         // update display badge in modal if visible
         const dispEl = document.getElementById('rval_' + bggId + '_' + dimName.replace(/[^a-z0-9]/gi,'_'));
         if (dispEl) dispEl.textContent = value.toFixed(1);
@@ -1447,14 +1484,17 @@ function buildRatingsSection(bggId) {
     }
     const ratings = gameRatingsMap.get(bggId) || {};
     const rows = ratingDimensions.map(dim => {
-        const val = ratings[dim] !== undefined ? Math.round(ratings[dim]) : '';
-        const hasVal = ratings[dim] !== undefined;
+        const r = ratings[dim];
+        const val = r !== undefined ? Math.round(r.value) : '';
+        const hasVal = r !== undefined;
+        const dateStr = hasVal ? formatRatingDate(r.date) : '';
         const escapedDim = esc(dim).replace(/'/g,"\\'");
         return `<div class="rating-row">
             <span class="rating-label">${esc(dim)}</span>
             <input type="number" min="1" max="10" step="1" value="${val}" placeholder="1-10" class="rating-num-input"
                 onchange="const v=parseInt(this.value); if(v>=1&&v<=10){setRating(${bggId},'${escapedDim}',v);}else{this.value='';}">
             ${hasVal ? `<button class="rating-delete" title="Remove" onclick="deleteRating(${bggId},'${escapedDim}')" style="margin-left:4px">×</button>` : '<span style="width:24px"></span>'}
+            ${hasVal ? `<span class="text-xs text-muted" style="margin-left:4px;min-width:70px">${dateStr}</span>` : ''}
         </div>`;
     }).join('');
     return rows;
