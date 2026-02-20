@@ -539,6 +539,10 @@ async function fetchCollection() {
         artists: [],
         publishers: [],
         families: [],
+        description: '',
+        playerPoll: [],
+        agePoll: [],
+        languageDependence: 'Unknown',
         loaded: false 
       };
     }).filter(game => game.name);
@@ -611,6 +615,9 @@ async function fetchCollection() {
             
             game.year = parseInt(thingItem.querySelector('yearpublished')?.getAttribute('value') || '0');
             
+            // Extract description
+            game.description = thingItem.querySelector('description')?.textContent?.substring(0, 300) || '';
+            
             // Extract playing times
             const minPlaytimeElem = thingItem.querySelector('minplaytime');
             const maxPlaytimeElem = thingItem.querySelector('maxplaytime');
@@ -623,6 +630,41 @@ async function fetchCollection() {
             }
             if (minAgeElem) {
               game.minAge = parseInt(minAgeElem.getAttribute('value') || '0');
+            }
+            
+            // Extract player count poll
+            const playerPoll = thingItem.querySelector('poll[name="suggested_numplayers"]');
+            if (playerPoll) {
+              game.playerPoll = Array.from(playerPoll.querySelectorAll('results')).map(result => {
+                const numplayers = result.getAttribute('numplayers');
+                const best = parseInt(result.querySelector('result[value="Best"]')?.getAttribute('numvotes') || '0');
+                const recommended = parseInt(result.querySelector('result[value="Recommended"]')?.getAttribute('numvotes') || '0');
+                const notRec = parseInt(result.querySelector('result[value="Not Recommended"]')?.getAttribute('numvotes') || '0');
+                return { numplayers, best, recommended, notRec, total: best + recommended + notRec };
+              });
+            }
+            
+            // Extract age poll
+            const agePoll = thingItem.querySelector('poll[name="suggested_playerage"]');
+            if (agePoll) {
+              const ageResults = Array.from(agePoll.querySelectorAll('result')).map(r => ({
+                age: r.getAttribute('value'),
+                votes: parseInt(r.getAttribute('numvotes') || '0')
+              })).filter(r => r.votes > 0);
+              game.agePoll = ageResults.sort((a, b) => b.votes - a.votes);
+            }
+            
+            // Extract language dependence
+            const langPoll = thingItem.querySelector('poll[name="language_dependence"]');
+            if (langPoll) {
+              const langResults = Array.from(langPoll.querySelectorAll('result')).map(r => ({
+                level: r.getAttribute('level'),
+                text: r.getAttribute('value'),
+                votes: parseInt(r.getAttribute('numvotes') || '0')
+              })).sort((a, b) => b.votes - a.votes);
+              if (langResults.length > 0) {
+                game.languageDependence = `${langResults[0].text} (${langResults[0].votes} votes)`;
+              }
             }
             
             // Extract min/max players
@@ -975,45 +1017,96 @@ function renderModalGames(games) {
 
       <!-- Expandable Details -->
       <div class="game-card-details" id="details-${idx}">
-        <!-- Gameplay -->
+        <!-- Description -->
+        ${game.description ? `
+          <div class="game-card-detail-section">
+            <div class="game-card-detail-title">📖 Overview</div>
+            <div class="game-card-detail-content text-sm leading-relaxed text-slate-600">
+              ${game.description}...
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Core Gameplay Info -->
         <div class="game-card-detail-section">
           <div class="game-card-detail-title">🎮 Gameplay</div>
           <div class="game-card-detail-content">
-            Players: ${game.minPlayers || '?'}-${game.maxPlayers || '?'} •
-            Time: ${game.minPlaytime || '?'}-${game.maxPlaytime || '?'}m •
-            Age: ${game.minAge > 0 ? game.minAge + '+' : 'N/A'}
+            <div>👥 Players: ${game.minPlayers}-${game.maxPlayers}</div>
+            <div>⏱️ Time: ${game.minPlaytime}-${game.maxPlaytime} minutes</div>
+            <div>🎂 Age: ${game.minAge > 0 ? game.minAge + '+' : 'N/A'}</div>
           </div>
         </div>
 
-        <!-- Ratings -->
+        <!-- Player Count Poll -->
+        ${game.playerPoll && game.playerPoll.length > 0 ? `
+          <div class="game-card-detail-section">
+            <div class="game-card-detail-title">🎯 Player Count Poll</div>
+            <div class="game-card-detail-content text-xs space-y-1">
+              ${game.playerPoll.slice(0, 6).map(p => {
+                const best = p.best || 0;
+                const rec = p.recommended || 0;
+                const notRec = p.notRec || 0;
+                const total = p.total || 1;
+                const bestPct = ((best / total) * 100).toFixed(0);
+                const recPct = ((rec / total) * 100).toFixed(0);
+                return `<div class="flex justify-between items-center">
+                  <span>${p.numplayers}p:</span>
+                  <div class="flex gap-1">
+                    ${best > 0 ? `<span class="bg-green-100 text-green-700 px-1 rounded">Best ${bestPct}%</span>` : ''}
+                    ${rec > 0 ? `<span class="bg-blue-100 text-blue-700 px-1 rounded">Rec ${recPct}%</span>` : ''}
+                  </div>
+                </div>`;
+              }).join('')}
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Ratings & Scores -->
         <div class="game-card-detail-section">
-          <div class="game-card-detail-title">⭐ Ratings</div>
+          <div class="game-card-detail-title">⭐ Ratings & Scores</div>
           <div class="game-card-detail-content">
-            Rating: ${game.bggRating > 0 ? game.bggRating.toFixed(2) : 'N/A'} •
-            Bayes: ${game.bayesAverage > 0 ? game.bayesAverage.toFixed(2) : 'N/A'} •
-            Complexity: ${game.weight > 0 ? game.weight.toFixed(2) : 'N/A'}<br>
-            Median: ${game.median > 0 ? game.median.toFixed(2) : 'N/A'} •
-            Votes: ${game.numRatings ? (game.numRatings / 1000).toFixed(1) + 'k' : '0'}
+            <div>Average: ${game.bggRating > 0 ? game.bggRating.toFixed(2) : 'N/A'}</div>
+            <div>Bayes Average: ${game.bayesAverage > 0 ? game.bayesAverage.toFixed(2) : 'N/A'}</div>
+            <div>Complexity: ${game.weight > 0 ? game.weight.toFixed(2) : 'N/A'}/5</div>
+            <div>Votes: ${game.numRatings ? (game.numRatings / 1000).toFixed(1) + 'k' : '0'}</div>
           </div>
         </div>
 
-        <!-- Ownership Stats -->
+        <!-- Community Stats -->
         <div class="game-card-detail-section">
-          <div class="game-card-detail-title">👥 Community Stats</div>
+          <div class="game-card-detail-title">👥 Community</div>
           <div class="game-card-detail-content">
-            Owned: ${game.owned ? (game.owned / 1000).toFixed(1) + 'k' : '0'} •
-            Wanting: ${game.wanting ? (game.wanting / 1000).toFixed(1) + 'k' : '0'} •
-            Wishing: ${game.wishing ? (game.wishing / 1000).toFixed(1) + 'k' : '0'} •
-            Trading: ${game.trading ? (game.trading / 1000).toFixed(1) + 'k' : '0'}
+            <div>Owned: ${game.owned ? (game.owned / 1000).toFixed(1) + 'k' : '0'}</div>
+            <div>Wanting: ${game.wanting ? (game.wanting / 1000).toFixed(1) + 'k' : '0'}</div>
+            <div>Wishing: ${game.wishing ? (game.wishing / 1000).toFixed(1) + 'k' : '0'}</div>
+            <div>Trading: ${game.trading ? (game.trading / 1000).toFixed(1) + 'k' : '0'}</div>
           </div>
         </div>
 
         <!-- Top Rank -->
         ${game.ranks && game.ranks.length > 0 ? `
           <div class="game-card-detail-section">
-            <div class="game-card-detail-title">🏆 Rank</div>
+            <div class="game-card-detail-title">🏆 Top Rank</div>
             <div class="game-card-detail-content">
-              #${game.ranks[0].value} ${game.ranks[0].friendlyName || game.ranks[0].name}
+              #${game.ranks[0].value} in ${game.ranks[0].friendlyName || game.ranks[0].name}
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Language Dependence -->
+        <div class="game-card-detail-section">
+          <div class="game-card-detail-title">🌐 Language Dependence</div>
+          <div class="game-card-detail-content">
+            ${game.languageDependence || 'Unknown'}
+          </div>
+        </div>
+
+        <!-- Age Poll -->
+        ${game.agePoll && game.agePoll.length > 0 ? `
+          <div class="game-card-detail-section">
+            <div class="game-card-detail-title">🎂 Suggested Age</div>
+            <div class="game-card-detail-content text-sm">
+              ${game.agePoll.slice(0, 3).map(a => `<div>${a.age}+ years: ${a.votes} votes</div>`).join('')}
             </div>
           </div>
         ` : ''}
@@ -1023,8 +1116,8 @@ function renderModalGames(games) {
           <div class="game-card-detail-section">
             <div class="game-card-detail-title">🎲 Mechanics (${game.mechanics.length})</div>
             <div class="game-card-icons">
-              ${game.mechanics.slice(0, 5).map(m => `<span class="game-card-tag">${m}</span>`).join('')}
-              ${game.mechanics.length > 5 ? `<span class="game-card-tag">+${game.mechanics.length - 5}</span>` : ''}
+              ${game.mechanics.slice(0, 6).map(m => `<span class="game-card-tag">${m}</span>`).join('')}
+              ${game.mechanics.length > 6 ? `<span class="game-card-tag">+${game.mechanics.length - 6}</span>` : ''}
             </div>
           </div>
         ` : ''}
@@ -1034,8 +1127,8 @@ function renderModalGames(games) {
           <div class="game-card-detail-section">
             <div class="game-card-detail-title">🏷️ Categories (${game.categories.length})</div>
             <div class="game-card-icons">
-              ${game.categories.slice(0, 5).map(c => `<span class="game-card-tag" style="background:#dcfce7;color:#166534">${c}</span>`).join('')}
-              ${game.categories.length > 5 ? `<span class="game-card-tag" style="background:#dcfce7;color:#166534">+${game.categories.length - 5}</span>` : ''}
+              ${game.categories.slice(0, 6).map(c => `<span class="game-card-tag" style="background:#dcfce7;color:#166534">${c}</span>`).join('')}
+              ${game.categories.length > 6 ? `<span class="game-card-tag" style="background:#dcfce7;color:#166534">+${game.categories.length - 6}</span>` : ''}
             </div>
           </div>
         ` : ''}
@@ -1045,8 +1138,19 @@ function renderModalGames(games) {
           <div class="game-card-detail-section">
             <div class="game-card-detail-title">👨‍🎨 Designers (${game.designers.length})</div>
             <div class="game-card-icons">
-              ${game.designers.slice(0, 5).map(d => `<span class="game-card-tag" style="background:#fce7f3;color:#be185d">${d}</span>`).join('')}
-              ${game.designers.length > 5 ? `<span class="game-card-tag" style="background:#fce7f3;color:#be185d">+${game.designers.length - 5}</span>` : ''}
+              ${game.designers.slice(0, 4).map(d => `<span class="game-card-tag" style="background:#fce7f3;color:#be185d">${d}</span>`).join('')}
+              ${game.designers.length > 4 ? `<span class="game-card-tag" style="background:#fce7f3;color:#be185d">+${game.designers.length - 4}</span>` : ''}
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Artists -->
+        ${game.artists && game.artists.length > 0 ? `
+          <div class="game-card-detail-section">
+            <div class="game-card-detail-title">🎨 Artists (${game.artists.length})</div>
+            <div class="game-card-icons">
+              ${game.artists.slice(0, 4).map(a => `<span class="game-card-tag" style="background:#ede9fe;color:#5b21b6">${a}</span>`).join('')}
+              ${game.artists.length > 4 ? `<span class="game-card-tag" style="background:#ede9fe;color:#5b21b6">+${game.artists.length - 4}</span>` : ''}
             </div>
           </div>
         ` : ''}
@@ -1056,8 +1160,19 @@ function renderModalGames(games) {
           <div class="game-card-detail-section">
             <div class="game-card-detail-title">📦 Publishers (${game.publishers.length})</div>
             <div class="game-card-icons">
-              ${game.publishers.slice(0, 5).map(p => `<span class="game-card-tag" style="background:#fee2e2;color:#991b1b">${p}</span>`).join('')}
-              ${game.publishers.length > 5 ? `<span class="game-card-tag" style="background:#fee2e2;color:#991b1b">+${game.publishers.length - 5}</span>` : ''}
+              ${game.publishers.slice(0, 4).map(p => `<span class="game-card-tag" style="background:#fed7aa;color:#92400e">${p}</span>`).join('')}
+              ${game.publishers.length > 4 ? `<span class="game-card-tag" style="background:#fed7aa;color:#92400e">+${game.publishers.length - 4}</span>` : ''}
+            </div>
+          </div>
+        ` : ''}
+
+        <!-- Families -->
+        ${game.families && game.families.length > 0 ? `
+          <div class="game-card-detail-section">
+            <div class="game-card-detail-title">👨‍👩‍👧 Families (${game.families.length})</div>
+            <div class="game-card-icons">
+              ${game.families.slice(0, 4).map(f => `<span class="game-card-tag" style="background:#fce7f3;color:#ec4899">${f}</span>`).join('')}
+              ${game.families.length > 4 ? `<span class="game-card-tag" style="background:#fce7f3;color:#ec4899">+${game.families.length - 4}</span>` : ''}
             </div>
           </div>
         ` : ''}
