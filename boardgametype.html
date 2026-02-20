@@ -135,32 +135,56 @@
           >
         </div>
         <div>
-          <label class="text-xs font-bold text-slate-500 uppercase mb-3 block">Status Filters</label>
-          <div class="grid grid-cols-2 gap-3">
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" id="status-own" class="status-filter" checked value="own" class="w-4 h-4 rounded">
-              <span class="text-sm">Own</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" id="status-played" class="status-filter" value="played" class="w-4 h-4 rounded">
-              <span class="text-sm">Played</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" id="status-wantToPlay" class="status-filter" value="wantToPlay" class="w-4 h-4 rounded">
-              <span class="text-sm">Want to Play</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" id="status-wantToBuy" class="status-filter" value="wantToBuy" class="w-4 h-4 rounded">
-              <span class="text-sm">Want to Buy</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" id="status-wantToTrade" class="status-filter" value="wantToTrade" class="w-4 h-4 rounded">
-              <span class="text-sm">Want to Trade</span>
-            </label>
-            <label class="flex items-center gap-2 cursor-pointer">
-              <input type="checkbox" id="status-prevowned" class="status-filter" value="prevowned" class="w-4 h-4 rounded">
-              <span class="text-sm">Previously Owned</span>
-            </label>
+          <label class="text-xs font-bold text-slate-500 uppercase mb-3 block">Status Filters (load full collection, filter after)</label>
+          <div class="grid grid-cols-2 gap-2 text-sm">
+            <div>
+              <label class="text-xs text-slate-600 block mb-1">Own</label>
+              <select id="filter-own" class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white">
+                <option value="any">Any</option>
+                <option value="1" selected>Yes (1)</option>
+                <option value="0">No (0)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1">Played</label>
+              <select id="filter-played" class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white">
+                <option value="any" selected>Any</option>
+                <option value="1">Yes (1)</option>
+                <option value="0">No (0)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1">Want to Play</label>
+              <select id="filter-wanttoplay" class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white">
+                <option value="any" selected>Any</option>
+                <option value="1">Yes (1)</option>
+                <option value="0">No (0)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1">Want to Buy</label>
+              <select id="filter-wantingtobuy" class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white">
+                <option value="any" selected>Any</option>
+                <option value="1">Yes (1)</option>
+                <option value="0">No (0)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1">Want to Trade</label>
+              <select id="filter-wantingtrade" class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white">
+                <option value="any" selected>Any</option>
+                <option value="1">Yes (1)</option>
+                <option value="0">No (0)</option>
+              </select>
+            </div>
+            <div>
+              <label class="text-xs text-slate-600 block mb-1">Previously Owned</label>
+              <select id="filter-prevowned" class="w-full px-3 py-2 rounded-lg border border-slate-200 bg-white">
+                <option value="any" selected>Any</option>
+                <option value="1">Yes (1)</option>
+                <option value="0">No (0)</option>
+              </select>
+            </div>
           </div>
         </div>
         <button 
@@ -322,16 +346,9 @@ async function fetchCollection() {
       typeData[key] = {};
     });
     
-    // Build status query from selected checkboxes
-    const statusFilters = Array.from(document.querySelectorAll('.status-filter:checked'))
-      .map(cb => cb.value);
-    const statusQuery = statusFilters.length > 0 
-      ? '&stats=1&' + statusFilters.map(s => s + '=1').join('&')
-      : '&stats=1&own=1'; // Default to own if nothing selected
-    
-    // Fetch collection
+    // Always fetch FULL collection - no status filters in API call
     updateLoadingStatus('Fetching collection...');
-    const collXml = await fetchAPI('collection', username, statusQuery);
+    const collXml = await fetchAPI('collection', username, '&stats=1');
     const doc = new DOMParser().parseFromString(collXml, 'text/xml');
     const items = Array.from(doc.querySelectorAll('item'));
     
@@ -360,15 +377,31 @@ async function fetchCollection() {
         thumb, 
         image, 
         status,
-        rating: 0,
-        bayaverage: 0,
+        bggRating: 0,
+        bayesAverage: 0,
         weight: 0,
         rank: 999999,
         year: 0,
-        playingtime: 0,
+        minPlaytime: 0,
+        maxPlaytime: 0,
+        minAge: 0,
         minPlayers: 1,
         maxPlayers: 1,
         playersDisplay: '1',
+        numRatings: 0,
+        owned: 0,
+        wanting: 0,
+        wishing: 0,
+        trading: 0,
+        median: 0,
+        stddev: 0,
+        ranks: [],
+        mechanics: [],
+        categories: [],
+        designers: [],
+        artists: [],
+        publishers: [],
+        families: [],
         loaded: false 
       };
     }).filter(game => game.name);
@@ -411,32 +444,56 @@ async function fetchCollection() {
             // Extract all stats from statistics > ratings
             const stats = thingItem.querySelector('statistics ratings');
             if (stats) {
-              // Average rating (actual user average)
-              game.rating = parseFloat(stats.querySelector('average')?.getAttribute('value') || '0');
-              // Bayesian average (Bayesian rated - for weighted scoring)
-              game.bayaverage = parseFloat(stats.querySelector('bayesaverage')?.getAttribute('value') || '0');
+              // Ratings
+              game.bggRating = parseFloat(stats.querySelector('average')?.getAttribute('value') || '0');
+              game.bayesAverage = parseFloat(stats.querySelector('bayesaverage')?.getAttribute('value') || '0');
+              game.median = parseFloat(stats.querySelector('median')?.getAttribute('value') || '0');
+              game.stddev = parseFloat(stats.querySelector('stddev')?.getAttribute('value') || '0');
+              game.numRatings = parseInt(stats.querySelector('usersrated')?.getAttribute('value') || '0');
+              
+              // Ownership stats
+              game.owned = parseInt(stats.querySelector('owned')?.getAttribute('value') || '0');
+              game.wanting = parseInt(stats.querySelector('wanting')?.getAttribute('value') || '0');
+              game.wishing = parseInt(stats.querySelector('wishing')?.getAttribute('value') || '0');
+              game.trading = parseInt(stats.querySelector('trading')?.getAttribute('value') || '0');
+              
               // Weight (complexity)
               game.weight = parseFloat(stats.querySelector('averageweight')?.getAttribute('value') || '0');
-              // Rank
-              const rankElem = stats.querySelector('rank[name="boardgame"]');
-              if (rankElem) {
-                game.rank = parseInt(rankElem.getAttribute('value'));
+              
+              // All ranks
+              const ranksNode = stats.querySelector('ranks');
+              if (ranksNode) {
+                game.ranks = Array.from(ranksNode.querySelectorAll('rank')).map(r => ({
+                  name: r.getAttribute('name'),
+                  friendlyName: r.getAttribute('friendlyname'),
+                  type: r.getAttribute('type'),
+                  value: r.getAttribute('value')
+                })).filter(r => r.value);
               }
             }
+            
             game.year = parseInt(thingItem.querySelector('yearpublished')?.getAttribute('value') || '0');
             
-            // Extract playing time
-            const playtimeElem = thingItem.querySelector('playingtime');
-            if (playtimeElem) {
-              game.playingtime = parseInt(playtimeElem.textContent || '0');
+            // Extract playing times
+            const minPlaytimeElem = thingItem.querySelector('minplaytime');
+            const maxPlaytimeElem = thingItem.querySelector('maxplaytime');
+            const minAgeElem = thingItem.querySelector('minage');
+            if (minPlaytimeElem) {
+              game.minPlaytime = parseInt(minPlaytimeElem.getAttribute('value') || '0');
+            }
+            if (maxPlaytimeElem) {
+              game.maxPlaytime = parseInt(maxPlaytimeElem.getAttribute('value') || '0');
+            }
+            if (minAgeElem) {
+              game.minAge = parseInt(minAgeElem.getAttribute('value') || '0');
             }
             
             // Extract min/max players
             const minPlayersElem = thingItem.querySelector('minplayers');
             const maxPlayersElem = thingItem.querySelector('maxplayers');
             if (minPlayersElem && maxPlayersElem) {
-              const minPlayers = parseInt(minPlayersElem.textContent || '1');
-              const maxPlayers = parseInt(maxPlayersElem.textContent || '1');
+              const minPlayers = parseInt(minPlayersElem.getAttribute('value') || '1');
+              const maxPlayers = parseInt(maxPlayersElem.getAttribute('value') || '1');
               game.minPlayers = minPlayers;
               game.maxPlayers = maxPlayers;
               game.playersDisplay = minPlayers === maxPlayers ? `${minPlayers}` : `${minPlayers}-${maxPlayers}`;
@@ -455,6 +512,20 @@ async function fetchCollection() {
                 }
                 typeData[key][linkId].games.push(game);
               });
+              // Also store in game object for modal display
+              if (key === 'mechanic') {
+                game.mechanics = Array.from(links).map(l => l.getAttribute('value'));
+              } else if (key === 'category') {
+                game.categories = Array.from(links).map(l => l.getAttribute('value'));
+              } else if (key === 'designer') {
+                game.designers = Array.from(links).map(l => l.getAttribute('value'));
+              } else if (key === 'artist') {
+                game.artists = Array.from(links).map(l => l.getAttribute('value'));
+              } else if (key === 'publisher') {
+                game.publishers = Array.from(links).map(l => l.getAttribute('value'));
+              } else if (key === 'family') {
+                game.families = Array.from(links).map(l => l.getAttribute('value'));
+              }
             });
           });
           
@@ -468,6 +539,66 @@ async function fetchCollection() {
       
       await wait(500);
     }
+    
+    // Apply status filters based on dropdown selections
+    const filteredGames = applyStatusFilters(allGames);
+    
+    // Rebuild typeData with filtered games
+    Object.keys(TYPE_MAP).forEach(key => {
+      typeData[key] = {};
+    });
+    filteredGames.forEach(game => {
+      Object.entries(TYPE_MAP).forEach(([key, type]) => {
+        if (key === 'mechanic' && game.mechanics) {
+          game.mechanics.forEach(m => {
+            // Need to find the mechanic id from original typeData or just use names
+            if (!typeData[key][m]) {
+              typeData[key][m] = { name: m, games: [] };
+            }
+            typeData[key][m].games.push(game);
+          });
+        } else if (key === 'category' && game.categories) {
+          game.categories.forEach(c => {
+            if (!typeData[key][c]) {
+              typeData[key][c] = { name: c, games: [] };
+            }
+            typeData[key][c].games.push(game);
+          });
+        } else if (key === 'designer' && game.designers) {
+          game.designers.forEach(d => {
+            if (!typeData[key][d]) {
+              typeData[key][d] = { name: d, games: [] };
+            }
+            typeData[key][d].games.push(game);
+          });
+        } else if (key === 'artist' && game.artists) {
+          game.artists.forEach(a => {
+            if (!typeData[key][a]) {
+              typeData[key][a] = { name: a, games: [] };
+            }
+            typeData[key][a].games.push(game);
+          });
+        } else if (key === 'publisher' && game.publishers) {
+          game.publishers.forEach(p => {
+            if (!typeData[key][p]) {
+              typeData[key][p] = { name: p, games: [] };
+            }
+            typeData[key][p].games.push(game);
+          });
+        } else if (key === 'family' && game.families) {
+          game.families.forEach(f => {
+            if (!typeData[key][f]) {
+              typeData[key][f] = { name: f, games: [] };
+            }
+            typeData[key][f].games.push(game);
+          });
+        }
+      });
+    });
+    
+    // Update game count with filtered amount
+    document.getElementById('gameCount').textContent = filteredGames.length;
+    renderCurrentTab();
     
     updateLoadingStatus('Complete!');
     updateProgress(100);
@@ -484,6 +615,26 @@ async function fetchCollection() {
     fetchBtn.disabled = false;
     loadingSection.classList.add('hidden');
   }
+}
+
+function applyStatusFilters(games) {
+  const own = document.getElementById('filter-own').value;
+  const played = document.getElementById('filter-played').value;
+  const wanttoplay = document.getElementById('filter-wanttoplay').value;
+  const wantingtobuy = document.getElementById('filter-wantingtobuy').value;
+  const wantingtrade = document.getElementById('filter-wantingtrade').value;
+  const prevowned = document.getElementById('filter-prevowned').value;
+  
+  return games.filter(game => {
+    // Check each filter - if "any", skip the filter; if "1", require true; if "0", require false
+    if (own !== 'any' && game.status.own !== (own === '1')) return false;
+    if (played !== 'any' && game.status.played !== (played === '1')) return false;
+    if (wanttoplay !== 'any' && game.status.wanttoplay !== (wanttoplay === '1')) return false;
+    if (wantingtobuy !== 'any' && game.status.wantingtobuy !== (wantingtobuy === '1')) return false;
+    if (wantingtrade !== 'any' && game.status.wantingtrade !== (wantingtrade === '1')) return false;
+    if (prevowned !== 'any' && game.status.prevowned !== (prevowned === '1')) return false;
+    return true;
+  });
 }
 
 function updateLoadingStatus(msg) {
@@ -596,12 +747,14 @@ function showGames(title, games) {
     // Fallback to original game if not found (shouldn't happen)
     return {
       ...game,
-      rating: game.rating || 0,
-      bayaverage: game.bayaverage || 0,
+      bggRating: game.bggRating || 0,
+      bayesAverage: game.bayesAverage || 0,
       weight: game.weight || 0,
       rank: game.rank || 999999,
       year: game.year || 0,
-      playingtime: game.playingtime || 0,
+      minPlaytime: game.minPlaytime || 0,
+      maxPlaytime: game.maxPlaytime || 0,
+      minAge: game.minAge || 0,
       minPlayers: game.minPlayers || 1,
       maxPlayers: game.maxPlayers || 1,
       playersDisplay: game.playersDisplay || '1'
@@ -712,7 +865,7 @@ function renderModalGames(games) {
           <div class="grid grid-cols-4 gap-1">
             <div class="bg-slate-50 p-1 rounded">
               <div class="text-slate-500 text-[0.65rem]">Players</div>
-              <div class="font-bold text-slate-700 text-[0.7rem]">${game.minplayers || '?'}-${game.maxplayers || '?'}</div>
+              <div class="font-bold text-slate-700 text-[0.7rem]">${game.minPlayers || '?'}-${game.maxPlayers || '?'}</div>
             </div>
             <div class="bg-slate-50 p-1 rounded">
               <div class="text-slate-500 text-[0.65rem]">Time</div>
@@ -720,7 +873,7 @@ function renderModalGames(games) {
             </div>
             <div class="bg-slate-50 p-1 rounded">
               <div class="text-slate-500 text-[0.65rem]">Age</div>
-              <div class="font-bold text-slate-700 text-[0.7rem]">${game.minAge !== 'N/A' ? game.minAge + '+' : 'N/A'}</div>
+              <div class="font-bold text-slate-700 text-[0.7rem]">${game.minAge !== 0 && game.minAge !== 'N/A' ? game.minAge + '+' : 'N/A'}</div>
             </div>
             <div class="bg-slate-50 p-1 rounded">
               <div class="text-slate-500 text-[0.65rem]">Best</div>
