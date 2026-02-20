@@ -822,182 +822,204 @@ function generateCode() {
 
 function buildScadCode(type, size, pipDepth, round) {
     const r = round, s = size, d = pipDepth;
-    const pipR = (s * 0.055).toFixed(2);
-    const hs = (s * 0.26).toFixed(3);
-
-    const header =
+    
+    const header = 
 `// ============================================================
-// Dice Architect Pro – OpenSCAD Source File
-// Paste into OpenSCAD (openscad.org), press F6 to render,
-// then File → Export → Export as STL for 3D printing.
-//
-// Die Type : ${type.toUpperCase()}
-// Size     : ${s} mm
-// Rounding : ${r} mm
-// Pip Depth: ${d} mm
+// Dice Architect Generated Code
+// Paste into OpenSCAD (openscad.org)
+// Press F6 to render, then Export as STL
 // ============================================================
 
-$fn        = 64;
-size       = ${s};    // outer edge length (mm)
-corner_r   = ${r};    // corner bevel radius (mm)
-pip_depth  = ${d};    // pip / numeral engrave depth (mm)
-pip_r      = ${pipR}; // pip dot radius (auto-scaled)
+size = ${s};
+r = ${r};
+d = ${d};
+$fn = 64;
+
 `;
 
-    // ── D6 ──────────────────────────────────────────────────────
+    // ── D6: Rounded Cube ─────────────────────────────────────
     if (type === 'd6') {
         return header + `
-// ── D6  Rounded Cube with pip faces ──────────────────────────
-
-// Rounded cube via Minkowski sum of a smaller cube + sphere
-module rounded_cube(s, r) {
-    minkowski() {
-        cube([s - 2*r, s - 2*r, s - 2*r], center = true);
-        sphere(r = r, $fn = 20);
-    }
-}
-
-// Place n pips on the face that sits along +Z after rotation.
-// face_rot: rotation needed so that face points toward +Z
-module pips_on_face(n, face_rot) {
-    hs = size * 0.26;
-    positions =
-        (n == 1) ? [[0, 0]] :
-        (n == 2) ? [[-hs, -hs], [ hs,  hs]] :
-        (n == 3) ? [[-hs, -hs], [  0,   0], [ hs,  hs]] :
-        (n == 4) ? [[-hs, -hs], [ hs, -hs], [-hs,  hs], [ hs,  hs]] :
-        (n == 5) ? [[-hs, -hs], [ hs, -hs], [  0,   0], [-hs,  hs], [ hs,  hs]] :
-                   [[-hs, -hs], [ hs, -hs], [-hs,   0], [ hs,   0], [-hs,  hs], [ hs,  hs]];
-    rotate(face_rot)
-        for (p = positions)
-            translate([p[0], p[1], size / 2])
-                cylinder(h = pip_depth * 2 + 0.1, r = pip_r,
-                         center = true, $fn = 16);
-}
-
 difference() {
-    rounded_cube(size, corner_r);
+    // Rounded cube using minkowski
+    translate([${r}, ${r}, ${r}]) minkowski() {
+        cube(size - 2*${r});
+        sphere(${r});
+    }
+    
+    // Face engravings
+    draw_face(1, "center", 0);      // +Z
+    draw_face(2, "four", 0);        // -Z
+    draw_face(3, "twoCol", 0);      // +X
+    draw_face(4, "twoCol", 0);      // -X
+    draw_face(5, "threeX", 0);      // +Y
+    draw_face(6, "fourCorner", 0);  // -Y
+}
 
-    // Standard Western pip layout (1 opposite 6, 2 opposite 5, 3 opposite 4)
-    pips_on_face(1, [  0,   0, 0]);  // +Z face
-    pips_on_face(6, [180,   0, 0]);  // -Z face
-    pips_on_face(2, [  0, -90, 0]);  // +X face
-    pips_on_face(5, [  0,  90, 0]);  // -X face
-    pips_on_face(3, [ 90,   0, 0]);  // +Y face
-    pips_on_face(4, [-90,   0, 0]);  // -Y face
+module draw_face(face, pattern, val) {
+    mid = size / 2;
+    if (face == 1) translate([mid, mid, size]) rotate([0, 0, 0]) pip_pattern(pattern);
+    if (face == 2) translate([mid, mid, 0]) rotate([180, 0, 0]) pip_pattern(pattern);
+    if (face == 3) translate([mid, 0, mid]) rotate([90, 0, 0]) pip_pattern(pattern);
+    if (face == 4) translate([mid, size, mid]) rotate([-90, 0, 0]) pip_pattern(pattern);
+    if (face == 5) translate([0, mid, mid]) rotate([0, -90, 0]) pip_pattern(pattern);
+    if (face == 6) translate([size, mid, mid]) rotate([0, 90, 0]) pip_pattern(pattern);
+}
+
+module pip_pattern(pt) {
+    q = size * 0.25;
+    
+    if (pt == "center") pip(0, 0);
+    if (pt == "four") { pip(-q, -q); pip(q, -q); pip(-q, q); pip(q, q); }
+    if (pt == "twoCol") { pip(-q, 0); pip(q, 0); }
+    if (pt == "threeX") { pip(-q, -q); pip(0, 0); pip(q, q); }
+    if (pt == "fourCorner") { pip(-q, -q); pip(q, -q); pip(-q, q); pip(q, q); }
+}
+
+module pip(x, y) {
+    translate([x, y, 0]) cylinder(h = d*2, r = size*0.08, center = true);
 }
 `;
     }
 
-    // ── D4 ──────────────────────────────────────────────────────
+    // ── D4: Tetrahedron ──────────────────────────────────────
     if (type === 'd4') {
-        const a = (s * 0.86).toFixed(3);
+        const sc = (s * 0.6).toFixed(3);
         return header + `
-// ── D4  Tetrahedron with engraved numbers ────────────────────
-//
-// Vertex coordinates for a regular tetrahedron inscribed in a
-// cube of half-side  a.
-
-a = ${a};  // half-side scale
-
-module d4_body() {
-    polyhedron(
-        points = [
-            [ a,  a,  a],   // 0
-            [-a, -a,  a],   // 1
-            [-a,  a, -a],   // 2
-            [ a, -a, -a]    // 3
-        ],
-        faces  = [
-            [0, 2, 1],  // face A – bottom
-            [0, 1, 3],  // face B
-            [0, 3, 2],  // face C
-            [1, 2, 3]   // face D – top
-        ],
-        convexity = 1
-    );
-}
-
-// Engrave a number centred on a face.
-// rot  : rotation that aligns the face normal to +Z
-// dist : distance from origin to face centre
-module engrave_num(label, rot, dist) {
-    rotate(rot)
-    translate([0, 0, dist - pip_depth])
-    rotate([0, 0, 0])
-    linear_extrude(height = pip_depth * 2, center = false)
-        text(label,
-             size    = a * 0.30,
-             halign  = "center",
-             valign  = "center",
-             font    = "Liberation Sans:style=Bold");
-}
-
-face_dist = a * 0.577;  // distance from centre to face midpoint (a / sqrt(3))
-
 difference() {
-    d4_body();
-    engrave_num("1", [  0,   0,   0], face_dist);
-    engrave_num("2", [180,   0, 120], face_dist);
-    engrave_num("3", [180,   0, 240], face_dist);
-    engrave_num("4", [180,   0,   0], face_dist);
+    // Regular tetrahedron
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [
+            [1, 1, 1],
+            [1, -1, -1],
+            [-1, 1, -1],
+            [-1, -1, 1]
+        ],
+        faces = [[0, 1, 2], [0, 2, 3], [0, 3, 1], [1, 3, 2]]
+    );
+    
+    // Text on each face
+    engrave_face(1, [0, 0, 0], [0, 0, ${sc}]);
+    engrave_face(2, [109.47, 0, 0], [0, 0, ${sc}]);
+    engrave_face(3, [109.47, 0, 120], [0, 0, ${sc}]);
+    engrave_face(4, [109.47, 0, 240], [0, 0, ${sc}]);
+}
+
+module engrave_face(num, rot, trans) {
+    rotate(rot) translate(trans) 
+        linear_extrude(height = d*2, center = true)
+            text(str(num), size = size*0.4, font = "Arial", halign = "center", valign = "center");
 }
 `;
     }
 
-    // ── D8 ──────────────────────────────────────────────────────
+    // ── D8: Octahedron ───────────────────────────────────────
     if (type === 'd8') {
-        const sc = (s * 0.70).toFixed(3);
+        const sc = (s * 0.6).toFixed(3);
         return header + `
-// ── D8  Octahedron with engraved numbers ─────────────────────
-
-module d8_body() {
-    // Unit octahedron scaled to desired size
-    scale([${sc}, ${sc}, ${sc}])
-        polyhedron(
-            points = [
-                [ 1,  0,  0],  // 0 +X
-                [-1,  0,  0],  // 1 -X
-                [ 0,  1,  0],  // 2 +Y
-                [ 0, -1,  0],  // 3 -Y
-                [ 0,  0,  1],  // 4 +Z
-                [ 0,  0, -1]   // 5 -Z
-            ],
-            faces = [
-                [4, 0, 2],  // face 0 – upper +X+Y
-                [4, 2, 1],  // face 1 – upper -X+Y
-                [4, 1, 3],  // face 2 – upper -X-Y
-                [4, 3, 0],  // face 3 – upper +X-Y
-                [5, 2, 0],  // face 4 – lower +X+Y
-                [5, 1, 2],  // face 5 – lower -X+Y
-                [5, 3, 1],  // face 6 – lower -X-Y
-                [5, 0, 3]   // face 7 – lower +X-Y
-            ],
-            convexity = 1
-        );
+difference() {
+    // Regular octahedron
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [
+            [1, 0, 0], [-1, 0, 0],
+            [0, 1, 0], [0, -1, 0],
+            [0, 0, 1], [0, 0, -1]
+        ],
+        faces = [
+            [4, 0, 2], [4, 2, 1], [4, 1, 3], [4, 3, 0],
+            [5, 2, 0], [5, 1, 2], [5, 3, 1], [5, 0, 3]
+        ]
+    );
+    
+    // Text on 8 faces
+    for (i = [0:7]) {
+        ang = i * 45;
+        rotate([35.26, 0, ang]) translate([0, 0, ${sc}])
+            linear_extrude(height = d*2, center = true)
+                text(str(i+1), size = size*0.3, font = "Arial", halign = "center", valign = "center");
+    }
 }
+`;
+    }
 
-// Face-normal rotations (each face normal rotated to +Z)
-face_rots = [
-    [  35.264,   0,  45],  // face 0  → 1
-    [  35.264,   0, 135],  // face 1  → 2
-    [  35.264,   0, 225],  // face 2  → 3
-    [  35.264,   0, 315],  // face 3  → 4
-    [ -35.264,   0, 315],  // face 4  → 5
-    [ -35.264,   0, 225],  // face 5  → 6
-    [ -35.264,   0, 135],  // face 6  → 7
-    [ -35.264,   0,  45],  // face 7  → 8
-];
+    // ── D10: Pentagonal Trapezohedron ────────────────────────
+    if (type === 'd10') {
+        const sc = (s * 0.5).toFixed(3);
+        return header + `
+difference() {
+    // Simplified D10 as cylinder with 10 faces
+    cylinder(h = size, r = size*0.35, $fn = 10);
+    
+    // Text on 10 faces
+    for (i = [0:9]) {
+        ang = i * 36;
+        rotate([0, 0, ang]) translate([size*0.4, 0, size/2])
+            linear_extrude(height = d*2, center = true)
+                text(str(i), size = size*0.25, font = "Arial", halign = "center", valign = "center");
+    }
+}
+`;
+    }
 
-face_dist = ${sc} * 0.5774;  // inradius: scale / sqrt(3)
+    // ── D12: Dodecahedron ────────────────────────────────────
+    if (type === 'd12') {
+        const sc = (s * 0.45).toFixed(3);
+        return header + `
+difference() {
+    // Dodecahedron approximation using intersection of boxes
+    scale([${sc}, ${sc}, ${sc}]) 
+    intersection() {
+        rotate([90, 0, 0]) cylinder(h=2.6, r=2.6, center=true, $fn=12);
+        rotate([0, 90, 0]) cylinder(h=2.6, r=2.6, center=true, $fn=12);
+        cylinder(h=2.6, r=2.6, center=true, $fn=12);
+    }
+    
+    // Text on 12 faces
+    for (i = [0:11]) {
+        ang = i * 30;
+        rotate([0, 0, ang]) translate([0, ${sc}*1.5, 0])
+            linear_extrude(height = d*2, center = true)
+                text(str(i+1), size = size*0.25, font = "Arial", halign = "center", valign = "center");
+    }
+}
+`;
+    }
 
-module engrave_num(label, rot) {
-    rotate(rot)
-    translate([0, 0, face_dist - pip_depth])
-    linear_extrude(height = pip_depth * 2, center = false)
-        text(label,
-             size   = size * 0.18,
-             halign = "center",
+    // ── D20: Icosahedron ─────────────────────────────────────
+    if (type === 'd20') {
+        const phi = 1.618;
+        const sc = (s * 0.4).toFixed(3);
+        return header + `
+difference() {
+    // Icosahedron (20 faces)
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [
+            [-1, -phi, 0], [1, -phi, 0], [1, phi, 0], [-1, phi, 0],
+            [0, -1, -phi], [0, -1, phi], [0, 1, -phi], [0, 1, phi],
+            [-phi, 0, -1], [-phi, 0, 1], [phi, 0, -1], [phi, 0, 1]
+        ],
+        faces = [
+            [0, 5, 1], [0, 1, 4], [0, 4, 8], [0, 8, 9], [0, 9, 5],
+            [3, 5, 9], [3, 9, 7], [3, 7, 6], [3, 6, 2], [3, 2, 11],
+            [2, 11, 10], [2, 10, 6], [6, 10, 4], [6, 4, 8], [4, 1, 10],
+            [1, 5, 11], [1, 11, 10], [7, 2, 11], [7, 11, 5], [7, 5, 9]
+        ]
+    );
+    
+    // Text on 20 faces
+    for (i = [0:19]) {
+        ang_x = (i % 2) * 36;
+        ang_z = (i / 2) * 36;
+        rotate([ang_x, ang_z, 0]) translate([0, 0, ${sc}*1.05])
+            linear_extrude(height = d*2, center = true)
+                text(str(i+1), size = size*0.2, font = "Arial", halign = "center", valign = "center");
+    }
+}
+`;
+    }
+
+    return header + "// Unsupported die type";
+}
              valign = "center",
              font   = "Liberation Sans:style=Bold");
 }
@@ -1010,139 +1032,64 @@ difference() {
 `;
     }
 
-    // ── D12 ─────────────────────────────────────────────────────
+    // ── D12: Dodecahedron ────────────────────────────────────
     if (type === 'd12') {
-        const sc = (s * 0.595).toFixed(3);
+        const sc = (s * 0.45).toFixed(3);
         return header + `
-// ── D12  Regular Dodecahedron with engraved numbers ──────────
-//
-// A regular dodecahedron can be constructed as the intersection
-// of three orthogonal golden-ratio boxes.  The inradius is used
-// to position text on each face.
-
-phi = (1 + sqrt(5)) / 2;  // golden ratio ≈ 1.618
-
-module d12_body() {
-    scale(${sc})
+difference() {
+    // Dodecahedron approximation using intersection of boxes
+    scale([${sc}, ${sc}, ${sc}]) 
     intersection() {
-        cube([2/phi, 2,     2*phi], center = true);
-        cube([2,     2*phi, 2/phi], center = true);
-        cube([2*phi, 2/phi, 2    ], center = true);
+        rotate([90, 0, 0]) cylinder(h=2.6, r=2.6, center=true, $fn=12);
+        rotate([0, 90, 0]) cylinder(h=2.6, r=2.6, center=true, $fn=12);
+        cylinder(h=2.6, r=2.6, center=true, $fn=12);
     }
-}
-
-// Inradius of unit dodecahedron ≈ 1.1135 × scale
-inradius = ${sc} * 1.1135;
-
-// Face-normal directions for all 12 pentagonal faces
-// (from the 12 vertices of a regular icosahedron, normalised)
-face_normals = [
-    [  0,      1/phi,  phi],
-    [  0,     -1/phi,  phi],
-    [  0,      1/phi, -phi],
-    [  0,     -1/phi, -phi],
-    [  phi,    0,      1/phi],
-    [ -phi,    0,      1/phi],
-    [  phi,    0,     -1/phi],
-    [ -phi,    0,     -1/phi],
-    [  1/phi,  phi,    0],
-    [ -1/phi,  phi,    0],
-    [  1/phi, -phi,    0],
-    [ -1/phi, -phi,    0]
-];
-
-function norm3(v) = v / norm(v);
-
-module engrave_num(label, n_vec) {
-    // Rotate so that the face normal aligns with +Z, then push to surface
-    a  = acos(n_vec[2] / norm(n_vec));            // tilt angle
-    ax = [-n_vec[1], n_vec[0], 0];                // rotation axis (cross Z×n)
-    rotate(a = a, v = (norm(ax) > 0.001 ? ax : [1,0,0]))
-    translate([0, 0, inradius - pip_depth])
-    linear_extrude(height = pip_depth * 2, center = false)
-        text(label,
-             size   = size * 0.17,
-             halign = "center",
-             valign = "center",
-             font   = "Liberation Sans:style=Bold");
-}
-
-difference() {
-    d12_body();
-    for (i = [0 : 11])
-        engrave_num(str(i + 1), face_normals[i]);
+    
+    // Text on 12 faces
+    for (i = [0:11]) {
+        ang = i * 30;
+        rotate([0, 0, ang]) translate([0, ${sc}*1.5, 0])
+            linear_extrude(height = d*2, center = true)
+                text(str(i+1), size = size*0.25, font = "Arial", halign = "center", valign = "center");
+    }
 }
 `;
     }
 
-    // ── D20 ─────────────────────────────────────────────────────
-    const sc20 = (s * 0.615).toFixed(3);
-    return header + `
-// ── D20  Regular Icosahedron with engraved numbers ───────────
-//
-// A regular icosahedron constructed from exact coordinates.
-// The 20 triangular face normals are used to position numbers.
-
-phi = (1 + sqrt(5)) / 2;  // golden ratio ≈ 1.618
-
-// Twelve vertices of a unit icosahedron ────────────────────
-icos_pts = [
-    [ 0,  1,  phi],  // 0
-    [ 0, -1,  phi],  // 1
-    [ 0,  1, -phi],  // 2
-    [ 0, -1, -phi],  // 3
-    [ 1,  phi,  0],  // 4
-    [-1,  phi,  0],  // 5
-    [ 1, -phi,  0],  // 6
-    [-1, -phi,  0],  // 7
-    [ phi,  0,  1],  // 8
-    [-phi,  0,  1],  // 9
-    [ phi,  0, -1],  // 10
-    [-phi,  0, -1]   // 11
-];
-
-// Twenty triangular faces ──────────────────────────────────
-icos_faces = [
-    [0,1,8],  [0,8,4],  [0,4,5],  [0,5,9],  [0,9,1],
-    [1,6,8],  [8,6,10],[8,10,4], [4,10,2], [4,2,5],
-    [5,2,11],[5,11,9], [9,11,7], [9,7,1],  [1,7,6],
-    [3,6,7],  [3,7,11],[3,11,2], [3,2,10], [3,10,6]
-];
-
-module d20_body() {
-    scale(${sc20})
-        polyhedron(points = icos_pts, faces = icos_faces, convexity = 2);
-}
-
-// Inradius of unit icosahedron = phi² / (2 * sqrt(3)) ≈ 0.7558
-// Scaled inradius:
-inradius = ${sc20} * 0.7558;
-
-// Centroid of face i = average of its three vertex positions
-function face_centroid(fi) =
-    (icos_pts[icos_faces[fi][0]] +
-     icos_pts[icos_faces[fi][1]] +
-     icos_pts[icos_faces[fi][2]]) / 3;
-
-module engrave_num(label, n_vec) {
-    a  = acos(n_vec[2] / norm(n_vec));
-    ax = [-n_vec[1], n_vec[0], 0];
-    rotate(a = a, v = (norm(ax) > 0.001 ? ax : [1,0,0]))
-    translate([0, 0, inradius - pip_depth])
-    linear_extrude(height = pip_depth * 2, center = false)
-        text(label,
-             size   = size * 0.14,
-             halign = "center",
-             valign = "center",
-             font   = "Liberation Sans:style=Bold");
-}
-
+    // ── D20: Icosahedron ─────────────────────────────────────
+    if (type === 'd20') {
+        const phi = 1.618;
+        const sc = (s * 0.4).toFixed(3);
+        return header + `
 difference() {
-    d20_body();
-    for (i = [0 : 19])
-        engrave_num(str(i + 1), face_centroid(i));
+    // Icosahedron (20 faces)
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [
+            [-1, -phi, 0], [1, -phi, 0], [1, phi, 0], [-1, phi, 0],
+            [0, -1, -phi], [0, -1, phi], [0, 1, -phi], [0, 1, phi],
+            [-phi, 0, -1], [-phi, 0, 1], [phi, 0, -1], [phi, 0, 1]
+        ],
+        faces = [
+            [0, 5, 1], [0, 1, 4], [0, 4, 8], [0, 8, 9], [0, 9, 5],
+            [3, 5, 9], [3, 9, 7], [3, 7, 6], [3, 6, 2], [3, 2, 11],
+            [2, 11, 10], [2, 10, 6], [6, 10, 4], [6, 4, 8], [4, 1, 10],
+            [1, 5, 11], [1, 11, 10], [7, 2, 11], [7, 11, 5], [7, 5, 9]
+        ]
+    );
+    
+    // Text on 20 faces
+    for (i = [0:19]) {
+        ang_x = (i % 2) * 36;
+        ang_z = (i / 2) * 36;
+        rotate([ang_x, ang_z, 0]) translate([0, 0, ${sc}*1.05])
+            linear_extrude(height = d*2, center = true)
+                text(str(i+1), size = size*0.2, font = "Arial", halign = "center", valign = "center");
+    }
 }
 `;
+    }
+
+    return header + "// Unsupported die type";
 }
 
 function syntaxHighlight(code) {
