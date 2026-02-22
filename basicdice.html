@@ -1,0 +1,650 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no, viewport-fit=cover">
+    <meta name="mobile-web-app-capable" content="yes">
+    <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 32 32'><text x='50%' y='50%' text-anchor='middle' dy='.3em' font-size='24' fill='%236366f1'>🎲</text></svg>">
+    <title>D&D Dice Batch Builder</title>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/three.js/r128/three.min.js"></script>
+    <style>
+        *,*::before,*::after{box-sizing:border-box;margin:0;padding:0}
+        :root{
+            --bg:#0f1117;--surface:#1a1d27;--card:#22252f;--border:#2e3140;
+            --text:#e4e6ed;--muted:#8b8fa3;--accent:#6366f1;--accent2:#818cf8;
+            --green:#22c55e;--red:#ef4444;--orange:#f59e0b;--radius:14px;
+        }
+        html{font-family:-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,sans-serif;
+             background:var(--bg);color:var(--text);-webkit-tap-highlight-color:transparent}
+        body{height:100dvh;display:flex;flex-direction:column;overflow:hidden;overscroll-behavior:none}
+        input,select,button,textarea{font-family:inherit;font-size:inherit;color:inherit}
+
+        /* Main layout: canvas left, panel right */
+        .container{display:flex;height:100%;gap:0;overflow:hidden}
+        .canvas-section{flex:0 0 40%;background:#07080d;touch-action:none;overflow:hidden;position:relative;min-width:300px}
+        .panel-section{flex:1;display:flex;flex-direction:column;overflow:hidden}
+
+        #canvas-container{width:100%;height:100%;display:flex;align-items:center;justify-content:center}
+        .cv-label{position:absolute;top:12px;left:12px;font-size:11px;color:rgba(255,255,255,.6);font-weight:700;z-index:10}
+
+        /* Top bar */
+        .header{background:var(--surface);border-bottom:1px solid var(--border);padding:14px 16px;display:flex;align-items:center;gap:10px}
+        .header h1{font-size:18px;font-weight:800}
+        .header .subtitle{font-size:11px;color:var(--muted);margin-left:auto}
+
+        /* Settings panel */
+        .settings{flex:1;overflow-y:auto;-webkit-overflow-scrolling:touch;padding:16px}
+        .settings-group{margin-bottom:16px}
+        .sg-title{font-size:11px;font-weight:700;color:var(--muted);text-transform:uppercase;letter-spacing:.05em;margin-bottom:10px}
+
+        /* Canvas control buttons */
+        .cv-btn{position:absolute;bottom:12px;right:12px;background:rgba(99,102,241,.9);border:1px solid var(--accent);
+            backdrop-filter:blur(12px);-webkit-backdrop-filter:blur(12px);
+            color:#fff;border-radius:10px;padding:8px 12px;cursor:pointer;font-size:12px;font-weight:700;
+            display:flex;align-items:center;gap:6px;transition:background .15s;-webkit-tap-highlight-color:transparent;z-index:20}
+        .cv-btn:active{background:var(--accent2)}
+
+        /* Cards */
+        .card{background:var(--card);border:1px solid var(--border);border-radius:var(--radius);padding:12px;margin-bottom:12px}
+
+        /* Inputs */
+        .inp{width:100%;padding:10px 12px;background:var(--surface);border:1px solid var(--border);
+            border-radius:10px;color:var(--text);font-size:14px;outline:none;transition:border-color .2s}
+        .inp:focus{border-color:var(--accent)}
+        select.inp{-webkit-appearance:none;appearance:none;
+            background-image:url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='10' height='10' fill='%238b8fa3'%3E%3Cpath d='M5 7L1 3h8z'/%3E%3C/svg%3E");
+            background-repeat:no-repeat;background-position:right 10px center;padding-right:28px}
+        input[type=color].inp{padding:4px 6px;height:36px;cursor:pointer}
+        input[type=number].inp{-moz-appearance:textfield}
+        input[type=number].inp::-webkit-inner-spin-button{-webkit-appearance:none}
+        .inp-row{display:grid;grid-template-columns:1fr 1fr;gap:10px;margin-bottom:10px}
+        .inp-full{display:flex;flex-direction:column}
+        .inp-full label{font-size:10px;font-weight:700;color:var(--muted);text-transform:uppercase;margin-bottom:4px}
+
+        /* Buttons */
+        .btn{display:inline-flex;align-items:center;justify-content:center;gap:6px;
+            padding:10px 14px;border-radius:10px;font-size:13px;font-weight:700;border:none;
+            cursor:pointer;transition:transform .15s,opacity .15s;-webkit-tap-highlight-color:transparent;width:100%}
+        .btn:active{transform:scale(.96)}
+        .btn:disabled{opacity:.4;pointer-events:none}
+        .btn-primary{background:var(--accent);color:#fff}
+        .btn-green{background:var(--green);color:#fff}
+        .btn-outline{background:transparent;color:var(--accent2);border:1px solid var(--border)}
+        .btn-group{display:grid;grid-template-columns:1fr 1fr;gap:10px}
+
+        /* Dice grid (for batch export preview) */
+        .dice-grid{display:grid;grid-template-columns:repeat(2,1fr);gap:8px;margin-bottom:12px}
+        .dice-item{background:var(--card);border:1px solid var(--border);border-radius:12px;padding:10px;
+            display:flex;flex-direction:column;align-items:center;justify-content:center;text-align:center;
+            cursor:pointer;transition:all .15s}
+        .dice-item.active{border-color:var(--accent);background:rgba(99,102,241,.12)}
+        .dice-item .di-icon{font-size:28px;margin-bottom:4px}
+        .dice-item .di-label{font-size:11px;font-weight:700}
+        .dice-item .di-status{font-size:9px;color:var(--muted);margin-top:2px}
+
+        /* Toast */
+        .toast{position:fixed;bottom:16px;left:16px;right:16px;z-index:200;padding:12px 16px;border-radius:12px;
+            font-size:12px;font-weight:600;text-align:center;
+            transform:translateY(150px);opacity:0;
+            transition:all .3s cubic-bezier(.4,0,.2,1);pointer-events:none}
+        .toast.show{transform:translateY(0);opacity:1}
+        .toast-success{background:rgba(34,197,94,.2);color:var(--green);border:1px solid rgba(34,197,94,.3)}
+
+        /* Size preset buttons */
+        .size-presets{display:grid;grid-template-columns:repeat(4,1fr);gap:6px}
+        .size-btn{padding:8px 4px;border-radius:8px;border:1px solid var(--border);background:var(--surface);
+            color:var(--text);font-size:11px;font-weight:700;cursor:pointer;transition:all .15s}
+        .size-btn:active{background:var(--accent);border-color:var(--accent);color:#fff}
+
+        /* Bottom actions */
+        .footer{border-top:1px solid var(--border);padding:14px 16px;display:flex;gap:10px;flex-shrink:0}
+        .footer .btn{flex:1}
+
+        /* Files list for download */
+        .files-list{background:var(--surface);border:1px solid var(--border);border-radius:10px;padding:10px;
+            max-height:200px;overflow-y:auto}
+        .file-item{display:flex;align-items:center;justify-content:space-between;padding:8px;
+            background:var(--card);border-radius:8px;margin-bottom:6px;font-size:11px}
+        .file-item:last-child{margin-bottom:0}
+        .file-badge{background:var(--accent);color:#fff;padding:2px 6px;border-radius:4px;font-size:9px;font-weight:700}
+    </style>
+</head>
+<body>
+
+<div class="container">
+    <!-- Canvas section -->
+    <div class="canvas-section">
+        <div class="cv-label">🎲 Preview</div>
+        <div id="canvas-container"></div>
+        <button class="cv-btn" onclick="rotateDice()">
+            <svg width="14" height="14" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+                <path stroke-width="2.2" stroke-linecap="round" d="M4 4v5h5M20 20v-5h-5M4.07 15A9 9 0 1 0 6 6.34"/>
+            </svg>
+            Rotate
+        </button>
+    </div>
+
+    <!-- Settings section -->
+    <div class="panel-section">
+        <div class="header">
+            <span style="font-size:22px">🎲</span>
+            <div>
+                <h1>D&D Batch Builder</h1>
+                <span class="subtitle">Generate OpenSCAD files for full set</span>
+            </div>
+        </div>
+
+        <div class="settings">
+            <!-- Common settings -->
+            <div class="card">
+                <div class="sg-title">Common Settings</div>
+                <div class="inp-row">
+                    <div class="inp-full">
+                        <label>Size (mm)</label>
+                        <input type="number" id="base_size" value="16" min="8" max="50" class="inp" oninput="updatePreview()">
+                    </div>
+                    <div class="inp-full">
+                        <label>Rounding (mm)</label>
+                        <input type="number" id="rounding" value="2" step="0.5" min="0" max="6" class="inp" oninput="updatePreview()">
+                    </div>
+                </div>
+                <div class="sg-title" style="margin-top:12px">Size Presets</div>
+                <div class="size-presets">
+                    <button class="size-btn" onclick="setSize(16)">16mm</button>
+                    <button class="size-btn" onclick="setSize(19)">19mm</button>
+                    <button class="size-btn" onclick="setSize(22)">22mm</button>
+                    <button class="size-btn" onclick="setSize(25)">25mm</button>
+                </div>
+            </div>
+
+            <!-- Colors -->
+            <div class="card">
+                <div class="sg-title">Colors</div>
+                <div class="inp-row">
+                    <div class="inp-full">
+                        <label>Die Color</label>
+                        <input type="color" id="dice_color" value="#ffffff" class="inp" oninput="updatePreview()">
+                    </div>
+                    <div class="inp-full">
+                        <label>Ink Color</label>
+                        <input type="color" id="pip_color" value="#1e293b" class="inp" oninput="updatePreview()">
+                    </div>
+                </div>
+            </div>
+
+            <!-- Dice selection -->
+            <div class="card">
+                <div class="sg-title">D&D Set (Select to Preview)</div>
+                <div class="dice-grid" id="dice-grid"></div>
+            </div>
+
+            <!-- Generated files -->
+            <div class="card" id="files-card" style="display:none">
+                <div class="sg-title">Generated Files</div>
+                <div class="files-list" id="files-list"></div>
+            </div>
+        </div>
+
+        <!-- Footer actions -->
+        <div class="footer">
+            <button class="btn btn-outline" onclick="generateAll()">Generate All</button>
+            <button class="btn btn-primary" onclick="downloadAll()">Download All</button>
+        </div>
+    </div>
+</div>
+
+<!-- Toast -->
+<div class="toast" id="toast"></div>
+
+<script>
+const DICE_TYPES = [
+    {id:'d4', label:'D4', faces:4, icon:'△'},
+    {id:'d6', label:'D6', faces:6, icon:'⬜'},
+    {id:'d8', label:'D8', faces:8, icon:'◇'},
+    {id:'d10', label:'D10', faces:10, icon:'⬠'},
+    {id:'d12', label:'D12', faces:12, icon:'⬡'},
+    {id:'d20', label:'D20', faces:20, icon:'🔷'},
+];
+
+let scene, camera, renderer, currentDiceMesh;
+let generatedScadFiles = {};
+let currentDiceType = 'd6';
+
+function initThreeJS() {
+    const container = document.getElementById('canvas-container');
+    const w = container.clientWidth, h = container.clientHeight;
+
+    scene = new THREE.Scene();
+    scene.background = new THREE.Color(0x07080d);
+
+    camera = new THREE.PerspectiveCamera(40, w/h, 0.1, 1000);
+    camera.position.set(30, 30, 30);
+    camera.lookAt(0, 0, 0);
+
+    renderer = new THREE.WebGLRenderer({antialias:true, alpha:false});
+    renderer.setSize(w, h);
+    renderer.setPixelRatio(window.devicePixelRatio);
+    renderer.shadowMap.enabled = true;
+    container.appendChild(renderer.domElement);
+
+    // Lights
+    const light = new THREE.DirectionalLight(0xffffff, 0.8);
+    light.position.set(20, 30, 20);
+    light.castShadow = true;
+    light.shadow.mapSize.width = 2048;
+    light.shadow.mapSize.height = 2048;
+    scene.add(light);
+
+    const ambLight = new THREE.AmbientLight(0xffffff, 0.4);
+    scene.add(ambLight);
+
+    updatePreview();
+    animate();
+}
+
+function getDiceGeometry(type) {
+    const s = parseFloat(document.getElementById('base_size').value) || 20;
+    const r = parseFloat(document.getElementById('rounding').value) || 2;
+
+    switch(type) {
+        case 'd6': {
+            const geo = new THREE.BoxGeometry(s, s, s);
+            return applyRounding(geo, r);
+        }
+        case 'd4': {
+            const pts = [new THREE.Vector3(1,1,1), new THREE.Vector3(1,-1,-1), 
+                        new THREE.Vector3(-1,1,-1), new THREE.Vector3(-1,-1,1)];
+            const faces = [[0,1,2],[0,2,3],[0,3,1],[1,3,2]];
+            const geo = new THREE.BufferGeometry();
+            const vertices = new Float32Array(pts.flatMap(p=>[p.x*s*0.3,p.y*s*0.3,p.z*s*0.3]));
+            geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            // setIndex expects a single index buffer (flattened)
+            const indices = new Uint16Array(faces.flat());
+            geo.setIndex(new THREE.BufferAttribute(indices, 1));
+            geo.computeVertexNormals();
+            return geo;
+        }
+        case 'd8': {
+            const pts = [new THREE.Vector3(1,0,0), new THREE.Vector3(-1,0,0),
+                        new THREE.Vector3(0,1,0), new THREE.Vector3(0,-1,0),
+                        new THREE.Vector3(0,0,1), new THREE.Vector3(0,0,-1)];
+            const faces = [[4,0,2],[4,2,1],[4,1,3],[4,3,0],[5,2,0],[5,1,2],[5,3,1],[5,0,3]];
+            const geo = new THREE.BufferGeometry();
+            const vertices = new Float32Array(pts.flatMap(p=>[p.x*s*0.24,p.y*s*0.24,p.z*s*0.24]));
+            geo.setAttribute('position', new THREE.BufferAttribute(vertices, 3));
+            const indices = new Uint16Array(faces.flat());
+            geo.setIndex(new THREE.BufferAttribute(indices, 1));
+            geo.computeVertexNormals();
+            return geo;
+        }
+        case 'd12': {
+            return new THREE.DodecahedronGeometry(s*0.22);
+        }
+        case 'd20': {
+            return new THREE.IcosahedronGeometry(s*0.2);
+        }
+        case 'd10': {
+            return new THREE.CylinderGeometry(s*0.35, s*0.35, s, 10);
+        }
+        default: return new THREE.BoxGeometry(s, s, s);
+    }
+}
+
+function applyRounding(geo, radius) {
+    // Simple rounding by beveling (simplified approach)
+    return geo;
+}
+
+function updatePreview() {
+    if(currentDiceMesh) scene.remove(currentDiceMesh);
+
+    const dieColor = document.getElementById('dice_color').value;
+    const geo = getDiceGeometry(currentDiceType);
+    const mat = new THREE.MeshStandardMaterial({color: dieColor, roughness:0.4, metalness:0.1});
+    
+    currentDiceMesh = new THREE.Mesh(geo, mat);
+    currentDiceMesh.castShadow = true;
+    scene.add(currentDiceMesh);
+}
+
+function rotateDice() {
+    if(currentDiceMesh) {
+        currentDiceMesh.rotation.x += Math.random() * 0.5;
+        currentDiceMesh.rotation.y += Math.random() * 0.5;
+        currentDiceMesh.rotation.z += Math.random() * 0.5;
+    }
+}
+
+function animate() {
+    requestAnimationFrame(animate);
+    if(currentDiceMesh) {
+        currentDiceMesh.rotation.x += 0.002;
+        currentDiceMesh.rotation.y += 0.003;
+    }
+    renderer.render(scene, camera);
+}
+
+function setSize(mm) {
+    document.getElementById('base_size').value = mm;
+    updatePreview();
+}
+
+function buildDiceGrid() {
+    const grid = document.getElementById('dice-grid');
+    grid.innerHTML = DICE_TYPES.map(d => `
+        <div class="dice-item ${d.id === currentDiceType ? 'active' : ''}" onclick="selectDice('${d.id}')">
+            <div class="di-icon">${d.icon}</div>
+            <div class="di-label">${d.label}</div>
+            <div class="di-status">${d.faces} faces</div>
+        </div>
+    `).join('');
+}
+
+function selectDice(type) {
+    currentDiceType = type;
+    updatePreview();
+    buildDiceGrid();
+}
+
+/* ============== OPENSCAD GENERATION ============== */
+
+function generateCode(type) {
+    const size = parseFloat(document.getElementById('base_size').value) || 20;
+    const round = parseFloat(document.getElementById('rounding').value) || 2;
+    const depth = 0.8;
+    const dieColor = document.getElementById('dice_color').value || '#ffffff';
+    const inkColor = document.getElementById('pip_color').value || '#1e293b';
+    
+    // Simple numeric faces for batch generation
+    const faceCount = DICE_TYPES.find(d=>d.id===type)?.faces || 6;
+    const faceData = Array.from({length:faceCount}, (_,i) => ({type:'num', val:String(i+1)}));
+
+    return buildScadCode(type, size, depth, round, faceData, dieColor, inkColor);
+}
+
+function faceScadContent(face, size, depth) {
+    const d = depth, s = size;
+    const q = s * 0.25;
+    const pipR = s * 0.08;
+    const pipLayouts = {
+        1: [[0,0]],
+        2: [[-q,-q],[q,q]],
+        3: [[-q,-q],[0,0],[q,q]],
+        4: [[-q,-q],[q,-q],[-q,q],[q,q]],
+        5: [[-q,-q],[q,-q],[0,0],[-q,q],[q,q]],
+        6: [[-q,-q],[q,-q],[-q,0],[q,0],[-q,q],[q,q]]
+    };
+    if (face.type === 'pips') {
+        const count = Math.min(Math.max(parseInt(face.val)||1,1),6);
+        const positions = pipLayouts[count] || pipLayouts[1];
+        return positions.map(([px,py]) =>
+            `    pip(${px.toFixed(3)}, ${py.toFixed(3)});`
+        ).join('\n');
+    } else {
+        const val = (face.val || '').replace(/"/g, '\\"').slice(0,3);
+        const fontSize = (s * 0.42).toFixed(3);
+        return `    linear_extrude(height=d*2, center=true)\n        text("${val}", size=${fontSize}, font="Segoe UI Emoji", halign="center", valign="center");`;
+    }
+}
+
+function buildScadCode(type, size, pipDepth, round, faceData, dieColor, inkColor) {
+    const r = round, s = size, d = pipDepth;
+    faceData = faceData || [];
+
+    const header =
+`// D&D ${type.toUpperCase()} – Batch Builder Export
+// Size: ${s}mm, Rounding: ${r}mm, Pips: ${d}mm
+// Paste into OpenSCAD → F5 preview / F6 render → Export STL
+
+size = ${s};
+r    = ${r};
+d    = ${d};
+$fn  = 64;
+
+module pip(x, y) {
+    translate([x, y, 0])
+        cylinder(h=d*2, r=${(s*0.08).toFixed(3)}, center=true, $fn=32);
+}
+
+`;
+
+    // ── D6 ──
+    if (type === 'd6') {
+        const faceTransforms = [
+            { idx:0, comment:'+Z top',    t:`[size/2, size/2, size]`, rot:`[0, 0, 0]`    },
+            { idx:1, comment:'-Z bottom', t:`[size/2, size/2, 0]`,    rot:`[180, 0, 0]`  },
+            { idx:2, comment:'+X right',  t:`[size, size/2, size/2]`, rot:`[0, 90, 0]`   },
+            { idx:3, comment:'-X left',   t:`[0, size/2, size/2]`,    rot:`[0, -90, 0]`  },
+            { idx:4, comment:'+Y back',   t:`[size/2, size, size/2]`, rot:`[90, 0, 0]`   },
+            { idx:5, comment:'-Y front',  t:`[size/2, 0, size/2]`,    rot:`[-90, 0, 0]`  },
+        ];
+        const faceModules = faceTransforms.map(({idx, comment}) => {
+            const f = faceData[idx] || {type:'num', val:String(idx+1)};
+            return `module face_${idx+1}() { // ${comment}: "${f.val}"\n${faceScadContent(f, s, d)}\n}`;
+        }).join('\n\n');
+        const faceCalls = faceTransforms.map(({idx, comment, t, rot}) =>
+            `    // Face ${idx+1} – ${comment}: "${(faceData[idx]||{val:idx+1}).val}"\n    translate(${t}) rotate(${rot}) face_${idx+1}();`
+        ).join('\n');
+        return header +
+`difference() {
+    translate([r, r, r])
+    minkowski() {
+        cube([size - 2*r, size - 2*r, size - 2*r]);
+        sphere(r);
+    }
+${faceCalls}
+}
+
+${faceModules}
+`;
+    }
+
+    // ── D4 ──
+    if (type === 'd4') {
+        const sc = (s * 0.6).toFixed(3);
+        const d4Faces = [
+            { rot:`[0, 0, 0]`,        trans:`[0, 0, ${sc}]` },
+            { rot:`[109.47, 0, 0]`,   trans:`[0, 0, ${sc}]` },
+            { rot:`[109.47, 0, 120]`, trans:`[0, 0, ${sc}]` },
+            { rot:`[109.47, 0, 240]`, trans:`[0, 0, ${sc}]` },
+        ];
+        const faceCalls = d4Faces.map(({rot,trans},i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `    rotate(${rot}) translate(${trans}) face_${i+1}();`;
+        }).join('\n');
+        const faceModules = d4Faces.map((_,i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `module face_${i+1}() { // "${f.val}"\n${faceScadContent(f, s, d)}\n}`;
+        }).join('\n\n');
+        return header +
+`difference() {
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [[1,1,1],[1,-1,-1],[-1,1,-1],[-1,-1,1]],
+        faces  = [[0,1,2],[0,2,3],[0,3,1],[1,3,2]]
+    );
+${faceCalls}
+}
+
+${faceModules}
+`;
+    }
+
+    // ── D8 ──
+    if (type === 'd8') {
+        const sc = (s * 0.6).toFixed(3);
+        const d8Angs = [0,45,90,135,180,225,270,315];
+        const faceCalls = d8Angs.map((ang,i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `    rotate([35.26, 0, ${ang}]) translate([0, 0, ${sc}]) face_${i+1}();`;
+        }).join('\n');
+        const faceModules = d8Angs.map((_,i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `module face_${i+1}() { // "${f.val}"\n${faceScadContent(f, s, d)}\n}`;
+        }).join('\n\n');
+        return header +
+`difference() {
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [[1,0,0],[-1,0,0],[0,1,0],[0,-1,0],[0,0,1],[0,0,-1]],
+        faces  = [[4,0,2],[4,2,1],[4,1,3],[4,3,0],[5,2,0],[5,1,2],[5,3,1],[5,0,3]]
+    );
+${faceCalls}
+}
+
+${faceModules}
+`;
+    }
+
+    // ── D10 ──
+    if (type === 'd10') {
+        const angs = [0,36,72,108,144,180,216,252,288,324];
+        const faceCalls = angs.map((ang,i) => {
+            const f = faceData[i] || {type:'num', val:String(i)};
+            return `    rotate([0, 0, ${ang}]) translate([size*0.4, 0, size/2]) rotate([0, 90, 0]) face_${i+1}();`;
+        }).join('\n');
+        const faceModules = angs.map((_,i) => {
+            const f = faceData[i] || {type:'num', val:String(i)};
+            return `module face_${i+1}() { // "${f.val}"\n${faceScadContent(f, s, d)}\n}`;
+        }).join('\n\n');
+        return header +
+`difference() {
+    cylinder(h=size, r=size*0.35, $fn=10);
+${faceCalls}
+}
+
+${faceModules}
+`;
+    }
+
+    // ── D12 ──
+    if (type === 'd12') {
+        const sc = (s * 0.45).toFixed(3);
+        const d12Poses = [
+            {rot:`[0, 0, 0]`,       trans:`[0, 0, ${sc}*1.4]`},
+            {rot:`[180, 0, 0]`,     trans:`[0, 0, ${sc}*1.4]`},
+            ...Array.from({length:5},(_,i)=>({rot:`[63.43, 0, ${i*72}]`,     trans:`[0, 0, ${sc}*1.4]`})),
+            ...Array.from({length:5},(_,i)=>({rot:`[116.57, 0, ${i*72+36}]`, trans:`[0, 0, ${sc}*1.4]`})),
+        ];
+        const faceCalls = d12Poses.map(({rot,trans},i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `    rotate(${rot}) translate(${trans}) face_${i+1}();`;
+        }).join('\n');
+        const faceModules = d12Poses.map((_,i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `module face_${i+1}() { // "${f.val}"\n${faceScadContent(f, s, d)}\n}`;
+        }).join('\n\n');
+        return header +
+`difference() {
+    scale([${sc}, ${sc}, ${sc}])
+    intersection() {
+        rotate([90, 0, 0])  cylinder(h=2.618, r=1.618, center=true, $fn=12);
+        rotate([0, 90, 0])  cylinder(h=2.618, r=1.618, center=true, $fn=12);
+        cylinder(h=2.618, r=1.618, center=true, $fn=12);
+    }
+${faceCalls}
+}
+
+${faceModules}
+`;
+    }
+
+    // ── D20 ──
+    if (type === 'd20') {
+        const phi = 1.618;
+        const sc = (s * 0.4).toFixed(3);
+        const d20Rots = [
+            [90,0,0],[90,0,72],[90,0,144],[90,0,216],[90,0,288],
+            [26.57,0,36],[26.57,0,108],[26.57,0,180],[26.57,0,252],[26.57,0,324],
+            [153.43,0,0],[153.43,0,72],[153.43,0,144],[153.43,0,216],[153.43,0,288],
+            [270,0,36],[270,0,108],[270,0,180],[270,0,252],[270,0,324],
+        ];
+        const faceCalls = d20Rots.map((rot,i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `    rotate([${rot.join(',')}]) translate([0, 0, ${sc}*1.05]) face_${i+1}();`;
+        }).join('\n');
+        const faceModules = d20Rots.map((_,i) => {
+            const f = faceData[i] || {type:'num', val:String(i+1)};
+            return `module face_${i+1}() { // "${f.val}"\n${faceScadContent(f, s, d)}\n}`;
+        }).join('\n\n');
+        return header +
+`difference() {
+    scale([${sc}, ${sc}, ${sc}]) polyhedron(
+        points = [
+            [-1,-${phi},0],[1,-${phi},0],[1,${phi},0],[-1,${phi},0],
+            [0,-1,-${phi}],[0,-1,${phi}],[0,1,-${phi}],[0,1,${phi}],
+            [-${phi},0,-1],[-${phi},0,1],[${phi},0,-1],[${phi},0,1]
+        ],
+        faces = [
+            [0,5,1],[0,1,4],[0,4,8],[0,8,9],[0,9,5],
+            [3,5,9],[3,9,7],[3,7,6],[3,6,2],[3,2,11],
+            [2,11,10],[2,10,6],[6,10,4],[6,4,8],[4,1,10],
+            [1,5,11],[1,11,10],[7,2,11],[7,11,5],[7,5,9]
+        ]
+    );
+${faceCalls}
+}
+
+${faceModules}
+`;
+    }
+
+    return header + '// Unsupported die type';
+}
+
+function generateAll() {
+    generatedScadFiles = {};
+    DICE_TYPES.forEach(d => {
+        const code = generateCode(d.id);
+        generatedScadFiles[d.id] = code;
+    });
+    
+    showFilesList();
+    toast(`Generated ${DICE_TYPES.length} SCAD files!`, 'success');
+}
+
+function showFilesList() {
+    const card = document.getElementById('files-card');
+    const list = document.getElementById('files-list');
+    
+    list.innerHTML = Object.entries(generatedScadFiles).map(([type, code]) => `
+        <div class="file-item">
+            <span>dice_${type}.scad (${(code.length/1024).toFixed(1)}KB)</span>
+            <span class="file-badge">✓ Ready</span>
+        </div>
+    `).join('');
+    
+    card.style.display = 'block';
+}
+
+function downloadAll() {
+    if(Object.keys(generatedScadFiles).length === 0) {
+        return toast('Generate files first!', 'error');
+    }
+    
+    // Download each file individually
+    Object.entries(generatedScadFiles).forEach(([type, code]) => {
+        const blob = new Blob([code], {type:'text/plain'});
+        const a = document.createElement('a');
+        a.href = URL.createObjectURL(blob);
+        a.download = `dice_${type}.scad`;
+        a.click();
+        URL.revokeObjectURL(a.href);
+    });
+    
+    toast('Downloaded all files!', 'success');
+}
+
+function toast(msg, type='info') {
+    const el = document.getElementById('toast');
+    el.textContent = msg;
+    el.className = `toast toast-${type} show`;
+    setTimeout(() => el.classList.remove('show'), 2500);
+}
+
+// Init
+document.addEventListener('DOMContentLoaded', () => {
+    initThreeJS();
+    buildDiceGrid();
+});
+</script>
+</body>
+</html>
