@@ -857,7 +857,13 @@
     <div class="modal-content">
       <div class="modal-header">
         <h2 class="text-2xl font-bold"><i class="fa-solid fa-chart-bar mr-3"></i>Most Common Box Sizes</h2>
-        <button class="modal-close" onclick="closeBoxSizesModal()">×</button>
+        <div class="flex items-center gap-4">
+          <label class="flex items-center gap-2 text-white cursor-pointer text-sm">
+            <input type="checkbox" id="useShortestDimension" checked onchange="window.refreshBoxSizesDisplay()" class="w-4 h-4">
+            <span>Include Shortest</span>
+          </label>
+          <button class="modal-close" onclick="closeBoxSizesModal()">×</button>
+        </div>
       </div>
       <div class="modal-body">
         <div id="boxSizesContent" class="space-y-4">
@@ -865,6 +871,21 @@
             <i class="fa-solid fa-spinner fa-spin text-2xl mb-2"></i>
             <p>Analyzing box sizes...</p>
           </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Box Size Details Modal (for showing games) -->
+  <div id="boxSizeDetailsModal" class="modal" onclick="if(event.target === this) closeBoxSizeDetailsModal()">
+    <div class="modal-content">
+      <div class="modal-header">
+        <h2 class="text-2xl font-bold"><i class="fa-solid fa-box mr-3"></i><span id="detailsModalTitle">Box Size Details</span></h2>
+        <button class="modal-close" onclick="closeBoxSizeDetailsModal()">×</button>
+      </div>
+      <div class="modal-body">
+        <div id="boxSizeDetailsContent" class="space-y-4">
+          <!-- Games will be populated here -->
         </div>
       </div>
     </div>
@@ -2830,115 +2851,215 @@ function closeStatsModal() {
   document.getElementById('statsModal').classList.remove('active');
 }
 
+// Global state for box sizes modal
+let boxSizesModalData = {
+  source: null
+};
+
 function showBoxSizesModal(source) {
   try {
     console.log('🎯 === showBoxSizesModal CALLED ===');
     console.log('📌 source parameter:', source);
     
     const modal = document.getElementById('boxSizesModal');
-    const content = document.getElementById('boxSizesContent');
     
-    if (!modal || !content) {
-      console.error('❌ Box sizes modal or content element not found');
+    if (!modal) {
+      console.error('❌ Box sizes modal not found');
       return;
     }
     
-    // Collect box sizes from appropriate source
-    const sizes = {};
-    let hasData = false;
+    boxSizesModalData.source = source;
     
     console.log('📊 showBoxSizesModal - source:', source);
     console.log('🔍 allVersions:', allVersions ? allVersions.length : 'undefined');
     console.log('🔍 filteredGames:', filteredGames ? filteredGames.length : 'undefined');
     
+    // Validate data availability
+    let hasData = false;
+    
     if (source === 'collection') {
-      // Analyze all versions in allVersions
       if (!allVersions || allVersions.length === 0) {
         console.warn('⚠️ No collection loaded');
-        content.innerHTML = '<div class="text-center py-8 text-slate-500">Please load a collection first</div>';
+        document.getElementById('boxSizesContent').innerHTML = '<div class="text-center py-8 text-slate-500">Please load a collection first</div>';
         modal.classList.add('active');
         return;
       }
-      
-      allVersions.forEach(v => {
-        if (v && v.width > 0 && v.length > 0 && v.height > 0) {
-          hasData = true;
-          const key = `${v.width.toFixed(1)}" × ${v.length.toFixed(1)}" × ${v.height.toFixed(1)}"`;
-          if (!sizes[key]) {
-            sizes[key] = { width: v.width, length: v.length, height: v.height, count: 0 };
-          }
-          sizes[key].count++;
-        }
-      });
-      console.log('✓ Found', Object.keys(sizes).length, 'unique sizes from collection');
+      hasData = allVersions.some(v => v && v.width > 0 && v.length > 0 && v.height > 0);
     } else if (source === 'measurements') {
-      // Analyze selected measurements from filteredGames
       if (!filteredGames || filteredGames.length === 0) {
         console.warn('⚠️ No measurements available');
-        content.innerHTML = '<div class="text-center py-8 text-slate-500">No measurements available. Load a collection and switch to Measurements tab.</div>';
+        document.getElementById('boxSizesContent').innerHTML = '<div class="text-center py-8 text-slate-500">No measurements available. Load a collection and switch to Measurements tab.</div>';
         modal.classList.add('active');
         return;
       }
-      
-      // Get the selected measurement for each game (like renderMeasurements does)
-      filteredGames.forEach(game => {
-        if (game && game.versions && game.versions.length > 0) {
-          const selected = selectBestMeasurement(game.versions, game.gameId);
-          if (selected && selected.width > 0 && selected.length > 0 && selected.height > 0) {
-            hasData = true;
-            const key = `${selected.width.toFixed(1)}" × ${selected.length.toFixed(1)}" × ${selected.height.toFixed(1)}"`;
-            if (!sizes[key]) {
-              sizes[key] = { width: selected.width, length: selected.length, height: selected.height, count: 0 };
-            }
-            sizes[key].count++;
-          }
-        }
-      });
-      console.log('✓ Found', Object.keys(sizes).length, 'unique sizes from measurements');
+      hasData = filteredGames.some(game => game && game.versions && game.versions.length > 0);
     }
     
-    // Sort by count descending
-    const sorted = Object.values(sizes).sort((a, b) => b.count - a.count);
-    
-    // Render content
-    if (!hasData || sorted.length === 0) {
+    if (!hasData) {
       console.log('⚠️ No data available');
-      content.innerHTML = '<div class="text-center py-8 text-slate-500">No box size data available</div>';
+      document.getElementById('boxSizesContent').innerHTML = '<div class="text-center py-8 text-slate-500">No box size data available</div>';
     } else {
-      const total = sorted.reduce((sum, s) => sum + s.count, 0);
-      content.innerHTML = `
-        <div class="space-y-2">
-          <div class="grid grid-cols-4 gap-2 font-bold text-sm bg-slate-100 p-3 rounded-lg sticky top-0">
-            <div>Size</div>
-            <div class="text-right">Count</div>
-            <div class="text-right">%</div>
-            <div class="text-right">Volume</div>
-          </div>
-          ${sorted.map(s => {
-            const volume = (s.width * s.length * s.height).toFixed(1);
-            const percentage = ((s.count / total) * 100).toFixed(1);
-            return `
-              <div class="grid grid-cols-4 gap-2 items-center p-3 bg-white border border-slate-200 rounded-lg hover:bg-slate-50">
-                <div class="font-semibold text-slate-800">${s.width.toFixed(1)}" × ${s.length.toFixed(1)}" × ${s.height.toFixed(1)}"</div>
-                <div class="text-right font-bold text-indigo-600">${s.count}</div>
-                <div class="text-right text-sm text-slate-600">${percentage}%</div>
-                <div class="text-right text-sm text-slate-500">${volume} in³</div>
-              </div>
-            `;
-          }).join('')}
-        </div>
-        <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800">
-          <strong>Total Unique Sizes:</strong> ${sorted.length} | <strong>Total Items:</strong> ${total}
-        </div>
-      `;
-      console.log('✓ Content rendered');
+      window.refreshBoxSizesDisplay();
     }
     
     modal.classList.add('active');
     console.log('✅ Modal displayed - active class added');
   } catch (err) {
-    console.error('Error showing box sizes modal:', err);
+    console.error('❌ Error showing box sizes modal:', err);
+    console.error('Stack trace:', err.stack);
   }
+}
+
+function getSizeKey(width, length, height, useShortestDimension = true) {
+  const dims = [width, length, height].sort((a, b) => b - a); // Sort descending (longest first)
+  
+  if (useShortestDimension) {
+    return `${dims[0].toFixed(1)}" × ${dims[1].toFixed(1)}" × ${dims[2].toFixed(1)}"`;
+  } else {
+    return `${dims[0].toFixed(1)}" × ${dims[1].toFixed(1)}"`;
+  }
+}
+
+function refreshBoxSizesDisplay() {
+  const content = document.getElementById('boxSizesContent');
+  if (!content || !boxSizesModalData.source) return;
+  
+  const useShortestDimension = document.getElementById('useShortestDimension').checked;
+  const sizes = {};
+  const gamesBySize = {};
+  
+  // Rebuild size groups based on current checkbox state
+  if (boxSizesModalData.source === 'collection') {
+    allVersions.forEach(v => {
+      if (v && v.width > 0 && v.length > 0 && v.height > 0) {
+        const key = getSizeKey(v.width, v.length, v.height, useShortestDimension);
+        if (!sizes[key]) {
+          sizes[key] = { count: 0 };
+          gamesBySize[key] = [];
+        }
+        sizes[key].count++;
+        gamesBySize[key].push({
+          name: v.gameName || 'Unknown',
+          thumb: v.thumb || '',
+          versionName: v.versionName || ''
+        });
+      }
+    });
+  } else if (boxSizesModalData.source === 'measurements') {
+    filteredGames.forEach(game => {
+      if (game && game.versions && game.versions.length > 0) {
+        const selected = selectBestMeasurement(game.versions, game.gameId);
+        if (selected && selected.width > 0 && selected.length > 0 && selected.height > 0) {
+          const key = getSizeKey(selected.width, selected.length, selected.height, useShortestDimension);
+          if (!sizes[key]) {
+            sizes[key] = { count: 0 };
+            gamesBySize[key] = [];
+          }
+          sizes[key].count++;
+          gamesBySize[key].push({
+            name: game.name || 'Unknown',
+            thumb: selected.thumb || game.thumb || '',
+            versionName: selected.versionName || ''
+          });
+        }
+      }
+    });
+  }
+  
+  boxSizesModalData.gamesBySize = gamesBySize;
+  
+  const sorted = Object.entries(sizes)
+    .map(([key, data]) => ({ key, count: data.count }))
+    .sort((a, b) => b.count - a.count);
+  
+  if (sorted.length === 0) {
+    content.innerHTML = '<div class="text-center py-8 text-slate-500">No box size data available</div>';
+  } else {
+    const total = sorted.reduce((sum, s) => sum + s.count, 0);
+    content.innerHTML = `
+      <div class="space-y-2">
+        <div class="grid gap-2 font-bold text-sm bg-slate-100 p-3 rounded-lg sticky top-0 ${useShortestDimension ? 'grid-cols-4' : 'grid-cols-3'}">
+          <div>Size</div>
+          <div class="text-right">Count</div>
+          <div class="text-right">%</div>
+          ${useShortestDimension ? '<div class="text-right">Volume</div>' : ''}
+        </div>
+        ${sorted.map((s, idx) => {
+          // Parse the size key to calculate volume if using all dimensions
+          let volumeHtml = '';
+          if (useShortestDimension) {
+            // Extract dims from key (format: "12.0" × 9.5" × 2.8"")
+            const dimMatch = s.key.match(/(\d+\.?\d*)" × (\d+\.?\d*)" × (\d+\.?\d*)"/);
+            if (dimMatch) {
+              const volume = (parseFloat(dimMatch[1]) * parseFloat(dimMatch[2]) * parseFloat(dimMatch[3])).toFixed(1);
+              volumeHtml = `<div class="text-right text-sm text-slate-500">${volume} in³</div>`;
+            }
+          }
+          const percentage = ((s.count / total) * 100).toFixed(1);
+          
+          return `
+            <div class="grid gap-2 items-center p-3 bg-white border border-slate-200 rounded-lg hover:bg-indigo-50 cursor-pointer transition-colors ${useShortestDimension ? 'grid-cols-4' : 'grid-cols-3'}" onclick="showBoxSizeDetails('${s.key}')">
+              <div class="font-semibold text-slate-800">${s.key}</div>
+              <div class="text-right font-bold text-indigo-600">${s.count}</div>
+              <div class="text-right text-sm text-slate-600">${percentage}%</div>
+              ${volumeHtml}
+            </div>
+          `;
+        }).join('')}
+      </div>
+      <div class="mt-4 p-3 bg-blue-50 border border-blue-200 rounded-lg text-xs text-blue-800">
+        <strong>Total Unique Sizes:</strong> ${sorted.length} | <strong>Total Items:</strong> ${total}
+      </div>
+    `;
+  }
+}
+
+function showBoxSizeDetails(sizeStr) {
+  const detailsModal = document.getElementById('boxSizeDetailsModal');
+  const detailsTitle = document.getElementById('detailsModalTitle');
+  const detailsContent = document.getElementById('boxSizeDetailsContent');
+  
+  if (!detailsModal || !detailsContent) return;
+  
+  detailsTitle.textContent = `Games with size ${sizeStr}`;
+  
+  // Find games matching this size
+  const matchingGames = boxSizesModalData.gamesBySize[sizeStr] || [];
+  
+  if (matchingGames.length === 0) {
+    detailsContent.innerHTML = '<div class="text-center py-8 text-slate-500">No games found for this size</div>';
+  } else {
+    // Remove duplicates by game name
+    const seen = new Set();
+    const uniqueGames = matchingGames.filter(g => {
+      if (seen.has(g.name)) return false;
+      seen.add(g.name);
+      return true;
+    });
+    
+    detailsContent.innerHTML = `
+      <div class="grid grid-cols-2 md:grid-cols-3 lg:grid-cols-4 gap-4">
+        ${uniqueGames.map(game => `
+          <div class="flex flex-col items-center text-center">
+            <div class="w-full aspect-square bg-slate-100 rounded-lg overflow-hidden mb-2 border border-slate-200">
+              <img src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" alt="${game.name}" class="w-full h-full object-cover" onerror="this.style.display='none'">
+            </div>
+            <div class="text-sm font-semibold text-slate-800 line-clamp-2">${game.name}</div>
+            ${game.versionName ? `<div class="text-xs text-slate-500">${game.versionName}</div>` : ''}
+          </div>
+        `).join('')}
+      </div>
+      <div class="mt-4 p-3 bg-green-50 border border-green-200 rounded-lg text-xs text-green-800">
+        <strong>Total games:</strong> ${uniqueGames.length}
+      </div>
+    `;
+  }
+  
+  detailsModal.classList.add('active');
+}
+
+function closeBoxSizeDetailsModal() {
+  document.getElementById('boxSizeDetailsModal').classList.remove('active');
 }
 
 function closeBoxSizesModal() {
