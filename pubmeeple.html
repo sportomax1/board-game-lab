@@ -330,8 +330,13 @@ async function loadSelectedList() {
     
     // Sort by rank just in case
     parsedList.sort((a, b) => a.rank - b.rank);
-    
-    await fetchBGGData();
+    // Reveal editor and render initial placeholders immediately
+    document.getElementById('editorSection').classList.remove('hidden');
+    document.getElementById('footerAction').classList.remove('hidden');
+    renderThumbs();
+
+    // Fetch BGG metadata and update thumbnails progressively
+    fetchBGGData();
 }
 
 // --- Search Functions ---
@@ -501,11 +506,13 @@ async function fetchMissingThumbnails() {
                 const thumb = thingDoc.querySelector('thumbnail')?.textContent || thingDoc.querySelector('image')?.textContent;
                 
                 if (thumb) {
-                    thumbsMap[name] = { thumb: thumb, isExact: false, matchedTo: 'BGG Search' };
-                    // Remove from missed list in auditLogs (visual only)
-                    auditLogs.missed = auditLogs.missed.filter(n => n !== name);
-                    auditLogs.fuzzy.push({ input: name, matched: `ID:${id}`, reason: 'search' });
-                    foundCount++;
+                  thumbsMap[name] = { thumb: thumb, isExact: false, matchedTo: 'BGG Search' };
+                  // Update UI for this item immediately
+                  updateThumbImage(name, thumb);
+                  // Remove from missed list in auditLogs (visual only)
+                  auditLogs.missed = auditLogs.missed.filter(n => n !== name);
+                  auditLogs.fuzzy.push({ input: name, matched: `ID:${id}`, reason: 'search' });
+                  foundCount++;
                 }
             }
         } catch (e) {
@@ -576,23 +583,30 @@ async function fetchBGGData(){
       if(collMap[key]) {
         thumbsMap[n]= {thumb: collMap[key].thumb, isExact: true};
         auditLogs.exact++;
+        // Update UI progressively
+        updateThumbImage(n, thumbsMap[n].thumb || PLACEHOLDER_IMG);
       }
       else if(normMapBasic[normBasic]) {
         thumbsMap[n] = {thumb: normMapBasic[normBasic].thumb, isExact: false, matchedTo: normMapBasic[normBasic].original};
         auditLogs.fuzzy.push({input: n, matched: normMapBasic[normBasic].original, reason: 'normalized'});
+        updateThumbImage(n, thumbsMap[n].thumb || PLACEHOLDER_IMG);
       }
       else if(normMapStrict[normStrict]) {
         thumbsMap[n] = {thumb: normMapStrict[normStrict].thumb, isExact: false, matchedTo: normMapStrict[normStrict].original};
         auditLogs.fuzzy.push({input: n, matched: normMapStrict[normStrict].original, reason: 'keywords'});
+        updateThumbImage(n, thumbsMap[n].thumb || PLACEHOLDER_IMG);
       }
       else {
         const foundKey = Object.keys(collMap).find(k=>k.includes(key) || key.includes(k));
         if(foundKey) {
           thumbsMap[n] = {thumb: collMap[foundKey].thumb, isExact: false, matchedTo: collMap[foundKey].original};
           auditLogs.fuzzy.push({input: n, matched: collMap[foundKey].original, reason: 'substring'});
+          updateThumbImage(n, thumbsMap[n].thumb || PLACEHOLDER_IMG);
         } else {
           thumbsMap[n] = {thumb: '', isExact: false};
           auditLogs.missed.push(n);
+          // Ensure placeholder shows immediately for missed items
+          updateThumbImage(n, PLACEHOLDER_IMG);
         }
       }
     }
@@ -672,7 +686,7 @@ function renderThumbs() {
             const imgData = thumbsMap[item.name] || {thumb: ''};
             return `
             <div class="relative aspect-square bg-white/10 rounded-xl overflow-hidden shadow-lg border border-white/20 group" draggable="true" data-index="${i}">
-                <img src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full ${zoom ? 'img-zoom' : 'img-contain'} bg-black/20">
+                <img data-name="${item.name.replace(/"/g, '&quot;')}" src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full ${zoom ? 'img-zoom' : 'img-contain'} bg-black/20">
                 ${showRanks ? `<div class="absolute top-2 left-2 bg-white/90 text-black font-bold w-6 h-6 flex items-center justify-center rounded-full text-xs shadow-sm">${item.rank}</div>` : ''}
                 ${showPercentiles ? `<div class="absolute top-2 right-2 bg-emerald-500 text-white font-bold px-1.5 py-0.5 rounded text-[10px] shadow-sm">${item.percentile}%</div>` : ''}
                 ${showNames ? `<div class="absolute bottom-0 left-0 w-full bg-black/60 backdrop-blur-sm p-1 text-center"><p class="text-[10px] text-white font-medium truncate px-1">${item.name}</p></div>` : ''}
@@ -692,7 +706,7 @@ function renderThumbs() {
             <div class="flex items-center gap-4 bg-white/80 backdrop-blur-sm p-3 rounded-xl shadow-sm border border-white/40" draggable="true" data-index="${i}">
                 ${showRanks ? `<div class="text-xl font-bold text-slate-400 w-8 text-center">${item.rank}</div>` : ''}
                 <div class="w-12 h-12 bg-slate-100 rounded-lg overflow-hidden flex-shrink-0">
-                    <img src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full object-cover">
+                  <img data-name="${item.name.replace(/"/g, '&quot;')}" src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full object-cover">
                 </div>
                 <div class="flex-1 min-w-0">
                     <h3 class="font-bold text-slate-800 truncate">${item.name}</h3>
@@ -710,7 +724,7 @@ function renderThumbs() {
             return `
             <div class="shelf-item relative w-12 bg-slate-800 rounded-sm shadow-xl" style="height: ${height}px;" draggable="true" data-index="${i}">
                 <div class="absolute inset-0 overflow-hidden rounded-sm opacity-80">
-                     <img src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full object-cover opacity-50">
+                     <img data-name="${item.name.replace(/"/g, '&quot;')}" src="${imgData.thumb || PLACEHOLDER_IMG}" class="w-full h-full object-cover opacity-50">
                 </div>
                 <div class="absolute inset-0 flex items-center justify-center">
                     <span class="text-white font-bold text-xs -rotate-90 whitespace-nowrap tracking-wider drop-shadow-md">${item.name.substring(0, 15)}</span>
@@ -721,6 +735,21 @@ function renderThumbs() {
     }
 
     addDragListeners();
+}
+
+function updateThumbImage(name, url) {
+  if (!name) return;
+  const imgs = document.querySelectorAll('img[data-name]');
+  imgs.forEach(img => {
+    // dataset.name will be the raw game name as rendered
+    if (img.dataset && img.dataset.name === name) {
+      try {
+        if (img.src !== url) img.src = url || PLACEHOLDER_IMG;
+      } catch (e) {
+        img.src = url || PLACEHOLDER_IMG;
+      }
+    }
+  });
 }
 
 function addDragListeners() {
