@@ -61,7 +61,7 @@
         .tile-front {
             background: rgba(255, 255, 255, 0.05);
             border: 1px solid rgba(255, 255, 255, 0.1);
-            color: rgba(255, 255, 255, 0.3);
+            color: rgba(255, 255, 255, 0.1);
             font-size: 2rem;
             font-weight: 900;
         }
@@ -69,7 +69,7 @@
         .tile-back {
             transform: rotateY(180deg);
             background: #ffffff;
-            padding: 8px;
+            padding: 6px;
         }
         
         .tile-back img {
@@ -80,12 +80,12 @@
         }
 
         .matched .tile-inner {
-            transform: rotateY(180deg) scale(0.95);
-            opacity: 0.6;
+            transform: rotateY(180deg) scale(0.92);
+            opacity: 0.4;
         }
 
         .matched .tile-back {
-            background: #f1f5f9;
+            background: #1e293b;
             filter: grayscale(1);
         }
 
@@ -103,17 +103,9 @@
             z-index: 100;
         }
 
-        .stat-card {
-            background: rgba(255, 255, 255, 0.05);
-            border: 1px solid rgba(255, 255, 255, 0.1);
-            border-radius: 1rem;
-            padding: 0.75rem;
-            text-align: center;
-        }
-
         .player-card {
             transition: all 0.3s ease;
-            opacity: 0.5;
+            opacity: 0.4;
             transform: scale(0.9);
         }
 
@@ -132,9 +124,19 @@
         .player-card.active.current {
             animation: pulse-player 2s infinite;
         }
+
+        .custom-scrollbar::-webkit-scrollbar { width: 4px; }
+        .custom-scrollbar::-webkit-scrollbar-track { background: transparent; }
+        .custom-scrollbar::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, 0.1); border-radius: 10px; }
     </style>
 </head>
-<body class="min-h-screen flex flex-col">
+<body class="min-h-screen flex flex-col selection:bg-emerald-500/30">
+    <!-- Background Decor -->
+    <div class="fixed inset-0 overflow-hidden pointer-events-none z-0">
+        <div class="absolute -top-[10%] -left-[10%] w-[40%] h-[40%] bg-emerald-900/20 blur-[120px] rounded-full"></div>
+        <div class="absolute bottom-[10%] right-[0%] w-[50%] h-[50%] bg-blue-900/10 blur-[120px] rounded-full"></div>
+    </div>
+
     <!-- Setup Screen -->
     <div id="setupScreen" class="fixed inset-0 z-50 flex items-center justify-center p-4">
         <div class="absolute inset-0 bg-slate-900/80 backdrop-blur-md"></div>
@@ -180,19 +182,21 @@
                     </div>
                 </div>
 
-                <button onclick="startGame()" class="w-full bg-emerald-500 text-white py-4 rounded-2xl font-black text-lg uppercase tracking-tight hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 mt-4 shadow-xl shadow-emerald-500/20">
-                    Start Draft
+                <button id="startBtn" onclick="startGame()" class="w-full bg-emerald-500 text-white py-4 rounded-2xl font-black text-lg uppercase tracking-tight hover:scale-[1.02] active:scale-95 transition-all flex items-center justify-center gap-2 mt-4 shadow-xl shadow-emerald-500/20">
+                    <span id="btnText">Start Game</span>
+                    <div id="btnSpinner" class="hidden w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin"></div>
                 </button>
             </div>
+            <p id="setupStatus" class="mt-4 text-center text-[10px] font-bold text-slate-500 uppercase tracking-widest hidden"></p>
         </div>
     </div>
 
     <!-- Game Screen -->
-    <div id="gameScreen" class="hidden flex-1 flex flex-col pb-safe max-w-5xl mx-auto w-full">
+    <div id="gameScreen" class="hidden relative z-10 flex-1 flex flex-col pb-safe max-w-5xl mx-auto w-full">
         <!-- Header -->
-        <header class="p-6 flex flex-col md:flex-row md:items-center justify-between gap-6">
+        <header class="p-6 flex flex-col md:flex-row md:items-center justify-between gap-6 border-b border-white/5">
             <div class="flex flex-col">
-                <h1 class="text-2xl font-black italic uppercase tracking-tighter leading-tight text-white">Memory <span class="text-emerald-400">Match</span></h1>
+                <h1 class="text-2xl font-black italic uppercase tracking-tighter leading-none text-white">Memory <span class="text-emerald-400">Match</span></h1>
                 <div class="flex gap-4 mt-2">
                     <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest"><span class="text-emerald-400" id="matchesDisplay">0</span> / <span id="totalMatchesDisplay">0</span> Pairs</div>
                     <div class="text-[10px] font-bold text-slate-500 uppercase tracking-widest"><span class="text-emerald-400" id="flipsDisplay">0</span> Flips</div>
@@ -217,7 +221,7 @@
 
         <!-- Grid Container -->
         <div class="flex-1 p-4 md:p-6 overflow-y-auto custom-scrollbar flex items-center justify-center">
-            <div id="gameGrid" class="grid gap-3 md:gap-4 w-full"></div>
+            <div id="gameGrid" class="grid gap-3 md:gap-4 w-full h-fit py-10"></div>
         </div>
     </div>
 
@@ -261,6 +265,7 @@
         let player1Score = 0;
         let player2Score = 0;
         let twoPlayerMode = true;
+        const IMAGE_PROXY = '/api/image-proxy?url=';
 
         function setGameCount(count, btn) {
             gameCount = count;
@@ -297,21 +302,42 @@
             return shuffled;
         }
 
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                const response = await fetch(url);
+                if (response.status === 202) {
+                    await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+                    continue;
+                }
+                if (!response.ok) throw new Error(`HTTP ${response.status}`);
+                return await response.text();
+            }
+            throw new Error('Exceeded fetch attempts');
+        }
+
         async function startGame() {
             const username = document.getElementById('usernameInput').value.trim();
             if (!username) return alert('Enter a BGG username');
 
-            twoPlayerMode = document.getElementById('twoPlayerMode').checked;
-            document.getElementById('setupScreen').classList.add('hidden');
-            document.getElementById('gameScreen').classList.remove('hidden');
-            document.getElementById('totalMatchesDisplay').textContent = gameCount;
+            const startBtn = document.getElementById('startBtn');
+            const btnText = document.getElementById('btnText');
+            const btnSpinner = document.getElementById('btnSpinner');
+            const statusEl = document.getElementById('setupStatus');
+
+            startBtn.disabled = true;
+            btnText.textContent = "Loading...";
+            btnSpinner.classList.remove('hidden');
+            statusEl.textContent = "Scanning collection...";
+            statusEl.classList.remove('hidden');
 
             try {
-                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
-                const xml = await res.text();
-                const parser = new DOMParser().parseFromString(xml, 'text/xml');
-                let items = Array.from(parser.querySelectorAll('item'));
+                const xmlText = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                const parser = new DOMParser();
+                const xml = parser.parseFromString(xmlText, 'text/xml');
+                
+                if (xml.querySelector('errors error')) throw new Error('User not found or private collection');
 
+                let items = Array.from(xml.querySelectorAll('item'));
                 if (document.getElementById('excludeExpansions').checked) {
                     items = items.filter(item => item.getAttribute('subtype') !== 'boardgameexpansion');
                 }
@@ -324,8 +350,10 @@
                         thumbnail: item.querySelector('thumbnail').textContent
                     }));
 
+                if (validGames.length < 2) throw new Error('Need at least 2 games with images');
+
                 validGames = shuffleArray(validGames).slice(0, gameCount);
-                if (validGames.length < gameCount) gameCount = validGames.length;
+                gameCount = validGames.length; // adjust if fewer games found
 
                 gamePairs = [];
                 validGames.forEach((game, idx) => {
@@ -337,17 +365,25 @@
                 flipped = new Array(gamePairs.length).fill(false);
                 matched = new Array(gamePairs.length).fill(false);
                 
+                twoPlayerMode = document.getElementById('twoPlayerMode').checked;
                 if (twoPlayerMode) {
                     document.getElementById('twoPlayerStats').classList.remove('hidden');
                     updatePlayerIndicator();
                 }
 
+                document.getElementById('setupScreen').classList.add('hidden');
+                document.getElementById('gameScreen').classList.remove('hidden');
+                document.getElementById('totalMatchesDisplay').textContent = gameCount;
+
                 renderGameBoard();
                 gameStartTime = Date.now();
                 startTimer();
             } catch (error) {
-                alert('Error loading games: ' + error.message);
-                location.reload();
+                alert('Error: ' + error.message);
+                startBtn.disabled = false;
+                btnText.textContent = "Start Game";
+                btnSpinner.classList.add('hidden');
+                statusEl.classList.add('hidden');
             }
         }
 
@@ -361,11 +397,11 @@
             grid.style.gridTemplateColumns = `repeat(${cols}, 1fr)`;
             
             grid.innerHTML = gamePairs.map((game, idx) => `
-                <div class="game-tile" id="tile-${idx}" onclick="flipTile(${idx})">
+                <div class="game-tile aspect-[3/4]" id="tile-${idx}" onclick="flipTile(${idx})">
                     <div class="tile-inner">
-                        <div class="tile-front">?</div>
+                        <div class="tile-front">🔍</div>
                         <div class="tile-back">
-                            <img src="${game.thumbnail}" alt="${game.name}" loading="lazy">
+                            <img src="${IMAGE_PROXY}${encodeURIComponent(game.thumbnail)}" alt="${game.name}" loading="lazy">
                         </div>
                     </div>
                 </div>
@@ -373,8 +409,10 @@
         }
 
         function flipTile(idx) {
+            if (flipped[idx] || matched[idx]) return;
+            
             const flippedIndices = flipped.map((f, i) => f ? i : -1).filter(i => i !== -1);
-            if (flipped[idx] || matched[idx] || flippedIndices.length >= 2) return;
+            if (flippedIndices.length >= 2) return;
 
             flipped[idx] = true;
             flips++;
