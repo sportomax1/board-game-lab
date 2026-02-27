@@ -61,7 +61,7 @@
         }
 
         .input-dark {
-            @apply bg-white/5 border border-white/10 rounded-2xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-medium;
+            @apply bg-slate-900/50 border border-white/10 rounded-2xl px-4 py-3 text-white focus:outline-none focus:ring-2 focus:ring-indigo-500/50 transition-all font-medium placeholder-slate-500;
         }
 
         .custom-scrollbar::-webkit-scrollbar { width: 4px; }
@@ -416,39 +416,45 @@
 
         async function fetchGameDetails() {
             const batchSize = 20;
+            const parallelLimit = 50; // Total 1000 items in flight
             const batches = [];
             for (let i = 0; i < allGames.length; i += batchSize) batches.push(allGames.slice(i, i + batchSize));
 
-            for (let i = 0; i < batches.length; i++) {
-                const batch = batches[i];
-                const ids = batch.map(g => g.id).join(',');
-                updateStatus(`Details: ${i+1}/${batches.length}`, 'loading');
+            for (let i = 0; i < batches.length; i += parallelLimit) {
+                const group = batches.slice(i, i + parallelLimit);
+                updateStatus(`Loading details ${i * batchSize} - ${Math.min((i + parallelLimit) * batchSize, allGames.length)}...`, 'loading');
 
-                const xmlText = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
-                const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+                await Promise.all(group.map(async batch => {
+                    const ids = batch.map(g => g.id).join(',');
+                    try {
+                        const xmlText = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&stats=1`);
+                        const doc = new DOMParser().parseFromString(xmlText, 'text/xml');
+                        
+                        doc.querySelectorAll('item').forEach(item => {
+                            const id = item.getAttribute('id');
+                            gameDetails[id] = {
+                                id, name: item.querySelector('name')?.getAttribute('value'),
+                                yearPublished: parseInt(item.querySelector('yearpublished')?.getAttribute('value')) || 0,
+                                minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value')) || 0,
+                                maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value')) || 0,
+                                playingTime: parseInt(item.querySelector('playingtime')?.getAttribute('value')) || 0,
+                                minPlaytime: parseInt(item.querySelector('minplaytime')?.getAttribute('value')) || 0,
+                                maxPlaytime: parseInt(item.querySelector('maxplaytime')?.getAttribute('value')) || 0,
+                                minAge: parseInt(item.querySelector('minage')?.getAttribute('value')) || 0,
+                                thumbnail: item.querySelector('thumbnail')?.textContent,
+                                image: item.querySelector('image')?.textContent,
+                                categories: Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')),
+                                mechanics: Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')),
+                                designers: Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')),
+                                publishers: Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')),
+                                artists: Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value')),
+                                rating: parseFloat(item.querySelector('ratings > average')?.getAttribute('value')) || 0
+                            };
+                        });
+                    } catch (e) { console.error(`Failed to fetch batch ${ids}`, e); }
+                }));
                 
-                doc.querySelectorAll('item').forEach(item => {
-                    const id = item.getAttribute('id');
-                    gameDetails[id] = {
-                        id, name: item.querySelector('name')?.getAttribute('value'),
-                        yearPublished: parseInt(item.querySelector('yearpublished')?.getAttribute('value')) || 0,
-                        minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value')) || 0,
-                        maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value')) || 0,
-                        playingTime: parseInt(item.querySelector('playingtime')?.getAttribute('value')) || 0,
-                        minPlaytime: parseInt(item.querySelector('minplaytime')?.getAttribute('value')) || 0,
-                        maxPlaytime: parseInt(item.querySelector('maxplaytime')?.getAttribute('value')) || 0,
-                        minAge: parseInt(item.querySelector('minage')?.getAttribute('value')) || 0,
-                        thumbnail: item.querySelector('thumbnail')?.textContent,
-                        image: item.querySelector('image')?.textContent,
-                        categories: Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')),
-                        mechanics: Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')),
-                        designers: Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')),
-                        publishers: Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')),
-                        artists: Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value')),
-                        rating: parseFloat(item.querySelector('ratings > average')?.getAttribute('value')) || 0
-                    };
-                });
-                await new Promise(r => setTimeout(r, 300));
+                if (i + parallelLimit < batches.length) await new Promise(r => setTimeout(r, 500));
             }
         }
 
