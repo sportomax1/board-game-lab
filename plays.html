@@ -166,11 +166,12 @@
                         <label class="switch"><input type="checkbox" id="ownedOnlyToggle" onchange="updateUI()"><span class="slider"></span></label>
                         <span class="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Owned</span>
                         <div class="h-3 w-px bg-slate-200 mx-1"></div>
-                        <label class="switch"><input type="checkbox" id="splitModeToggle" onchange="updateUI()"><span class="slider"></span></label>
-                        <span class="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Split</span>
+                        <label class="switch"><input type="checkbox" id="splitModeToggle" checked onchange="updateUI()"><span class="slider"></span></label>
+                        <span class="text-[8px] font-bold text-slate-400 uppercase tracking-tighter">Combine</span>
                         <div class="h-3 w-px bg-slate-200 mx-1"></div>
                         <button onclick="openYearPlaysModal('first')" class="px-2 py-1 bg-blue-50 hover:bg-blue-100 text-blue-600 rounded text-[9px] font-bold uppercase tracking-tighter border border-blue-100 transition-colors">First Plays</button>
                         <button onclick="openYearPlaysModal('last')" class="px-2 py-1 bg-purple-50 hover:bg-purple-100 text-purple-600 rounded text-[9px] font-bold uppercase tracking-tighter border border-purple-100 transition-colors">Last Plays</button>
+                        <button onclick="openYearPlaysModal('published')" class="px-2 py-1 bg-emerald-50 hover:bg-emerald-100 text-emerald-600 rounded text-[9px] font-bold uppercase tracking-tighter border border-emerald-100 transition-colors">Published</button>
                     </div>
                     <div id="locations-filters" class="hidden flex items-center gap-2">
                         <select id="locationTimePeriod" onchange="renderLocations()" class="text-[10px] border border-slate-200 rounded px-2 py-1.5 outline-none bg-white text-slate-600 min-w-[100px]">
@@ -370,11 +371,12 @@
                 <table class="w-full text-left border-collapse">
                     <thead class="sticky top-0 bg-white text-slate-400 text-[8px] font-bold uppercase tracking-widest z-10 shadow-sm">
                         <tr>
+                            <th class="px-4 py-2 border-b w-8 text-center">#</th>
                             <th class="px-4 py-2 border-b w-12"></th>
                             <th class="px-4 py-2 border-b">Game</th>
                             <th class="px-4 py-2 border-b text-center cursor-pointer hover:text-slate-600" onclick="sortYearPlays('rank')">Rank</th>
                             <th class="px-4 py-2 border-b text-center cursor-pointer hover:text-slate-600" onclick="sortYearPlays('avg')">Avg</th>
-                            <th class="px-4 py-2 border-b text-center cursor-pointer hover:text-slate-600" onclick="sortYearPlays('rating')">Rating</th>
+                            <th class="px-4 py-2 border-b text-center cursor-pointer hover:text-slate-600" onclick="sortStats('rating')">Rating</th>
                             <th class="px-4 py-2 border-b text-center cursor-pointer hover:text-slate-600" onclick="sortYearPlays('date')">Play Date</th>
                             <th class="px-4 py-2 border-b text-right cursor-pointer hover:text-slate-600" onclick="sortYearPlays('published')">Year</th>
                         </tr>
@@ -840,7 +842,8 @@
 
         function renderStats(plays) {
             const ownedOnly = document.getElementById('ownedOnlyToggle').checked;
-            const splitMode = document.getElementById('splitModeToggle').checked;
+            const combineMode = document.getElementById('splitModeToggle').checked;
+            const splitMode = !combineMode;
             const statsMap = new Map();
             plays.forEach(p => {
                 if (ownedOnly && !ownedIds.has(p.gameId)) return;
@@ -1927,17 +1930,22 @@
         }
 
         // --- Year Plays Modal Logic ---
-        let currentYearPlaysType = 'first'; // 'first' or 'last'
+        let currentYearPlaysType = 'first'; // 'first', 'last', or 'published'
         let yearPlaysSortField = 'rank';
         let yearPlaysSortDir = 1;
 
         function openYearPlaysModal(type) {
             currentYearPlaysType = type;
-            document.getElementById('yearPlaysTitle').textContent = `${type === 'first' ? 'First' : 'Last'} Plays by Year`;
+            const titles = { first: 'First Plays', last: 'Last Plays', published: 'Games Published' };
+            document.getElementById('yearPlaysTitle').textContent = `${titles[type]} by Year`;
             
             // Populate Year Dropdown
             const years = new Set();
-            totalPlays.forEach(p => { if(p.date) years.add(p.date.slice(0, 4)); });
+            if (type === 'published') {
+                gameYears.forEach(y => { if(y) years.add(y); });
+            } else {
+                totalPlays.forEach(p => { if(p.date) years.add(p.date.slice(0, 4)); });
+            }
             const yearArr = [...years].sort((a, b) => b - a);
             const select = document.getElementById('yearPlaysYearSelect');
             select.innerHTML = yearArr.map(y => `<option value="${y}">${y}</option>`).join('');
@@ -1972,19 +1980,26 @@
                 }
             });
 
-            // Filter by the selected year based on type (first or last)
-            const filtered = [...gameStats.values()].filter(s => {
-                const date = currentYearPlaysType === 'first' ? s.first : s.last;
-                return date && date.startsWith(selectedYear);
-            });
+            // Filter based on type
+            let filtered = [];
+            if (currentYearPlaysType === 'published') {
+                filtered = [...gameStats.values()].filter(s => {
+                    return gameYears.get(s.id) === selectedYear;
+                });
+            } else {
+                filtered = [...gameStats.values()].filter(s => {
+                    const date = currentYearPlaysType === 'first' ? s.first : s.last;
+                    return date && date.startsWith(selectedYear);
+                });
+            }
 
-            // Map in metadata for sorting/display
+            // Map in metadata
             const displayData = filtered.map(s => {
                 const details = gameDetailsMap.get(s.id) || {};
                 const collRating = collectionRatings.get(s.id) || details.rating || 0;
                 return {
                     ...s,
-                    date: currentYearPlaysType === 'first' ? s.first : s.last,
+                    date: currentYearPlaysType === 'published' ? s.last : (currentYearPlaysType === 'first' ? s.first : s.last),
                     rank: details.rank || 999999,
                     avg: details.average || 0,
                     rating: collRating,
@@ -2002,8 +2017,9 @@
 
             document.getElementById('yearPlaysCount').textContent = `${displayData.length} games`;
             const tbody = document.getElementById('yearPlaysTableBody');
-            tbody.innerHTML = displayData.map(s => `
+            tbody.innerHTML = displayData.map((s, idx) => `
                 <tr class="hover:bg-slate-50 transition-colors">
+                    <td class="px-4 py-2 text-center text-slate-400 font-mono text-[9px]">${idx + 1}</td>
                     <td class="px-4 py-2">
                         <div class="w-8 h-8 rounded bg-slate-100 overflow-hidden border border-slate-200/50">
                             ${gameThumbnails.has(s.id) ? `<img src="${gameThumbnails.get(s.id)}" class="w-full h-full object-cover">` : ''}
@@ -2016,7 +2032,7 @@
                     <td class="px-4 py-2 text-center text-slate-400 font-mono text-[10px]">${s.date}</td>
                     <td class="px-4 py-2 text-right text-slate-400 font-mono">${s.published || '—'}</td>
                 </tr>
-            `).join('') || '<tr><td colspan="7" class="p-10 text-center text-slate-300">No matches for this year.</td></tr>';
+            `).join('') || '<tr><td colspan="8" class="p-10 text-center text-slate-300">No matches for this year.</td></tr>';
         }
 
         function sortYearPlays(field) {
