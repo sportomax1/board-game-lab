@@ -1,10 +1,10 @@
 import os
 import glob
 from pathlib import Path
-# Added timedelta for the Mountain Time offset calculation
 from datetime import datetime, timezone, timedelta
-# NEW: Required for running Git commands
 import subprocess
+import re
+import json
 
 def format_time_since(delta):
     """Converts a timedelta object to a user-friendly 'time since' string."""
@@ -14,13 +14,13 @@ def format_time_since(delta):
         return "Just now"
     elif seconds < 3600:
         minutes = seconds // 60
-        return f"{minutes} minute{'s' if minutes > 1 else ''} ago"
+        return f"{minutes}m ago"
     elif seconds < 86400:
         hours = seconds // 3600
-        return f"{hours} hour{'s' if hours > 1 else ''} ago"
+        return f"{hours}h ago"
     else:
         days = seconds // 86400
-        return f"{days} day{'s' if days > 1 else ''} ago"
+        return f"{days}d ago"
 
 def get_git_commit_time(file_path):
     """
@@ -35,19 +35,122 @@ def get_git_commit_time(file_path):
             ['git', 'log', '-1', '--format=%ct', '--', file_path],
             capture_output=True,
             text=True,
-            # CRITICAL: If the file is newly created but not committed yet, 
-            # this will raise CalledProcessError. We handle it in the except block.
             check=True
         )
         return float(result.stdout.strip())
-    except (subprocess.CalledProcessError, FileNotFoundError):
+    except (subprocess.CalledProcessError, FileNotFoundError, ValueError):
         # Fallback for new (uncommitted) files or if git fails
-        print(f"Warning: No git history found for {file_path}. Using filesystem time.")
+        # print(f"Warning: No git history found for {file_path}. Using filesystem time.")
         return os.path.getmtime(file_path)
     except Exception as e:
         # Generic error fallback
         print(f"Error getting git time for {file_path}: {e}")
         return os.path.getmtime(file_path)
+
+def update_home_html():
+    file_path = 'home.html'
+    if not os.path.exists(file_path):
+        print(f"Skipping home.html update: File {file_path} not found.")
+        return
+
+    with open(file_path, 'r', encoding='utf-8') as f:
+        content = f.read()
+
+    # 1. Extract the apps array block
+    pattern = r'(const\s+apps\s*=\s*\[)(.*?)(\];)'
+    match = re.search(pattern, content, re.DOTALL)
+    
+    if not match:
+        print("Could not find 'const apps = [...]' block in home.html")
+        return
+
+    start_str = match.group(1)
+    apps_content = match.group(2)
+    end_str = match.group(3)
+
+    # 2. Parse existing apps to preserve metadata
+    objects = []
+    current_lines = []
+    in_object = False
+    brace_count = 0
+    
+    lines = apps_content.split('\n')
+    for line in lines:
+        stripped = line.strip()
+        if not stripped:
+            continue
+            
+        if stripped.startswith('//'):
+            pass # Ignore comments for parsing
+        
+        if '{' in stripped and not in_object:
+            in_object = True
+            current_lines = [line]
+            brace_count = line.count('{') - line.count('}')
+        elif in_object:
+            current_lines.append(line)
+            brace_count += line.count('{') - line.count('}')
+        
+        if in_object and brace_count == 0:
+            full_text = '\n'.join(current_lines)
+            url_match = re.search(r'url:\s*[\'"]([^\'"]+)[\'"]', full_text)
+            if url_match:
+                url = url_match.group(1)
+                objects.append({'url': url, 'text': full_text.rstrip(',')})
+            in_object = False
+            current_lines = []
+
+    # 3. Scan directory
+    fs_files = set()
+    exclude_files = {'index.html', 'home.html', '404.html'}
+    exclude_dirs = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api', 'alt', '.vscode', 'private'}
+    
+    for root, dirs, files in os.walk('.'):
+        dirs[:] = [d for d in dirs if d not in exclude_dirs]
+        for file in files:
+            if file.endswith('.html') and file not in exclude_files:
+                rel_path = os.path.relpath(os.path.join(root, file), '.').replace('\\', '/')
+                if rel_path.startswith('./'):
+                    rel_path = rel_path[2:]
+                fs_files.add(rel_path)
+
+    # 4. Construct new app list
+    final_objects = []
+    processed_urls = set()
+    
+    # A. Add existing objects if file still exists
+    for obj in objects:
+        url = obj['url']
+        if url in fs_files:
+            final_objects.append(obj['text'])
+            processed_urls.add(url)
+        # else: print(f"Removing missing file from home.html: {url}")
+
+    # B. Add new files
+    new_files = fs_files - processed_urls
+    for new_file in sorted(new_files):
+        print(f"Adding new file to home.html: {new_file}")
+        name = os.path.splitext(os.path.basename(new_file))[0].replace('-', ' ').title()
+        
+        new_entry = f"""            {{
+                name: '{name}',
+                emoji: '🆕',
+                description: 'Auto-detected file',
+                tags: ['New', 'Auto'],
+                category: 'misc',
+                url: '{new_file}',
+                defaultRating: 0
+            }}"""
+        final_objects.append(new_entry)
+
+    # 5. Reconstruct the block
+    new_apps_content = '\n' + ',\n'.join(final_objects) + '\n        '
+    new_full_content = content[:match.start(2)] + new_apps_content + content[match.end(2):]
+    
+    with open(file_path, 'w', encoding='utf-8') as f:
+        f.write(new_full_content)
+    
+    print(f"Successfully updated home.html with {len(final_objects)} apps.")
 
 def generate_html_index(output_file='index.html'):
     """
@@ -60,486 +163,328 @@ def generate_html_index(output_file='index.html'):
     generation_time_iso = generation_time_utc.replace(microsecond=0).isoformat()
     MTN_OFFSET = timedelta(hours=-7)
     generation_time_mtn = generation_time_utc + MTN_OFFSET
-    generation_time_str = generation_time_mtn.strftime('%Y-%m-%d %H:%M:%S MST/MDT')
+    generation_time_str = generation_time_mtn.strftime('%b %d, %H:%M')
     
     # Directories to exclude from scanning
-    EXCLUDE_DIRS = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api'}
+    EXCLUDE_DIRS = {'.git', '.github', 'node_modules', '__pycache__', '.vercel', 'api', 'alt', '.vscode'}
     
     # --- Start of HTML content ---
     html_content = f"""<!DOCTYPE html>
 <html lang="en">
 <head>
     <meta charset="UTF-8">
-    <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>Application Index (Sorted by Update)</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>App Index</title>
+    <meta name="theme-color" content="#0f172a">
     <style>
-        body {{ 
-            font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-            margin: 20px; 
-            background-color: #fdfdfd;
-            color: #333;
+        :root {{
+            --bg-body: #f8fafc;
+            --bg-card: #ffffff;
+            --text-main: #1e293b;
+            --text-muted: #64748b;
+            --primary: #4f46e5;
+            --primary-light: #e0e7ff;
+            --border: #e2e8f0;
+            --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.05);
+            --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.1), 0 2px 4px -2px rgb(0 0 0 / 0.1);
+            --radius: 16px;
+            --font-sans: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
         }}
-        .container {{ max-width: 1000px; margin: auto; }}
-        h1 {{ 
-            border-bottom: 2px solid #eee; 
-            padding-bottom: 10px; 
+
+        @media (prefers-color-scheme: dark) {{
+            :root {{
+                --bg-body: #0f172a;
+                --bg-card: #1e293b;
+                --text-main: #f1f5f9;
+                --text-muted: #94a3b8;
+                --primary: #818cf8;
+                --primary-light: #312e81;
+                --border: #334155;
+                --shadow-sm: 0 1px 2px 0 rgb(0 0 0 / 0.3);
+                --shadow-md: 0 4px 6px -1px rgb(0 0 0 / 0.3);
+            }}
         }}
+
+        * {{ box-sizing: border-box; -webkit-tap-highlight-color: transparent; }}
         
-        /* --- About Section --- */
-        .about-btn {{
-            display: inline-block;
-            padding: 10px 20px;
-            background: #667eea;
-            color: white;
-            text-decoration: none;
-            border: none;
-            border-radius: 6px;
-            font-weight: 600;
-            cursor: pointer;
-            font-size: 14px;
-            transition: transform 0.2s, box-shadow 0.2s;
+        body {{ 
+            font-family: var(--font-sans);
+            margin: 0; 
+            background-color: var(--bg-body);
+            color: var(--text-main);
+            line-height: 1.5;
+            padding-bottom: 40px;
         }}
-        .about-btn:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
+
+        .container {{ 
+            max-width: 800px; 
+            margin: 0 auto; 
+            padding: 20px;
         }}
-        .modal {{
-            display: none;
-            position: fixed;
-            z-index: 1;
-            left: 0;
-            top: 0;
-            width: 100%;
-            height: 100%;
-            background-color: rgba(0,0,0,0.4);
-        }}
-        .modal.open {{
-            display: flex;
-            align-items: center;
-            justify-content: center;
-        }}
-        .modal-content {{
-            background-color: #fefefe;
-            padding: 30px;
-            border-radius: 10px;
-            width: 90%;
-            max-width: 600px;
-            max-height: 80vh;
-            overflow-y: auto;
-            box-shadow: 0 4px 20px rgba(0,0,0,0.2);
-        }}
-        .modal-header {{
+
+        /* Header */
+        header {{
+            margin-bottom: 24px;
             display: flex;
             justify-content: space-between;
             align-items: center;
-            margin-bottom: 20px;
         }}
-        .modal-header h2 {{
+        
+        h1 {{ 
+            font-size: 24px; 
+            font-weight: 800; 
             margin: 0;
-            color: #667eea;
+            background: linear-gradient(135deg, var(--primary) 0%, #c084fc 100%);
+            -webkit-background-clip: text;
+            -webkit-text-fill-color: transparent;
+            letter-spacing: -0.5px;
         }}
-        .close-btn {{
-            background: none;
-            border: none;
-            font-size: 28px;
-            cursor: pointer;
-            color: #999;
-            transition: color 0.2s;
+
+        .meta-info {{
+            font-size: 13px;
+            color: var(--text-muted);
+            font-weight: 500;
         }}
-        .close-btn:hover {{
-            color: #333;
+
+        /* Search & Controls */
+        .controls-area {{
+            position: sticky;
+            top: 10px;
+            z-index: 100;
+            background: rgba(255, 255, 255, 0.8);
+            backdrop-filter: blur(12px);
+            -webkit-backdrop-filter: blur(12px);
+            padding: 12px;
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-md);
+            margin-bottom: 24px;
+            border: 1px solid rgba(255,255,255,0.1);
         }}
-        .modal-body p {{
-            margin: 15px 0;
-            line-height: 1.7;
-            color: #555;
+
+        @media (prefers-color-scheme: dark) {{
+            .controls-area {{
+                background: rgba(30, 41, 59, 0.8);
+                border: 1px solid rgba(255,255,255,0.05);
+            }}
         }}
-        .modal-body .project-section {{
-            margin-top: 25px;
-            padding-top: 20px;
-            border-top: 1px solid #eee;
+
+        .search-wrapper {{
+            position: relative;
+            margin-bottom: 12px;
         }}
-        .modal-body .project-title {{
-            font-weight: 600;
-            color: #667eea;
-            font-size: 16px;
-            margin-bottom: 8px;
-        }}
-        .modal-body .project-desc {{
-            color: #777;
-            font-size: 14px;
-        }}
-        /* --- End About Section --- */
-        
-        /* --- Random Button & Custom Launcher --- */
-        .action-buttons {{
-            display: flex;
-            gap: 10px;
-            margin-bottom: 20px;
-            flex-wrap: wrap;
-        }}
-        .random-btn {{
-            padding: 10px 20px;
-            background: #f59e0b;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-weight: 600;
-            cursor: pointer;
-            font-size: 14px;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }}
-        .random-btn:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-            background: #d97706;
-        }}
-        .custom-launcher {{
-            display: flex;
-            gap: 5px;
-            flex: 1;
-            min-width: 250px;
-        }}
-        .custom-input {{
-            flex: 1;
-            padding: 10px;
-            border: 1px solid #ccc;
-            border-radius: 6px;
-            font-size: 14px;
-        }}
-        .launch-btn {{
-            padding: 10px 20px;
-            background: #10b981;
-            color: white;
-            border: none;
-            border-radius: 6px;
-            font-weight: 600;
-            cursor: pointer;
-            font-size: 14px;
-            transition: transform 0.2s, box-shadow 0.2s;
-        }}
-        .launch-btn:hover {{
-            transform: translateY(-2px);
-            box-shadow: 0 6px 12px rgba(0,0,0,0.15);
-            background: #059669;
-        }}
-        /* --- End Random Button & Custom Launcher --- */
-        
-        /* --- Search Bar Styles --- */
+
         .search-input {{
             width: 100%;
-            padding: 10px;
-            margin-bottom: 20px;
-            border: 1px solid #ccc;
-            border-radius: 6px;
-            box-sizing: border-box;
+            padding: 12px 16px 12px 44px;
+            background-color: var(--bg-body);
+            border: 1px solid var(--border);
+            border-radius: 12px;
             font-size: 16px;
+            color: var(--text-main);
+            transition: all 0.2s;
+            outline: none;
         }}
-        /* --- End Search Bar Styles --- */
-        
-        /* --- File Type Filter Styles --- */
-        .filter-controls {{
-            margin-bottom: 20px;
+
+        .search-input:focus {{
+            border-color: var(--primary);
+            box-shadow: 0 0 0 3px var(--primary-light);
+        }}
+
+        .search-icon {{
+            position: absolute;
+            left: 14px;
+            top: 50%;
+            transform: translateY(-50%);
+            color: var(--text-muted);
+            pointer-events: none;
+        }}
+
+        .filters {{
             display: flex;
-            flex-wrap: wrap;
             gap: 8px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+            scrollbar-width: none; /* Hide scrollbar Firefox */
         }}
+        .filters::-webkit-scrollbar {{ display: none; }}
+
         .filter-btn {{
             padding: 8px 16px;
-            font-size: 13px;
-            border: 2px solid #ddd;
-            background-color: #fff;
+            font-size: 14px;
+            font-weight: 600;
             border-radius: 20px;
+            background-color: var(--bg-body);
+            border: 1px solid var(--border);
+            color: var(--text-muted);
+            white-space: nowrap;
             cursor: pointer;
             transition: all 0.2s;
-            font-weight: 500;
         }}
-        .filter-btn:hover {{
-            background-color: #f0f0f0;
-        }}
+
         .filter-btn.active {{
-            background-color: #0366d6;
+            background-color: var(--primary);
             color: white;
-            border-color: #0366d6;
+            border-color: var(--primary);
         }}
-        /* --- End File Type Filter Styles --- */
 
-        /* --- Sorting Button Styles --- */
-        .sort-controls {{
-            margin-bottom: 20px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 10px;
-        }}
-        .sort-btn {{
-            flex-grow: 1;
-            padding: 8px 12px;
-            font-size: 14px;
-            border: 1px solid #ccc;
-            background-color: #f7f7f7;
-            border-radius: 6px;
-            cursor: pointer;
-            transition: background-color 0.2s, box-shadow 0.2s;
-        }}
-        .sort-btn:hover {{
-            background-color: #eee;
-        }}
-        .sort-btn.active {{
-            background-color: #0366d6;
-            color: white;
-            border-color: #0366d6;
-            box-shadow: 0 1px 3px rgba(0,0,0,0.1);
-        }}
-        /* --- End Sorting Button Styles --- */
-
-        /* --- Folder Visibility Filter Styles --- */
-        .folder-filters {{
-            margin-bottom: 15px;
-            display: flex;
-            flex-wrap: wrap;
-            gap: 15px;
-            padding: 10px;
-            background-color: #f9f9f9;
-            border-radius: 6px;
-            border: 1px solid #e5e5e5;
-        }}
-        .folder-filters label {{
-            display: flex;
-            align-items: center;
-            gap: 8px;
-            font-size: 14px;
-            cursor: pointer;
-            user-select: none;
-        }}
-        .folder-filters label:hover {{
-            color: #0366d6;
-        }}
-        .folder-filters input[type="checkbox"] {{
-            cursor: pointer;
-            accent-color: #0366d6;
-        }}
-        /* --- End Folder Visibility Filter Styles --- */
-
-        /* --- New Compact Card/List Styles --- */
-        .app-entry {{
-            display: flex;
-            align-items: center;
-            border: 1px solid #ddd;
-            border-radius: 6px;
-            margin-bottom: 8px;
-            background-color: #fff;
-            box-shadow: 0 1px 2px rgba(0,0,0,0.05);
-            transition: box-shadow 0.2s ease;
-            padding: 0;
-        }}
-        .app-entry:hover {{
-            box-shadow: 0 2px 4px rgba(0,0,0,0.08);
-            background-color: #fafafa;
+        /* App List */
+        .app-list {{
+            display: grid;
+            gap: 12px;
+            grid-template-columns: 1fr;
         }}
         
-        .file-link {{
-            flex-grow: 1; 
-            display: flex; 
-            align-items: center;
-            padding: 10px 15px; 
+        @media (min-width: 600px) {{
+            .app-list {{ grid-template-columns: repeat(2, 1fr); }}
+        }}
+
+        .app-card {{
+            background-color: var(--bg-card);
+            border-radius: var(--radius);
+            box-shadow: var(--shadow-sm);
             text-decoration: none;
-            color: #333;
+            color: inherit;
+            display: flex;
+            flex-direction: column;
+            padding: 16px;
+            transition: transform 0.2s, box-shadow 0.2s;
+            border: 1px solid var(--border);
+            position: relative;
+            overflow: hidden;
         }}
-        .file-link:hover {{
-            color: #0366d6;
+
+        .app-card:active {{ transform: scale(0.98); }}
+        .app-card:hover {{
+            box-shadow: var(--shadow-md);
+            border-color: var(--primary);
         }}
-        
-        .file-path-container {{
-            flex: 1 1 50%;
+
+        .card-header {{
             display: flex;
             align-items: center;
-            font-weight: 500;
-            font-size: 16px;
-            overflow: hidden;
-            white-space: nowrap;
-            text-overflow: ellipsis;
+            justify-content: space-between;
+            margin-bottom: 8px;
         }}
 
-        .file-update-info {{
-            flex: 0 0 auto;
-            margin-left: auto;
-            font-size: 14px;
-            color: #6a6a6a;
-            white-space: nowrap;
-        }}
-
-        .file-type-badge {{
-            display: inline-block;
-            padding: 2px 8px;
-            border-radius: 4px;
-            font-size: 11px;
-            font-weight: 600;
+        .file-type {{
+            font-size: 10px;
+            font-weight: 700;
             text-transform: uppercase;
-            margin-right: 15px;
-            margin-left: 0;
-            flex-shrink: 0;
+            padding: 4px 8px;
+            border-radius: 6px;
+            background-color: var(--bg-body);
+            color: var(--text-muted);
         }}
         
-        /* Media query for smaller screens */
-        @media (max-width: 700px) {{
-            .app-entry {{
-                flex-direction: column;
-                align-items: stretch;
-            }}
-            .file-link {{
-                flex-direction: column;
-                align-items: flex-start;
-            }}
-            .file-path-container {{
-                width: 100%;
-                margin-bottom: 5px;
-            }}
-            .file-update-info {{
-                margin-left: 0;
-                width: 100%;
-                text-align: left;
-                padding-top: 5px;
-                border-top: 1px solid #eee;
-                font-size: 13px;
-                color: #888;
-            }}
-            .file-type-badge {{
-                margin-right: 0;
-                margin-left: 8px;
-            }}
-            .action-buttons {{
-                flex-direction: column;
-            }}
-            .custom-launcher {{
-                min-width: 100%;
-            }}
+        .badge-html {{ color: #e34c26; background: #fff0eb; }}
+        .badge-py {{ color: #3776ab; background: #e0f2ff; }}
+        .badge-js {{ color: #d4b830; background: #fffbe0; }}
+        
+        @media (prefers-color-scheme: dark) {{
+            .badge-html {{ background: #2a1b18; }}
+            .badge-py {{ background: #182633; }}
+            .badge-js {{ background: #2a2718; }}
         }}
 
-        /* Badge color map */
-        .badge-html {{ background-color: #e34c26; color: white; }}
-        .badge-xml {{ background-color: #ff6600; color: white; }}
-        .badge-py {{ background-color: #3776ab; color: white; }}
-        .badge-js {{ background-color: #f7df1e; color: black; }}
-        .badge-json {{ background-color: #000; color: white; }}
-        .badge-yml {{ background-color: #cb171e; color: white; }}
-        .badge-md {{ background-color: #083fa1; color: white; }}
-        .badge-txt {{ background-color: #888; color: white; }}
-        .badge-other {{ background-color: #6c757d; color: white; }}
+        .app-name {{
+            font-size: 16px;
+            font-weight: 600;
+            color: var(--text-main);
+            margin-bottom: 4px;
+            word-break: break-word;
+            line-height: 1.3;
+        }}
+
+        .app-path {{
+            font-size: 12px;
+            color: var(--text-muted);
+            margin-bottom: 12px;
+            display: block;
+            opacity: 0.8;
+        }}
+
+        .card-footer {{
+            margin-top: auto;
+            display: flex;
+            justify-content: space-between;
+            align-items: flex-end;
+            font-size: 12px;
+            color: var(--text-muted);
+        }}
+
+        .time-badge {{
+            display: flex;
+            align-items: center;
+            gap: 4px;
+        }}
         
-        /* --- Generation Time Display --- */
-        .generation-time {{
-            background-color: #f0f9ff;
-            border: 1px solid #bae6fd;
-            border-radius: 6px;
-            padding: 12px 16px;
-            margin-bottom: 20px;
-            font-size: 14px;
-            color: #0c4a6e;
+        .arrow-icon {{
+            color: var(--primary);
+            opacity: 0;
+            transform: translateX(-10px);
+            transition: all 0.2s;
         }}
-        .generation-time strong {{
-            color: #075985;
+        
+        .app-card:hover .arrow-icon {{
+            opacity: 1;
+            transform: translateX(0);
         }}
-        /* --- End Generation Time Display --- */
+
+        /* Buttons */
+        .fab {{
+            position: fixed;
+            bottom: 24px;
+            right: 24px;
+            width: 56px;
+            height: 56px;
+            border-radius: 50%;
+            background: var(--primary);
+            color: white;
+            display: flex;
+            align-items: center;
+            justify-content: center;
+            box-shadow: 0 4px 12px rgba(79, 70, 229, 0.4);
+            border: none;
+            cursor: pointer;
+            z-index: 200;
+            font-size: 24px;
+            transition: transform 0.2s;
+        }}
+        
+        .fab:hover {{ transform: scale(1.1); }}
+
+        /* Utilities */
+        .hidden {{ display: none !important; }}
     </style>
 </head>
 <body>
     <div class="container">
-        <div style="display: flex; justify-content: space-between; align-items: center; margin-bottom: 20px;">
-            <h1 style="margin: 0;">Available Applications</h1>
-            <button class="about-btn" onclick="openAboutModal()" style="margin: 0;">About</button>
-        </div>
-        
-        <!-- Generation Time Info -->
-        <div class="generation-time">
-            <strong>Index Generated:</strong> {generation_time_str} <span id="timeSince"></span>
-        </div>
-        
-        <!-- About Modal -->
-        <div id="aboutModal" class="modal">
-            <div class="modal-content">
-                <div class="modal-header">
-                    <h2>About These Projects</h2>
-                    <button class="close-btn" onclick="closeAboutModal()">&times;</button>
-                </div>
-                <div class="modal-body">
-                    <h3 style="color: #667eea; margin-top: 0;">🎲 Board Game Data Tools & Visualization Suite</h3>
-                    <p>A collection of interactive tools and pages exploring board game data, collection analytics, and play statistics through creative data visualization and analysis.</p>
-                    
-                    <p><strong>Passionate about:</strong> Board games, data analysis, and building innovative tools to explore data in creative ways.</p>
-                    
-                    <p><strong>Welcome to the Board Game Data Analytics Suite!</strong> This is a curated collection of tools and interactive applications built around my passion for board games, data analysis, and creative problem-solving through data visualization.</p>
-                    
-                    <p>Each project in this suite represents a different approach to exploring board game data—from collection management and play tracking to statistical analysis and performance comparisons.</p>
-                    
-                    <div class="project-section">
-                        <div class="project-title">🎮 Collection Tools</div>
-                        <div class="project-desc">Browse, manage, and analyze your personal board game collection with integrated BGG (BoardGameGeek) data, library comparisons, and detailed statistics.</div>
-                    </div>
-                    
-                    <div class="project-section">
-                        <div class="project-title">📊 Play Statistics</div>
-                        <div class="project-desc">Track play history, view detailed statistics about your gaming sessions, and export data in multiple formats for further analysis or sharing.</div>
-                    </div>
-                    
-                    <div class="project-section">
-                        <div class="project-title">📈 Data Visualization</div>
-                        <div class="project-desc">Interactive visualizations including distribution charts, ranking comparisons, complexity analysis, and play time breakdowns across your collection.</div>
-                    </div>
-                    
-                    <div class="project-section">
-                        <div class="project-title">🔧 Built With</div>
-                        <div class="project-desc">Vanilla JavaScript, HTML5, CSS3, Python, and BGG API integration. All projects are optimized for mobile and desktop experiences.</div>
-                    </div>
-                    
-                    <div class="project-section">
-                        <div class="project-title">💡 My Passion</div>
-                        <div class="project-desc">I'm passionate about board games and discovering new insights through data analysis. These tools showcase different ways to transform raw data into meaningful, interactive experiences that help you understand your gaming habits and collection better.</div>
-                    </div>
-                    
-                    <div class="project-section">
-                        <div class="project-title">📮 Get in Touch</div>
-                        <div class="project-desc">Questions, suggestions, or want to collaborate? Find me at <strong>@sportomax</strong> on social media or GitHub.</div>
-                    </div>
-                </div>
+        <header>
+            <div>
+                <h1>App Index</h1>
+                <div class="meta-info">Updated: {generation_time_str}</div>
             </div>
-        </div>
-        
-        <p>Click a file entry to open it. Filter by file type and folder visibility below.</p>
-        
-        <!-- Random Button and Custom Launcher -->
-        <div class="action-buttons">
-            <button id="randomBtn" class="random-btn">🎲 Random File</button>
-            <div class="custom-launcher">
-                <input type="text" id="customFileInput" class="custom-input" placeholder="Enter filename (e.g., myfile.html)">
-                <button id="launchBtn" class="launch-btn">🚀 Launch</button>
+            <div id="fileCount" class="meta-info" style="background: var(--bg-card); padding: 4px 8px; border-radius: 8px; border: 1px solid var(--border);">
+                Loading...
             </div>
-        </div>
-        
-        <!-- Single Folder Visibility Checkbox -->
-        <div class="folder-filters">
-            <label><input type="checkbox" id="hideSubfolders" checked> Hide all subfolders (show root files only)</label>
-        </div>
-        
-        <div class="filter-controls">
-            <button class="filter-btn" data-filter="all">All Files</button>
-            <button class="filter-btn" data-filter=".html">HTML</button>
-            <button class="filter-btn" data-filter=".xml">XML</button>
-            <button class="filter-btn" data-filter=".py">Python</button>
-            <button class="filter-btn" data-filter=".js">JavaScript</button>
-            <button class="filter-btn" data-filter=".json">JSON</button>
-            <button class="filter-btn" data-filter=".yml">YML</button>
-            <button class="filter-btn" data-filter=".md">Markdown</button>
-            <button class="filter-btn" data-filter=".txt">Text</button>
-        </div>
-        
-        <input type="text" id="searchInput" placeholder="Search files by name or path..." class="search-input">
-        
-        <div class="sort-controls">
-            <button id="sortByUpdate" class="sort-btn active">Sort by Last Update (Newest)</button>
-            <button id="sortByName" class="sort-btn">Sort by Name (A-Z)</button>
+        </header>
+
+        <div class="controls-area">
+            <div class="search-wrapper">
+                <svg class="search-icon" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><circle cx="11" cy="11" r="8"></circle><line x1="21" y1="21" x2="16.65" y2="16.65"></line></svg>
+                <input type="text" id="searchInput" class="search-input" placeholder="Search apps...">
+            </div>
+            
+            <div class="filters">
+                <button class="filter-btn active" data-filter="all">All</button>
+                <button class="filter-btn" data-filter=".html">Apps</button>
+                <button class="filter-btn" data-filter=".py">Scripts</button>
+                <button class="filter-btn" data-filter=".json">Data</button>
+                <button class="filter-btn" data-filter="recent">Recent</button>
+            </div>
         </div>
 
-        <div id="app-list">
+        <div id="appList" class="app-list">
 """
     
     # 1. Find all files (excluding certain directories and the output file)
@@ -559,347 +504,145 @@ def generate_html_index(output_file='index.html'):
     file_stats = []
     now_utc = datetime.now(timezone.utc)
     
-    # Define Mountain Time offset (e.g., MST/MDT -7 hours) for display
-    MTN_OFFSET = timedelta(hours=-7)
-    
     for file_path_str in all_files:
         path_obj = Path(file_path_str)
             
-        # *** USING GIT COMMIT TIME ***
         mtime_epoch = get_git_commit_time(file_path_str)
-        # -----------------------------
-
         mod_time_dt_utc = datetime.fromtimestamp(mtime_epoch, timezone.utc)
-        # Using the full path as the primary label for the compact view
-        app_name_label = file_path_str 
-        
-        # Get file extension
         file_ext = path_obj.suffix.lower()
-        if not file_ext:
-            file_ext = '.txt'  # Default for files without extension
-
-        # Calculate time for MTN display
-        mod_time_mtn = mod_time_dt_utc + MTN_OFFSET
-        mod_time_mtn_str = mod_time_mtn.strftime('%Y-%m-%d %H:%M:%S MST/MDT')
+        if not file_ext: file_ext = '.txt'
 
         file_stats.append({
             'path': path_obj.as_posix(),
+            'name': path_obj.name,
+            'folder': path_obj.parent.name if path_obj.parent.name != '.' else '',
             'mtime': mtime_epoch,
-            'mod_time_str_mtn': mod_time_mtn_str,
             'time_since': format_time_since(now_utc - mod_time_dt_utc),
-            'app_name_lower': app_name_label.lower(),
             'extension': file_ext
         })
 
-    # 3. Sort the list by modification time (mtime), descending
+    # 3. Sort by modification time (descending) by default
     sorted_files = sorted(file_stats, key=lambda x: x['mtime'], reverse=True)
     
-    # Helper function to get badge class
+    # Helper for badges
     def get_badge_class(ext):
-        badge_map = {
-            '.html': 'html',
-            '.xml': 'xml',
-            '.py': 'py',
-            '.js': 'js',
-            '.json': 'json',
-            '.yml': 'yml',
-            '.yaml': 'yml',
-            '.md': 'md',
-            '.txt': 'txt'
-        }
-        return badge_map.get(ext, 'other')
+        if ext == '.html': return 'badge-html'
+        if ext == '.py': return 'badge-py'
+        if ext == '.js': return 'badge-js'
+        return ''
 
-    # 4. Generate HTML for each file
-    if not sorted_files:
-        html_content += '<p>No files found.</p>'
-    else:
-        for file_data in sorted_files:
-            file_path = file_data['path']
-            # Using the full file path for the compact view
-            app_path_label = file_data['path'] 
-            file_ext = file_data['extension']
-            badge_class = get_badge_class(file_ext)
-            
-            # Extract folder name (first part of path)
-            path_parts = file_path.split('/')
-            if len(path_parts) > 1 and path_parts[0] != '.':
-                folder = path_parts[0]
-            else:
-                folder = 'root'
-            
-            # Add data- attributes for JavaScript sorting and filtering
-            html_content += f"""
-            <div class="app-entry" data-mtime="{file_data['mtime']}" data-name="{file_data['path'].lower()}" data-extension="{file_ext}" data-folder="{folder}">
-                <a href="{file_path}" class="file-link" role="button">
-                    <div class="file-path-container">
-                        <span class="file-type-badge badge-{badge_class}">{file_ext[1:]}</span>
-                        {app_path_label}
-                    </div>
-                    <div class="file-update-info">
-                        Last Update: {file_data['mod_time_str_mtn']} ({file_data['time_since']})
-                    </div>
-                </a>
-            </div>
-"""
+    # 4. Generate HTML cards
+    for file_data in sorted_files:
+        file_path = file_data['path']
+        display_name = file_data['name']
+        folder_display = file_data['folder'] + '/' if file_data['folder'] else ''
+        file_ext = file_data['extension']
+        badge_class = get_badge_class(file_ext)
+        clean_ext = file_ext.replace('.', '').upper()
+        
+        # Determine if "recent" (last 7 days)
+        is_recent = (datetime.now().timestamp() - file_data['mtime']) < (7 * 24 * 3600)
+        recent_attr = "true" if is_recent else "false"
 
-    # End of the app list
-    html_content += "        </div> \n"
-    
-    # --- JavaScript for Sorting, Filtering, Random, and Custom Launcher ---
+        html_content += f"""
+            <a href="{file_path}" class="app-card" data-name="{display_name.lower()}" data-ext="{file_ext}" data-recent="{recent_attr}">
+                <div class="card-header">
+                    <span class="file-type {badge_class}">{clean_ext}</span>
+                    <svg class="arrow-icon" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><line x1="5" y1="12" x2="19" y2="12"></line><polyline points="12 5 19 12 12 19"></polyline></svg>
+                </div>
+                <div class="app-name">{display_name}</div>
+                <span class="app-path">{folder_display}{display_name}</span>
+                <div class="card-footer">
+                    <div class="time-badge">
+                        <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="10"></circle><polyline points="12 6 12 12 16 14"></polyline></svg>
+                        {file_data['time_since']}
+                    </div>
+                </div>
+            </a>"""
+
     html_content += """
+        </div>
+        
+        <button id="randomBtn" class="fab" title="Open Random App">
+            <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><polyline points="16 3 21 3 21 8"></polyline><line x1="4" y1="20" x2="21" y2="3"></line><polyline points="21 16 21 21 16 21"></polyline><line x1="15" y1="15" x2="21" y2="21"></line><line x1="4" y1="4" x2="9" y2="9"></line></svg>
+        </button>
+    </div>
+
     <script>
         document.addEventListener('DOMContentLoaded', () => {
-            const btnSortUpdate = document.getElementById('sortByUpdate');
-            const btnSortName = document.getElementById('sortByName');
-            const appListContainer = document.getElementById('app-list');
             const searchInput = document.getElementById('searchInput');
             const filterButtons = document.querySelectorAll('.filter-btn');
+            const appList = document.getElementById('appList');
+            const cards = document.querySelectorAll('.app-card');
+            const fileCountEl = document.getElementById('fileCount');
             const randomBtn = document.getElementById('randomBtn');
-            const launchBtn = document.getElementById('launchBtn');
-            const customFileInput = document.getElementById('customFileInput');
-            const hideSubfoldersCheckbox = document.getElementById('hideSubfolders');
-            
-            let currentFilter = '.html'; // Default to HTML
-            let hideSubfolders = true; // Default to hiding subfolders
-            
-            // Load preferences from localStorage
-            function loadPreferences() {
-                const savedPrefs = localStorage.getItem('indexPreferences');
-                if (savedPrefs) {
-                    try {
-                        const prefs = JSON.parse(savedPrefs);
-                        hideSubfolders = prefs.hideSubfolders !== undefined ? prefs.hideSubfolders : true;
-                        if (hideSubfoldersCheckbox) hideSubfoldersCheckbox.checked = hideSubfolders;
-                    } catch (e) {
-                        // If parsing fails, use defaults
-                        hideSubfolders = true;
+
+            let currentFilter = 'all';
+
+            function filterApps() {
+                const query = searchInput.value.toLowerCase();
+                let visibleCount = 0;
+
+                cards.forEach(card => {
+                    const name = card.dataset.name;
+                    const ext = card.dataset.ext;
+                    const isRecent = card.dataset.recent === 'true';
+                    
+                    const matchesSearch = name.includes(query);
+                    let matchesFilter = true;
+
+                    if (currentFilter === 'recent') {
+                        matchesFilter = isRecent;
+                    } else if (currentFilter !== 'all') {
+                        matchesFilter = ext === currentFilter;
                     }
-                } else {
-                    // Set defaults if no preferences saved
-                    hideSubfolders = true;
-                }
-            }
-            
-            // Save preferences to localStorage
-            function savePreferences() {
-                const prefs = {
-                    hideSubfolders: hideSubfolders
-                };
-                localStorage.setItem('indexPreferences', JSON.stringify(prefs));
-            }
-            
-            // Update hideSubfolders setting based on checkbox
-            function updateFolderVisibility() {
-                hideSubfolders = hideSubfoldersCheckbox.checked;
-                savePreferences();
-                applyFilters();
-            }
-            
-            function sortItems(criteria) {
-                const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
-                
-                let sortedItems;
 
-                if (criteria === 'name') {
-                    sortedItems = items.sort((a, b) => {
-                        return a.dataset.name.localeCompare(b.dataset.name);
-                    });
-                    btnSortName.classList.add('active');
-                    btnSortUpdate.classList.remove('active');
-                } else {
-                    sortedItems = items.sort((a, b) => {
-                        return b.dataset.mtime - a.dataset.mtime;
-                    });
-                    btnSortUpdate.classList.add('active');
-                    btnSortName.classList.remove('active');
-                }
-
-                sortedItems.forEach(item => {
-                    appListContainer.appendChild(item);
-                });
-            }
-            
-            function applyFilters() {
-                const searchTerm = searchInput.value.toLowerCase();
-                const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
-                
-                items.forEach(item => {
-                    const itemName = item.dataset.name;
-                    const updateInfo = item.querySelector('.file-update-info').textContent.toLowerCase();
-                    const extension = item.dataset.extension;
-                    const folder = item.dataset.folder;
-                    
-                    // Check if item matches search term
-                    const matchesSearch = !searchTerm || itemName.includes(searchTerm) || updateInfo.includes(searchTerm);
-                    
-                    // Check if item matches file type filter
-                    const matchesFilter = currentFilter === 'all' || extension === currentFilter;
-                    
-                    // Check if folder should be visible (root is always visible)
-                    const folderVisible = !hideSubfolders || folder === 'root';
-                    
-                    // Show item only if it matches all filters
-                    if (matchesSearch && matchesFilter && folderVisible) {
-                        item.style.display = 'flex';
+                    if (matchesSearch && matchesFilter) {
+                        card.classList.remove('hidden');
+                        visibleCount++;
                     } else {
-                        item.style.display = 'none';
-                    }
-                });
-            }
-            
-            function setFileTypeFilter(filter) {
-                currentFilter = filter;
-                
-                // Update active state of filter buttons
-                filterButtons.forEach(btn => {
-                    if (btn.dataset.filter === filter) {
-                        btn.classList.add('active');
-                    } else {
-                        btn.classList.remove('active');
+                        card.classList.add('hidden');
                     }
                 });
                 
-                applyFilters();
-            }
-            
-            function getVisibleFiles() {
-                const items = Array.from(appListContainer.querySelectorAll('.app-entry'));
-                return items.filter(item => item.style.display !== 'none');
-            }
-            
-            function openRandomFile() {
-                const visibleFiles = getVisibleFiles();
-                if (visibleFiles.length === 0) {
-                    alert('No files match the current filter!');
-                    return;
-                }
-                
-                const randomIndex = Math.floor(Math.random() * visibleFiles.length);
-                const randomFile = visibleFiles[randomIndex];
-                const fileLink = randomFile.querySelector('.file-link');
-                
-                if (fileLink && fileLink.href) {
-                    window.location.href = fileLink.href;
-                }
-            }
-            
-            function launchCustomFile() {
-                const filename = customFileInput.value.trim();
-                if (!filename) {
-                    alert('Please enter a filename!');
-                    return;
-                }
-                
-                // Add .html extension if no extension is provided
-                let finalFilename = filename;
-                if (!filename.includes('.')) {
-                    finalFilename = filename + '.html';
-                }
-                
-                // Construct the URL
-                const baseUrl = 'https://vercel-one-phi-42.vercel.app/';
-                const url = baseUrl + finalFilename;
-                
-                // Open in current window
-                window.location.href = url;
+                fileCountEl.textContent = `${visibleCount} Apps`;
             }
 
-            // Add event listeners
-            btnSortUpdate.addEventListener('click', () => sortItems('update'));
-            btnSortName.addEventListener('click', () => sortItems('name'));
-            searchInput.addEventListener('keyup', applyFilters);
-            
             filterButtons.forEach(btn => {
                 btn.addEventListener('click', () => {
-                    setFileTypeFilter(btn.dataset.filter);
+                    filterButtons.forEach(b => b.classList.remove('active'));
+                    btn.classList.add('active');
+                    currentFilter = btn.dataset.filter;
+                    filterApps();
                 });
             });
+
+            searchInput.addEventListener('input', filterApps);
             
-            // Folder visibility checkbox event listener
-            if (hideSubfoldersCheckbox) {
-                hideSubfoldersCheckbox.addEventListener('change', updateFolderVisibility);
-            }
-            
-            // Random button event listener
-            randomBtn.addEventListener('click', openRandomFile);
-            
-            // Custom launcher event listeners
-            launchBtn.addEventListener('click', launchCustomFile);
-            customFileInput.addEventListener('keypress', (e) => {
-                if (e.key === 'Enter') {
-                    launchCustomFile();
+            // Random Button
+            randomBtn.addEventListener('click', () => {
+                const visible = Array.from(cards).filter(c => !c.classList.contains('hidden'));
+                if (visible.length > 0) {
+                    const randomCard = visible[Math.floor(Math.random() * visible.length)];
+                    window.location.href = randomCard.href;
                 }
             });
 
-            // Load preferences from localStorage
-            loadPreferences();
-            
-            // Initial setup: Sort and then apply the default filter
-            sortItems('update'); 
-            setFileTypeFilter(currentFilter);
-            
-            // Update time since generation
-            function updateTimeSince() {
-                const generationTime = new Date('GENERATION_TIME_ISO_PLACEHOLDER');
-                const now = new Date();
-                const diffMs = now - generationTime;
-                const diffSeconds = Math.floor(diffMs / 1000);
-                
-                let timeSinceText = '';
-                if (diffSeconds < 60) {
-                    timeSinceText = '(Just now)';
-                } else if (diffSeconds < 3600) {
-                    const minutes = Math.floor(diffSeconds / 60);
-                    timeSinceText = `(` + minutes + ` minute` + (minutes > 1 ? 's' : '') + ` ago)`;
-                } else if (diffSeconds < 86400) {
-                    const hours = Math.floor(diffSeconds / 3600);
-                    timeSinceText = `(` + hours + ` hour` + (hours > 1 ? 's' : '') + ` ago)`;
-                } else {
-                    const days = Math.floor(diffSeconds / 86400);
-                    timeSinceText = `(` + days + ` day` + (days > 1 ? 's' : '') + ` ago)`;
-                }
-                
-                document.getElementById('timeSince').textContent = timeSinceText;
-            }
-            
-            updateTimeSince();
-            // Update every minute
-            setInterval(updateTimeSince, 60000);
-            
-            // About modal functions
-            window.openAboutModal = function() {
-                document.getElementById('aboutModal').classList.add('open');
-            };
-            
-            window.closeAboutModal = function() {
-                document.getElementById('aboutModal').classList.remove('open');
-            };
-            
-            // Close modal when clicking outside of it
-            document.getElementById('aboutModal').addEventListener('click', function(e) {
-                if (e.target === this) {
-                    this.classList.remove('open');
-                }
-            });
+            // Initial count
+            filterApps();
         });
     </script>
-"""
-    # --- End of JavaScript ---
-
-    # End of the HTML content
-    html_content += """
-    </div> </body>
+</body>
 </html>
 """
 
-    # Replace the timestamp placeholder
     html_content = html_content.replace('GENERATION_TIME_ISO_PLACEHOLDER', generation_time_iso)
 
-    # Write the content to the specified output file
     with open(output_file, 'w', encoding='utf-8') as f:
         f.write(html_content)
 
-    print(f"Successfully generated {output_file} with {len(sorted_files)} links, sorting, and search controls.")
+    print(f"Successfully generated {output_file} with modern UI.")
 
 if __name__ == "__main__":
     generate_html_index()
+    update_home_html()
