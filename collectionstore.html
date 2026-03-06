@@ -1,0 +1,413 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Collection → Supabase</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>💾</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #020617; color: #e5e7eb; }
+    .glass { background: rgba(15,23,42,0.85); backdrop-filter: blur(14px); border: 1px solid rgba(148,163,184,0.35); }
+    .log-box { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", "Courier New", monospace; }
+  </style>
+</head>
+<body class="min-h-screen bg-slate-950 bg-gradient-to-b from-slate-950 via-slate-900 to-slate-950 pb-24">
+
+  <header class="sticky top-0 z-20 border-b border-slate-800/80 bg-slate-950/80 backdrop-blur-xl">
+    <div class="max-w-4xl mx-auto px-4 py-3 flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="w-9 h-9 rounded-2xl bg-indigo-600 flex items-center justify-center text-white text-xl">💾</div>
+        <div>
+          <h1 class="text-lg font-black tracking-tight text-slate-100">BGG Collection → Supabase</h1>
+          <p class="text-[10px] font-bold tracking-[0.16em] uppercase text-slate-500">One table, full game records</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2 text-xs">
+        <span class="inline-flex items-center gap-1 px-2 py-1 rounded-full bg-slate-900 border border-slate-700">
+          <span class="w-2 h-2 rounded-full bg-slate-600" id="supabaseDot"></span>
+          <span class="font-semibold text-slate-300" id="supabaseStatus">Connecting…</span>
+        </span>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto p-4 space-y-4">
+    <!-- Control Card -->
+    <section class="glass rounded-3xl p-5 shadow-xl space-y-4">
+      <div class="flex flex-col md:flex-row md:items-end md:justify-between gap-4">
+        <div class="space-y-2 flex-1">
+          <label class="text-[10px] font-black uppercase tracking-[0.16em] text-slate-400">BGG Username</label>
+          <input id="username" type="text" value="sportomax" placeholder="BGG username" class="w-full px-4 py-2.5 rounded-2xl bg-slate-900/60 border border-slate-700 text-sm text-slate-100 placeholder:text-slate-500 focus:outline-none focus:ring-2 focus:ring-indigo-500" />
+        </div>
+        <div class="flex flex-col gap-2 w-full md:w-56">
+          <button id="runBtn" class="w-full px-4 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-sm font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-indigo-600/30 transition disabled:opacity-50 disabled:cursor-not-allowed" disabled>
+            Fetch & Save to Supabase
+          </button>
+          <div class="flex items-center justify-between text-[11px] text-slate-400">
+            <span>Total games: <span id="totalGames">0</span></span>
+            <span>Saved rows: <span id="savedRows">0</span></span>
+          </div>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <div class="flex items-center justify-between text-[11px] text-slate-400">
+          <span id="statusText">Waiting for Supabase…</span>
+          <span id="progressLabel"></span>
+        </div>
+        <div class="w-full h-1.5 rounded-full bg-slate-900 overflow-hidden">
+          <div id="progressBar" class="h-full w-0 bg-gradient-to-r from-indigo-400 via-sky-400 to-emerald-400 transition-all"></div>
+        </div>
+      </div>
+    </section>
+
+    <!-- Log Card -->
+    <section class="glass rounded-3xl p-4 shadow-xl">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="text-xs font-black uppercase tracking-[0.2em] text-slate-400">Activity Log</h2>
+        <button id="clearLogBtn" class="text-[10px] font-semibold text-slate-400 hover:text-slate-200">Clear</button>
+      </div>
+      <div id="log" class="log-box text-[11px] leading-relaxed text-slate-300 bg-slate-950/60 border border-slate-800 rounded-2xl p-3 h-64 overflow-y-auto"></div>
+    </section>
+
+    <!-- Info Card -->
+    <section class="glass rounded-3xl p-4 text-[11px] text-slate-400 space-y-2">
+      <p class="font-semibold text-slate-200">Supabase table name: <span class="font-mono text-emerald-300">bgg_collection</span></p>
+      <p>This page reads your live BGG collection (using the same fields as collection.html) and upserts one consolidated row per game into a single Supabase table.</p>
+    </section>
+  </main>
+
+<script>
+  const API_BASE = '/api/bgg-helper';
+  const TABLE_NAME = 'bgg_collection';
+  const state = {
+    db: null,
+    isRunning: false,
+    totalGames: 0,
+    savedRows: 0,
+  };
+
+  function log(msg) {
+    const el = document.getElementById('log');
+    const time = new Date().toLocaleTimeString();
+    const line = document.createElement('div');
+    line.innerHTML = `<span class="text-slate-500">[${time}]</span> ${msg}`;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  function setStatus(msg) {
+    document.getElementById('statusText').textContent = msg;
+  }
+
+  function setProgress(pct, label = '') {
+    document.getElementById('progressBar').style.width = `${Math.max(0, Math.min(100, pct))}%`;
+    document.getElementById('progressLabel').textContent = label;
+  }
+
+  function setCounts(total, saved) {
+    if (typeof total === 'number') {
+      state.totalGames = total;
+      document.getElementById('totalGames').textContent = total;
+    }
+    if (typeof saved === 'number') {
+      state.savedRows = saved;
+      document.getElementById('savedRows').textContent = saved;
+    }
+  }
+
+  async function initSupabase() {
+    try {
+      const dot = document.getElementById('supabaseDot');
+      const label = document.getElementById('supabaseStatus');
+      const res = await fetch('/api/supabase-config');
+      if (!res.ok) {
+        const body = await res.text().catch(() => '(no body)');
+        throw new Error(`HTTP ${res.status} when fetching /api/supabase-config: ${body.slice(0,200)}`);
+      }
+      const contentType = res.headers.get('content-type') || '';
+      if (!contentType.includes('application/json')) {
+        const body = await res.text().catch(() => '(no body)');
+        throw new Error(`Expected JSON but got ${contentType}: ${body.slice(0,200)}`);
+      }
+      const cfg = await res.json();
+      state.db = supabase.createClient(cfg.url, cfg.anonKey);
+      dot.classList.remove('bg-slate-600');
+      dot.classList.add('bg-emerald-400');
+      label.textContent = 'Connected';
+      setStatus('Ready. Enter a BGG username and click Fetch & Save.');
+      document.getElementById('runBtn').disabled = false;
+    } catch (err) {
+      console.error(err);
+      const dot = document.getElementById('supabaseDot');
+      const label = document.getElementById('supabaseStatus');
+      dot.classList.remove('bg-slate-600');
+      dot.classList.add('bg-red-500');
+      label.textContent = 'Supabase error';
+      setStatus('Failed to load Supabase config. Check /api/supabase-config or run vercel dev.');
+      log('Supabase init failed: ' + err.message);
+    }
+  }
+
+  async function fetchWithRetry(url, maxRetries = 5) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (res.status === 202) {
+          log(`BGG queued (202). Retry in 3s…`);
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        if (res.ok) return await res.text();
+        log(`HTTP ${res.status} from BGG. Backing off…`);
+        await new Promise(r => setTimeout(r, 2000));
+      } catch (e) {
+        log(`Network error: ${e.message}. Retrying…`);
+        await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt)));
+      }
+    }
+    throw new Error('Failed to fetch from BGG after retries');
+  }
+
+  async function run() {
+    if (!state.db || state.isRunning) return;
+    const username = (document.getElementById('username').value || '').trim();
+    if (!username) {
+      alert('Enter a BGG username');
+      return;
+    }
+
+    state.isRunning = true;
+    document.getElementById('runBtn').disabled = true;
+    setCounts(0, 0);
+    setProgress(0, 'Starting…');
+    setStatus('Fetching collection from BGG…');
+    log(`Starting sync for ${username}…`);
+
+    try {
+      // STEP 1: collection.xml
+      const collUrl = `${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}&own=1`;
+      log(`GET ${collUrl}`);
+      const collXml = await fetchWithRetry(collUrl);
+      const collDoc = new DOMParser().parseFromString(collXml, 'text/xml');
+      const collItems = Array.from(collDoc.querySelectorAll('item'));
+      if (!collItems.length) {
+        setStatus('No games found in collection.');
+        log('No games found in collection.');
+        return;
+      }
+
+      // Map BGG collection flags we merge into the main rows
+      const collectionMap = {};
+      collItems.forEach(it => {
+        const oid = it.getAttribute('objectid') || it.getAttribute('id');
+        if (!oid) return;
+        const statusNode = it.querySelector('status');
+        const getFlag = (name) => {
+          const a = it.getAttribute(name);
+          if (a !== null) return parseInt(a || '0', 10) || 0;
+          const s = statusNode ? statusNode.getAttribute(name) : null;
+          if (s !== null) return parseInt(s || '0', 10) || 0;
+          return 0;
+        };
+        collectionMap[oid] = {
+          own: getFlag('own'),
+          prevowned: getFlag('prevowned'),
+          fortrade: getFlag('fortrade'),
+          want: getFlag('want'),
+          wanttoplay: getFlag('wanttoplay'),
+          wanttobuy: getFlag('wanttobuy'),
+          wishlist: getFlag('wishlist'),
+          preordered: getFlag('preordered'),
+          lastmodified: it.getAttribute('lastmodified') || (statusNode ? statusNode.getAttribute('lastmodified') || '' : '')
+        };
+      });
+
+      const objectIds = collItems.map(i => i.getAttribute('objectid')).filter(Boolean);
+      setCounts(objectIds.length, 0);
+      setProgress(8, `Collection: ${objectIds.length} games`);
+      setStatus('Fetching detailed game data…');
+
+      // STEP 2: thing?id=… with stats=1, batching like collection.html
+      const batchSize = 20;
+      const batches = [];
+      for (let i = 0; i < objectIds.length; i += batchSize) {
+        batches.push(objectIds.slice(i, i + batchSize));
+      }
+
+      const allRows = [];
+
+      // Process thing() batches with concurrency control: 100 parallel requests, each batch contains up to 20 ids
+      const CONCURRENCY = 100;
+      async function processBatch(batchIds) {
+        const ids = batchIds.join(',');
+        const url = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`;
+        log(`GET ${url}`);
+        const xml = await fetchWithRetry(url);
+        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+        const rows = [];
+        Array.from(doc.querySelectorAll('item')).forEach(item => {
+          const id = item.getAttribute('id');
+          if (!id) return;
+          const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || item.querySelector('name')?.textContent || '';
+          const thumb = item.querySelector('thumbnail')?.textContent || '';
+          const image = item.querySelector('image')?.textContent || '';
+          const desc = (item.querySelector('description')?.textContent || '').trim();
+          const year = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0', 10) || 0;
+          const minplayers = parseInt(item.querySelector('minplayers')?.getAttribute('value') || '0', 10) || 0;
+          const maxplayers = parseInt(item.querySelector('maxplayers')?.getAttribute('value') || '0', 10) || 0;
+          const minplaytime = parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0', 10) || 0;
+          const maxplaytime = parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0', 10) || 0;
+          const minage = parseInt(item.querySelector('minage')?.getAttribute('value') || '0', 10) || 0;
+          const ratings = item.querySelector('statistics ratings') || item.querySelector('statistics > ratings');
+          const num = (el) => el ? parseFloat(el.getAttribute('value') || el.textContent || '0') || 0 : 0;
+          const numInt = (el) => el ? parseInt(el.getAttribute('value') || el.textContent || '0', 10) || 0 : 0;
+          const bggRating = ratings ? num(ratings.querySelector('average')) : 0;
+          const bayesaverage = ratings ? num(ratings.querySelector('bayesaverage')) : 0;
+          const userRated = ratings ? numInt(ratings.querySelector('usersrated')) : 0;
+          const stddev = ratings ? num(ratings.querySelector('stddev')) : 0;
+          const median = ratings ? num(ratings.querySelector('median')) : 0;
+          const owned = ratings ? numInt(ratings.querySelector('owned')) : 0;
+          const trading = ratings ? numInt(ratings.querySelector('trading')) : 0;
+          const wanting = ratings ? numInt(ratings.querySelector('wanting')) : 0;
+          const wishing = ratings ? numInt(ratings.querySelector('wishing')) : 0;
+          const numcomments = ratings ? numInt(ratings.querySelector('numcomments')) : 0;
+          const numweights = ratings ? numInt(ratings.querySelector('numweights')) : 0;
+          const avgweight = ratings ? num(ratings.querySelector('averageweight')) : 0;
+          const ranksNode = ratings ? ratings.querySelector('ranks') : null;
+          const primaryRank = ranksNode ? (ranksNode.querySelector('rank[type="subtype"]')?.getAttribute('value') || '') : '';
+          const familyRank = ranksNode ? (ranksNode.querySelector('rank[type="family"]')?.getAttribute('value') || '') : '';
+          const allRanks = {};
+          if (ranksNode) {
+            Array.from(ranksNode.querySelectorAll('rank')).forEach(r => {
+              const fname = (r.getAttribute('friendlyname') || r.getAttribute('name') || '').trim();
+              const value = r.getAttribute('value') || '';
+              if (fname && value) allRanks[fname] = value;
+            });
+          }
+          const categories = Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value'));
+          const mechanics = Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value'));
+          let bestwith = '';
+          let recommendedwith = '';
+          try {
+            const ps = item.querySelector('poll-summary[name="suggested_numplayers"], poll-summary');
+            if (ps) {
+              const b = ps.querySelector('result[name="bestwith"]')?.getAttribute('value') || ps.querySelector('result[name="bestwith"]')?.textContent || '';
+              const r = ps.querySelector('result[name="recommendedwith"]')?.getAttribute('value')
+                || ps.querySelector('result[name="recommendedwith"]')?.textContent
+                || ps.querySelector('result[name="recommmendedwith"]')?.getAttribute('value')
+                || ps.querySelector('result[name="recommmendedwith"]')?.textContent
+                || '';
+              if (b) bestwith = b;
+              if (r) recommendedwith = r;
+            }
+          } catch (_) {}
+          const coll = collectionMap[id] || {};
+          const row = {
+            bgg_id: parseInt(id, 10),
+            name,
+            year,
+            minplayers,
+            maxplayers,
+            minplaytime,
+            maxplaytime,
+            minage,
+            bgg_rating: bggRating,
+            bayesaverage,
+            user_rated: userRated,
+            stddev,
+            median,
+            owned,
+            trading,
+            wanting,
+            wishing,
+            numcomments,
+            numweights,
+            avgweight,
+            primary_rank: primaryRank ? parseInt(primaryRank, 10) || null : null,
+            family_rank: familyRank ? parseInt(familyRank, 10) || null : null,
+            all_ranks: allRanks,
+            categories,
+            mechanics,
+            bestwith,
+            recommendedwith,
+            own: coll.own || 0,
+            prevowned: coll.prevowned || 0,
+            fortrade: coll.fortrade || 0,
+            want: coll.want || 0,
+            wanttoplay: coll.wanttoplay || 0,
+            wanttobuy: coll.wanttobuy || 0,
+            wishlist: coll.wishlist || 0,
+            preordered: coll.preordered || 0,
+            lastmodified: coll.lastmodified || '',
+            thumb,
+            image,
+            description: desc,
+            xml: new XMLSerializer().serializeToString(item),
+          };
+          rows.push(row);
+        });
+        return rows;
+      }
+
+      // run batches in groups of CONCURRENCY parallel requests
+      let processed = 0;
+      for (let i = 0; i < batches.length; i += CONCURRENCY) {
+        const group = batches.slice(i, i + CONCURRENCY);
+        const promises = group.map(batchIds => processBatch(batchIds));
+        const results = await Promise.all(promises);
+        results.forEach(r => allRows.push(...r));
+        processed += group.length;
+        const pct = 8 + (processed / batches.length) * 52; // 8-60%
+        setProgress(pct, `BGG details ${processed}/${batches.length} batches`);
+        setStatus(`Fetched ${processed}/${batches.length} batches from BGG…`);
+      }
+
+      setCounts(allRows.length, 0);
+      log(`Parsed ${allRows.length} game records from BGG.`);
+      setStatus('Saving to Supabase (upsert)…');
+
+      // STEP 3: upsert into Supabase in batches
+      const BATCH_SIZE = 50;
+      let saved = 0;
+      for (let i = 0; i < allRows.length; i += BATCH_SIZE) {
+        const batch = allRows.slice(i, i + BATCH_SIZE);
+        const { error } = await state.db
+          .from(TABLE_NAME)
+          .upsert(batch, { onConflict: 'bgg_id' });
+        if (error) {
+          log(`Supabase error on batch ${Math.floor(i / BATCH_SIZE) + 1}: ${error.message}`);
+          throw error;
+        }
+        saved += batch.length;
+        setCounts(undefined, saved);
+        const pct = 60 + ((i + batch.length) / allRows.length) * 40; // 60-100%
+        setProgress(pct, `Saved ${saved}/${allRows.length}`);
+        log(`Saved batch ${Math.floor(i / BATCH_SIZE) + 1} (${batch.length} rows)…`);
+      }
+
+      setProgress(100, `Done: ${saved} rows`);
+      setStatus('Completed. All games saved to Supabase.');
+      log('Sync complete ✔');
+    } catch (err) {
+      console.error(err);
+      setStatus('Error during sync. See log for details.');
+      log('ERROR: ' + err.message);
+    } finally {
+      state.isRunning = false;
+      document.getElementById('runBtn').disabled = !state.db;
+    }
+  }
+
+  document.getElementById('runBtn').addEventListener('click', run);
+  document.getElementById('clearLogBtn').addEventListener('click', () => {
+    document.getElementById('log').innerHTML = '';
+  });
+
+  document.addEventListener('DOMContentLoaded', initSupabase);
+</script>
+
+</body>
+</html>
