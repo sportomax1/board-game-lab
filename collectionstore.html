@@ -71,8 +71,8 @@
 
   <!-- Stored Data Modal -->
   <div id="storedModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60">
-    <div class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 w-11/12 max-w-4xl rounded-lg p-4 overflow-auto max-h-[80vh]">
-      <div class="flex items-center justify-between mb-3">
+    <div class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 w-11/12 max-w-6xl rounded-lg p-4 overflow-auto max-h-[85vh]">
+      <div class="flex items-center justify-between mb-3 gap-2">
         <h3 class="font-bold">Stored BGG Collection</h3>
         <div class="flex items-center gap-2">
           <input id="addIdInput" type="number" placeholder="Add BGG ID" class="px-2 py-1 rounded border" />
@@ -80,16 +80,37 @@
           <button id="storedClose" class="px-2 py-1 bg-slate-200 rounded">Close</button>
         </div>
       </div>
-      <div class="space-y-2">
-        <div class="flex items-center justify-between">
-          <div class="text-sm text-slate-500">Showing up to 200 rows</div>
+      <div class="space-y-3">
+        <div class="flex items-center justify-between gap-2">
           <div class="flex items-center gap-2">
-            <button id="refreshStored" class="px-2 py-1 bg-slate-800 text-white rounded text-xs">Refresh</button>
-            <button id="clearTableBtn" class="px-2 py-1 bg-red-600 text-white rounded text-xs">Delete All</button>
+            <input id="storedSearch" placeholder="Search all columns" class="px-3 py-2 rounded border w-72" />
+            <select id="storedColumn" class="px-2 py-2 rounded border text-sm">
+              <option value="__all">All columns</option>
+            </select>
+            <button id="refreshStored" class="px-2 py-2 bg-slate-800 text-white rounded text-xs">Refresh</button>
+            <button id="clearTableBtn" class="px-2 py-2 bg-red-600 text-white rounded text-xs">Delete All</button>
           </div>
+          <div class="text-sm text-slate-500">Showing up to 1000 rows</div>
         </div>
-        <div id="storedList" class="text-sm font-mono overflow-auto max-h-[60vh]"></div>
+
+        <div id="storedTableWrap" class="overflow-auto border rounded"> 
+          <table id="storedTable" class="min-w-full text-sm">
+            <thead id="storedTableHead" class="bg-slate-100 text-left text-xs"></thead>
+            <tbody id="storedTableBody" class="font-mono"></tbody>
+          </table>
+        </div>
       </div>
+    </div>
+  </div>
+
+  <!-- Row detail modal -->
+  <div id="rowDetailModal" class="fixed inset-0 z-60 hidden items-center justify-center bg-black/70">
+    <div class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 w-11/12 max-w-3xl rounded-lg p-4 overflow-auto max-h-[80vh]">
+      <div class="flex items-center justify-between mb-2">
+        <h4 class="font-bold">Row Detail</h4>
+        <button id="rowDetailClose" class="px-2 py-1 bg-slate-200 rounded">Close</button>
+      </div>
+      <pre id="rowDetailPre" class="text-xs font-mono whitespace-pre-wrap"></pre>
     </div>
   </div>
 
@@ -444,7 +465,7 @@
 
   document.addEventListener('DOMContentLoaded', initSupabase);
   
-  // Stored modal wiring
+  // Stored modal wiring and full-table viewer
   document.getElementById('viewStoredBtn').addEventListener('click', openStoredModal);
   document.getElementById('storedClose').addEventListener('click', () => document.getElementById('storedModal').classList.add('hidden'));
   document.getElementById('refreshStored').addEventListener('click', loadStoredData);
@@ -455,6 +476,10 @@
     addRowById(id);
   });
 
+  document.getElementById('storedSearch').addEventListener('input', renderStoredTable);
+  document.getElementById('storedColumn').addEventListener('change', renderStoredTable);
+  document.getElementById('rowDetailClose').addEventListener('click', () => document.getElementById('rowDetailModal').classList.add('hidden'));
+
   async function openStoredModal() {
     if (!state.db) return alert('Supabase not connected');
     document.getElementById('storedModal').classList.remove('hidden');
@@ -462,35 +487,66 @@
   }
 
   async function loadStoredData() {
-    const out = document.getElementById('storedList');
-    out.innerHTML = 'Loading...';
-    const { data, error } = await state.db.from(TABLE_NAME).select('*').order('bgg_id', { ascending: true }).limit(200);
-    if (error) { out.innerHTML = 'Error: ' + error.message; return; }
-    if (!data || data.length === 0) { out.innerHTML = '<div class="text-slate-500">No rows</div>'; return; }
-    out.innerHTML = data.map(r => {
-      const safeName = (r.name || '').replace(/</g,'&lt;');
-      return `
-        <div class="p-2 border-b flex items-center justify-between gap-2">
-          <div class="flex-1 min-w-0">
-            <div class="font-bold truncate">${safeName} <span class="text-xs text-slate-500">(#${r.bgg_id})</span></div>
-            <div class="text-xs text-slate-500">Year: ${r.year || 'N/A'} • Rating: ${r.bgg_rating || 'N/A'}</div>
-          </div>
-          <div class="flex items-center gap-2">
-            <button class="px-2 py-1 bg-sky-600 text-white rounded text-xs" onclick="window._cs_viewRow(${r.bgg_id})">View</button>
-            <button class="px-2 py-1 bg-red-600 text-white rounded text-xs" onclick="window._cs_deleteRow(${r.bgg_id})">Delete</button>
-          </div>
-        </div>
-      `;
+    const body = document.getElementById('storedTableBody');
+    const head = document.getElementById('storedTableHead');
+    body.innerHTML = '<tr><td class="p-4">Loading...</td></tr>';
+    head.innerHTML = '';
+    const { data, error } = await state.db.from(TABLE_NAME).select('*').order('bgg_id', { ascending: true }).limit(1000);
+    if (error) { body.innerHTML = `<tr><td class="p-4 text-red-600">Error: ${error.message}</td></tr>`; return; }
+    state.storedData = data || [];
+    populateColumnSelect(state.storedData);
+    renderStoredTable();
+  }
+
+  function populateColumnSelect(rows) {
+    const sel = document.getElementById('storedColumn');
+    sel.innerHTML = '<option value="__all">All columns</option>';
+    if (!rows || rows.length === 0) return;
+    const cols = Object.keys(rows[0]);
+    cols.forEach(c => {
+      const opt = document.createElement('option');
+      opt.value = c; opt.textContent = c; sel.appendChild(opt);
+    });
+  }
+
+  function renderStoredTable() {
+    const rows = state.storedData || [];
+    const q = (document.getElementById('storedSearch').value || '').toLowerCase().trim();
+    const col = document.getElementById('storedColumn').value;
+    const head = document.getElementById('storedTableHead');
+    const body = document.getElementById('storedTableBody');
+    if (!rows || rows.length === 0) { head.innerHTML=''; body.innerHTML='<tr><td class="p-4 text-slate-500">No rows</td></tr>'; return; }
+    const keys = Object.keys(rows[0]);
+    head.innerHTML = '<tr>' + keys.map(k => `<th class="px-2 py-2 border-b">${k}</th>`).join('') + '<th class="px-2 py-2 border-b">Actions</th></tr>';
+
+    const filtered = rows.filter(r => {
+      if (!q) return true;
+      if (col && col !== '__all') {
+        const v = (r[col] === null || r[col] === undefined) ? '' : String(r[col]);
+        return v.toLowerCase().includes(q);
+      }
+      // search across all columns
+      return keys.some(k => {
+        const v = (r[k] === null || r[k] === undefined) ? '' : String(r[k]);
+        return v.toLowerCase().includes(q);
+      });
+    });
+
+    body.innerHTML = filtered.map(r => {
+      const cells = keys.map(k => `<td class="px-2 py-1 border-b align-top"><div class="max-w-[24rem] truncate">${escapeHtml(String(r[k] === null || r[k] === undefined ? '' : r[k]))}</div></td>`).join('');
+      return `<tr>${cells}<td class="px-2 py-1 border-b"><div class="flex gap-2"><button class="px-2 py-1 bg-sky-600 text-white rounded text-xs" onclick="window._cs_viewRow(${r.bgg_id})">View</button><button class="px-2 py-1 bg-red-600 text-white rounded text-xs" onclick="window._cs_deleteRow(${r.bgg_id})">Delete</button></div></td></tr>`;
     }).join('');
   }
 
-  // Expose simple globals for inline onclick handlers
+  function escapeHtml(s) { return s.replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;'); }
+
+  // Expose view/delete to work with table actions
   window._cs_viewRow = async function(id) {
-    const modal = document.getElementById('storedModal');
     const { data, error } = await state.db.from(TABLE_NAME).select('*').eq('bgg_id', id).limit(1).single();
     if (error) return alert('Error: ' + error.message);
     const pretty = JSON.stringify(data, null, 2).replace(/</g,'&lt;');
-    alert(pretty);
+    document.getElementById('rowDetailPre').innerHTML = pretty;
+    document.getElementById('rowDetailModal').classList.remove('hidden');
   };
 
   window._cs_deleteRow = async function(id) {
@@ -519,8 +575,7 @@
       const doc = new DOMParser().parseFromString(xml, 'text/xml');
       const item = doc.querySelector('item');
       if (!item) throw new Error('No item found for id ' + id);
-      // reuse processBatch logic partially
-      const tempRows = await (async function batchParse(it){
+      const tempRows = (function batchParse(it){
         const name = it.querySelector('name[type="primary"]')?.getAttribute('value') || it.querySelector('name')?.textContent || '';
         const thumb = it.querySelector('thumbnail')?.textContent || '';
         const image = it.querySelector('image')?.textContent || '';
