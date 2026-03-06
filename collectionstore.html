@@ -365,15 +365,21 @@
         setStatus(`Fetched ${processed}/${batches.length} batches from BGG…`);
       }
 
-      setCounts(allRows.length, 0);
-      log(`Parsed ${allRows.length} game records from BGG.`);
+      // Deduplicate by bgg_id to avoid ON CONFLICT DO UPDATE errors when
+      // the same id appears more than once inside a single upsert statement.
+      const uniqueMap = new Map();
+      allRows.forEach(r => { if (r && r.bgg_id) uniqueMap.set(Number(r.bgg_id), r); });
+      const dedupedRows = Array.from(uniqueMap.values());
+
+      setCounts(dedupedRows.length, 0);
+      log(`Parsed ${allRows.length} game records from BGG, ${dedupedRows.length} unique.`);
       setStatus('Saving to Supabase (upsert)…');
 
       // STEP 3: upsert into Supabase in batches
       const BATCH_SIZE = 50;
       let saved = 0;
-      for (let i = 0; i < allRows.length; i += BATCH_SIZE) {
-        const batch = allRows.slice(i, i + BATCH_SIZE);
+      for (let i = 0; i < dedupedRows.length; i += BATCH_SIZE) {
+        const batch = dedupedRows.slice(i, i + BATCH_SIZE);
         const { error } = await state.db
           .from(TABLE_NAME)
           .upsert(batch, { onConflict: 'bgg_id' });
@@ -383,8 +389,8 @@
         }
         saved += batch.length;
         setCounts(undefined, saved);
-        const pct = 60 + ((i + batch.length) / allRows.length) * 40; // 60-100%
-        setProgress(pct, `Saved ${saved}/${allRows.length}`);
+        const pct = 60 + ((i + batch.length) / dedupedRows.length) * 40; // 60-100%
+        setProgress(pct, `Saved ${saved}/${dedupedRows.length}`);
         log(`Saved batch ${Math.floor(i / BATCH_SIZE) + 1} (${batch.length} rows)…`);
       }
 
