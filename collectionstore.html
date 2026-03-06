@@ -46,6 +46,12 @@
           <button id="runBtn" class="w-full px-4 py-2.5 rounded-2xl bg-indigo-600 hover:bg-indigo-500 text-sm font-black uppercase tracking-[0.16em] text-white shadow-lg shadow-indigo-600/30 transition disabled:opacity-50 disabled:cursor-not-allowed" disabled>
             Fetch & Save to Supabase
           </button>
+          <div class="flex items-center gap-2 mt-1">
+            <label class="text-xs text-slate-300 flex items-center gap-2"><input id="replaceTable" type="checkbox"> <span>Replace table (DELETE existing)</span></label>
+          </div>
+          <div class="flex items-center gap-2 mt-1">
+            <button id="viewStoredBtn" class="w-full px-3 py-2 rounded-2xl bg-slate-800 hover:bg-slate-700 text-xs font-bold text-slate-200">View Stored Data</button>
+          </div>
           <div class="flex items-center justify-between text-[11px] text-slate-400">
             <span>Total games: <span id="totalGames">0</span></span>
             <span>Saved rows: <span id="savedRows">0</span></span>
@@ -62,6 +68,30 @@
         </div>
       </div>
     </section>
+
+  <!-- Stored Data Modal -->
+  <div id="storedModal" class="fixed inset-0 z-50 hidden items-center justify-center bg-black/60">
+    <div class="bg-white dark:bg-slate-900 text-slate-900 dark:text-slate-100 w-11/12 max-w-4xl rounded-lg p-4 overflow-auto max-h-[80vh]">
+      <div class="flex items-center justify-between mb-3">
+        <h3 class="font-bold">Stored BGG Collection</h3>
+        <div class="flex items-center gap-2">
+          <input id="addIdInput" type="number" placeholder="Add BGG ID" class="px-2 py-1 rounded border" />
+          <button id="addIdBtn" class="px-2 py-1 bg-green-600 text-white rounded">Add</button>
+          <button id="storedClose" class="px-2 py-1 bg-slate-200 rounded">Close</button>
+        </div>
+      </div>
+      <div class="space-y-2">
+        <div class="flex items-center justify-between">
+          <div class="text-sm text-slate-500">Showing up to 200 rows</div>
+          <div class="flex items-center gap-2">
+            <button id="refreshStored" class="px-2 py-1 bg-slate-800 text-white rounded text-xs">Refresh</button>
+            <button id="clearTableBtn" class="px-2 py-1 bg-red-600 text-white rounded text-xs">Delete All</button>
+          </div>
+        </div>
+        <div id="storedList" class="text-sm font-mono overflow-auto max-h-[60vh]"></div>
+      </div>
+    </div>
+  </div>
 
     <!-- Log Card -->
     <section class="glass rounded-3xl p-4 shadow-xl">
@@ -413,6 +443,108 @@
   });
 
   document.addEventListener('DOMContentLoaded', initSupabase);
+  
+  // Stored modal wiring
+  document.getElementById('viewStoredBtn').addEventListener('click', openStoredModal);
+  document.getElementById('storedClose').addEventListener('click', () => document.getElementById('storedModal').classList.add('hidden'));
+  document.getElementById('refreshStored').addEventListener('click', loadStoredData);
+  document.getElementById('clearTableBtn').addEventListener('click', clearTableConfirm);
+  document.getElementById('addIdBtn').addEventListener('click', () => {
+    const id = Number(document.getElementById('addIdInput').value || 0);
+    if (!id) return alert('Enter a valid BGG id');
+    addRowById(id);
+  });
+
+  async function openStoredModal() {
+    if (!state.db) return alert('Supabase not connected');
+    document.getElementById('storedModal').classList.remove('hidden');
+    await loadStoredData();
+  }
+
+  async function loadStoredData() {
+    const out = document.getElementById('storedList');
+    out.innerHTML = 'Loading...';
+    const { data, error } = await state.db.from(TABLE_NAME).select('*').order('bgg_id', { ascending: true }).limit(200);
+    if (error) { out.innerHTML = 'Error: ' + error.message; return; }
+    if (!data || data.length === 0) { out.innerHTML = '<div class="text-slate-500">No rows</div>'; return; }
+    out.innerHTML = data.map(r => {
+      const safeName = (r.name || '').replace(/</g,'&lt;');
+      return `
+        <div class="p-2 border-b flex items-center justify-between gap-2">
+          <div class="flex-1 min-w-0">
+            <div class="font-bold truncate">${safeName} <span class="text-xs text-slate-500">(#${r.bgg_id})</span></div>
+            <div class="text-xs text-slate-500">Year: ${r.year || 'N/A'} • Rating: ${r.bgg_rating || 'N/A'}</div>
+          </div>
+          <div class="flex items-center gap-2">
+            <button class="px-2 py-1 bg-sky-600 text-white rounded text-xs" onclick="window._cs_viewRow(${r.bgg_id})">View</button>
+            <button class="px-2 py-1 bg-red-600 text-white rounded text-xs" onclick="window._cs_deleteRow(${r.bgg_id})">Delete</button>
+          </div>
+        </div>
+      `;
+    }).join('');
+  }
+
+  // Expose simple globals for inline onclick handlers
+  window._cs_viewRow = async function(id) {
+    const modal = document.getElementById('storedModal');
+    const { data, error } = await state.db.from(TABLE_NAME).select('*').eq('bgg_id', id).limit(1).single();
+    if (error) return alert('Error: ' + error.message);
+    const pretty = JSON.stringify(data, null, 2).replace(/</g,'&lt;');
+    alert(pretty);
+  };
+
+  window._cs_deleteRow = async function(id) {
+    if (!confirm('Delete row ' + id + '?')) return;
+    const { error } = await state.db.from(TABLE_NAME).delete().eq('bgg_id', id);
+    if (error) return alert('Delete failed: ' + error.message);
+    log('Deleted row ' + id);
+    await loadStoredData();
+  };
+
+  async function clearTableConfirm() {
+    if (!confirm('Delete ALL rows from the table? This cannot be undone.')) return;
+    setStatus('Deleting all rows…');
+    const { error } = await state.db.from(TABLE_NAME).delete().neq('bgg_id', null);
+    if (error) { log('Delete all failed: ' + error.message); setStatus('Delete failed'); return; }
+    log('All rows deleted');
+    setStatus('All rows deleted');
+    await loadStoredData();
+  }
+
+  // Add a single row by fetching thing API for the given id and upserting
+  async function addRowById(id) {
+    setStatus('Fetching thing ' + id + ' from BGG...');
+    try {
+      const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(id)}&stats=1`);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      const item = doc.querySelector('item');
+      if (!item) throw new Error('No item found for id ' + id);
+      // reuse processBatch logic partially
+      const tempRows = await (async function batchParse(it){
+        const name = it.querySelector('name[type="primary"]')?.getAttribute('value') || it.querySelector('name')?.textContent || '';
+        const thumb = it.querySelector('thumbnail')?.textContent || '';
+        const image = it.querySelector('image')?.textContent || '';
+        const desc = (it.querySelector('description')?.textContent || '').trim();
+        const year = parseInt(it.querySelector('yearpublished')?.getAttribute('value') || '0', 10) || 0;
+        const ratings = it.querySelector('statistics ratings') || it.querySelector('statistics > ratings');
+        const num = (el) => el ? parseFloat(el.getAttribute('value') || el.textContent || '0') || 0 : 0;
+        const numInt = (el) => el ? parseInt(el.getAttribute('value') || el.textContent || '0', 10) || 0 : 0;
+        const bggRating = ratings ? num(ratings.querySelector('average')) : 0;
+        const allRanks = {};
+        const ranksNode = ratings ? ratings.querySelector('ranks') : null;
+        if (ranksNode) Array.from(ranksNode.querySelectorAll('rank')).forEach(r => { const fname = (r.getAttribute('friendlyname')||r.getAttribute('name')||'').trim(); const value = r.getAttribute('value')||''; if (fname && value) allRanks[fname]=value; });
+        return [{ bgg_id: Number(id), name, year, bgg_rating: bggRating, all_ranks: allRanks, thumb, image, description: desc }];
+      })(item);
+      const { error } = await state.db.from(TABLE_NAME).upsert(tempRows, { onConflict: 'bgg_id' });
+      if (error) throw error;
+      log('Added/updated id ' + id);
+      await loadStoredData();
+      setStatus('Added id ' + id);
+    } catch (e) {
+      log('Add failed: ' + e.message);
+      setStatus('Add failed');
+    }
+  }
 </script>
 
 </body>
