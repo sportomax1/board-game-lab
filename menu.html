@@ -40,7 +40,8 @@
     <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
       <div class="flex gap-2 mb-4 border-b">
         <button id="tabCollection" onclick="switchTab('collection')" class="px-4 py-2 font-bold border-b-2 border-indigo-600 text-indigo-600">BGG Collection</button>
-        <button id="tabCSV" onclick="switchTab('csv')" class="px-4 py-2 font-bold text-slate-500 hover:text-slate-700">CSV Upload</button>
+        <button id="tabCsv" onclick="switchTab('csv')" class="px-4 py-2 font-bold text-slate-500 hover:text-slate-700">CSV Upload</button>
+        <button id="tabBoth" onclick="switchTab('both')" class="px-4 py-2 font-bold text-slate-500 hover:text-slate-700">&#9889; BGG + CSV</button>
       </div>
       
       <!-- BGG Collection Tab -->
@@ -65,6 +66,28 @@
           <p class="text-blue-900 font-semibold mb-2">💾 Quick Export from BGG</p>
           <a href="https://boardgamegeek.com/geekcollection.php?action=exportcsv&subtype=boardgame&all=1" target="_blank" class="text-blue-600 hover:text-blue-700 hover:underline font-medium">Export your collection as CSV from BGG →</a>
           <p class="text-blue-700 text-xs mt-2">Then upload the file above to sort by any column in your collection data.</p>
+        </div>
+      </div>
+
+      <!-- BGG + CSV Tab -->
+      <div id="bothTab" class="hidden">
+        <h2 class="text-lg font-bold mb-1">Load BGG Collection + CSV</h2>
+        <p class="text-sm text-slate-500 mb-3">Merges full BGG API data (ratings, weight, playtime, player counts) with your CSV's extra columns (personal rating, notes, etc.). CSV must have an <code class="bg-slate-100 px-1 rounded">objectid</code> column.</p>
+        <div class="grid grid-cols-1 md:grid-cols-2 gap-3 mb-3">
+          <div>
+            <label class="text-xs font-bold text-slate-500 mb-1 block">BGG Username</label>
+            <input id="bothUsername" type="text" value="sportomax" placeholder="BGG username" class="w-full px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-violet-500 outline-none text-sm">
+          </div>
+          <div>
+            <label class="text-xs font-bold text-slate-500 mb-1 block">CSV File</label>
+            <input type="file" id="bothCsvFile" accept=".csv" class="w-full px-4 py-2 rounded-lg border border-slate-200 text-sm">
+          </div>
+        </div>
+        <button onclick="loadBoth()" id="bothBtn" class="bg-violet-600 hover:bg-violet-700 text-white px-6 py-2 rounded-lg font-bold transition w-full">Load Both</button>
+        <div class="bg-violet-50 border border-violet-200 rounded-lg p-3 text-sm mt-3">
+          <p class="text-violet-900 font-semibold mb-1">💡 Maximum sort options</p>
+          <p class="text-violet-700 text-xs">Use your BGG export CSV to unlock personal rating, wishlist priority, comment, and more — combined with all BGG API fields for the most sort options possible.</p>
+          <a href="https://boardgamegeek.com/geekcollection.php?action=exportcsv&subtype=boardgame&all=1" target="_blank" class="text-violet-600 hover:underline font-medium text-xs mt-1 block">Export BGG collection CSV →</a>
         </div>
       </div>
     </div>
@@ -230,7 +253,29 @@ const collectionSortFields = [
 let sortFields = [...collectionSortFields];
 
 let isCSVMode = false;
+let isBothMode = false;
 let csvColumns = [];
+
+function parseCSVLine(line) {
+  const result = [];
+  let current = '';
+  let inQuotes = false;
+  for (let i = 0; i < line.length; i++) {
+    const char = line[i];
+    const nextChar = line[i + 1];
+    if (char === '"') {
+      if (inQuotes && nextChar === '"') { current += '"'; i++; }
+      else { inQuotes = !inQuotes; }
+    } else if (char === ',' && !inQuotes) {
+      result.push(current.trim());
+      current = '';
+    } else {
+      current += char;
+    }
+  }
+  result.push(current.trim());
+  return result;
+}
 
 function populateSortOptions() {
     const sortSelect = document.getElementById('sortSelect');
@@ -247,11 +292,17 @@ function populateSortOptions() {
         { value: 'name', label: 'Name' },
         { value: 'year', label: 'Year Published' }
       ];
-      
       csvColumns.forEach(col => {
-        if (!['name', 'year'].includes(col.toLowerCase())) {
+        if (!['name', 'year'].includes(col.toLowerCase()))
           sortFields.push({ value: col, label: col });
-        }
+      });
+    } else if (isBothMode) {
+      // Both mode: all BGG fields + any CSV-only columns not already covered
+      sortFields = [...collectionSortFields];
+      const bggVals = new Set(collectionSortFields.map(f => f.value.toLowerCase()));
+      csvColumns.forEach(col => {
+        if (!bggVals.has(col.toLowerCase()))
+          sortFields.push({ value: col, label: col });
       });
     } else {
       // Collection mode: use BGG fields + player counts
@@ -266,21 +317,26 @@ function populateSortOptions() {
 
     // Set defaults depending on mode
     if (isCSVMode) {
-      // Prefer username -> objectname -> name for primary (common CSV headers)
       const primary = Array.from(sortSelect.options).find(o => ['username','objectname','name'].includes(o.value.toLowerCase()))?.value || 'name';
-      // Prefer CSV `average` (NOT baverage) for secondary
-      const secondary = Array.from(tiebreakerSortSelect.options).find(o => ['average'].includes(o.value.toLowerCase()))?.value || 
+      const secondary = Array.from(tiebreakerSortSelect.options).find(o => ['average'].includes(o.value.toLowerCase()))?.value ||
                         Array.from(tiebreakerSortSelect.options).find(o => ['baverage','bayesaverage'].includes(o.value.toLowerCase()))?.value || 'name';
       sortSelect.value = primary;
       tiebreakerSortSelect.value = secondary;
-      // If primary is a name-like field, default to ascending (A→Z). If it's `username`, ensure ascending as requested.
       sortAsc = ['username','objectname','name'].includes(primary.toLowerCase());
-      // Secondary (average) should default to descending
       tiebreakerSortAsc = false;
       document.getElementById('sortDirBtn').textContent = sortAsc ? '▲' : '▼';
-      document.getElementById('tiebreakerSortDirBtn').textContent = tiebreakerSortAsc ? '▲' : '▼';
+      document.getElementById('tiebreakerSortDirBtn').textContent = '▼';
+    } else if (isBothMode) {
+      sortSelect.value = 'bggRating';
+      // Prefer CSV personal rating column if present, else fall back to bayesaverage
+      const csvRating = Array.from(tiebreakerSortSelect.options).find(o => o.value.toLowerCase() === 'rating')?.value ||
+                        Array.from(tiebreakerSortSelect.options).find(o => o.value.toLowerCase() === 'average')?.value;
+      tiebreakerSortSelect.value = csvRating || 'bayesaverage';
+      sortAsc = false;
+      tiebreakerSortAsc = false;
+      document.getElementById('sortDirBtn').textContent = '▼';
+      document.getElementById('tiebreakerSortDirBtn').textContent = '▼';
     } else {
-      // Default BGG collection defaults
       sortSelect.value = 'bggRating';
       tiebreakerSortSelect.value = 'bayesaverage';
       sortAsc = false;
@@ -294,30 +350,16 @@ function populateSortOptions() {
 window.addEventListener('DOMContentLoaded', populateSortOptions);
 
 function switchTab(tab) {
-    const collectionTab = document.getElementById('collectionTab');
-    const csvTab = document.getElementById('csvTab');
-    const tabCollectionBtn = document.getElementById('tabCollection');
-    const tabCSVBtn = document.getElementById('tabCSV');
-    
-    if (tab === 'collection') {
-        collectionTab.classList.remove('hidden');
-        csvTab.classList.add('hidden');
-        tabCollectionBtn.classList.add('border-b-2', 'border-indigo-600', 'text-indigo-600');
-        tabCollectionBtn.classList.remove('text-slate-500');
-        tabCSVBtn.classList.remove('border-b-2', 'border-indigo-600', 'text-indigo-600');
-        tabCSVBtn.classList.add('text-slate-500');
-        // Refresh sort options for the collection mode
-        populateSortOptions();
-    } else {
-        csvTab.classList.remove('hidden');
-        collectionTab.classList.add('hidden');
-        tabCSVBtn.classList.add('border-b-2', 'border-indigo-600', 'text-indigo-600');
-        tabCSVBtn.classList.remove('text-slate-500');
-        tabCollectionBtn.classList.remove('border-b-2', 'border-indigo-600', 'text-indigo-600');
-        tabCollectionBtn.classList.add('text-slate-500');
-        // Refresh sort options (will reflect collection defaults until CSV is loaded)
-        populateSortOptions();
-    }
+    const panels = { collection: 'collectionTab', csv: 'csvTab', both: 'bothTab' };
+    const activeClass = 'px-4 py-2 font-bold border-b-2 border-indigo-600 text-indigo-600';
+    const inactiveClass = 'px-4 py-2 font-bold text-slate-500 hover:text-slate-700';
+    Object.entries(panels).forEach(([t, panelId]) => {
+        document.getElementById(panelId).classList.toggle('hidden', t !== tab);
+        const btnId = t === 'collection' ? 'tabCollection' : t === 'csv' ? 'tabCsv' : 'tabBoth';
+        const btn = document.getElementById(btnId);
+        if (btn) btn.className = (t === tab) ? activeClass : inactiveClass;
+    });
+    populateSortOptions();
 }
 
 async function loadCSV() {
@@ -342,37 +384,6 @@ async function loadCSV() {
     
     if (lines.length < 2) {
       throw new Error('CSV file must have headers and at least one row');
-    }
-    
-    // Helper function to parse CSV line respecting quotes
-    function parseCSVLine(line) {
-      const result = [];
-      let current = '';
-      let inQuotes = false;
-      
-      for (let i = 0; i < line.length; i++) {
-        const char = line[i];
-        const nextChar = line[i + 1];
-        
-        if (char === '"') {
-          if (inQuotes && nextChar === '"') {
-            // Escaped quote
-            current += '"';
-            i++; // Skip next quote
-          } else {
-            // Toggle quote mode
-            inQuotes = !inQuotes;
-          }
-        } else if (char === ',' && !inQuotes) {
-          // End of field
-          result.push(current.trim());
-          current = '';
-        } else {
-          current += char;
-        }
-      }
-      result.push(current.trim()); // Add last field
-      return result;
     }
     
     // Parse CSV headers
@@ -521,6 +532,150 @@ async function fetchCollection() {
   } finally {
     document.getElementById('fetchBtn').disabled = false;
   }
+}
+
+async function loadBoth() {
+  const username = document.getElementById('bothUsername').value.trim() || 'sportomax';
+  const fileInput = document.getElementById('bothCsvFile');
+  const file = fileInput.files[0];
+  if (!file) { alert('Please select a CSV file'); return; }
+
+  document.getElementById('bothBtn').disabled = true;
+  document.getElementById('fetchSection').classList.add('hidden');
+  document.getElementById('loadingSection').classList.remove('hidden');
+  isCSVMode = false;
+  isBothMode = true;
+  allGames = [];
+
+  try {
+    updateLoadingStatus('Reading CSV file...');
+    updateProgress(5);
+    const text = await file.text();
+    const lines = text.trim().split('\n');
+    if (lines.length < 2) throw new Error('CSV must have headers and at least one row');
+    const headers = parseCSVLine(lines[0]).map(h => h.replace(/^['"]|['"]$/g, ''));
+    if (!headers.some(h => h.toLowerCase() === 'objectid')) throw new Error('CSV must contain an "objectid" column');
+    const csvData = [];
+    for (let i = 1; i < lines.length; i++) {
+      const vals = parseCSVLine(lines[i]).map(v => v.replace(/^['"]|['"]$/g, ''));
+      const row = {};
+      headers.forEach((h, idx) => { row[h] = idx < vals.length ? vals[idx] : ''; });
+      csvData.push(row);
+    }
+    const csvById = {};
+    csvData.forEach(row => { const id = row.objectid || row.objectId; if (id) csvById[id] = row; });
+    csvColumns = headers.filter(h => h.toLowerCase() !== 'objectid');
+
+    updateLoadingStatus('Fetching BGG collection...');
+    updateProgress(10);
+    const collXml = await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}`);
+    const collDoc = new DOMParser().parseFromString(collXml, 'text/xml');
+    const collItems = Array.from(collDoc.querySelectorAll('item')).filter(item => {
+      const ownAttr = item.getAttribute('own');
+      if (ownAttr !== null) return parseInt(ownAttr) === 1;
+      const statusNode = item.querySelector('status');
+      if (statusNode) return parseInt(statusNode.getAttribute('own') || '0') === 1;
+      return false;
+    });
+    const playsMap = {};
+    collItems.forEach(item => {
+      const oid = item.getAttribute('objectid');
+      const numplaysNode = item.querySelector('numplays');
+      playsMap[oid] = numplaysNode ? (parseInt(numplaysNode.textContent || '0') || 0) : (parseInt(item.getAttribute('numplays') || '0') || 0);
+    });
+
+    const bggIds = new Set(collItems.map(i => i.getAttribute('objectid')));
+    const allIds = [...new Set([...bggIds, ...Object.keys(csvById)])];
+    updateLoadingStatus(`${bggIds.size} BGG owned + ${Object.keys(csvById).length} CSV → fetching details...`);
+    updateProgress(20);
+
+    const batchSize = 20;
+    const batches = [];
+    for (let i = 0; i < allIds.length; i += batchSize) batches.push(allIds.slice(i, i + batchSize));
+    await batchFetchBoth(batches, csvById, playsMap, allIds.length);
+
+    updateLoadingStatus('Complete!');
+    document.getElementById('controlsSection').classList.remove('hidden');
+    document.getElementById('actionButtons').classList.remove('hidden');
+    document.getElementById('gamesGrid').classList.remove('hidden');
+    document.getElementById('gameCount').textContent = allGames.length;
+    populateSortOptions();
+    displayedGames = [...allGames];
+    sortGames();
+    setTimeout(() => { document.getElementById('loadingSection').classList.add('hidden'); }, 500);
+  } catch (err) {
+    console.error(err);
+    updateLoadingStatus(`Error: ${err.message}`);
+    alert(`Error: ${err.message}`);
+  } finally {
+    document.getElementById('bothBtn').disabled = false;
+  }
+}
+
+async function batchFetchBoth(batches, csvById, playsMap, totalIds) {
+  let activeCount = 0, batchIndex = 0;
+  return new Promise(resolve => {
+    async function processBatch(idx, batch) {
+      try {
+        const ids = batch.join(',');
+        const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`);
+        const doc = new DOMParser().parseFromString(xml, 'text/xml');
+        Array.from(doc.querySelectorAll('item')).forEach(item => {
+          const id = item.getAttribute('id');
+          const type = item.getAttribute('type');
+          const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'N/A';
+          const thumb = item.querySelector('thumbnail')?.textContent || '';
+          const year = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0');
+          const ratings = item.querySelector('statistics ratings');
+          const playerCountData = {};
+          const playerPoll = item.querySelector('poll[name="suggested_numplayers"]');
+          if (playerPoll) {
+            Array.from(playerPoll.querySelectorAll('results')).forEach(results => {
+              const np = results.getAttribute('numplayers');
+              const best = parseInt(results.querySelector('result[value="Best"]')?.getAttribute('numvotes') || '0');
+              const rec  = parseInt(results.querySelector('result[value="Recommended"]')?.getAttribute('numvotes') || '0');
+              const notRec = parseInt(results.querySelector('result[value="Not Recommended"]')?.getAttribute('numvotes') || '0');
+              playerCountData[np] = { best, recommended: rec, notRecommended: notRec, total: best + rec + notRec };
+            });
+          }
+          const csvRow = csvById[id] || {};
+          const rawType = (csvRow.objecttype || csvRow.objectType || csvRow.itemtype || type || '').toLowerCase();
+          const normalizedType = rawType.includes('expansion') ? 'boardgameexpansion' : (type || 'boardgame');
+          // CSV data spread first so BGG API fields override for game metadata
+          const gameData = {
+            ...csvRow,
+            id, name, thumb, year,
+            type: normalizedType,
+            bggRating: parseFloat(ratings?.querySelector('average')?.getAttribute('value') || '0'),
+            bayesaverage: parseFloat(ratings?.querySelector('bayesaverage')?.getAttribute('value') || '0'),
+            stddev: parseFloat(ratings?.querySelector('stddev')?.getAttribute('value') || '0'),
+            minage: parseInt(item.querySelector('minage')?.getAttribute('value') || '0'),
+            usersrated: parseInt(ratings?.querySelector('usersrated')?.getAttribute('value') || '0'),
+            owned: parseInt(ratings?.querySelector('owned')?.getAttribute('value') || '0'),
+            trading: parseInt(ratings?.querySelector('trading')?.getAttribute('value') || '0'),
+            wanting: parseInt(ratings?.querySelector('wanting')?.getAttribute('value') || '0'),
+            wishing: parseInt(ratings?.querySelector('wishing')?.getAttribute('value') || '0'),
+            numcomments: parseInt(ratings?.querySelector('numcomments')?.getAttribute('value') || '0'),
+            numweights: parseInt(ratings?.querySelector('numweights')?.getAttribute('value') || '0'),
+            averageweight: parseFloat(ratings?.querySelector('averageweight')?.getAttribute('value') || '0'),
+            playingtime: (parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0') + parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0')) / 2,
+            minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value') || '0'),
+            maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value') || '0'),
+            playerCountData,
+            plays: playsMap[id] || 0,
+          };
+          allGames.push(gameData);
+        });
+        updateProgress(20 + (allGames.length / Math.max(totalIds, 1)) * 80);
+        updateLoadingStatus(`Fetching details... ${allGames.length} / ${totalIds}`);
+      } catch (e) { console.error('batchFetchBoth error', e); }
+      activeCount--;
+      if (batchIndex < batches.length) { activeCount++; processBatch(batchIndex, batches[batchIndex++]); }
+      else if (activeCount === 0) resolve();
+    }
+    for (let i = 0; i < Math.min(100, batches.length); i++) { activeCount++; processBatch(batchIndex, batches[batchIndex++]); }
+    if (batches.length === 0) resolve();
+  });
 }
 
 async function fetchWithRetry(url, maxRetries = 5) {
