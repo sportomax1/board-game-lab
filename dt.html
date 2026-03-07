@@ -206,7 +206,7 @@
                     <input type="radio" name="csvSource" value="dte.csv" checked class="hidden">DTE CSV
                 </label>
                 <label id="csv-dtw-label" class="flex-1 text-sm bg-gray-100 rounded-lg px-3 py-2 text-center cursor-pointer">
-                    <input type="radio" name="csvSource" value="dtw.csv" class="hidden">DTW CSV
+                    <input type="radio" name="csvSource" value="dtnew.csv" class="hidden">DTW CSV
                 </label>
             </div>
             <script>
@@ -796,45 +796,57 @@
             const lines = text.split(/\r?\n/).filter(l => l.trim());
             const out = [];
             const dropped = [];
-            
-            // Skip header check
-            let start = 0;
-            if (lines.length > 0) {
-                const header = lines[0].toLowerCase();
-                if (header.includes('game name') || header.includes('shelf')) start = 1;
-            }
+            const clean = (s) => (s || '').replace(/^"|"$/g, '').replace(/""/g, '"').trim();
 
-            for (let i = start; i < lines.length; i++) {
-                const line = lines[i];
-                let parts = [];
-                let current = '';
-                let inQuote = false;
-                
+            function parseLine(line) {
+                const parts = [];
+                let current = '', inQuote = false;
                 for (let j = 0; j < line.length; j++) {
                     const c = line[j];
-                    if (c === '"') {
-                        inQuote = !inQuote;
-                    } else if (c === ',' && !inQuote) {
-                        parts.push(current.trim());
-                        current = '';
-                        continue;
-                    }
+                    if (c === '"') { inQuote = !inQuote; }
+                    else if (c === ',' && !inQuote) { parts.push(current.trim()); current = ''; continue; }
                     current += c;
                 }
                 parts.push(current.trim());
-                
+                return parts;
+            }
+
+            // Skip header & detect column indices
+            let start = 0;
+            let colName = 0, colShelf = 1, colMinP = -1, colMaxP = -1, colPub = -1, colYear = -1;
+
+            if (lines.length > 0) {
+                const header = lines[0].toLowerCase();
+                if (header.includes('game name') || header.includes('shelf') ||
+                    header.includes('title') || header.includes('location') ||
+                    header.includes('minplayers')) {
+                    start = 1;
+                    parseLine(lines[0]).forEach((h, i) => {
+                        const k = clean(h).toLowerCase().replace(/[^a-z]/g, '');
+                        if (k === 'title' || k === 'gamename') colName = i;
+                        else if (k === 'location' || k === 'shelflocation') colShelf = i;
+                        else if (k === 'minplayers') colMinP = i;
+                        else if (k === 'maxplayers') colMaxP = i;
+                        else if (k === 'publisher') colPub = i;
+                        else if (k === 'year') colYear = i;
+                    });
+                }
+            }
+
+            for (let i = start; i < lines.length; i++) {
+                const parts = parseLine(lines[i]);
+
                 if (parts.length >= 2) {
-                    let name = parts[0];
-                    let shelf = parts[1]; 
-                    
-                    const clean = (s) => s.replace(/^"|"$/g, '').replace(/""/g, '"');
-                    
                     out.push({
-                        name: clean(name),
-                        shelf: clean(shelf)
+                        name: clean(parts[colName]),
+                        shelf: clean(parts[colShelf] || ''),
+                        csvMinP: colMinP >= 0 ? (parseInt(clean(parts[colMinP])) || 0) : 0,
+                        csvMaxP: colMaxP >= 0 ? (parseInt(clean(parts[colMaxP])) || 0) : 0,
+                        publisher: colPub >= 0 ? clean(parts[colPub] || '') : '',
+                        csvYear: colYear >= 0 ? clean(parts[colYear] || '') : ''
                     });
                 } else {
-                    dropped.push(line);
+                    dropped.push(lines[i]);
                 }
             }
             
@@ -957,13 +969,14 @@
 
             try {
                 // Load CSV
-                const csvText = await fetchCSV('dte.csv');
-                if (!csvText) throw new Error('Could not load dte.csv');
+                const csvFile = window.DT_CSV_SOURCE || 'dte.csv';
+                const csvText = await fetchCSV(csvFile);
+                if (!csvText) throw new Error(`Could not load ${csvFile}`);
                 
                 const dteRows = parseCSV(csvText);
                 if (dteRows.length === 0) throw new Error('CSV is empty');
                 
-                console.log(`[DEBUG] CSV Parsing: ${dteRows.length} rows parsed from dte.csv`);
+                console.log(`[DEBUG] CSV Parsing: ${dteRows.length} rows parsed from ${csvFile}`);
                 loadingBar.style.width = '30%';
 
                 // Fetch user's BGG collection for enrichment
@@ -1138,11 +1151,11 @@
                         finalGame = {
                             id: `dte-${idx}`,
                             name: dteGameName,
-                            year: '',
+                            year: row.csvYear || '',
                             bggRating: '-',
                             average: 0, // No average rating
-                            minP: 0,
-                            maxP: 0,
+                            minP: row.csvMinP || 0,
+                            maxP: row.csvMaxP || 0,
                             time: 0,
                             thumb: '',
                             plays: 0,
