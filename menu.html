@@ -84,7 +84,16 @@
 
     <!-- Controls -->
     <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4 space-y-3">
-        <div class="grid grid-cols-1 md:grid-cols-3 gap-3">
+
+        <!-- Sort mode toggle -->
+        <div class="flex items-center gap-2 flex-wrap">
+          <span class="text-xs font-bold text-slate-500 uppercase tracking-wide">Sort Mode:</span>
+          <button id="modeSequential" onclick="setSortMode('sequential')" class="px-3 py-1.5 text-xs font-bold rounded-full bg-indigo-600 text-white transition">Sequential</button>
+          <button id="modeCombined"   onclick="setSortMode('combined')"   class="px-3 py-1.5 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition">⚡ Combined (Rank Avg)</button>
+        </div>
+
+        <!-- Sequential controls -->
+        <div id="sequentialControls" class="grid grid-cols-1 md:grid-cols-2 gap-3">
             <div>
                 <label class="text-xs font-bold text-slate-500">Primary Sort</label>
                 <div class="flex">
@@ -99,24 +108,33 @@
                     <button id="tiebreakerSortDirBtn" onclick="toggleTiebreakerSortDir()" class="px-3 py-2 rounded-r-lg border border-l-0 border-slate-200 bg-white text-sm">▼</button>
                 </div>
             </div>
-            <div class="flex items-end gap-4">
-               <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" id="ignoreExpansions" onchange="sortGames()" class="form-checkbox text-indigo-600 rounded" checked>
-                <span class="text-sm font-semibold text-slate-700">Ignore Expansions</span>
-              </label>
-               <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" id="ignoreZeroValues" onchange="sortGames()" class="form-checkbox text-indigo-600 rounded" checked>
-                <span class="text-sm font-semibold text-slate-700">Ignore 0 Values</span>
-              </label>
-               <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" id="printIncludePrimary" class="form-checkbox text-indigo-600 rounded" checked>
-                <span class="text-sm font-semibold text-slate-700">Include Primary in Print</span>
-              </label>
-               <label class="flex items-center gap-2 cursor-pointer">
-                <input type="checkbox" id="printIncludeSecondary" class="form-checkbox text-indigo-600 rounded" checked>
-                <span class="text-sm font-semibold text-slate-700">Include Secondary in Print</span>
-              </label>
-            </div>
+        </div>
+
+        <!-- Combined (rank-average) controls -->
+        <div id="combinedControls" class="hidden space-y-2">
+          <p class="text-xs text-slate-500">Each game is ranked 1–N per field. Final order = lowest average rank (best across all selected fields).</p>
+          <div id="combinedCriteriaList" class="space-y-2"></div>
+          <button onclick="addCombinedCriterion()" class="mt-1 px-3 py-1.5 text-xs font-bold bg-indigo-50 text-indigo-600 rounded-lg border border-indigo-200 hover:bg-indigo-100 transition">+ Add Sort Field</button>
+        </div>
+
+        <!-- Checkboxes (always visible) -->
+        <div class="flex items-center gap-4 flex-wrap pt-1 border-t border-slate-100">
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="ignoreExpansions" onchange="sortGames()" class="form-checkbox text-indigo-600 rounded" checked>
+            <span class="text-sm font-semibold text-slate-700">Ignore Expansions</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="ignoreZeroValues" onchange="sortGames()" class="form-checkbox text-indigo-600 rounded" checked>
+            <span class="text-sm font-semibold text-slate-700">Ignore 0 Values</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="printIncludePrimary" class="form-checkbox text-indigo-600 rounded" checked>
+            <span class="text-sm font-semibold text-slate-700">Include Primary in Print</span>
+          </label>
+          <label class="flex items-center gap-2 cursor-pointer">
+            <input type="checkbox" id="printIncludeSecondary" class="form-checkbox text-indigo-600 rounded" checked>
+            <span class="text-sm font-semibold text-slate-700">Include Secondary in Print</span>
+          </label>
         </div>
     </div>
 
@@ -179,6 +197,8 @@ let allGames = [];
 let displayedGames = [];
 let sortAsc = false;
 let tiebreakerSortAsc = false;
+let combinedMode = false;
+let combinedCriteria = []; // [{ field: string, asc: boolean }, ...]
 
 const collectionSortFields = [
     { value: 'name', label: 'Name' },
@@ -268,6 +288,7 @@ function populateSortOptions() {
       document.getElementById('sortDirBtn').textContent = '▼';
       document.getElementById('tiebreakerSortDirBtn').textContent = '▼';
     }
+    if (combinedMode) renderCombinedCriteriaList();
 }
 
 window.addEventListener('DOMContentLoaded', populateSortOptions);
@@ -723,26 +744,152 @@ function categorizeGame(game, targetPlayerCount) {
 
 function getPlayerCountScore(game, targetPlayerCount) {
     const category = categorizeGame(game, targetPlayerCount);
-    // Return category priority (lower is better) plus bayesaverage for tiebreaking
-    // We'll multiply priority by 1000 and subtract bayesaverage to sort category first, then rating
     const categoryOrder = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4, null: 999 };
     const priority = categoryOrder[category] || 999;
     const bayesAvg = game.bayesaverage || 0;
-    // Return negative so higher bayesaverage within same category sorts first (descending)
     return -(priority * 1000 - bayesAvg);
 }
 
+// ── Combined (rank-average) sort ─────────────────────────────────
+function setSortMode(mode) {
+  combinedMode = (mode === 'combined');
+  document.getElementById('sequentialControls').classList.toggle('hidden', combinedMode);
+  document.getElementById('combinedControls').classList.toggle('hidden', !combinedMode);
+  const on  = 'px-3 py-1.5 text-xs font-bold rounded-full bg-indigo-600 text-white transition';
+  const off = 'px-3 py-1.5 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition';
+  document.getElementById('modeSequential').className = combinedMode ? off : on;
+  document.getElementById('modeCombined').className   = combinedMode ? on  : off;
+  if (combinedMode && combinedCriteria.length === 0) {
+    const fA = sortFields.find(f => f.value === 'playingtime')?.value || sortFields[0]?.value || 'name';
+    const fB = sortFields.find(f => f.value === 'bggRating')?.value  || sortFields[1]?.value || 'name';
+    combinedCriteria = [{ field: fA, asc: true }, { field: fB, asc: false }];
+  }
+  renderCombinedCriteriaList();
+  sortGames();
+}
+
+function renderCombinedCriteriaList() {
+  const list = document.getElementById('combinedCriteriaList');
+  if (!list) return;
+  list.innerHTML = combinedCriteria.map((c, i) => {
+    const opts = sortFields.map(f =>
+      `<option value="${f.value}"${f.value === c.field ? ' selected' : ''}>${f.label}</option>`
+    ).join('');
+    const canRemove = combinedCriteria.length > 2;
+    return `<div class="flex gap-1 items-center">
+      <span class="text-xs font-bold text-slate-400 w-5 text-center flex-shrink-0">${i + 1}.</span>
+      <select onchange="updateCombinedField(${i}, this.value)" class="flex-1 px-3 py-2 rounded-l-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm bg-white font-bold">${opts}</select>
+      <button onclick="toggleCombinedDir(${i})" class="px-3 py-2 border-y border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 whitespace-nowrap">${c.asc ? '▲ Asc' : '▼ Desc'}</button>
+      <button onclick="removeCombinedCriterion(${i})" class="px-3 py-2 rounded-r-lg border border-l-0 border-slate-200 text-sm transition ${canRemove ? 'bg-white text-red-400 hover:bg-red-50' : 'bg-slate-50 text-slate-300 cursor-not-allowed'}">✕</button>
+    </div>`;
+  }).join('');
+}
+
+function addCombinedCriterion() {
+  const used = new Set(combinedCriteria.map(c => c.field));
+  const next = sortFields.find(f => !used.has(f.value))?.value || sortFields[0].value;
+  combinedCriteria.push({ field: next, asc: false });
+  renderCombinedCriteriaList();
+  sortGames();
+}
+
+function removeCombinedCriterion(idx) {
+  if (combinedCriteria.length <= 2) return;
+  combinedCriteria.splice(idx, 1);
+  renderCombinedCriteriaList();
+  sortGames();
+}
+
+function toggleCombinedDir(idx) {
+  combinedCriteria[idx].asc = !combinedCriteria[idx].asc;
+  renderCombinedCriteriaList();
+  sortGames();
+}
+
+function updateCombinedField(idx, newField) {
+  combinedCriteria[idx].field = newField;
+  sortGames();
+}
+
+function getNumericFieldValue(game, field) {
+  if (field.startsWith('bestAt')) {
+    const pc = field === 'bestAt8' ? 8 : parseInt(field.replace('bestAt', ''));
+    const ord = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4, null: 999 };
+    return ord[categorizeGame(game, pc)] ?? 999;
+  }
+  let v = game[field];
+  if (typeof v === 'string' && v !== '' && !isNaN(v)) v = parseFloat(v);
+  return typeof v === 'number' ? v : null;
+}
+
+function rankAverageSort(games, criteria) {
+  if (!games.length || !criteria.length) return games;
+  const n = games.length;
+  const rankSums = new Array(n).fill(0);
+  criteria.forEach(({ field, asc }) => {
+    const indices = games.map((_, i) => i);
+    indices.sort((i, j) => {
+      const a = getNumericFieldValue(games[i], field);
+      const b = getNumericFieldValue(games[j], field);
+      if (a === null && b === null) {
+        const sa = String(games[i][field] ?? '');
+        const sb = String(games[j][field] ?? '');
+        return asc ? sa.localeCompare(sb) : sb.localeCompare(sa);
+      }
+      const na = a ?? 0, nb = b ?? 0;
+      return asc ? (na - nb) : (nb - na);
+    });
+    // Assign average rank within tied groups
+    let i = 0;
+    while (i < n) {
+      let j = i + 1;
+      const vi = getNumericFieldValue(games[indices[i]], field) ?? String(games[indices[i]][field] ?? '');
+      while (j < n) {
+        const vj = getNumericFieldValue(games[indices[j]], field) ?? String(games[indices[j]][field] ?? '');
+        const same = (typeof vi === 'number' && typeof vj === 'number')
+          ? Math.abs(vi - vj) < 1e-9
+          : vi === vj;
+        if (!same) break;
+        j++;
+      }
+      const avgRank = (i + j - 1) / 2;
+      for (let k = i; k < j; k++) rankSums[indices[k]] += avgRank;
+      i = j;
+    }
+  });
+  return games.map((g, i) => ({ g, r: rankSums[i] }))
+    .sort((a, b) => a.r - b.r)
+    .map(x => x.g);
+}
+// ─────────────────────────────────────────────────────────────────
+
 function sortGames() {
-  const sortBy = document.getElementById('sortSelect').value;
-  const tiebreakerSortBy = document.getElementById('tiebreakerSortSelect').value;
   const ignoreExpansions = document.getElementById('ignoreExpansions').checked;
   const ignoreZeroValues = document.getElementById('ignoreZeroValues').checked;
 
   let gamesToDisplay = [...allGames];
-
   if (ignoreExpansions) {
-      gamesToDisplay = gamesToDisplay.filter(g => g.type !== 'boardgameexpansion');
+    gamesToDisplay = gamesToDisplay.filter(g => g.type !== 'boardgameexpansion');
   }
+
+  // ── Combined mode: rank-average ──────────────────────────────
+  if (combinedMode) {
+    if (ignoreZeroValues && combinedCriteria.length > 0) {
+      gamesToDisplay = gamesToDisplay.filter(g =>
+        combinedCriteria.some(c => {
+          const v = g[c.field];
+          return v !== 0 && v !== '0' && v !== '' && v != null;
+        })
+      );
+    }
+    displayedGames = rankAverageSort(gamesToDisplay, combinedCriteria);
+    renderGames();
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────
+
+  const sortBy = document.getElementById('sortSelect').value;
+  const tiebreakerSortBy = document.getElementById('tiebreakerSortSelect').value;
 
   // Filter by player count if sorting by bestAt (only show games that support that player count)
   if (sortBy.startsWith('bestAt')) {
@@ -859,16 +1006,52 @@ function toggleTiebreakerSortDir() {
 function renderGames() {
   const container = document.getElementById('gamesGrid');
   const emptyState = document.getElementById('emptyState');
-  const sortBy = document.getElementById('sortSelect').value;
-  
+
   if (displayedGames.length === 0) {
     container.classList.add('hidden');
     emptyState.classList.remove('hidden');
     return;
   }
-  
+
   container.classList.remove('hidden');
   emptyState.classList.add('hidden');
+
+  // ── Combined mode rendering ──────────────────────────────────
+  if (combinedMode) {
+    container.innerHTML = displayedGames.map((g, idx) => {
+      const criteriaHtml = combinedCriteria.map(c => {
+        const lbl = sortFields.find(f => f.value === c.field)?.label || c.field;
+        let val = g[c.field];
+        if (c.field.startsWith('bestAt')) {
+          const pc = c.field === 'bestAt8' ? 8 : parseInt(c.field.replace('bestAt', ''));
+          val = { 'perfect': 'Perfect', 'best': 'Best', 'recommended': 'Rec.', 'supported': 'OK', null: 'N/A' }[categorizeGame(g, pc)] || 'N/A';
+        } else if (typeof val === 'string' && !isNaN(val) && val !== '') {
+          val = parseFloat(val).toFixed(2).replace(/\.00$/, '');
+        } else if (typeof val === 'number') {
+          val = val.toFixed(2).replace(/\.00$/, '');
+        } else {
+          val = String(val ?? '');
+        }
+        return `<span class="inline-flex items-center gap-0.5 text-xs bg-slate-100 text-slate-600 px-1.5 py-0.5 rounded font-medium">${c.asc ? '▲' : '▼'} ${lbl}: <span class="font-bold text-slate-800">${val}</span></span>`;
+      }).join('');
+      return `
+        <div class="game-card bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden p-2 flex items-center text-left w-full" title="${g.name}">
+          <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="flex-shrink-0">
+            <img src="${g.thumb}" alt="${g.name}" class="w-16 h-16 rounded-md object-cover bg-slate-200">
+          </a>
+          <div class="flex-grow ml-3">
+            <h3 class="font-bold text-sm text-slate-800 line-clamp-2">${g.name}</h3>
+            <div class="text-xs text-slate-500">${g.year > 0 ? g.year : ''}</div>
+            <div class="flex flex-wrap gap-1 mt-1">${criteriaHtml}</div>
+          </div>
+          <div class="text-lg text-indigo-600 font-bold ml-3 bg-indigo-50 px-3 py-1 rounded-lg min-w-[2.5rem] text-center">#${idx + 1}</div>
+        </div>`;
+    }).join('');
+    return;
+  }
+  // ─────────────────────────────────────────────────────────────
+
+  const sortBy = document.getElementById('sortSelect').value;
 
   container.innerHTML = displayedGames.map(g => {
     const sortValue = g[sortBy];
