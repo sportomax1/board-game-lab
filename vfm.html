@@ -157,6 +157,22 @@
             cursor: pointer;
         }
         
+        .price-neutral {
+            color: #1c1c1e;
+            background: #f2f2f7;
+        }
+
+        .status-available {
+            color: #34c759;
+            background: rgba(52, 199, 89, 0.12);
+        }
+
+        .status-sold {
+            color: #ff3b30;
+            background: rgba(255, 59, 48, 0.12);
+        }
+
+        /* legacy — keep for analytics detail cards */
         .price-green {
             color: #34c759;
             background: rgba(52, 199, 89, 0.1);
@@ -165,7 +181,6 @@
         .price-red {
             color: #ff3b30;
             background: rgba(255, 59, 48, 0.1);
-            text-decoration: line-through;
         }
         
         .filter-chip {
@@ -1080,7 +1095,7 @@
                         }
                         
                         // Parse price from body and check comments for sold
-                        const priceInfo = parsePrice(body, commentsList);
+                        const priceInfo = parsePrice(body, commentsList, username);
                         
                         results.push({
                             itemId,
@@ -1176,15 +1191,56 @@
             }
         }
 
-        // ============ PRICE PARSER ============
-        function parsePrice(body, commentsList = []) {
-            const lowerBody = body.toLowerCase();
-            let isSold = lowerBody.includes('sold') || lowerBody.includes('[s]') || lowerBody.includes('**sold**');
+        // ============ SOLD DETECTION ============
+        function detectSold(body, commentsList, sellerUsername) {
+            // Strong body-level sold signals — word-boundary or explicit markup
+            const bodySoldPatterns = [
+                /\[sold\]/i,                          // [Sold] tag
+                /\[s\]/i,                             // [S] shorthand tag
+                /\*\*sold\*\*/i,                      // **Sold** bold
+                /~~.*?sold.*?~~/i,                    // ~~Sold~~ strikethrough
+                /\bSOLD\b/,                           // ALL-CAPS SOLD (word boundary)
+                /^SOLD\b/im,                          // Line starting with SOLD
+                /\bsold[!.]\s*$/im,                   // "Sold!" / "Sold." at end of line
+                /\bsold[,!]\s*thank/i,                // "Sold, thank you"
+                /\bthank.*\bsold\b/i,                 // "Thanks, sold!"
+                /\bno longer available\b/i,           // "no longer available"
+                /\bthis (item|game) has been sold\b/i,
+                /\bitem (has been )?sold\b/i,
+                /\bpending sale\b/i,
+            ];
 
-            // Check comments for "Sold"
-            if (!isSold && commentsList) {
-                isSold = commentsList.some(c => c.text.toLowerCase().includes('sold'));
+            if (bodySoldPatterns.some(p => p.test(body))) return true;
+
+            // Comment-level sold detection — only strong/unambiguous signals
+            if (commentsList && commentsList.length > 0) {
+                for (const c of commentsList) {
+                    const text = (c.text || '').trim();
+                    const isSeller = sellerUsername &&
+                        c.user?.toLowerCase() === sellerUsername.toLowerCase();
+
+                    // Comment that is *just* "Sold" (±punctuation) — buyer/seller confirming
+                    if (/^\s*sold[!.?]*\s*$/i.test(text)) return true;
+
+                    // Seller's own comment explicitly says sold (not negated)
+                    if (isSeller &&
+                        /\bsold\b/i.test(text) &&
+                        !/\b(not|un|never)\s*sold\b/i.test(text)) return true;
+
+                    // "Please mark (it|this) as sold" — buyer confirming
+                    if (/\bmark\s+(it\s+|this\s+)?as\s+sold\b/i.test(text)) return true;
+
+                    // "No longer available" in a comment
+                    if (/\bno longer available\b/i.test(text)) return true;
+                }
             }
+
+            return false;
+        }
+
+        // ============ PRICE PARSER ============
+        function parsePrice(body, commentsList = [], sellerUsername = null) {
+            const isSold = detectSold(body, commentsList, sellerUsername);
 
             // High-confidence patterns (in preferential order)
             const pricePatterns = [
@@ -1301,8 +1357,8 @@
                 );
             }
             
-            // Filter by Sold/Unsold status - only apply if not both are selected
-            if (currentFilter !== 'all' && (!filterShowSold || !filterShowUnsold)) {
+            // Filter by Sold/Unsold status
+            if (!filterShowSold || !filterShowUnsold) {
                 filtered = filtered.filter(item => {
                     if (!filterShowSold && item.isSold) return false;
                     if (!filterShowUnsold && !item.isSold) return false;
@@ -1370,11 +1426,10 @@
                                     </div>
                                     <div class="flex items-center gap-2 mt-1.5">
                                         ${item.price !== null 
-                                            ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold ${item.isSold ? 'price-red' : 'price-green'}">
-                                                $${item.price.toFixed(0)}${item.isSold ? ' SOLD' : ''}
-                                            </span>`
-                                            : `<span class="text-xs text-gray-400">No price listed</span>`
+                                            ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold price-neutral">$${item.price.toFixed(0)}</span>`
+                                            : ''
                                         }
+                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${item.isSold ? 'status-sold' : 'status-available'}">${item.isSold ? 'SOLD' : 'AVAILABLE'}</span>
                                     </div>
                                     <div class="flex items-center gap-3 mt-2 text-xs text-gray-400">
                                         <span class="flex items-center gap-1">
@@ -1690,7 +1745,11 @@
                                 <span id="userLocation" class="text-xs text-gray-400">Loading location...</span>
                             </div>
                             <div class="grid grid-cols-3 gap-2">
-                                ${item.price !== null ? `<div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Price</div><div class="text-lg font-bold ${item.isSold ? 'text-red-600' : 'text-green-600'}">$${item.price.toFixed(0)}</div>${item.isSold ? '<div class="text-xs text-red-600">SOLD</div>' : ''}</div>` : ''}
+                                <div class="ios-card p-2 text-center">
+                                    <div class="text-xs text-gray-500">${item.price !== null ? 'Price' : 'Status'}</div>
+                                    ${item.price !== null ? `<div class="text-lg font-bold text-gray-900">$${item.price.toFixed(0)}</div>` : ''}
+                                    <div class="text-xs font-semibold ${item.isSold ? 'text-red-500' : 'text-green-500'}">${item.isSold ? 'SOLD' : 'AVAILABLE'}</div>
+                                </div>
                                 <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Comments</div><div class="text-lg font-bold text-gray-900">${item.comments}</div></div>
                                 <div class="ios-card p-2 text-center"><div class="text-xs text-gray-500">Plays</div><div class="text-lg font-bold text-blue-600">${collectionData.get(item.gameId)?.numplays || 0}</div></div>
                             </div>
