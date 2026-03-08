@@ -71,6 +71,16 @@
         ::-webkit-scrollbar { width: 4px; }
         ::-webkit-scrollbar-track { background: transparent; }
         ::-webkit-scrollbar-thumb { background: #cbd5e1; border-radius: 10px; }
+
+        .shelf-tab {
+            @apply flex-1 py-2 text-[10px] font-bold uppercase tracking-wider text-center transition-all border-b-2;
+        }
+        .shelf-tab.active {
+            @apply text-indigo-600 border-indigo-600 bg-indigo-50/50;
+        }
+        .shelf-tab.inactive {
+            @apply text-slate-400 border-transparent hover:text-slate-600;
+        }
     </style>
 </head>
 <body class="text-slate-900">
@@ -136,6 +146,22 @@
                     </div>
                 </div>
 
+                <!-- Shelf of Shame Section -->
+                <div class="bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm">
+                    <div class="flex border-b border-slate-100">
+                        <button onclick="setShelfFilter(0)" id="tab-0" class="shelf-tab active">Shame (0)</button>
+                        <button onclick="setShelfFilter(1)" id="tab-1" class="shelf-tab inactive">1 Play</button>
+                        <button onclick="setShelfFilter(2)" id="tab-2" class="shelf-tab inactive">2 Plays</button>
+                        <button onclick="setShelfFilter(3)" id="tab-3" class="shelf-tab inactive">3+ Plays</button>
+                    </div>
+                    <div id="shelfGrid" class="p-3 grid grid-cols-6 sm:grid-cols-8 gap-2 max-h-[200px] overflow-y-auto content-start bg-slate-50/30">
+                        <!-- Tiny tiles for filtered owned items -->
+                    </div>
+                    <div id="shelfSummary" class="px-3 py-1.5 bg-white border-t border-slate-50 text-[9px] font-bold text-slate-400 uppercase tracking-widest text-right">
+                        0 items owned
+                    </div>
+                </div>
+
                 <!-- Detail Table -->
                 <div class="bg-white rounded-2xl border border-slate-100 overflow-hidden shadow-sm">
                     <table class="w-full text-left text-[10px]">
@@ -192,6 +218,7 @@
         ];
 
         let collectionData = [];
+        let currentShelfFilter = 0; // 0, 1, 2, 3 (for 3+)
 
         async function fetchBGG(endpoint, params = '', retries = 5) {
             const url = `${API_URL}?endpoint=${endpoint}${params}`;
@@ -232,7 +259,6 @@
             updateProgress(10, 'Syncing Collection...', username);
 
             try {
-                // Step 1: Collection XML
                 const xmlText = await fetchBGG('collection', `&username=${encodeURIComponent(username)}&stats=1`);
                 const parser = new DOMParser();
                 const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
@@ -244,7 +270,6 @@
                 const items = Array.from(xmlDoc.querySelectorAll('item'));
                 collectionData = items.map(item => {
                     const statusNode = item.querySelector('status');
-                    const statsNode = item.querySelector('stats');
                     const status = {};
                     statusMap.forEach(s => status[s.id] = statusNode.getAttribute(s.id) === '1');
                     
@@ -260,7 +285,6 @@
 
                 updateProgress(40, 'Fetching Deep Details...', `Analyzing ${collectionData.length} items`);
 
-                // Step 2: Parallel Enrichment (Requested: 100 parallel batches of 20)
                 const ids = collectionData.map(i => i.id);
                 const batchSize = 20;
                 const batches = [];
@@ -314,6 +338,8 @@
             document.getElementById('totalGames').textContent = games.length;
             document.getElementById('totalExpansions').textContent = expansions.length;
 
+            renderShelf();
+
             const tbody = document.getElementById('statusTableBody');
             tbody.innerHTML = '';
             
@@ -355,6 +381,50 @@
             });
         }
 
+        function setShelfFilter(val) {
+            currentShelfFilter = val;
+            renderShelf();
+        }
+
+        function renderShelf() {
+            const owned = collectionData.filter(i => i.status.own);
+            let filtered = [];
+            
+            if (currentShelfFilter === 3) {
+                filtered = owned.filter(i => i.plays >= 3);
+            } else {
+                filtered = owned.filter(i => i.plays === currentShelfFilter);
+            }
+
+            // Update Tabs
+            [0, 1, 2, 3].forEach(val => {
+                const btn = document.getElementById(`tab-${val}`);
+                if (val === currentShelfFilter) {
+                    btn.classList.replace('inactive', 'active');
+                } else {
+                    btn.classList.replace('active', 'inactive');
+                }
+            });
+
+            // Update Grid
+            const grid = document.getElementById('shelfGrid');
+            grid.innerHTML = filtered.map(i => {
+                const thumb = i.image || 'https://cf.geekdo-images.com/zx_9pDp6m60_q6r1uYf8uA__thumb/img/999999_thumb.png';
+                return `
+                    <a href="https://boardgamegeek.com/${i.type}/${i.id}" target="_blank" class="block relative group">
+                        <img src="${IMAGE_PROXY}${thumb}" class="tiny-thumb" alt="${i.name}" title="${i.name} - ${i.plays} plays">
+                        ${i.plays > 0 ? `<div class="absolute -top-1 -right-1 bg-indigo-500 text-white text-[7px] px-1 rounded-full font-bold border border-white shadow-sm">${i.plays}</div>` : ''}
+                    </a>
+                `;
+            }).join('');
+
+            if (filtered.length === 0) {
+                grid.innerHTML = `<div class="col-span-full py-8 text-center text-slate-300 text-[10px] font-bold uppercase tracking-widest">No items found</div>`;
+            }
+
+            document.getElementById('shelfSummary').textContent = `${filtered.length} items owned with ${currentShelfFilter}${currentShelfFilter === 3 ? '+' : ''} plays`;
+        }
+
         function showCategory(type) {
             let filtered = collectionData;
             if (type !== 'all') filtered = collectionData.filter(i => i.type === type);
@@ -371,10 +441,7 @@
             document.getElementById('modalTitle').textContent = title;
             document.getElementById('modalSubtitle').textContent = `${items.length} items across collection`;
             const list = document.getElementById('modalList');
-            
-            // Sort by plays descending or name
             items.sort((a, b) => (b.plays - a.plays) || a.name.localeCompare(b.name));
-
             list.innerHTML = items.map(i => {
                 const thumb = i.image || 'https://cf.geekdo-images.com/zx_9pDp6m60_q6r1uYf8uA__thumb/img/999999_thumb.png';
                 return `
@@ -384,7 +451,6 @@
                     </a>
                 `;
             }).join('');
-            
             const modal = document.getElementById('gameModal');
             modal.classList.remove('hidden');
             setTimeout(() => modal.classList.add('active'), 10);
