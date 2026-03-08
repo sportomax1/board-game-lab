@@ -41,7 +41,7 @@
             flex: 1;
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
-            padding-bottom: 90px;
+            padding-bottom: calc(90px + env(safe-area-inset-bottom, 0px));
         }
         
         .tab-bar {
@@ -280,7 +280,7 @@
             overflow-y: auto;
             -webkit-overflow-scrolling: touch;
             animation: slideUp 0.3s ease;
-            padding-bottom: env(safe-area-inset-bottom, 0);
+            padding-bottom: max(env(safe-area-inset-bottom, 0px), 8px);
         }
         
         @keyframes slideUp {
@@ -621,6 +621,11 @@
         let listingsSort = 'date-desc'; // date-desc, price-asc, price-desc
         let analyticsSort = 'avg-desc'; // avg-desc, rank-asc
         let isRunning = false;
+        // Pagination state for virtual listings render
+        let _filteredListings = [];
+        let _listingsRenderedCount = 0;
+        let _listingsObserver = null;
+        const LISTINGS_PAGE_SIZE = 40;
         let collectionXML = '';
         let geeklistXML = '';
         let myUsername = 'sportomax'; // Will be populated from Setup tab
@@ -1192,13 +1197,41 @@
             }
         }
 
-        // ============ COMMENT PRICE EXTRACTOR ============
-        function extractCommentPrice(text) {
-            const m = (text || '').match(/\$\s*(\d+(?:\.\d{1,2})?)/);
-            if (m) return parseFloat(m[1]);
-            const m2 = (text || '').match(/\b(\d{1,4}(?:\.\d{1,2})?)\s*(?:dollars?|usd)\b/i);
-            if (m2) return parseFloat(m2[1]);
-            return null;
+        // ============ PENDING DETECTION ============
+        // Returns true if a comment suggests active buyer interest at the listing price
+        function isCommentPending(text, listingPrice, commentUser, sellerUsername) {
+            if (!text) return false;
+            // Don't flag seller's own comments
+            if (sellerUsername && commentUser && commentUser.toLowerCase() === sellerUsername.toLowerCase()) return false;
+
+            const trimmed = text.trim();
+
+            // Bare number (or $number) matching listing price — BGG convention for price-match interest
+            // Only when comment is very short (effectively just the price, maybe with punctuation)
+            if (listingPrice !== null) {
+                const bareNum = trimmed.match(/^\$?\s*(\d+(?:\.\d{1,2})?)\s*[!.,?]?\s*$/);
+                if (bareNum && Math.abs(parseFloat(bareNum[1]) - listingPrice) <= 1) return true;
+
+                // $X anywhere in the comment matching listing price
+                const dollarMatch = trimmed.match(/\$\s*(\d+(?:\.\d{1,2})?)/);
+                if (dollarMatch && Math.abs(parseFloat(dollarMatch[1]) - listingPrice) <= 1) return true;
+            }
+
+            // Explicit buyer-intent phrases (price not required)
+            const intentPatterns = [
+                /\bi'?ll\s+take\s+(it|this)\b/i,
+                /\bi\s+want\s+(it|this)\b/i,
+                /\b(very\s+)?interested\b/i,
+                /\bdibs\b/i,
+                /\bi'?m\s+in\b/i,
+                /\bi'?ll\s+(buy|pay)\b/i,
+                /\bpm\s+sent\b/i,
+                /\bmessage\s+sent\b/i,
+                /\bpayment\s+sent\b/i,
+            ];
+            if (intentPatterns.some(p => p.test(trimmed))) return true;
+
+            return false;
         }
 
         // ============ SOLD DETECTION ============
@@ -1318,56 +1351,130 @@
             return 'Just now';
         }
 
+        // ============ LISTING CARD HTML BUILDER ============
+        function buildListingCardHTML(item) {
+            const collectionItem = collectionData.get(item.gameId);
+            const numplays = collectionItem?.numplays || 0;
+            return `
+            <div class="game-card cursor-pointer" onclick="openGameDetail('${item.itemId}')">
+                <div class="flex p-3">
+                    <div class="w-16 h-16 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0">
+                        ${item.thumbnail
+                            ? `<img src="${item.thumbnail}" alt="${item.gameName}" class="w-full h-full object-cover" loading="lazy">`
+                            : `<div class="w-full h-full flex items-center justify-center text-gray-300">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                                </svg>
+                            </div>`
+                        }
+                    </div>
+                    <div class="ml-3 flex-1 min-w-0">
+                        <h3 class="font-semibold text-gray-900 text-sm leading-tight truncate">${item.gameName}</h3>
+                        <div class="flex items-center gap-1.5 mt-0.5">
+                            <span class="text-xs text-gray-500">by</span>
+                            <span class="text-xs font-medium text-blue-600">@${item.username}</span>
+                        </div>
+                        <div class="flex items-center gap-2 mt-1.5">
+                            ${item.price !== null
+                                ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold price-neutral">$${item.price.toFixed(0)}</span>`
+                                : ''
+                            }
+                            <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${item.isSold ? 'status-sold' : 'status-available'}">${item.isSold ? 'SOLD' : 'AVAILABLE'}</span>
+                        </div>
+                        <div class="flex items-center gap-3 mt-2 text-xs text-gray-400">
+                            <span class="flex items-center gap-1">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
+                                </svg>
+                                ${item.comments}
+                            </span>
+                            ${item.thumbs > 0 ? `<span class="flex items-center gap-1">👍 ${item.thumbs}</span>` : ''}
+                            <span>${timeAgo(item.postDate)}</span>
+                            ${numplays > 0 ? `<span class="flex items-center gap-1 text-blue-600 font-medium">
+                                <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
+                                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+                                </svg>
+                                ${numplays}
+                            </span>` : ''}
+                        </div>
+                        <div class="text-xs text-gray-400 mt-1">${item.geeklistLabel}</div>
+                    </div>
+                    <button onclick="event.stopPropagation(); window.open('https://boardgamegeek.com/geeklist/${item.geeklistId}?itemid=${item.itemId}', '_blank')" class="flex-shrink-0 ml-2 p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="View on BGG">
+                        <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
+                        </svg>
+                    </button>
+                </div>
+            </div>`;
+        }
+
+        // Append next LISTINGS_PAGE_SIZE items into the list, observe sentinel for more
+        function _appendListingsChunk() {
+            const list = document.querySelector('#listingsContainer .listings-list');
+            if (!list) return;
+            const oldSentinel = document.getElementById('listings-sentinel');
+            if (oldSentinel) oldSentinel.remove();
+
+            const end = Math.min(_listingsRenderedCount + LISTINGS_PAGE_SIZE, _filteredListings.length);
+            const frag = document.createDocumentFragment();
+            for (let i = _listingsRenderedCount; i < end; i++) {
+                const tmpl = document.createElement('template');
+                tmpl.innerHTML = buildListingCardHTML(_filteredListings[i]);
+                frag.appendChild(tmpl.content.firstElementChild);
+            }
+            list.appendChild(frag);
+            _listingsRenderedCount = end;
+
+            if (_listingsRenderedCount < _filteredListings.length) {
+                const sentinel = document.createElement('div');
+                sentinel.id = 'listings-sentinel';
+                sentinel.style.height = '4px';
+                list.appendChild(sentinel);
+                if (_listingsObserver) _listingsObserver.observe(sentinel);
+            }
+        }
+
         // ============ RENDER LISTINGS ============
         function renderListings() {
             const container = document.getElementById('listingsContainer');
-            const searchQuery = listingsSearchQuery.toLowerCase();
-            
-            // Filter listings
+
+            if (_listingsObserver) { _listingsObserver.disconnect(); _listingsObserver = null; }
+
             let filtered = geeklistData;
-            
-            // Search filter
+
             if (listingsSearchQuery) {
-                filtered = filtered.filter(item => 
-                    item.gameName.toLowerCase().includes(listingsSearchQuery)
+                filtered = filtered.filter(item =>
+                    item.gameName.toLowerCase().includes(listingsSearchQuery.toLowerCase())
                 );
             }
-            
-            // Collection status filter - if 'all' is selected, skip this filter entirely
+
             if (currentFilter !== 'all') {
                 filtered = filtered.filter(item => {
-                    const collectionItem = collectionData.get(item.gameId);
-                    if (!collectionItem) return false;
-                    return collectionItem.status[currentFilter] === true;
+                    const col = collectionData.get(item.gameId);
+                    return col && col.status[currentFilter] === true;
                 });
             }
-            
-            // Apply additional toggles only if 'all' is NOT selected, or if they're active
-            // If 'all' is selected, only apply these filters if they're explicitly toggled on
-            
-            // Filter by numplays if toggled
+
             if (filterNumplays && currentFilter !== 'all') {
                 filtered = filtered.filter(item => {
-                    const collectionItem = collectionData.get(item.gameId);
-                    return collectionItem && collectionItem.numplays > 0;
+                    const col = collectionData.get(item.gameId);
+                    return col && col.numplays > 0;
                 });
             }
-            
-            // Filter by My Posts
+
             if (filterMyPosts && currentFilter !== 'all') {
-                filtered = filtered.filter(item => 
+                filtered = filtered.filter(item =>
                     item.username.toLowerCase() === myUsername.toLowerCase()
                 );
             }
-            
-            // Filter by My Comments
+
             if (filterICommented && currentFilter !== 'all') {
-                filtered = filtered.filter(item => 
+                filtered = filtered.filter(item =>
                     item.commentsList.some(c => c.user.toLowerCase() === myUsername.toLowerCase())
                 );
             }
-            
-            // Filter by Sold/Unsold status
+
             if (!filterShowSold || !filterShowUnsold) {
                 filtered = filtered.filter(item => {
                     if (!filterShowSold && item.isSold) return false;
@@ -1375,8 +1482,7 @@
                     return true;
                 });
             }
-            
-            // Apply sorting
+
             if (listingsSort === 'date-desc') {
                 filtered.sort((a, b) => new Date(b.postDate) - new Date(a.postDate));
             } else if (listingsSort === 'price-asc') {
@@ -1394,9 +1500,10 @@
                     return b.price - a.price;
                 });
             }
-            
-            document.getElementById('listingsSubtitle').textContent = `${filtered.length} listing${filtered.length !== 1 ? 's' : ''}`;
-            
+
+            document.getElementById('listingsSubtitle').textContent =
+                `${filtered.length} listing${filtered.length !== 1 ? 's' : ''}`;
+
             if (filtered.length === 0) {
                 container.innerHTML = `
                     <div class="empty-state">
@@ -1405,73 +1512,19 @@
                         </svg>
                         <h3 class="text-lg font-semibold text-gray-600 mb-1">No Matches</h3>
                         <p class="text-sm text-gray-400">Try a different filter</p>
-                    </div>
-                `;
+                    </div>`;
                 return;
             }
-            
-            container.innerHTML = `
-                <div class="space-y-3">
-                    ${filtered.map(item => {
-                        const collectionItem = collectionData.get(item.gameId);
-                        const numplays = collectionItem?.numplays || 0;
-                        return `
-                        <div class="game-card fade-in cursor-pointer" onclick="openGameDetail('${item.itemId}')">
-                            <div class="flex p-3">
-                                <div class="w-16 h-16 rounded-lg bg-gray-100 overflow-hidden flex-shrink-0">
-                                    ${item.thumbnail 
-                                        ? `<img src="${item.thumbnail}" alt="${item.gameName}" class="w-full h-full object-cover">`
-                                        : `<div class="w-full h-full flex items-center justify-center text-gray-300">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-6 w-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
-                                            </svg>
-                                        </div>`
-                                    }
-                                </div>
-                                <div class="ml-3 flex-1 min-w-0">
-                                    <h3 class="font-semibold text-gray-900 text-sm leading-tight truncate">${item.gameName}</h3>
-                                    <div class="flex items-center gap-1.5 mt-0.5">
-                                        <span class="text-xs text-gray-500">by</span>
-                                        <span class="text-xs font-medium text-blue-600">@${item.username}</span>
-                                    </div>
-                                    <div class="flex items-center gap-2 mt-1.5">
-                                        ${item.price !== null 
-                                            ? `<span class="inline-flex items-center px-2 py-0.5 rounded-md text-xs font-bold price-neutral">$${item.price.toFixed(0)}</span>`
-                                            : ''
-                                        }
-                                        <span class="inline-flex items-center px-2 py-0.5 rounded-full text-xs font-semibold ${item.isSold ? 'status-sold' : 'status-available'}">${item.isSold ? 'SOLD' : 'AVAILABLE'}</span>
-                                    </div>
-                                    <div class="flex items-center gap-3 mt-2 text-xs text-gray-400">
-                                        <span class="flex items-center gap-1">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 12h.01M12 12h.01M16 12h.01M21 12c0 4.418-4.03 8-9 8a9.863 9.863 0 01-4.255-.949L3 20l1.395-3.72C3.512 15.042 3 13.574 3 12c0-4.418 4.03-8 9-8s9 3.582 9 8z" />
-                                            </svg>
-                                            ${item.comments}
-                                        </span>
-                                        ${item.thumbs > 0 ? `<span class="flex items-center gap-1">👍 ${item.thumbs}</span>` : ''}
-                                        <span>${timeAgo(item.postDate)}</span>
-                                        ${numplays > 0 ? `<span class="flex items-center gap-1 text-blue-600 font-medium">
-                                            <svg xmlns="http://www.w3.org/2000/svg" class="h-3 w-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z" />
-                                                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
-                                            </svg>
-                                            ${numplays}
-                                        </span>` : ''}
-                                    </div>
-                                    <div class="text-xs text-gray-400 mt-1">
-                                        ${item.geeklistLabel}
-                                    </div>
-                                </div>
-                                <button onclick="event.stopPropagation(); window.open('https://boardgamegeek.com/geeklist/${item.geeklistId}?itemid=${item.itemId}', '_blank')" class="flex-shrink-0 ml-2 p-2 text-blue-600 hover:bg-blue-50 rounded-lg" title="View on BGG">
-                                    <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                                        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14" />
-                                    </svg>
-                                </button>
-                            </div>
-                        </div>
-                    `}).join('')}
-                </div>
-            `;
+
+            _filteredListings = filtered;
+            _listingsRenderedCount = 0;
+            container.innerHTML = '<div class="space-y-3 listings-list"></div>';
+
+            _listingsObserver = new IntersectionObserver(entries => {
+                if (entries[0].isIntersecting) _appendListingsChunk();
+            }, { rootMargin: '400px' });
+
+            _appendListingsChunk();
         }
 
         // ============ RENDER ANALYTICS ============
@@ -1780,13 +1833,12 @@
                     </div>
                     
                     ${item.commentsList.length > 0 ? `
-                        <div class="ios-card p-4">
+                        <div class="ios-card p-4 pb-2">
                             <h3 class="font-bold text-gray-900 mb-3">Comments (${item.commentsList.length})</h3>
                             <div class="space-y-3">
                                 ${item.commentsList.map((c, ci) => {
                                     const isLast = ci === item.commentsList.length - 1;
-                                    const cPrice = extractCommentPrice(c.text);
-                                    const isPending = item.price !== null && cPrice !== null && Math.abs(cPrice - item.price) <= 1;
+                                    const isPending = !item.isSold && isCommentPending(c.text, item.price, c.user, item.username);
                                     return `
                                     <div class="${isLast ? 'pb-1' : 'pb-3 border-b border-gray-100'}${isPending ? ' bg-yellow-50 -mx-2 px-2 py-2 rounded-xl' : ''}">
                                         <div class="flex justify-between items-start mb-1">
