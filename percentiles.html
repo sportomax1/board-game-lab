@@ -40,14 +40,13 @@
     .p-0 { background: #ef4444; color: white; }
 
     .percentile-badge {
-      font-size: 8px;
+      font-size: 7px;
       font-weight: 800;
-      padding: 1px 3px;
-      border-radius: 4px;
-      text-transform: none;
+      padding: 1px 2px;
+      border-radius: 3px;
       line-height: 1;
       display:inline-block;
-      min-width:34px;
+      min-width:22px;
       text-align:center;
       white-space: nowrap;
     }
@@ -65,14 +64,15 @@
       overflow: auto;
     }
     th, td {
-      padding: 2px 4px !important;
+      padding: 1px 3px !important;
       vertical-align: middle;
       border-bottom: 1px solid #e6eef8;
       line-height: 1;
+      font-size: 10px;
     }
     .sticky-col { position: sticky; left: 0; background: var(--card); z-index: 20; white-space: nowrap; }
-    .sticky-col-2 { position: sticky; left: 48px; background: var(--card); z-index: 19; border-right: 1px solid #eef2ff; white-space: nowrap; }
-    .compact-row { font-weight:700; font-size:11px }
+    .sticky-col-2 { position: sticky; left: 24px; background: var(--card); z-index: 19; border-right: 1px solid #eef2ff; white-space: nowrap; }
+    .compact-row { font-weight:700; font-size:9px }
     .metrics-cell { display:flex; gap:6px; flex-wrap:wrap; align-items:center; }
     .metric-badge {
       background:#fbfdff;
@@ -209,6 +209,7 @@
   <script>
     const API_BASE = '/api/bgg-helper';
     const BATCH_SIZE = 20;
+    const PARALLEL_LIMIT = 100;
     let allGames = [];
     let percentileData = {};
     
@@ -257,15 +258,16 @@
         if (ids.length === 0) throw new Error('None.');
 
         const results = [];
-        for (let i = 0; i < ids.length; i += BATCH_SIZE) {
-          const batch = ids.slice(i, i + BATCH_SIZE);
-          const thingXml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(batch.join(','))}&stats=1`);
-          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
-          Array.from(thingDoc.querySelectorAll('item')).forEach(item => {
+        const batches = [];
+        for (let i = 0; i < ids.length; i += BATCH_SIZE) batches.push(ids.slice(i, i + BATCH_SIZE));
+
+        function parseThingXml(xml) {
+          const doc = new DOMParser().parseFromString(xml, 'text/xml');
+          return Array.from(doc.querySelectorAll('item')).map(item => {
             const stats = item.querySelector('statistics ratings');
             const rNode = stats?.querySelector('rank[type="subtype"]');
             const rVal = rNode ? rNode.getAttribute('value') : null;
-            results.push({
+            return {
               id: item.getAttribute('id'),
               name: item.querySelector('name[type="primary"]')?.getAttribute('value') || item.querySelector('name')?.textContent,
               thumb: item.querySelector('thumbnail')?.textContent || '',
@@ -282,8 +284,14 @@
               wanting: parseInt(stats?.querySelector('wanting')?.getAttribute('value') || '0'),
               wishing: parseInt(stats?.querySelector('wishing')?.getAttribute('value') || '0'),
               weight: parseFloat(stats?.querySelector('averageweight')?.getAttribute('value') || '0')
-            });
+            };
           });
+        }
+
+        for (let c = 0; c < batches.length; c += PARALLEL_LIMIT) {
+          const chunk = batches.slice(c, c + PARALLEL_LIMIT);
+          const xmls = await Promise.all(chunk.map(b => fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(b.join(','))}&stats=1`)));
+          xmls.forEach(xml => results.push(...parseThingXml(xml)));
           document.getElementById('loadingStatus').textContent = `Sync: ${results.length}/${ids.length}`;
         }
         allGames = results;
@@ -345,13 +353,13 @@
           const pTxt = p !== null ? Math.round(p) + '%' : '—';
           const valTxt = (v === null || v === undefined) ? '—' : (typeof v === 'number' ? (Number.isInteger(v) ? v.toLocaleString() : v.toLocaleString(undefined, {maximumFractionDigits:1})) : v);
           const dim = f.active ? '' : 'opacity-40';
-          return `<td class="text-center ${dim}"><div style="display:flex;flex-direction:row;align-items:center;gap:2px;justify-content:center;"><div class="text-[11px] font-black">${valTxt}</div><div class="percentile-badge ${getPCls(p)}">${pTxt}</div></div></td>`;
+          return `<td class="text-center ${dim}" style="white-space:nowrap"><span class="font-black">${valTxt}</span> <span class="percentile-badge ${getPCls(p)}">${pTxt}</span></td>`;
         }).join('');
 
         row.innerHTML = `
-          <td class="sticky-col"><img src="${g.thumb}" class="w-4 h-4 rounded"></td>
-          <td class="sticky-col-2 truncate max-w-[200px]">${g.name}</td>
-          <td class="text-center bg-rose-50 font-black border-x border-rose-100">${combined ? combined.toFixed(1) : '—'} <div class="percentile-badge ${cPCls}">${combined ? Math.round(combined)+'%' : '—'}</div></td>
+          <td class="sticky-col"><img src="${g.thumb}" class="w-4 h-4 rounded" loading="lazy"></td>
+          <td class="sticky-col-2 truncate max-w-[140px]" title="${g.name}">${g.name}</td>
+          <td class="text-center bg-rose-50 font-black border-x border-rose-100" style="white-space:nowrap">${combined ? combined.toFixed(1) : '—'} <span class="percentile-badge ${cPCls}">${combined ? Math.round(combined)+'%' : '—'}</span></td>
           ${perMetricCells}
         `;
         tBody.appendChild(row);
