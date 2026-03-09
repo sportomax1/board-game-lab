@@ -118,6 +118,7 @@
           >
             <option value="name">Name: A-Z</option>
             <option value="rating">User Rating</option>
+            <option value="score">Best Score</option>
             <option value="minplayers">Min Players</option>
             <option value="maxplayers">Max Players</option>
           </select>
@@ -304,9 +305,11 @@ function populatePlayerFilters() {
   
   // Sort player counts numerically
   const playerCounts = Array.from(playerCountSet).sort((a, b) => {
-    const numA = a.includes('+') ? parseInt(a) : parseInt(a);
-    const numB = b.includes('+') ? parseInt(b) : parseInt(b);
-    return numA - numB;
+    const numA = parseInt(a), numB = parseInt(b);
+    if (numA !== numB) return numA - numB;
+    if (a.includes('+') && !b.includes('+')) return 1;
+    if (!a.includes('+') && b.includes('+')) return -1;
+    return 0;
   });
   
   // Populate Best With dropdown
@@ -315,7 +318,7 @@ function populatePlayerFilters() {
   playerCounts.forEach(count => {
     const option = document.createElement('option');
     option.value = count;
-    option.textContent = `Best With: ${count}p`;
+    option.textContent = `Best With: ${count}${count.includes('+')?''+'':''} players`;
     bestWithSelect.appendChild(option);
   });
   
@@ -325,7 +328,7 @@ function populatePlayerFilters() {
   playerCounts.forEach(count => {
     const option = document.createElement('option');
     option.value = count;
-    option.textContent = `Recommended With: ${count}p`;
+    option.textContent = `Recommended With: ${count} players`;
     recommendedWithSelect.appendChild(option);
   });
 }
@@ -360,7 +363,7 @@ function filterGames() {
         const total = best + recommended + notRecommended;
         const bestPercent = total > 0 ? (best / total) : 0;
         const recPercent = total > 0 ? ((best + recommended) / total) : 0;
-        return pc.numplayers === recommendedWith && recPercent >= 0.5 && bestPercent < 0.5;
+        return pc.numplayers === recommendedWith && recPercent >= 0.5;
       });
       if (!hasRecommended) return false;
     }
@@ -382,9 +385,35 @@ function sortGames() {
     displayedGames.sort((a, b) => a.minplayers - b.minplayers);
   } else if (sortBy === 'maxplayers') {
     displayedGames.sort((a, b) => b.maxplayers - a.maxplayers);
+  } else if (sortBy === 'score') {
+    displayedGames.sort((a, b) => {
+      const best = g => (g.playerCounts||[]).reduce((mx,pc) => { const s=calcScore(pc.votes); return s!==null?Math.max(mx,s):mx; }, -Infinity);
+      return best(b) - best(a);
+    });
   }
   
   renderGames();
+}
+
+function calcScore(votes) {
+  const best = votes['Best'] || 0;
+  const rec  = votes['Recommended'] || 0;
+  const notRec = votes['Not Recommended'] || 0;
+  const total = best + rec + notRec;
+  if (total === 0) return null;
+  return (best * 2 + rec * 1 + notRec * -1) / total;
+}
+
+function getCategory(votes) {
+  const best = votes['Best'] || 0;
+  const rec  = votes['Recommended'] || 0;
+  const notRec = votes['Not Recommended'] || 0;
+  const total = best + rec + notRec;
+  if (total === 0) return 'none';
+  if (best / total >= 0.5) return 'best';
+  if ((best + rec) / total >= 0.5) return 'rec';
+  if (notRec / total >= 0.5) return 'not';
+  return 'neutral';
 }
 
 function renderGames() {
@@ -397,27 +426,12 @@ function renderGames() {
     
     const isLoaded = game.loaded || !isLoading;
     
-    // Calculate best and recommended player counts
-    let bestCounts = [];
-    let recommendedCounts = [];
-    
+    // Calculate per-player-count scores
+    const pcBadges = [];
     if (game.playerCounts && game.playerCounts.length > 0) {
       game.playerCounts.forEach(pc => {
-        const best = pc.votes['Best'] || 0;
-        const recommended = pc.votes['Recommended'] || 0;
-        const notRecommended = pc.votes['Not Recommended'] || 0;
-        const total = best + recommended + notRecommended;
-        
-        if (total > 0) {
-          const bestPercent = (best / total) * 100;
-          const recPercent = ((best + recommended) / total) * 100;
-          
-          if (bestPercent >= 50) {
-            bestCounts.push({ num: pc.numplayers, votes: pc.votes, total });
-          } else if (recPercent >= 50) {
-            recommendedCounts.push({ num: pc.numplayers, votes: pc.votes, total });
-          }
-        }
+        const s = calcScore(pc.votes);
+        if (s !== null) pcBadges.push({ num: pc.numplayers, score: s, cat: getCategory(pc.votes), votes: pc.votes });
       });
     }
     
@@ -439,54 +453,24 @@ function renderGames() {
           
           ${!isLoaded ? `
             <div class="flex gap-2">
-              <div class="skeleton bg-slate-200 h-8 w-16 rounded"></div>
-              <div class="skeleton bg-slate-200 h-8 w-16 rounded"></div>
-              <div class="skeleton bg-slate-200 h-8 w-16 rounded"></div>
+              <div class="skeleton bg-slate-200 h-6 w-12 rounded"></div>
+              <div class="skeleton bg-slate-200 h-6 w-12 rounded"></div>
+              <div class="skeleton bg-slate-200 h-6 w-12 rounded"></div>
             </div>
+          ` : pcBadges.length === 0 ? `
+            <div class="text-xs text-slate-400 italic">No player count data</div>
           ` : `
-            ${bestCounts.length === 0 && recommendedCounts.length === 0 ? `
-              <div class="text-xs text-slate-400 italic">No player count data</div>
-            ` : `
-              <div class="space-y-2">
-                ${bestCounts.length > 0 ? `
-                  <div>
-                    <div class="text-[10px] font-bold text-green-600 uppercase mb-1">Best With</div>
-                    <div class="flex flex-wrap gap-1">
-                      ${bestCounts.map(pc => {
-                        const best = pc.votes['Best'] || 0;
-                        const recommended = pc.votes['Recommended'] || 0;
-                        const notRec = pc.votes['Not Recommended'] || 0;
-                        return `
-                          <div class="player-badge bg-green-50 border border-green-200 px-2 py-1 rounded text-xs font-bold text-green-700">
-                            ${pc.num}p
-                            <span class="text-[9px] text-green-600 ml-1">(${best}/${recommended}/${notRec})</span>
-                          </div>
-                        `;
-                      }).join('')}
-                    </div>
-                  </div>
-                ` : ''}
-                
-                ${recommendedCounts.length > 0 ? `
-                  <div>
-                    <div class="text-[10px] font-bold text-blue-600 uppercase mb-1">Recommended</div>
-                    <div class="flex flex-wrap gap-1">
-                      ${recommendedCounts.map(pc => {
-                        const best = pc.votes['Best'] || 0;
-                        const recommended = pc.votes['Recommended'] || 0;
-                        const notRec = pc.votes['Not Recommended'] || 0;
-                        return `
-                          <div class="player-badge bg-blue-50 border border-blue-200 px-2 py-1 rounded text-xs font-bold text-blue-700">
-                            ${pc.num}p
-                            <span class="text-[9px] text-blue-600 ml-1">(${best}/${recommended}/${notRec})</span>
-                          </div>
-                        `;
-                      }).join('')}
-                    </div>
-                  </div>
-                ` : ''}
-              </div>
-            `}
+            <div class="flex flex-wrap gap-1.5">
+              ${pcBadges.map(({num, score, cat, votes}) => {
+                const best = votes['Best']||0, rec = votes['Recommended']||0, notRec = votes['Not Recommended']||0;
+                const clr = cat==='best'    ? 'bg-green-100 border-green-400 text-green-800'
+                           : cat==='rec'    ? 'bg-blue-100 border-blue-300 text-blue-800'
+                           : cat==='not'    ? 'bg-red-50 border-red-300 text-red-700'
+                           :                  'bg-slate-100 border-slate-300 text-slate-500';
+                const sStr = (score>=0?'+':'')+score.toFixed(1);
+                return `<div class="player-badge border px-2 py-0.5 rounded text-xs font-bold ${clr} inline-flex items-center gap-1" title="Best: ${best} | Rec: ${rec} | Not: ${notRec}"><span>${num}p</span><span class="font-semibold text-[10px] opacity-80">${sStr}</span></div>`;
+              }).join('')}
+            </div>
           `}
         </div>
       </div>

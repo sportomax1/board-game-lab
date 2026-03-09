@@ -50,22 +50,6 @@
     /* ── Scroll wrapper ── */
     .scroll-wrap{max-height:calc(100vh - 100px);overflow:auto;border:1px solid #e2e8f0;border-radius:6px;background:#fff}
 
-    /* ── Mobile card ── */
-    .mcard{background:#fff;border:1px solid #e2e8f0;border-radius:8px;padding:8px 10px;display:flex;flex-direction:column;gap:6px}
-    .mcard-head{display:flex;align-items:center;gap:8px}
-    .mcard-thumb{width:32px;height:32px;border-radius:6px;object-fit:cover;flex-shrink:0}
-    .mcard-title{font-weight:800;font-size:12px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;flex:1}
-    .mcard-comb{font-weight:900;font-size:14px;color:#e11d48;white-space:nowrap;margin-left:auto}
-    .mcard-metrics{display:grid;grid-template-columns:repeat(auto-fill,minmax(62px,1fr));gap:4px}
-    .mcard-m{background:#f8fafc;border:1px solid #f1f5f9;border-radius:5px;padding:3px 4px;text-align:center}
-    .mcard-m-label{font-size:7px;font-weight:800;color:#94a3b8;text-transform:uppercase;letter-spacing:.03em}
-    .mcard-m-val{font-size:10px;font-weight:800;line-height:1.2}
-
-    /* ── Responsive toggle ── */
-    .desk-only{display:none}
-    .mob-only{display:block}
-    @media(min-width:860px){.desk-only{display:block}.mob-only{display:none}}
-
     /* ── Loader ── */
     .spin{animation:sp .6s linear infinite}
     @keyframes sp{to{transform:rotate(360deg)}}
@@ -85,6 +69,12 @@
     <i class="fa-solid fa-user text-[8px] text-slate-400"></i>
     <input id="username" type="text" value="sportomax" class="bg-transparent text-[10px] font-semibold outline-none w-20 px-0.5">
     <button onclick="fetchFullData()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-[8px] font-black px-2 py-0.5 rounded transition-colors">GO</button>
+  </div>
+  <div class="flex items-center gap-1 bg-slate-100 rounded px-1.5 py-0.5 border border-slate-200">
+    <i class="fa-solid fa-file-csv text-[8px] text-slate-400"></i>
+    <input type="file" id="csvFile" accept=".csv" onchange="loadCsv(this)" class="hidden">
+    <button onclick="document.getElementById('csvFile').click()" class="text-[8px] font-black text-slate-500 hover:text-indigo-600 transition-colors">Upload CSV</button>
+    <span id="csvLabel" class="hidden text-[8px] font-bold text-emerald-600"></span>
   </div>
 </header>
 
@@ -111,7 +101,7 @@
   </div>
 
   <!-- Desktop table -->
-  <div class="desk-only px-2 pt-1 pb-2">
+  <div class="px-2 pt-1 pb-2">
     <div class="scroll-wrap">
       <table id="dtable">
         <thead><tr id="tableHead"></tr></thead>
@@ -120,8 +110,6 @@
     </div>
   </div>
 
-  <!-- Mobile cards -->
-  <div id="cardContainer" class="mob-only px-2 pt-1 pb-2 flex flex-col gap-2"></div>
 </div>
 
 <script>
@@ -131,6 +119,7 @@
   let allGames = [];
   let percentileData = {};
   let sortCol = 'combined', sortAsc = false;
+  let csvDataMap = {}; // objectid -> {invdate, pricepaid, collid}
 
   const metricConfig = [
     { id: 'year',        label: 'Year',   order: 'desc', active: true },
@@ -145,7 +134,10 @@
     { id: 'trading',     label: 'Trade',  order: 'desc', active: true },
     { id: 'wanting',     label: 'Want',   order: 'desc', active: true },
     { id: 'wishing',     label: 'Wish',   order: 'desc', active: true },
-    { id: 'weight',      label: 'Weight', order: 'asc',  active: true }
+    { id: 'weight',      label: 'Weight',  order: 'asc',  active: true },
+    { id: 'invdate',   label: 'Inv Date', order: 'desc', active: false, source: 'csv' },
+    { id: 'pricepaid', label: 'Price',    order: 'asc',  active: false, source: 'csv' },
+    { id: 'collid',    label: 'Coll ID',  order: 'desc', active: false, source: 'csv' }
   ];
 
   /* ── percentile color class ── */
@@ -166,11 +158,12 @@
 
   /* ── init config toggles ── */
   function initSettings(){
-    document.getElementById('settingsList').innerHTML = metricConfig.map(m=>`
-      <label class="flex items-center gap-0.5 cursor-pointer select-none">
-        <input type="checkbox" ${m.active?'checked':''} onchange="toggleMetric('${m.id}',this.checked)" class="w-2.5 h-2.5 accent-indigo-600">
-        <span class="text-[8px] font-bold text-slate-500">${m.label}</span>
-      </label>`).join('');
+    document.getElementById('settingsList').innerHTML = metricConfig.map(m=>{
+      const csv = m.source==='csv';
+      const clr = csv ? 'text-emerald-600' : 'text-slate-500';
+      const badge = csv ? '<span style="font-size:6px;background:#d1fae5;color:#065f46;border-radius:2px;padding:0 2px;margin-left:2px;font-weight:900">CSV</span>' : '';
+      return `<label class="flex items-center gap-0.5 cursor-pointer select-none"><input type="checkbox" ${m.active?'checked':''} onchange="toggleMetric('${m.id}',this.checked)" class="w-2.5 h-2.5 accent-indigo-600"><span class="text-[8px] font-bold ${clr}">${m.label}${badge}</span></label>`;
+    }).join('');
   }
   function toggleMetric(id,on){const m=metricConfig.find(x=>x.id===id);if(m)m.active=on;renderDisplay()}
 
@@ -229,17 +222,6 @@
       return r;
     });
     tb.innerHTML=rows.join('');
-
-    // ── Mobile cards ──
-    const cc=document.getElementById('cardContainer');
-    cc.innerHTML=filtered.map(g=>{
-      const comb=g.combined, combP=comb!=null?Math.round(comb):null;
-      let metrics=metricConfig.map(f=>{
-        const v=g[f.id], p=percentileData[f.id]?.[g.id]??null;
-        return`<div class="mcard-m"><div class="mcard-m-label">${f.label}</div><div class="mcard-m-val">${fv(v)} <span class="pbadge ${pc(p!=null?Math.round(p):null)}">${p!=null?Math.round(p)+'%':'—'}</span></div></div>`;
-      }).join('');
-      return`<div class="mcard"><div class="mcard-head"><img src="${g.thumb}" class="mcard-thumb" loading="lazy"><span class="mcard-title">${g.name}</span><span class="mcard-comb">${comb!=null?comb.toFixed(1):'—'} <span class="pbadge ${pc(combP)}">${combP!=null?combP+'%':''}</span></span></div><div class="mcard-metrics">${metrics}</div></div>`;
-    }).join('');
   }
 
   /* ── DATA FETCH (unchanged logic) ── */
@@ -293,6 +275,9 @@
       }
 
       allGames=results;
+      if(Object.keys(csvDataMap).length){
+        allGames.forEach(g=>{const c=csvDataMap[g.id];if(c){g.invdate=c.invdate;g.pricepaid=c.pricepaid;g.collid=c.collid}});
+      }
       calculatePercentiles();
       buildHeader();
       document.getElementById('loadingSection').classList.add('hidden');
@@ -304,8 +289,12 @@
   function calculatePercentiles(){
     percentileData={};
     metricConfig.forEach(f=>{
-      let valid=allGames.map(g=>({id:g.id,val:g[f.id]}));
-      if(f.ignoreNull||f.id==='rank')valid=valid.filter(g=>g.val!=null&&g.val!==0);
+      let valid=allGames.map(g=>{
+        let val=g[f.id];
+        if(f.id==='invdate'&&val) val=new Date(val).getTime();
+        return {id:g.id,val};
+      });
+      if(f.ignoreNull||f.id==='rank'||f.source==='csv') valid=valid.filter(g=>g.val!=null&&g.val!==0&&!Number.isNaN(g.val));
       valid.sort((a,b)=>f.order==='asc'?a.val-b.val:b.val-a.val);
       const N=valid.length,ranks={};
       valid.forEach((g,i)=>ranks[g.id]=N>1?(1-(i/(N-1)))*100:100);
@@ -323,6 +312,52 @@
       }catch(e){await new Promise(ok=>setTimeout(ok,1000))}
     }
     throw new Error('Request failed after retries');
+  }
+
+  function parseCsvRow(line){
+    const r=[];let cur='',inQ=false;
+    for(const ch of line){
+      if(ch==='"'){inQ=!inQ}
+      else if(ch===','&&!inQ){r.push(cur.trim());cur=''}
+      else cur+=ch;
+    }r.push(cur.trim());return r;
+  }
+
+  function loadCsv(input){
+    const file=input.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const lines=e.target.result.replace(/\r/g,'').split('\n').filter(l=>l.trim());
+      if(lines.length<2)return;
+      const hdrs=parseCsvRow(lines[0]).map(h=>h.replace(/^"|"$/g,'').toLowerCase());
+      const ci=n=>hdrs.indexOf(n);
+      const iid=ci('itemid'),iinvdate=ci('invdate'),iprice=ci('pricepaid'),icoll=ci('collid');
+      if(iid<0){alert('CSV must have an ITEMID column');return;}
+      csvDataMap={};
+      for(let i=1;i<lines.length;i++){
+        const row=parseCsvRow(lines[i]);
+        const oid=row[iid]?.replace(/^"|"$/g,'');
+        if(!oid)continue;
+        csvDataMap[oid]={
+          invdate   :iinvdate>=0?(row[iinvdate]?.replace(/^"|"$/g,'')||null):null,
+          pricepaid :iprice>=0?(parseFloat(row[iprice])||null):null,
+          collid    :icoll>=0?(parseInt(row[icoll])||null):null
+        };
+      }
+      const n=Object.keys(csvDataMap).length;
+      const lbl=document.getElementById('csvLabel');
+      lbl.textContent=n+' rows';
+      lbl.classList.remove('hidden');
+      metricConfig.filter(m=>m.source==='csv').forEach(m=>m.active=true);
+      initSettings();
+      if(allGames.length){
+        allGames.forEach(g=>{const c=csvDataMap[g.id];if(c){g.invdate=c.invdate;g.pricepaid=c.pricepaid;g.collid=c.collid}});
+        calculatePercentiles();
+        buildHeader();
+        renderDisplay();
+      }
+    };
+    reader.readAsText(file);
   }
 
   initSettings();
