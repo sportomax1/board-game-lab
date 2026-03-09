@@ -1,0 +1,401 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Percentiles</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+    
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background: #f8fafc;
+      color: #0f172a;
+    }
+
+    .percentile-badge {
+      font-size: 9px;
+      font-weight: 800;
+      padding: 1px 4px;
+      border-radius: 4px;
+      text-transform: uppercase;
+      display: inline-block;
+    }
+
+    .p-100 { background: #166534; color: white; }
+    .p-90 { background: #15803d; color: white; }
+    .p-80 { background: #16a34a; color: white; }
+    .p-70 { background: #22c55e; color: white; }
+    .p-60 { background: #4ade80; color: #064e3b; }
+    .p-50 { background: #86efac; color: #064e3b; }
+    .p-40 { background: #fef08a; color: #713f12; }
+    .p-30 { background: #fde047; color: #713f12; }
+    .p-20 { background: #facc15; color: #713f12; }
+    .p-10 { background: #f87171; color: white; }
+    .p-0 { background: #ef4444; color: white; }
+
+    .sticky-col {
+      position: sticky;
+      left: 0;
+      background: white;
+      z-index: 20;
+    }
+
+    .table-container {
+      max-height: calc(100vh - 250px);
+      overflow: auto;
+    }
+
+    tr:hover td {
+      background-color: #f1f5f9 !important;
+    }
+
+    .custom-scrollbar::-webkit-scrollbar {
+      height: 8px;
+      width: 8px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-track {
+      background: #f1f5f9;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb {
+      background: #cbd5e1;
+      border-radius: 10px;
+    }
+    .custom-scrollbar::-webkit-scrollbar-thumb:hover {
+      background: #94a3b8;
+    }
+
+    .loader {
+      border: 3px solid #f3f3f3;
+      border-top: 3px solid #6366f1;
+      border-radius: 50%;
+      width: 24px;
+      height: 24px;
+      animation: spin 1s linear infinite;
+    }
+    @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
+  </style>
+</head>
+<body class="pb-10">
+
+  <header class="sticky top-0 z-40 w-full bg-white/80 backdrop-blur-md border-b px-6 py-4 flex items-center justify-between shadow-sm">
+    <div class="flex items-center gap-3">
+      <div class="bg-indigo-600 text-white p-2.5 rounded-xl shadow-indigo-200 shadow-lg">
+        <i class="fa-solid fa-percent text-xl"></i>
+      </div>
+      <div>
+        <h1 class="text-xl font-extrabold tracking-tight">Percentile Ranks</h1>
+        <p class="text-[10px] text-slate-500 font-bold uppercase tracking-widest">Collection Analytics</p>
+      </div>
+    </div>
+    <div id="statsSummary" class="hidden md:flex items-center gap-6">
+      <div class="text-right">
+        <div class="text-xs font-bold text-slate-400 uppercase">Games</div>
+        <div id="gameCount" class="text-xl font-black text-indigo-600">0</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-[1600px] mx-auto p-4 lg:p-6 space-y-6">
+    
+    <!-- Config Card -->
+    <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-200 p-6">
+      <div class="flex flex-col md:flex-row gap-6 items-end">
+        <div class="flex-1 space-y-4">
+          <div class="grid grid-cols-1 md:grid-cols-2 gap-4">
+            <div>
+              <label class="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1.5 block">BGG Username</label>
+              <input id="username" type="text" value="sportomax" class="w-full px-4 py-2.5 rounded-xl border border-slate-200 focus:ring-4 focus:ring-indigo-100 focus:border-indigo-500 outline-none transition-all font-semibold">
+            </div>
+            <div>
+              <label class="text-[10px] font-black text-slate-500 uppercase tracking-wider mb-1.5 block">Collection Status</label>
+              <div class="flex gap-2">
+                <label class="flex-1 flex items-center justify-center gap-2 px-4 py-2.5 rounded-xl border-2 border-slate-100 bg-slate-50 cursor-pointer hover:bg-white transition-all">
+                  <input type="checkbox" id="ownOnly" checked class="w-4 h-4 text-indigo-600 rounded">
+                  <span class="text-sm font-bold text-slate-700">Own=1 Only</span>
+                </label>
+              </div>
+            </div>
+          </div>
+        </div>
+        <button onclick="confirmAndFetch()" id="fetchBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-8 py-3 rounded-xl font-bold shadow-lg shadow-indigo-100 transition-all flex items-center gap-2 whitespace-nowrap">
+          <i class="fa-solid fa-bolt"></i> Load & Calculate
+        </button>
+      </div>
+      <p class="mt-4 text-[11px] text-slate-400 font-medium italic">
+        * This will perform parallel API calls (100x batches of 20 IDs) with <code>stats=1</code> to calculate global distributions for your collection.
+      </p>
+    </div>
+
+    <!-- Loading State -->
+    <div id="loadingSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-200 p-8 text-center space-y-4">
+      <div class="flex justify-center"><div class="loader"></div></div>
+      <div id="loadingStatus" class="font-bold text-slate-700">Initializing...</div>
+      <div class="w-full max-w-md mx-auto bg-slate-100 rounded-full h-2 overflow-hidden">
+        <div id="progressBar" class="bg-indigo-600 h-full transition-all duration-300" style="width: 0%"></div>
+      </div>
+    </div>
+
+    <!-- Results Table -->
+    <div id="resultsSection" class="hidden space-y-4">
+      <div class="flex items-center justify-between">
+        <h2 class="text-lg font-extrabold text-slate-800">Collection Rankings</h2>
+        <div class="flex gap-4 items-center">
+           <div class="text-[10px] font-bold text-slate-400 uppercase tracking-wider">Top of list is 100%</div>
+           <input id="tableSearch" type="text" placeholder="Search games..." oninput="renderTable()" class="px-4 py-2 rounded-lg border border-slate-200 text-sm focus:ring-2 focus:ring-indigo-500 outline-none">
+        </div>
+      </div>
+      
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-200 overflow-hidden">
+        <div class="table-container custom-scrollbar">
+          <table class="w-full text-left border-collapse text-[11px]">
+            <thead class="sticky top-0 z-30">
+              <tr class="bg-slate-50 border-b border-slate-200">
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider sticky-col z-30 min-w-[200px]">Game</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="ID (Desc)">ID</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Year (Desc)">Year</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Time (Asc)">Time</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Age (Asc)">Age</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Users Rated (Desc)">Rated</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Average Rating (Desc)">Avg</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Bayes Average (Desc)">Bayes</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="BGG Rank (Asc)">Rank</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Std Dev (Asc)">StdDev</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Owned (Desc)">Owned</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Trading (Desc)">Trade</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Wanting (Desc)">Want</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Wishing (Desc)">Wish</th>
+                <th class="p-3 font-black text-slate-500 uppercase tracking-wider text-center cursor-help border-l" title="Weight (Asc)">Weight</th>
+              </tr>
+            </thead>
+            <tbody id="resultsBody">
+              <!-- Rows injected here -->
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </div>
+
+  </main>
+
+  <script>
+    const API_BASE = '/api/bgg-helper';
+    const BATCH_SIZE = 20;
+
+    let allGames = [];
+    let percentileData = {};
+
+    async function confirmAndFetch() {
+      const username = document.getElementById('username').value.trim();
+      const ownOnly = document.getElementById('ownOnly').checked;
+      
+      if (!username) return alert('Enter a username');
+      
+      const confirmed = confirm(`Load collection for ${username}? This will perform multiple API calls to calculate percentiles.`);
+      if (!confirmed) return;
+
+      document.getElementById('fetchSection').classList.add('hidden');
+      document.getElementById('loadingSection').classList.remove('hidden');
+      document.getElementById('resultsSection').classList.add('hidden');
+
+      try {
+        await fetchFullData(username, ownOnly);
+      } catch (err) {
+        console.error(err);
+        alert('Error: ' + err.message);
+        document.getElementById('fetchSection').classList.remove('hidden');
+        document.getElementById('loadingSection').classList.add('hidden');
+      }
+    }
+
+    async function fetchFullData(username, ownOnly) {
+      updateStatus(`Fetching collection for ${username}...`, 10);
+      
+      let collUrl = `${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}&stats=1&version=2`;
+      if (ownOnly) collUrl += '&own=1';
+      
+      const collXml = await fetchWithRetry(collUrl);
+      const collDoc = new DOMParser().parseFromString(collXml, 'text/xml');
+      const items = Array.from(collDoc.querySelectorAll('item'));
+      
+      if (items.length === 0) throw new Error('No games found in collection.');
+
+      const ids = items.map(it => it.getAttribute('objectid'));
+      updateStatus(`Found ${ids.length} games. Fetching global details...`, 20);
+
+      // Batch Thing API calls
+      const batches = [];
+      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+        batches.push(ids.slice(i, i + BATCH_SIZE));
+      }
+
+      let processed = 0;
+      const results = [];
+
+      // Process batches in parallel
+      const batchPromises = batches.map(async (batch, idx) => {
+        const idsStr = batch.join(',');
+        const thingUrl = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(idsStr)}&stats=1`;
+        const thingXml = await fetchWithRetry(thingUrl);
+        const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+        
+        Array.from(thingDoc.querySelectorAll('item')).forEach(item => {
+          const stats = item.querySelector('statistics ratings');
+          const rankNode = stats ? stats.querySelector('rank[type="subtype"]') : null;
+          const rankVal = rankNode ? rankNode.getAttribute('value') : null;
+
+          results.push({
+            id: parseInt(item.getAttribute('id')),
+            name: item.querySelector('name[type="primary"]')?.getAttribute('value') || item.querySelector('name')?.textContent,
+            year: parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0'),
+            time: parseInt(item.querySelector('playingtime')?.getAttribute('value') || '0'),
+            age: parseInt(item.querySelector('minage')?.getAttribute('value') || '0'),
+            usersrated: parseInt(stats?.querySelector('usersrated')?.getAttribute('value') || '0'),
+            average: parseFloat(stats?.querySelector('average')?.getAttribute('value') || '0'),
+            bayesaverage: parseFloat(stats?.querySelector('bayesaverage')?.getAttribute('value') || '0'),
+            rank: (rankVal && rankVal !== 'Not Ranked') ? parseInt(rankVal) : null,
+            stddev: parseFloat(stats?.querySelector('stddev')?.getAttribute('value') || '0'),
+            owned: parseInt(stats?.querySelector('owned')?.getAttribute('value') || '0'),
+            trading: parseInt(stats?.querySelector('trading')?.getAttribute('value') || '0'),
+            wanting: parseInt(stats?.querySelector('wanting')?.getAttribute('value') || '0'),
+            wishing: parseInt(stats?.querySelector('wishing')?.getAttribute('value') || '0'),
+            weight: parseFloat(stats?.querySelector('averageweight')?.getAttribute('value') || '0')
+          });
+        });
+        processed += batch.length;
+        updateStatus(`Fetched ${Math.min(processed, ids.length)} / ${ids.length} games...`, 20 + (processed / ids.length) * 70);
+      });
+
+      await Promise.all(batchPromises);
+
+      allGames = results;
+      calculatePercentiles();
+      
+      updateStatus('Calculation complete!', 100);
+      document.getElementById('loadingSection').classList.add('hidden');
+      document.getElementById('resultsSection').classList.remove('hidden');
+      document.getElementById('gameCount').textContent = allGames.length;
+      renderTable();
+    }
+
+    function calculatePercentiles() {
+      const fields = [
+        { key: 'id', order: 'desc' },
+        { key: 'year', order: 'desc' },
+        { key: 'time', order: 'asc' },
+        { key: 'age', order: 'asc' },
+        { key: 'usersrated', order: 'desc' },
+        { key: 'average', order: 'desc' },
+        { key: 'bayesaverage', order: 'desc' },
+        { key: 'rank', order: 'asc', ignoreNull: true },
+        { key: 'stddev', order: 'asc' },
+        { key: 'owned', order: 'desc' },
+        { key: 'trading', order: 'desc' },
+        { key: 'wanting', order: 'desc' },
+        { key: 'wishing', order: 'desc' },
+        { key: 'weight', order: 'asc' }
+      ];
+
+      percentileData = {};
+
+      fields.forEach(f => {
+        let validGames = allGames.map(g => ({ id: g.id, val: g[f.key] }));
+        if (f.ignoreNull || f.key === 'rank') {
+          validGames = validGames.filter(g => g.val !== null && g.val !== 0);
+        }
+
+        validGames.sort((a, b) => {
+          if (f.order === 'asc') return a.val - b.val;
+          return b.val - a.val;
+        });
+
+        const N = validGames.length;
+        const ranks = {};
+        
+        validGames.forEach((g, i) => {
+          const p = N > 1 ? (1 - (i / (N - 1))) * 100 : 100;
+          ranks[g.id] = p;
+        });
+
+        percentileData[f.key] = ranks;
+      });
+    }
+
+    function getPercentileClass(p) {
+      if (p === null) return '';
+      if (p >= 90) return 'p-100';
+      if (p >= 80) return 'p-90';
+      if (p >= 70) return 'p-80';
+      if (p >= 60) return 'p-70';
+      if (p >= 50) return 'p-60';
+      if (p >= 40) return 'p-50';
+      if (p >= 30) return 'p-40';
+      if (p >= 20) return 'p-30';
+      if (p >= 10) return 'p-20';
+      if (p > 0) return 'p-10';
+      return 'p-0';
+    }
+
+    function renderTable() {
+      const search = document.getElementById('tableSearch').value.toLowerCase();
+      const tbody = document.getElementById('resultsBody');
+      tbody.innerHTML = '';
+
+      const filtered = allGames.filter(g => g.name.toLowerCase().includes(search));
+
+      filtered.forEach(g => {
+        const row = document.createElement('tr');
+        row.className = 'border-b border-slate-100 transition-colors bg-white';
+        
+        let html = `
+          <td class="p-3 sticky-col z-20 font-bold text-slate-900 border-r border-slate-100 shadow-[2px_0_5px_-2px_rgba(0,0,0,0.05)]">
+            <div class="truncate max-w-[200px]" title="${g.name}">${g.name}</div>
+          </td>
+        `;
+
+        const fields = ['id', 'year', 'time', 'age', 'usersrated', 'average', 'bayesaverage', 'rank', 'stddev', 'owned', 'trading', 'wanting', 'wishing', 'weight'];
+        
+        fields.forEach(f => {
+          const val = g[f];
+          const p = percentileData[f] ? percentileData[f][g.id] : null;
+          const pCls = getPercentileClass(p);
+          const displayVal = (val === null || val === 0) ? '—' : (typeof val === 'number' ? val.toLocaleString(undefined, {minimumFractionDigits: (f === 'average' || f === 'bayesaverage' || f === 'stddev' || f === 'weight' ? 2 : 0)}) : val);
+          
+          html += `<td class="p-3 text-center border-l border-slate-50">
+            <div class="font-bold text-slate-700">${displayVal}</div>
+            ${p !== null ? `<div class="percentile-badge ${pCls}">${Math.round(p)}%</div>` : ''}
+          </td>`;
+        });
+
+        row.innerHTML = html;
+        tbody.appendChild(row);
+      });
+    }
+
+    async function fetchWithRetry(url, maxRetries = 10) {
+      for (let attempt = 0; attempt < maxRetries; attempt++) {
+        try {
+          const res = await fetch(url);
+          if (res.status === 202) {
+            await new Promise(r => setTimeout(r, 2000));
+            continue;
+          }
+          if (res.ok) return await res.text();
+          await new Promise(r => setTimeout(r, 1000));
+        } catch (e) {
+          await new Promise(r => setTimeout(r, 1000 * Math.pow(2, attempt)));
+        }
+      }
+      throw new Error('Failed to fetch after retries');
+    }
+
+    function updateStatus(msg, pct) {
+      document.getElementById('loadingStatus').textContent = msg;
+      document.getElementById('progressBar').style.width = pct + '%';
+    }
+  </script>
+
+</body>
+</html>
