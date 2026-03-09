@@ -136,6 +136,14 @@
 
         .btn:active { transform: scale(0.98); opacity: 0.9; }
 
+        .btn-outline {
+            background: white;
+            color: var(--text-main);
+            border: 1.5px solid var(--border);
+        }
+
+        .btn-sm { padding: 8px 12px; font-size: 0.8rem; }
+
         /* List Items */
         .list-item {
             display: flex;
@@ -148,7 +156,7 @@
             margin-bottom: 10px;
         }
 
-        .list-img { width: 48px; height: 48px; border-radius: 10px; background: #f1f5f9; object-fit: cover; }
+        .list-img { width: 48px; height: 48px; border-radius: 10px; background: #f1f5f9; object-fit: cover; border: 1px solid var(--border); }
         .list-info { flex: 1; min-width: 0; }
         .list-name { font-weight: 700; font-size: 0.875rem; display: block; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
         .list-meta { font-size: 0.75rem; color: var(--secondary); margin-top: 2px; }
@@ -191,6 +199,57 @@
         }
 
         .lock-icon { font-size: 3rem; margin-bottom: 24px; }
+
+        /* Compare Grid */
+        .compare-grid {
+            display: grid;
+            grid-template-columns: 1fr 1fr;
+            gap: 12px;
+        }
+
+        .compare-col { min-width: 0; }
+        .col-header { 
+            font-size: 0.65rem; 
+            font-weight: 800; 
+            text-transform: uppercase; 
+            color: var(--secondary); 
+            margin-bottom: 12px; 
+            padding: 0 4px;
+            display: flex;
+            justify-content: space-between;
+        }
+
+        @media (max-width: 600px) {
+            .compare-grid { grid-template-columns: 1fr; }
+        }
+
+        /* Sort Bar */
+        .sort-bar {
+            display: flex;
+            gap: 8px;
+            margin-bottom: 16px;
+            overflow-x: auto;
+            padding-bottom: 4px;
+        }
+        .sort-bar::-webkit-scrollbar { display: none; }
+
+        .sort-btn {
+            background: white;
+            border: 1px solid var(--border);
+            padding: 6px 12px;
+            border-radius: 8px;
+            font-size: 0.7rem;
+            font-weight: 700;
+            white-space: nowrap;
+            color: var(--secondary);
+            cursor: pointer;
+        }
+
+        .sort-btn.active {
+            background: var(--primary-light);
+            border-color: var(--primary);
+            color: var(--primary);
+        }
     </style>
 </head>
 <body>
@@ -238,19 +297,32 @@
 
         <!-- Compare View -->
         <section id="view-compare" class="view-content">
-            <div class="card" style="padding: 16px;">
-                <div style="display: flex; gap: 8px; margin-bottom: 12px;">
-                    <select id="compare-base" onchange="renderCompare()">
-                        <option value="">Select Base Person</option>
-                    </select>
-                </div>
-                <div style="display: flex; gap: 8px;">
-                    <button class="btn btn-outline" style="flex:1; padding:10px;" onclick="setCompareMode('common')">Shared</button>
-                    <button class="btn btn-outline" style="flex:1; padding:10px;" onclick="setCompareMode('unique')">Unique</button>
-                </div>
+            <div class="card" style="padding: 16px; margin-bottom: 12px;">
+                <select id="compare-base" onchange="renderCompare()">
+                    <option value="">Select Base Player</option>
+                </select>
             </div>
-            <div id="compare-results">
-                <!-- Results -->
+
+            <div class="sort-bar">
+                <button class="sort-btn active" data-sort="matches" onclick="setCompareSort('matches', this)">Most Matches</button>
+                <button class="sort-btn" data-sort="name" onclick="setCompareSort('name', this)">Alphabetical</button>
+            </div>
+
+            <div class="compare-grid" id="compare-grid">
+                <div class="compare-col">
+                    <div class="col-header">
+                        <span>Shared with Others</span>
+                        <span id="shared-count" class="list-badge" style="background:none; border: 1px solid var(--border);">0</span>
+                    </div>
+                    <div id="compare-shared"></div>
+                </div>
+                <div class="compare-col">
+                    <div class="col-header">
+                        <span>Unique to Player</span>
+                        <span id="unique-count" class="list-badge" style="background:none; border: 1px solid var(--border);">0</span>
+                    </div>
+                    <div id="compare-unique"></div>
+                </div>
             </div>
         </section>
 
@@ -259,6 +331,12 @@
             <div class="card" style="padding: 12px; margin-bottom: 12px;">
                 <input type="text" id="lib-filter" placeholder="Search library..." oninput="renderLibrary()" style="padding: 10px;">
             </div>
+
+            <div class="sort-bar">
+                <button class="sort-btn active" data-sort="name" onclick="setLibSort('name', this)">A-Z</button>
+                <button class="sort-btn" data-sort="count" onclick="setLibSort('count', this)">Most Owners</button>
+            </div>
+
             <div id="library-list">
                 <!-- All Games -->
             </div>
@@ -289,7 +367,8 @@
         let metaCache = JSON.parse(localStorage.getItem('bga_meta_cache') || '{}');
         let owner = '';
         let dbClient = null;
-        let compareMode = 'common';
+        let compareSort = 'matches';
+        let libSort = 'name';
 
         async function unlock() {
             const key = document.getElementById('access-key').value.trim();
@@ -327,7 +406,7 @@
         }
 
         function updateUI() {
-            const names = Object.keys(datasets);
+            const names = Object.keys(datasets).sort();
             const totalGames = new Set();
             names.forEach(n => datasets[n].data.forEach(g => totalGames.add(g.name)));
             document.getElementById('header-meta').textContent = `${names.length} People • ${totalGames.size} Games`;
@@ -336,7 +415,7 @@
             const baseSelect = document.getElementById('compare-base');
             const current = baseSelect.value;
             baseSelect.innerHTML = '<option value="">Select Base Player</option>' + 
-                names.map(n => `<option value="${n}" ${current === n ? 'selected' : ''}>${n}</option>`).join('');
+                names.map(n => `<option value="${n}" ${current === n ? 'selected' : ''}>${n} (${datasets[n].data.length})</option>`).join('');
         }
 
         // --- View Renderers ---
@@ -359,57 +438,81 @@
             }).join('');
         }
 
-        function setCompareMode(mode) {
-            compareMode = mode;
+        function setCompareSort(sort, el) {
+            compareSort = sort;
+            el.parentElement.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
             renderCompare();
         }
 
         function renderCompare() {
             const base = document.getElementById('compare-base').value;
-            const container = document.getElementById('compare-results');
+            const sharedContainer = document.getElementById('compare-shared');
+            const uniqueContainer = document.getElementById('compare-unique');
+            
             if (!base) {
-                container.innerHTML = '<div style="text-align:center; padding:40px; color:var(--secondary);">Select a player to begin comparison</div>';
+                sharedContainer.innerHTML = '';
+                uniqueContainer.innerHTML = '<div style="text-align:center; padding:40px; color:var(--secondary); font-size: 0.8rem;">Select a player</div>';
+                document.getElementById('shared-count').textContent = '0';
+                document.getElementById('unique-count').textContent = '0';
                 return;
             }
 
             const baseGames = new Set(datasets[base].data.map(g => g.name));
             const others = Object.keys(datasets).filter(n => n !== base);
             
-            let results = [];
-            if (compareMode === 'common') {
-                const sharedMap = {};
-                others.forEach(n => {
-                    datasets[n].data.forEach(g => {
-                        if (baseGames.has(g.name)) {
-                            if (!sharedMap[g.name]) sharedMap[g.name] = { ...g, matches: [] };
-                            sharedMap[g.name].matches.push(n);
-                        }
+            const sharedMap = {};
+            const uniqueList = [];
+            const allOtherGames = new Set();
+            others.forEach(n => datasets[n].data.forEach(g => allOtherGames.add(g.name)));
+
+            datasets[base].data.forEach(g => {
+                if (allOtherGames.has(g.name)) {
+                    sharedMap[g.name] = { ...g, matches: [] };
+                    others.forEach(n => {
+                        if (datasets[n].data.some(og => og.name === g.name)) sharedMap[g.name].matches.push(n);
                     });
-                });
-                results = Object.values(sharedMap).sort((a,b) => b.matches.length - a.matches.length);
+                } else {
+                    uniqueList.push(g);
+                }
+            });
+
+            let sharedList = Object.values(sharedMap);
+            
+            // Sorting
+            if (compareSort === 'name') {
+                sharedList.sort((a,b) => a.name.localeCompare(b.name));
+                uniqueList.sort((a,b) => a.name.localeCompare(b.name));
             } else {
-                const uniqueToPlayer = [];
-                const allOtherGames = new Set();
-                others.forEach(n => datasets[n].data.forEach(g => allOtherGames.add(g.name)));
-                datasets[base].data.forEach(g => {
-                    if (!allOtherGames.has(g.name)) uniqueToPlayer.push(g);
-                });
-                results = uniqueToPlayer;
+                sharedList.sort((a,b) => b.matches.length - a.matches.length || a.name.localeCompare(b.name));
+                uniqueList.sort((a,b) => a.name.localeCompare(b.name));
             }
 
-            container.innerHTML = results.map(g => {
+            document.getElementById('shared-count').textContent = sharedList.length;
+            document.getElementById('unique-count').textContent = uniqueList.length;
+
+            const renderItem = (g, isShared) => {
                 const thumb = metaCache[g.name]?.thumb || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23f1f5f9" width="100" height="100"/%3E%3C/svg%3E';
                 return `
-                    <div class="list-item">
-                        <img src="${thumb}" class="list-img">
+                    <div class="list-item" style="padding: 10px; gap: 8px; border-radius: 12px;">
+                        <img src="${thumb}" class="list-img" style="width:36px; height:36px; border-radius: 6px;">
                         <div class="list-info">
-                            <span class="list-name">${g.name}</span>
-                            <span class="list-meta">${compareMode === 'common' ? `Shared with ${g.matches.join(', ')}` : 'Exclusive to ' + base}</span>
+                            <span class="list-name" style="font-size: 0.75rem;">${g.name}</span>
+                            <span class="list-meta" style="font-size: 0.6rem;">${isShared ? g.matches.length + ' matches' : 'Exclusive'}</span>
                         </div>
-                        <div class="list-badge">${g.matches ? g.matches.length + 1 : 1}</div>
                     </div>
                 `;
-            }).join('');
+            };
+
+            sharedContainer.innerHTML = sharedList.length ? sharedList.map(g => renderItem(g, true)).join('') : '<div style="font-size:0.7rem; color:var(--secondary); text-align:center; padding: 20px;">None</div>';
+            uniqueContainer.innerHTML = uniqueList.length ? uniqueList.map(g => renderItem(g, false)).join('') : '<div style="font-size:0.7rem; color:var(--secondary); text-align:center; padding: 20px;">None</div>';
+        }
+
+        function setLibSort(sort, el) {
+            libSort = sort;
+            el.parentElement.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            renderLibrary();
         }
 
         function renderLibrary() {
@@ -422,7 +525,13 @@
                 all[g.name].players.push(n);
             }));
 
-            const filtered = Object.values(all).filter(g => g.name.toLowerCase().includes(filter)).sort((a,b) => a.name.localeCompare(b.name));
+            let filtered = Object.values(all).filter(g => g.name.toLowerCase().includes(filter));
+            
+            if (libSort === 'name') {
+                filtered.sort((a,b) => a.name.localeCompare(b.name));
+            } else {
+                filtered.sort((a,b) => b.players.length - a.players.length || a.name.localeCompare(b.name));
+            }
             
             container.innerHTML = filtered.map(g => {
                 const thumb = metaCache[g.name]?.thumb || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23f1f5f9" width="100" height="100"/%3E%3C/svg%3E';
