@@ -304,26 +304,16 @@
             </div>
 
             <div class="sort-bar">
-                <button class="sort-btn active" data-sort="matches" onclick="setCompareSort('matches', this)">Most Matches</button>
-                <button class="sort-btn" data-sort="name" onclick="setCompareSort('name', this)">Alphabetical</button>
+                <button class="sort-btn active" data-sort="overlap" onclick="setCompareSort('overlap', this)">Most Overlap</button>
+                <button class="sort-btn" data-sort="plays" onclick="setCompareSort('plays', this)">Most Plays</button>
+                <button class="sort-btn" data-sort="name" onclick="setCompareSort('name', this)">A-Z</button>
             </div>
 
-            <div class="compare-grid" id="compare-grid">
-                <div class="compare-col">
-                    <div class="col-header">
-                        <span>Shared with Others</span>
-                        <span id="shared-count" class="list-badge" style="background:none; border: 1px solid var(--border);">0</span>
-                    </div>
-                    <div id="compare-shared"></div>
-                </div>
-                <div class="compare-col">
-                    <div class="col-header">
-                        <span>Unique to Player</span>
-                        <span id="unique-count" class="list-badge" style="background:none; border: 1px solid var(--border);">0</span>
-                    </div>
-                    <div id="compare-unique"></div>
-                </div>
+            <div style="display:flex; justify-content:space-between; align-items:center; margin-bottom:10px; padding:0 2px;">
+                <span style="font-size:0.65rem; font-weight:800; text-transform:uppercase; color:var(--secondary);">All Games</span>
+                <span id="compare-total-count" class="list-badge" style="background:none; border:1px solid var(--border);">0</span>
             </div>
+            <div id="compare-list"></div>
         </section>
 
         <!-- Library View -->
@@ -335,6 +325,7 @@
             <div class="sort-bar">
                 <button class="sort-btn active" data-sort="name" onclick="setLibSort('name', this)">A-Z</button>
                 <button class="sort-btn" data-sort="count" onclick="setLibSort('count', this)">Most Owners</button>
+                <button class="sort-btn" data-sort="total" onclick="setLibSort('total', this)">Most Plays</button>
             </div>
 
             <div id="library-list">
@@ -447,65 +438,66 @@
 
         function renderCompare() {
             const base = document.getElementById('compare-base').value;
-            const sharedContainer = document.getElementById('compare-shared');
-            const uniqueContainer = document.getElementById('compare-unique');
-            
-            if (!base) {
-                sharedContainer.innerHTML = '';
-                uniqueContainer.innerHTML = '<div style="text-align:center; padding:40px; color:var(--secondary); font-size: 0.8rem;">Select a player</div>';
-                document.getElementById('shared-count').textContent = '0';
-                document.getElementById('unique-count').textContent = '0';
+            const container = document.getElementById('compare-list');
+
+            if (!base || !datasets[base]) {
+                container.innerHTML = '<div style="text-align:center; padding:40px; color:var(--secondary); font-size:0.8rem;">Select a player above</div>';
+                document.getElementById('compare-total-count').textContent = '0';
                 return;
             }
 
-            const baseGames = new Set(datasets[base].data.map(g => g.name));
-            const others = Object.keys(datasets).filter(n => n !== base);
-            
-            const sharedMap = {};
-            const uniqueList = [];
-            const allOtherGames = new Set();
-            others.forEach(n => datasets[n].data.forEach(g => allOtherGames.add(g.name)));
+            const others = Object.keys(datasets).filter(n => n !== base).sort();
 
-            datasets[base].data.forEach(g => {
-                if (allOtherGames.has(g.name)) {
-                    sharedMap[g.name] = { ...g, matches: [] };
-                    others.forEach(n => {
-                        if (datasets[n].data.some(og => og.name === g.name)) sharedMap[g.name].matches.push(n);
-                    });
-                } else {
-                    uniqueList.push(g);
-                }
+            // Build per-game rows: all games the base player has
+            const gameRows = datasets[base].data.map(g => {
+                const hasIt = [{ name: base, count: g.count, isBase: true }];
+                const missing = [];
+                others.forEach(n => {
+                    const found = datasets[n].data.find(og => og.name === g.name);
+                    if (found) hasIt.push({ name: n, count: found.count, isBase: false });
+                    else missing.push({ name: n });
+                });
+                const totalPlays = hasIt.reduce((s, p) => s + p.count, 0);
+                return { name: g.name, hasIt, missing, totalPlays };
             });
 
-            let sharedList = Object.values(sharedMap);
-            
-            // Sorting
-            if (compareSort === 'name') {
-                sharedList.sort((a,b) => a.name.localeCompare(b.name));
-                uniqueList.sort((a,b) => a.name.localeCompare(b.name));
+            if (compareSort === 'overlap') {
+                gameRows.sort((a, b) => b.hasIt.length - a.hasIt.length || a.name.localeCompare(b.name));
+            } else if (compareSort === 'plays') {
+                gameRows.sort((a, b) => b.totalPlays - a.totalPlays || a.name.localeCompare(b.name));
             } else {
-                sharedList.sort((a,b) => b.matches.length - a.matches.length || a.name.localeCompare(b.name));
-                uniqueList.sort((a,b) => a.name.localeCompare(b.name));
+                gameRows.sort((a, b) => a.name.localeCompare(b.name));
             }
 
-            document.getElementById('shared-count').textContent = sharedList.length;
-            document.getElementById('unique-count').textContent = uniqueList.length;
+            document.getElementById('compare-total-count').textContent = gameRows.length;
 
-            const renderItem = (g, isShared) => {
-                const thumb = metaCache[g.name]?.thumb || 'data:image/svg+xml,%3Csvg xmlns="http://www.w3.org/2000/svg" width="100" height="100"%3E%3Crect fill="%23f1f5f9" width="100" height="100"/%3E%3C/svg%3E';
-                return `
-                    <div class="list-item" style="padding: 10px; gap: 8px; border-radius: 12px;">
-                        <img src="${thumb}" class="list-img" style="width:36px; height:36px; border-radius: 6px;">
-                        <div class="list-info">
-                            <span class="list-name" style="font-size: 0.75rem;">${g.name}</span>
-                            <span class="list-meta" style="font-size: 0.6rem;">${isShared ? g.matches.length + ' matches' : 'Exclusive'}</span>
+            container.innerHTML = gameRows.map(g => {
+                const thumb = metaCache[g.name]?.thumb || '';
+                const thumbHtml = thumb
+                    ? `<img src="${thumb}" style="width:32px;height:32px;border-radius:6px;object-fit:cover;flex-shrink:0;border:1px solid var(--border);">`
+                    : `<div style="width:32px;height:32px;border-radius:6px;background:#f1f5f9;flex-shrink:0;"></div>`;
+
+                const hasHtml = g.hasIt.map(p =>
+                    `<span style="font-size:0.65rem;font-weight:700;color:#166534;background:#dcfce7;padding:2px 6px;border-radius:6px;white-space:nowrap;${p.isBase?'outline:1.5px solid #16a34a;':''}">` +
+                    `${p.name} (${p.count})</span>`
+                ).join(' ');
+
+                const missingHtml = g.missing.map(p =>
+                    `<span style="font-size:0.65rem;font-weight:700;color:#94a3b8;background:#f1f5f9;padding:2px 6px;border-radius:6px;white-space:nowrap;">` +
+                    `${p.name} (0)</span>`
+                ).join(' ');
+
+                return `<div class="list-item" style="padding:10px 12px;gap:10px;align-items:flex-start;">
+                    ${thumbHtml}
+                    <div style="flex:1;min-width:0;">
+                        <div style="font-size:0.8rem;font-weight:700;margin-bottom:5px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;">${g.name}</div>
+                        <div style="display:flex;gap:4px;flex-wrap:wrap;align-items:center;">
+                            <div style="display:flex;gap:3px;flex-wrap:wrap;">${hasHtml}</div>
+                            ${missingHtml ? `<span style="color:var(--border);font-size:0.7rem;">│</span><div style="display:flex;gap:3px;flex-wrap:wrap;">${missingHtml}</div>` : ''}
                         </div>
                     </div>
-                `;
-            };
-
-            sharedContainer.innerHTML = sharedList.length ? sharedList.map(g => renderItem(g, true)).join('') : '<div style="font-size:0.7rem; color:var(--secondary); text-align:center; padding: 20px;">None</div>';
-            uniqueContainer.innerHTML = uniqueList.length ? uniqueList.map(g => renderItem(g, false)).join('') : '<div style="font-size:0.7rem; color:var(--secondary); text-align:center; padding: 20px;">None</div>';
+                </div>`;
+            }).join('');
         }
 
         function setLibSort(sort, el) {
@@ -521,14 +513,17 @@
             const all = {};
             
             Object.keys(datasets).forEach(n => datasets[n].data.forEach(g => {
-                if (!all[g.name]) all[g.name] = { ...g, players: [] };
+                if (!all[g.name]) all[g.name] = { name: g.name, players: [], totalCount: 0 };
                 all[g.name].players.push(n);
+                all[g.name].totalCount += g.count || 0;
             }));
 
             let filtered = Object.values(all).filter(g => g.name.toLowerCase().includes(filter));
             
             if (libSort === 'name') {
                 filtered.sort((a,b) => a.name.localeCompare(b.name));
+            } else if (libSort === 'total') {
+                filtered.sort((a,b) => b.totalCount - a.totalCount || a.name.localeCompare(b.name));
             } else {
                 filtered.sort((a,b) => b.players.length - a.players.length || a.name.localeCompare(b.name));
             }
@@ -540,7 +535,7 @@
                         <img src="${thumb}" class="list-img">
                         <div class="list-info">
                             <span class="list-name">${g.name}</span>
-                            <span class="list-meta">Players: ${g.players.join(', ')}</span>
+                            <span class="list-meta">Players: ${g.players.join(', ')} • ${g.totalCount} total plays</span>
                         </div>
                         <div class="list-badge">${g.players.length}</div>
                     </div>
