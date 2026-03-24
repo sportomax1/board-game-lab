@@ -65,11 +65,6 @@
         <h2 class="text-lg font-bold mb-3">Load BGG Plays</h2>
         <div class="flex gap-2 mb-2">
           <input id="playsUsername" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
-          <select id="playDataSource" class="px-3 py-2 rounded-lg border border-slate-200 bg-white text-sm">
-            <option value="both">Both IRL & BGA</option>
-            <option value="irl">IRL Only</option>
-            <option value="bga">BGA Only</option>
-          </select>
           <button onclick="fetchPlays()" id="fetchPlaysBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
         </div>
       </div>
@@ -140,18 +135,55 @@
         <canvas id="myChart"></canvas>
     </div>
 
+    <!-- Plays Chart Section (dedicated, shown only for plays data) -->
+    <div id="playsChartSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+        <div class="flex flex-wrap items-center gap-3 mb-4">
+            <span class="font-bold text-slate-700 text-sm" id="playsChartTitle">Plays Over Time</span>
+            <!-- Month / Year toggle -->
+            <div class="flex ml-auto rounded-lg overflow-hidden border border-slate-200">
+                <button id="groupMonth" onclick="setPlaysGroup('month')" class="px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white">Month</button>
+                <button id="groupYear" onclick="setPlaysGroup('year')" class="px-3 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-50">Year</button>
+            </div>
+            <!-- IRL / BGA source toggles -->
+            <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" id="showIRL" checked onchange="generatePlaysChart()" class="rounded accent-indigo-600">
+                <span class="text-xs font-bold text-indigo-600">IRL</span>
+            </label>
+            <label class="flex items-center gap-1.5 cursor-pointer select-none">
+                <input type="checkbox" id="showBGA" checked onchange="generatePlaysChart()" class="rounded accent-teal-600">
+                <span class="text-xs font-bold text-teal-600">BGA</span>
+            </label>
+        </div>
+        <div id="playsChartWrap" style="position:relative; min-height:300px;">
+            <canvas id="playsChart"></canvas>
+        </div>
+    </div>
+
   </main>
 
 <script>
 const API_BASE = '/api/bgg-helper';
 const PLAY_FETCH_PARALLEL = 100;
-let allGames = []; // This will store collection or play data
+let allGames = [];
 let chart;
+let rawPlays = [];
+let playsGroup = 'month';
+let playsChart = null;
 
 function switchTab(tab) {
     document.getElementById('collectionTab').classList.toggle('hidden', tab !== 'collection');
     document.getElementById('csvTab').classList.toggle('hidden', tab !== 'csv');
     document.getElementById('playsTab').classList.toggle('hidden', tab !== 'plays');
+
+    // Hide plays-specific chart when leaving plays tab
+    if (tab !== 'plays') {
+        document.getElementById('playsChartSection').classList.add('hidden');
+    } else {
+        // Hide collection/csv chart when entering plays tab
+        document.getElementById('controlsSection').classList.add('hidden');
+        document.getElementById('chartContainer').classList.add('hidden');
+        if (rawPlays.length > 0) document.getElementById('playsChartSection').classList.remove('hidden');
+    }
 
     ['Collection', 'Csv', 'Plays'].forEach(t => {
         const tabBtn = document.getElementById(`tab${t}`);
@@ -192,9 +224,8 @@ async function loadCSV() {
   document.getElementById('fetchSection').classList.add('hidden');
   document.getElementById('loadingSection').classList.remove('hidden');
 
-  const text = await file.text();
-  const lines = text.trim().split('
-');
+    const text = await file.text();
+    const lines = text.trim().split('\n');
   const headers = parseCSVLine(lines[0]).map(h => h.replace(/^['"]|['"]$/g, ''));
   
   allGames = []; // Reset for CSV data
@@ -270,32 +301,25 @@ async function fetchPlays() {
 
     document.getElementById('fetchSection').classList.add('hidden');
     document.getElementById('loadingSection').classList.remove('hidden');
+    document.getElementById('playsChartSection').classList.add('hidden');
     updateLoadingStatus('Fetching plays...');
     document.getElementById('pageInfo').textContent = '';
 
-    const plays = await fetchAllPlays(username);
-    const filter = document.getElementById('playDataSource').value;
-
-    if (filter === 'irl') {
-        allGames = plays.filter(p => !p.location.toLowerCase().includes('bga') && !p.location.toLowerCase().includes('boardgamearena'));
-    } else if (filter === 'bga') {
-        allGames = plays.filter(p => p.location.toLowerCase().includes('bga') || p.location.toLowerCase().includes('boardgamearena'));
-    } else {
-        allGames = plays;
-    }
+    rawPlays = await fetchAllPlays(username);
 
     document.getElementById('loadingSection').classList.add('hidden');
-    document.getElementById('controlsSection').classList.remove('hidden');
-    document.getElementById('chartContainer').classList.remove('hidden');
-    document.getElementById('gameCount').textContent = allGames.length;
+    document.getElementById('fetchSection').classList.remove('hidden');
+    document.getElementById('gameCount').textContent = rawPlays.length.toLocaleString();
 
-    if (allGames.length > 0) {
-        const headers = Object.keys(allGames[0]);
-        populateAxisOptions(headers);
-        generateChart();
-    } else {
-        updateLoadingStatus('No plays found for the selected criteria.');
+    if (rawPlays.length === 0) {
+        updateLoadingStatus('No plays found.');
+        return;
     }
+
+    document.getElementById('playsChartTitle').textContent =
+        `${rawPlays.length.toLocaleString()} plays · ${username}`;
+    document.getElementById('playsChartSection').classList.remove('hidden');
+    generatePlaysChart();
 }
 
 async function fetchAllPlays(username) {
@@ -317,13 +341,12 @@ async function fetchAllPlays(username) {
                 allPlays.push(...res.plays);
             } else {
                 stopFound = true;
-                break; 
             }
         }
 
         if (!stopFound) {
             currentPageStart += PLAY_FETCH_PARALLEL;
-            document.getElementById('pageInfo').textContent = `${allPlays.length} records fetched...`;
+            document.getElementById('pageInfo').textContent = `${allPlays.length} records`;
             await new Promise(r => setTimeout(r, 600));
         }
     }
@@ -331,10 +354,11 @@ async function fetchAllPlays(username) {
 }
 
 async function fetchPage(username, page) {
-    const url = `${API_BASE}?endpoint=plays&username=${encodeURIComponent(username)}&page=${page}`;
+    const url = `/api/bgg-helper?endpoint=plays&username=${encodeURIComponent(username)}&page=${page}`;
     try {
-        const response = await fetchWithRetry(url);
-        const xml = new DOMParser().parseFromString(response, "text/xml");
+        const response = await fetch(url);
+        const text = await response.text();
+        const xml = new DOMParser().parseFromString(text, "text/xml");
         const playNodes = xml.getElementsByTagName('play');
         if (playNodes.length === 0) return { page, plays: [] };
 
@@ -342,6 +366,7 @@ async function fetchPage(username, page) {
         for (let i = 0; i < playNodes.length; i++) {
             const node = playNodes[i];
             const item = node.getElementsByTagName('item')[0];
+            const serializer = new XMLSerializer();
             pagePlays.push({
                 id: node.getAttribute('id'),
                 date: node.getAttribute('date'),
@@ -352,6 +377,7 @@ async function fetchPage(username, page) {
                 location: node.getAttribute('location') || 'IRL',
                 game: item ? item.getAttribute('name') : 'Unknown',
                 gameId: item ? item.getAttribute('objectid') : null,
+                rawXml: serializer.serializeToString(node)
             });
         }
         return { page, plays: pagePlays };
@@ -540,6 +566,120 @@ function generateChart() {
     });
 }
 
+function isBGAPlay(play) {
+    const loc = (play.location || '').toLowerCase();
+    return loc.includes('bga') || loc.includes('boardgamearena') || loc.includes('board game arena');
+}
+
+function setPlaysGroup(group) {
+    playsGroup = group;
+    const activeClass = 'px-3 py-1.5 text-xs font-bold bg-indigo-600 text-white';
+    const inactiveClass = 'px-3 py-1.5 text-xs font-bold text-slate-500 hover:bg-slate-50';
+    document.getElementById('groupMonth').className = group === 'month' ? activeClass : inactiveClass;
+    document.getElementById('groupYear').className = group === 'year' ? activeClass : inactiveClass;
+    generatePlaysChart();
+}
+
+function formatPeriodLabel(key) {
+    if (playsGroup === 'month' && /^\d{4}-\d{2}$/.test(key)) {
+        const [year, month] = key.split('-');
+        return new Date(parseInt(year), parseInt(month) - 1, 1)
+            .toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
+    }
+    return key;
+}
+
+function generatePlaysChart() {
+    const showIRL = document.getElementById('showIRL').checked;
+    const showBGA = document.getElementById('showBGA').checked;
+
+    const irlMap = {};
+    const bgaMap = {};
+
+    rawPlays.forEach(p => {
+        if (!p.date) return;
+        const d = new Date(p.date);
+        if (isNaN(d.getTime())) return;
+        const qty = parseInt(p.quantity) || 1;
+        let key;
+        if (playsGroup === 'month') {
+            key = `${d.getUTCFullYear()}-${String(d.getUTCMonth() + 1).padStart(2, '0')}`;
+        } else {
+            key = String(d.getUTCFullYear());
+        }
+        if (isBGAPlay(p)) {
+            bgaMap[key] = (bgaMap[key] || 0) + qty;
+        } else {
+            irlMap[key] = (irlMap[key] || 0) + qty;
+        }
+    });
+
+    // All period keys, newest first (top to bottom on horizontal bar)
+    const allKeys = [...new Set([...Object.keys(irlMap), ...Object.keys(bgaMap)])]
+        .sort().reverse();
+    const displayLabels = allKeys.map(formatPeriodLabel);
+
+    const datasets = [];
+    if (showIRL) datasets.push({
+        label: 'IRL',
+        data: allKeys.map(k => irlMap[k] || 0),
+        backgroundColor: 'rgba(79, 70, 229, 0.75)',
+        borderColor: 'rgba(79, 70, 229, 1)',
+        borderWidth: 1,
+        borderRadius: 3,
+    });
+    if (showBGA) datasets.push({
+        label: 'BGA',
+        data: allKeys.map(k => bgaMap[k] || 0),
+        backgroundColor: 'rgba(13, 148, 136, 0.75)',
+        borderColor: 'rgba(13, 148, 136, 1)',
+        borderWidth: 1,
+        borderRadius: 3,
+    });
+
+    // Scale chart height to number of rows
+    const rowHeight = playsGroup === 'year' ? 36 : 26;
+    const chartHeight = Math.max(200, allKeys.length * rowHeight + 60);
+    document.getElementById('playsChartWrap').style.minHeight = chartHeight + 'px';
+
+    if (playsChart) playsChart.destroy();
+    const ctx = document.getElementById('playsChart').getContext('2d');
+    playsChart = new Chart(ctx, {
+        type: 'bar',
+        data: { labels: displayLabels, datasets },
+        options: {
+            indexAxis: 'y',
+            responsive: true,
+            maintainAspectRatio: false,
+            scales: {
+                x: {
+                    stacked: true,
+                    beginAtZero: true,
+                    grid: { color: 'rgba(0,0,0,0.05)' },
+                    title: { display: true, text: 'Plays', font: { weight: 'bold', size: 11 } }
+                },
+                y: {
+                    stacked: true,
+                    grid: { display: false },
+                    ticks: { font: { size: playsGroup === 'year' ? 13 : 11 } }
+                }
+            },
+            plugins: {
+                legend: { display: datasets.length > 1, position: 'top' },
+                tooltip: {
+                    callbacks: {
+                        footer: (items) => {
+                            if (items.length < 2) return '';
+                            const total = items.reduce((s, i) => s + i.raw, 0);
+                            return `Total: ${total}`;
+                        }
+                    }
+                }
+            }
+        }
+    });
+}
+
 function generateColors(numColors) {
     const colors = [];
     for (let i = 0; i < numColors; i++) {
@@ -558,13 +698,24 @@ async function fetchWithRetry(url, maxRetries = 3) {
     try {
       const res = await fetch(url);
       if (res.status === 202) { 
-        await new Promise(r => setTimeout(r, 2000)); 
+                await new Promise(r => setTimeout(r, 2000 + attempt * 500)); 
         continue; 
       }
-      if (res.ok) return await res.text();
+            if (res.ok) return await res.text();
+
+            // Retry transient upstream/proxy failures with backoff.
+            if ([429, 500, 502, 503, 504].includes(res.status)) {
+                if (attempt === maxRetries - 1) {
+                    throw new Error(`HTTP ${res.status} after ${maxRetries} attempts`);
+                }
+                await new Promise(r => setTimeout(r, 1200 + attempt * 800));
+                continue;
+            }
+
+            throw new Error(`HTTP ${res.status}`);
     } catch (e) { 
       if (attempt === maxRetries - 1) throw e;
-      await new Promise(r => setTimeout(r, 1500));
+            await new Promise(r => setTimeout(r, 1200 + attempt * 800));
     }
   }
   throw new Error('Failed to fetch after multiple retries.');

@@ -131,87 +131,110 @@ module.exports = async (req, res) => {
 
     console.log(`Endpoint: ${endpoint}, URL: ${bggUrl}`);
     
-    try {
-        // 4. Fetch data from BGG with authentication headers
-        console.log('Fetch Step: Attempting to call BGG API...');
-        
-        const bggResponse = await fetch(bggUrl, {
-            method: 'GET',
-            headers: {
-                'User-Agent': 'Vercel-BGG-Helper/1.0',
-                'Authorization': `Bearer ${bggToken}`,
-                'Cache-Control': 'no-cache', 
-                'Accept': 'text/xml'
-            }
-        });
-        
-        console.log(`Fetch Step: BGG API responded with Status ${bggResponse.status}`);
+    const MAX_BGG_RETRIES = 3;
 
-        // 5. Handle non-200 responses from BGG
-        
-        // BGG 202: The request is queued
-        if (bggResponse.status === 202) {
-            const errorMsg = 'E-202: BGG API is busy. Request queued. Please try again in 5-10 seconds.';
-            console.warn(errorMsg);
-            console.log('--- END: BGG Helper Queued (202) ---');
-            return res.status(202).json({ 
-                status: 202,
-                step: 'BGG Fetch Status Check',
-                error: 'Request Queued', 
+    for (let attempt = 0; attempt < MAX_BGG_RETRIES; attempt++) {
+        try {
+            // 4. Fetch data from BGG with authentication headers
+            console.log(`Fetch Step: Attempt ${attempt + 1}/${MAX_BGG_RETRIES} to call BGG API...`);
+            
+            const bggResponse = await fetch(bggUrl, {
+                method: 'GET',
+                headers: {
+                    'User-Agent': 'Vercel-BGG-Helper/1.0',
+                    'Authorization': `Bearer ${bggToken}`,
+                    'Cache-Control': 'no-cache', 
+                    'Accept': 'text/xml'
+                }
+            });
+            
+            console.log(`Fetch Step: BGG API responded with Status ${bggResponse.status}`);
+
+            // 5. Handle non-200 responses from BGG
+            
+            // BGG 202: The request is queued — retry after a delay
+            if (bggResponse.status === 202) {
+                if (attempt < MAX_BGG_RETRIES - 1) {
+                    const delay = 2000 + attempt * 2000;
+                    console.warn(`BGG 202 queued — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_BGG_RETRIES})`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+                const errorMsg = 'E-202: BGG API is busy. Request queued. Please try again in 5-10 seconds.';
+                console.warn(errorMsg);
+                console.log('--- END: BGG Helper Queued (202) ---');
+                return res.status(202).json({ 
+                    status: 202,
+                    step: 'BGG Fetch Status Check',
+                    error: 'Request Queued', 
+                    message: errorMsg
+                });
+            }
+            
+            // Retry on transient failures (429, 5xx)
+            if (!bggResponse.ok) {
+                const status = bggResponse.status;
+
+                if ((status === 429 || status >= 500) && attempt < MAX_BGG_RETRIES - 1) {
+                    const delay = 1500 + attempt * 1500;
+                    console.warn(`BGG ${status} — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_BGG_RETRIES})`);
+                    await new Promise(r => setTimeout(r, delay));
+                    continue;
+                }
+
+                let specificError = '';
+                if (status === 401 || status === 403) {
+                    specificError = 'BGG API authentication failed or access forbidden.';
+                } else if (status === 404) {
+                    specificError = `${endpoint} not found on BGG.`;
+                } else if (status === 429) {
+                    specificError = 'BGG API returned 429 Too Many Requests.';
+                } else {
+                    specificError = 'General BGG API error or downtime.';
+                }
+                
+                const errorMsg = `E-502: BGG API failure (BGG Status: ${status}). Detail: ${specificError}`;
+                
+                console.error(errorMsg);
+                console.log('--- END: BGG Helper Failed (502) ---');
+                return res.status(502).json({ 
+                    status: status,
+                    step: 'BGG Fetch Status Check',
+                    error: 'BGG API Error', 
+                    message: errorMsg
+                });
+            }
+
+            // 6. Read the response text (it's XML)
+            console.log('Response Step: BGG status is 200. Reading response body...');
+            const xmlText = await bggResponse.text();
+
+            // 7. Send the raw XML text back to the client
+            console.log(`Response Step: Success! Fetched ${xmlText.length} bytes of XML. Sending to client.`);
+            
+            res.setHeader('Content-Type', 'text/xml');
+            console.log('--- END: BGG Helper Success (200) ---');
+            return res.status(200).send(xmlText);
+
+        } catch (error) {
+            if (attempt < MAX_BGG_RETRIES - 1) {
+                const delay = 1500 + attempt * 1500;
+                console.warn(`Fetch error — retrying in ${delay}ms (attempt ${attempt + 1}/${MAX_BGG_RETRIES}): ${error.message}`);
+                await new Promise(r => setTimeout(r, delay));
+                continue;
+            }
+            // 8. Handle network or internal code errors
+            const errorMsg = `E-500: Internal Helper Error. Check Vercel logs for stack trace. Message: ${error.message}`;
+            console.error('*** UNCAUGHT EXCEPTION IN BGG HELPER ***');
+            console.error('Error Stack:', error.stack);
+            console.log('--- END: BGG Helper Failed (500) ---');
+            
+            return res.status(500).json({ 
+                status: 500,
+                step: 'Uncaught Exception',
+                error: 'Internal Server Error', 
                 message: errorMsg
             });
         }
-        
-        // Handle all other failures
-        if (!bggResponse.ok) {
-            const status = bggResponse.status;
-            let specificError = '';
-
-            if (status === 401 || status === 403) {
-                specificError = 'BGG API authentication failed or access forbidden.';
-            } else if (status === 404) {
-                specificError = `${endpoint} not found on BGG.`;
-            } else if (status === 429) {
-                specificError = 'BGG API returned 429 Too Many Requests.';
-            } else {
-                specificError = 'General BGG API error or downtime.';
-            }
-            
-            const errorMsg = `E-502: BGG API failure (BGG Status: ${status}). Detail: ${specificError}`;
-            
-            console.error(errorMsg);
-            console.log('--- END: BGG Helper Failed (502) ---');
-            return res.status(502).json({ 
-                status: status,
-                step: 'BGG Fetch Status Check',
-                error: 'BGG API Error', 
-                message: errorMsg
-            });
-        }
-
-        // 6. Read the response text (it's XML)
-        console.log('Response Step: BGG status is 200. Reading response body...');
-        const xmlText = await bggResponse.text();
-
-        // 7. Send the raw XML text back to the client
-        console.log(`Response Step: Success! Fetched ${xmlText.length} bytes of XML. Sending to client.`);
-        
-        res.setHeader('Content-Type', 'text/xml');
-        console.log('--- END: BGG Helper Success (200) ---');
-        return res.status(200).send(xmlText);
-
-    } catch (error) {
-        // 8. Handle network or internal code errors
-        const errorMsg = `E-500: Internal Helper Error. Check Vercel logs for stack trace. Message: ${error.message}`;
-        console.error('*** UNCAUGHT EXCEPTION IN BGG HELPER ***');
-        console.error('Error Stack:', error.stack);
-        console.log('--- END: BGG Helper Failed (500) ---');
-        
-        return res.status(500).json({ 
-            status: 500,
-            step: 'Uncaught Exception',
-            error: 'Internal Server Error', 
-            message: errorMsg
-        });
     }
 };
