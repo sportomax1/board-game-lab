@@ -135,9 +135,18 @@
 
         <!-- Combined (rank-average) controls -->
         <div id="combinedControls" class="hidden space-y-2">
-          <p class="text-xs text-slate-500">Each game is ranked 1–N per field. Final order = lowest average rank (best across all selected fields).</p>
+          <p class="text-xs text-slate-500">Each game is ranked 1–N per field. Final order = lowest <strong>weighted</strong> rank sum. Adjust the <span class="font-bold text-slate-700">×</span> weight to emphasize fields.</p>
           <div id="combinedCriteriaList" class="space-y-2"></div>
-          <button onclick="addCombinedCriterion()" class="mt-1 px-3 py-1.5 text-xs font-bold bg-indigo-50 text-indigo-600 rounded-lg border border-indigo-200 hover:bg-indigo-100 transition">+ Add Sort Field</button>
+          <div class="flex items-center gap-2 flex-wrap mt-1">
+            <button onclick="addCombinedCriterion()" class="px-3 py-1.5 text-xs font-bold bg-indigo-50 text-indigo-600 rounded-lg border border-indigo-200 hover:bg-indigo-100 transition">+ Add Sort Field</button>
+            <button onclick="saveCombinedPreset()" class="px-3 py-1.5 text-xs font-bold bg-green-50 text-green-700 rounded-lg border border-green-200 hover:bg-green-100 transition">💾 Save Preset</button>
+          </div>
+          <div id="combinedPresetSection" class="pt-1 border-t border-slate-100">
+            <div class="text-xs font-bold text-slate-400 uppercase tracking-wide mb-1">Saved Presets</div>
+            <div id="combinedPresetList" class="flex flex-wrap gap-1">
+              <span class="text-xs text-slate-400 italic">No saved presets</span>
+            </div>
+          </div>
         </div>
 
         <!-- Checkboxes (always visible) -->
@@ -351,7 +360,7 @@ function populateSortOptions() {
     if (combinedMode) renderCombinedCriteriaList();
 }
 
-window.addEventListener('DOMContentLoaded', populateSortOptions);
+window.addEventListener('DOMContentLoaded', () => { populateSortOptions(); renderPresetList(); });
 
 function switchTab(tab) {
     const panels = { collection: 'collectionTab', csv: 'csvTab', both: 'bothTab' };
@@ -923,9 +932,10 @@ function setSortMode(mode) {
   if (combinedMode && combinedCriteria.length === 0) {
     const fA = sortFields.find(f => f.value === 'playingtime')?.value || sortFields[0]?.value || 'name';
     const fB = sortFields.find(f => f.value === 'bggRating')?.value  || sortFields[1]?.value || 'name';
-    combinedCriteria = [{ field: fA, asc: true }, { field: fB, asc: false }];
+    combinedCriteria = [{ field: fA, asc: true, weight: 1 }, { field: fB, asc: false, weight: 1 }];
   }
   renderCombinedCriteriaList();
+  renderPresetList();
   sortGames();
 }
 
@@ -937,10 +947,13 @@ function renderCombinedCriteriaList() {
       `<option value="${f.value}"${f.value === c.field ? ' selected' : ''}>${f.label}</option>`
     ).join('');
     const canRemove = combinedCriteria.length > 2;
+    const weight = c.weight ?? 1;
     return `<div class="flex gap-1 items-center">
       <span class="text-xs font-bold text-slate-400 w-5 text-center flex-shrink-0">${i + 1}.</span>
       <select onchange="updateCombinedField(${i}, this.value)" class="flex-1 px-3 py-2 rounded-l-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm bg-white font-bold">${opts}</select>
       <button onclick="toggleCombinedDir(${i})" class="px-3 py-2 border-y border-slate-200 bg-white text-xs font-bold text-slate-600 hover:bg-slate-50 whitespace-nowrap">${c.asc ? '▲ Asc' : '▼ Desc'}</button>
+      <span class="px-1 py-2 border-y border-slate-200 bg-white text-xs text-slate-400 font-bold">×</span>
+      <input type="number" min="0.1" max="10" step="0.1" value="${weight}" onchange="updateCombinedWeight(${i}, this.value)" class="w-14 px-2 py-2 border-y border-slate-200 bg-white text-xs text-center font-bold outline-none" title="Weight (higher = more important)">
       <button onclick="removeCombinedCriterion(${i})" class="px-3 py-2 rounded-r-lg border border-l-0 border-slate-200 text-sm transition ${canRemove ? 'bg-white text-red-400 hover:bg-red-50' : 'bg-slate-50 text-slate-300 cursor-not-allowed'}">✕</button>
     </div>`;
   }).join('');
@@ -949,7 +962,7 @@ function renderCombinedCriteriaList() {
 function addCombinedCriterion() {
   const used = new Set(combinedCriteria.map(c => c.field));
   const next = sortFields.find(f => !used.has(f.value))?.value || sortFields[0].value;
-  combinedCriteria.push({ field: next, asc: false });
+  combinedCriteria.push({ field: next, asc: false, weight: 1 });
   renderCombinedCriteriaList();
   sortGames();
 }
@@ -972,6 +985,59 @@ function updateCombinedField(idx, newField) {
   sortGames();
 }
 
+function updateCombinedWeight(idx, val) {
+  const w = Math.max(0.1, parseFloat(val) || 1);
+  combinedCriteria[idx].weight = w;
+  sortGames();
+}
+
+// ── Combined presets (localStorage) ──────────────────────────────
+function saveCombinedPreset() {
+  const name = prompt('Enter a name for this preset:');
+  if (!name || !name.trim()) return;
+  const key = 'menuCombinedPresets';
+  const presets = JSON.parse(localStorage.getItem(key) || '{}');
+  presets[name.trim()] = JSON.parse(JSON.stringify(combinedCriteria));
+  localStorage.setItem(key, JSON.stringify(presets));
+  renderPresetList();
+}
+
+function loadCombinedPreset(name) {
+  const presets = JSON.parse(localStorage.getItem('menuCombinedPresets') || '{}');
+  if (!presets[name]) return;
+  combinedCriteria = JSON.parse(JSON.stringify(presets[name]));
+  // Ensure weight exists on each criterion
+  combinedCriteria.forEach(c => { if (c.weight == null) c.weight = 1; });
+  renderCombinedCriteriaList();
+  sortGames();
+}
+
+function deleteCombinedPreset(name) {
+  const presets = JSON.parse(localStorage.getItem('menuCombinedPresets') || '{}');
+  delete presets[name];
+  localStorage.setItem('menuCombinedPresets', JSON.stringify(presets));
+  renderPresetList();
+}
+
+function renderPresetList() {
+  const container = document.getElementById('combinedPresetList');
+  if (!container) return;
+  const presets = JSON.parse(localStorage.getItem('menuCombinedPresets') || '{}');
+  const names = Object.keys(presets);
+  if (names.length === 0) {
+    container.innerHTML = '<span class="text-xs text-slate-400 italic">No saved presets</span>';
+    return;
+  }
+  container.innerHTML = names.map(name => {
+    const safe = name.replace(/\\/g, '\\\\').replace(/'/g, "\\'");
+    return `<div class="flex items-center gap-1">
+      <button onclick="loadCombinedPreset('${safe}')" class="text-left px-2 py-1 text-xs bg-white border border-slate-200 rounded-lg hover:bg-indigo-50 hover:border-indigo-300 text-slate-700 font-semibold truncate max-w-[120px]" title="${name}">${name}</button>
+      <button onclick="deleteCombinedPreset('${safe}')" class="px-2 py-1 text-xs bg-white border border-red-200 rounded-lg hover:bg-red-50 text-red-400 font-bold flex-shrink-0">✕</button>
+    </div>`;
+  }).join('');
+}
+// ─────────────────────────────────────────────────────────────────
+
 function getNumericFieldValue(game, field) {
   if (field.startsWith('bestAt')) {
     const pc = field === 'bestAt8' ? 8 : parseInt(field.replace('bestAt', ''));
@@ -987,7 +1053,9 @@ function rankAverageSort(games, criteria) {
   if (!games.length || !criteria.length) return games;
   const n = games.length;
   const rankSums = new Array(n).fill(0);
-  criteria.forEach(({ field, asc }) => {
+  criteria.forEach((criterion) => {
+    const { field, asc } = criterion;
+    const weight = criterion.weight ?? 1;
     const indices = games.map((_, i) => i);
     indices.sort((i, j) => {
       const a = getNumericFieldValue(games[i], field);
@@ -1000,7 +1068,7 @@ function rankAverageSort(games, criteria) {
       const na = a ?? 0, nb = b ?? 0;
       return asc ? (na - nb) : (nb - na);
     });
-    // Assign average rank within tied groups
+    // Assign average rank within tied groups, scaled by weight
     let i = 0;
     while (i < n) {
       let j = i + 1;
@@ -1014,7 +1082,7 @@ function rankAverageSort(games, criteria) {
         j++;
       }
       const avgRank = (i + j - 1) / 2;
-      for (let k = i; k < j; k++) rankSums[indices[k]] += avgRank;
+      for (let k = i; k < j; k++) rankSums[indices[k]] += avgRank * weight;
       i = j;
     }
   });
@@ -1240,6 +1308,23 @@ function renderGames() {
   const primaryRankMap = computeFieldRanks(displayedGames, sortBy, sortAsc);
   const tieRankMap = computeFieldRanks(displayedGames, tieBy, tiebreakerSortAsc);
 
+  // For bestAt sorts: competition-rank positions (same category = same position, next group skips)
+  let competitionPositions = null;
+  if (sortBy.startsWith('bestAt')) {
+    const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
+    competitionPositions = [];
+    let pos = 1;
+    let i = 0;
+    while (i < displayedGames.length) {
+      const cat = categorizeGame(displayedGames[i], playerCount);
+      let j = i;
+      while (j < displayedGames.length && categorizeGame(displayedGames[j], playerCount) === cat) j++;
+      for (let k = i; k < j; k++) competitionPositions.push(pos);
+      pos += (j - i);
+      i = j;
+    }
+  }
+
   container.innerHTML = displayedGames.map((g, idx) => {
     const sortValue = g[sortBy];
     let displayValue = '';
@@ -1276,6 +1361,9 @@ function renderGames() {
       }
     }
 
+    // Use competition position for bestAt, sequential index otherwise
+    const displayPos = competitionPositions ? competitionPositions[idx] : idx + 1;
+
     return `
       <div class="game-card bg-white rounded-lg shadow-sm border border-slate-100 overflow-hidden p-2 flex items-center text-left cursor-pointer w-full" title="${g.name}">
         <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" rel="noopener noreferrer" onclick="event.stopPropagation()" class="flex-shrink-0">
@@ -1288,7 +1376,7 @@ function renderGames() {
         </div>
         <div class="flex items-center gap-2">
           ${showPrimary ? `<div class="text-lg text-indigo-600 font-bold bg-indigo-50 px-3 py-1 rounded-lg text-center"><div>${displayValue}</div><div class="text-xs font-semibold text-slate-400">#${primaryRankMap.get(g.id)}</div></div>` : ''}
-          ${showIdx ? `<div class="text-xs text-slate-400 font-bold border border-slate-200 px-2 py-1 rounded-md">#${idx + 1}</div>` : ''}
+          ${showIdx ? `<div class="text-xs text-slate-400 font-bold border border-slate-200 px-2 py-1 rounded-md">#${displayPos}</div>` : ''}
         </div>
       </div>
     `;
