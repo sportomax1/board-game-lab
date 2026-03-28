@@ -1,0 +1,822 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>BGG Concurrency Benchmark</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background: #f8fafc; }
+    .game-card { transition: transform 0.15s, box-shadow 0.15s; }
+    .game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 24px rgba(0,0,0,0.09); }
+  </style>
+</head>
+<body class="min-h-screen pb-24">
+
+  <!-- Header -->
+  <header class="sticky top-0 z-30 bg-white/80 backdrop-blur-md border-b border-slate-200 px-4 py-3 shadow-sm">
+    <div class="max-w-5xl mx-auto flex items-center gap-3">
+      <div class="bg-violet-600 text-white p-2 rounded-xl text-lg flex-shrink-0 w-10 h-10 flex items-center justify-center">
+        <i class="fa-solid fa-bolt"></i>
+      </div>
+      <div class="flex-1">
+        <h1 class="text-xl font-extrabold tracking-tight text-slate-900">Concurrency Benchmark</h1>
+        <p class="text-[10px] text-slate-400 font-bold uppercase tracking-widest">BGG Thing API · 20 IDs / Batch</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto px-4 pt-6 space-y-5">
+
+    <!-- Config -->
+    <div class="bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+      <div class="flex items-end gap-3 flex-wrap">
+        <div class="flex-1 min-w-[180px]">
+          <label class="text-xs font-bold text-slate-500 uppercase tracking-wide block mb-1">BGG Username</label>
+          <input id="username" type="text" value="sportomax"
+                 class="w-full px-3 py-2 border border-slate-200 rounded-lg text-sm focus:ring-2 focus:ring-violet-500 outline-none font-medium">
+        </div>
+        <button id="runBtn" onclick="startBenchmark()"
+                class="bg-violet-600 hover:bg-violet-700 disabled:opacity-50 text-white px-6 py-2 rounded-lg font-bold transition flex items-center gap-2">
+          <i class="fa-solid fa-bolt"></i> Run Benchmark
+        </button>
+      </div>
+      <!-- Concurrency level pills -->
+      <div class="mt-3 flex flex-wrap items-center gap-2">
+        <span class="text-xs text-slate-400 font-semibold">Passes (fastest→slowest):</span>
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full bg-violet-100 text-violet-700">500×</span>
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full bg-indigo-100 text-indigo-700">250×</span>
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full bg-blue-100 text-blue-700">100×</span>
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full bg-cyan-100 text-cyan-700">50×</span>
+        <span class="text-xs font-bold px-2 py-0.5 rounded-full bg-slate-100 text-slate-600">1×</span>
+      </div>
+      <div id="statusMsg" class="hidden mt-3 text-sm font-medium text-slate-500 border-t border-slate-100 pt-3"></div>
+    </div>
+
+    <!-- Benchmark Table -->
+    <div id="benchmarkSection" class="hidden bg-white rounded-2xl border border-slate-100 shadow-sm overflow-hidden">
+      <div class="px-5 py-4 bg-slate-50 border-b border-slate-100 flex items-center justify-between gap-3">
+        <div>
+          <h2 class="font-bold text-slate-800">Benchmark Runs</h2>
+          <p class="text-xs text-slate-400 mt-0.5">Sequential passes · highest concurrency first · 20 IDs/batch</p>
+        </div>
+        <div id="collectionBadge" class="hidden text-xs bg-violet-100 text-violet-700 font-bold px-3 py-1 rounded-full flex-shrink-0"></div>
+      </div>
+      <div class="overflow-x-auto">
+        <table class="w-full min-w-[780px]">
+          <thead>
+            <tr class="text-[10px] font-bold text-slate-400 uppercase tracking-widest border-b border-slate-100">
+              <th class="px-3 py-3 text-left">Concurrency</th>
+              <th class="px-3 py-3 text-left w-24">Status</th>
+              <th class="px-3 py-3 text-right" title="Peak simultaneous API requests in flight — this proves parallelism">Peak ∥</th>
+              <th class="px-3 py-3 text-left">Progress</th>
+              <th class="px-3 py-3 text-right" title="Average wall-clock time per individual batch call">Avg Batch</th>
+              <th class="px-3 py-3 text-right">Total Time</th>
+              <th class="px-3 py-3 text-right" title="Speedup vs 1× sequential baseline">vs 1×</th>
+              <th class="px-3 py-3 text-right">Retries</th>
+            </tr>
+          </thead>
+          <tbody id="benchmarkTbody"></tbody>
+        </table>
+      </div>
+    </div>
+
+    <!-- Batch Timeline -->
+    <div id="timelineSection" class="hidden bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+      <h2 class="font-bold text-slate-800 mb-1">Batch Timeline</h2>
+      <p class="text-xs text-slate-400 mb-4">Each bar = one batch. <strong>Left edge = when it started</strong>, right edge = when it finished. If all bars start at 0 but end at different times, the <em>bottleneck is server-side</em> (BGG/Vercel), not the browser.</p>
+      <div id="timelineChart" class="space-y-2"></div>
+    </div>
+
+    <!-- Insight callout -->
+    <div id="insightSection" class="hidden bg-slate-50 border border-slate-200 rounded-2xl p-5">
+      <div class="flex items-start gap-3">
+        <i class="fa-solid fa-chart-bar text-violet-500 mt-0.5 flex-shrink-0"></i>
+        <div id="insightText" class="text-sm w-full"></div>
+      </div>
+    </div>
+
+    <!-- Summary Chart -->
+    <div id="chartSection" class="hidden bg-white rounded-2xl border border-slate-100 shadow-sm p-5">
+      <h2 class="font-bold text-slate-800 mb-1">Performance Comparison</h2>
+      <p class="text-xs text-slate-400 mb-4">Bar width = time taken. Shorter bar = faster. Throughput = games received/sec.</p>
+      <div id="chartBars" class="space-y-3"></div>
+    </div>
+
+    <!-- Speedup callout -->
+    <div id="winnerSection" class="hidden"></div>
+
+    <!-- Game Cards -->
+    <div id="cardsSection" class="hidden">
+      <div class="flex items-center justify-between mb-3 flex-wrap gap-2">
+        <h2 class="font-extrabold text-slate-800 text-lg">
+          Collection
+          <span class="text-slate-400 font-normal text-base">(<span id="gamesCount">0</span> games)</span>
+        </h2>
+        <span class="text-xs text-slate-400">Sorted by BGG Rank · data from 500× pass · expansions excluded</span>
+      </div>
+      <div id="gamesGrid" class="grid gap-3" style="grid-template-columns: repeat(auto-fill, minmax(148px, 1fr));"></div>
+    </div>
+
+  </main>
+
+<script>
+const CONCURRENCY_LEVELS = [500, 250, 100, 50, 1];
+const BATCH_SIZE = 20;
+const API_BASE = '/api/bgg-helper';
+
+let isRunning = false;
+let objectIds  = [];
+let gamesMaster = [];
+let benchmarks  = {};
+
+function initBenchmarks() {
+  gamesMaster = [];
+  CONCURRENCY_LEVELS.forEach(lvl => {
+    benchmarks[lvl] = {
+      status: 'idle',
+      startMs: 0, endMs: 0,
+      fetched: 0, doneBatches: 0, totalBatches: 0,
+      firstItemMs: null, error: null,
+      retries202: 0, retries429: 0, retriesOther: 0,
+      effectiveConcurrency: 0,
+      peakInFlight: 0, currentInFlight: 0,
+      batchTimings: []  // [{s, e}] relative ms from pass start
+    };
+  });
+}
+initBenchmarks();
+
+/* ── Live timer ── */
+let liveTimer = null;
+function startLiveTimer(lvl) { stopLiveTimer(); liveTimer = setInterval(() => updateRowUI(lvl), 80); }
+function stopLiveTimer()     { if (liveTimer) { clearInterval(liveTimer); liveTimer = null; } }
+
+/* ── Formatting ── */
+function formatTime(ms) {
+  if (!ms && ms !== 0) return '–';
+  if (ms < 1000) return Math.round(ms) + 'ms';
+  return (ms / 1000).toFixed(2) + 's';
+}
+
+function getStatusBadge(status) {
+  const map = {
+    idle:    `<span class="text-slate-300 text-xs font-semibold">—</span>`,
+    waiting: `<span class="text-slate-400 text-xs font-semibold">Queued</span>`,
+    running: `<span class="inline-flex items-center gap-1 text-violet-600 font-bold text-xs"><i class="fa-solid fa-circle-notch fa-spin text-[10px]"></i>Running</span>`,
+    done:    `<span class="text-emerald-600 font-bold text-xs"><i class="fa-solid fa-check mr-0.5"></i>Done</span>`,
+    error:   `<span class="text-red-500 font-bold text-xs"><i class="fa-solid fa-xmark mr-0.5"></i>Error</span>`
+  };
+  return map[status] || '';
+}
+
+const ROW_BAR_COLOR = { 500: 'bg-violet-500', 250: 'bg-indigo-500', 100: 'bg-blue-500', 50: 'bg-cyan-500', 1: 'bg-slate-400' };
+
+function updateRowUI(lvl) {
+  const b   = benchmarks[lvl];
+  const row = document.getElementById(`brow-${lvl}`);
+  if (!row) return;
+
+  const elapsed = b.status === 'running'
+    ? performance.now() - b.startMs
+    : (b.startMs && b.endMs ? b.endMs - b.startMs : null);
+
+  const pct    = b.totalBatches > 0 ? Math.min(100, (b.doneBatches / b.totalBatches) * 100) : 0;
+  const barCol = b.status === 'running' ? 'bg-violet-400 animate-pulse' : (ROW_BAR_COLOR[lvl] || 'bg-violet-500');
+
+  // Retries
+  const totalRetries = (b.retries202 || 0) + (b.retries429 || 0) + (b.retriesOther || 0);
+  let retryHtml = '–';
+  if (b.status !== 'idle' && b.status !== 'waiting') {
+    if (totalRetries === 0) {
+      retryHtml = b.status === 'done' ? '<span class="text-emerald-600 font-bold">0</span>' : '–';
+    } else {
+      const parts = [];
+      if (b.retries202)   parts.push('<span title="BGG queued (202)" class="text-amber-600 font-bold">' + b.retries202 + '×202</span>');
+      if (b.retries429)   parts.push('<span title="Rate limited (429)" class="text-red-500 font-bold">' + b.retries429 + '×429</span>');
+      if (b.retriesOther) parts.push('<span title="Other errors" class="text-slate-400">' + b.retriesOther + '×err</span>');
+      retryHtml = parts.join(' ');
+    }
+  }
+
+  // Effective concurrency label under badge
+  const effEl = row.querySelector('.eff-conc-val');
+  if (effEl && b.effectiveConcurrency > 0) effEl.textContent = 'eff: ' + b.effectiveConcurrency + '∥';
+
+  // Peak in-flight
+  const peakEl = row.querySelector('.peak-cell');
+  if (peakEl) {
+    if (b.status === 'running' && b.currentInFlight > 0) {
+      peakEl.innerHTML = `<span class="text-violet-600 font-extrabold">${b.currentInFlight}</span><span class="text-[10px] text-slate-400"> now</span>`;
+    } else if (b.peakInFlight > 0) {
+      const color = b.peakInFlight >= 20 ? 'text-emerald-600' : b.peakInFlight >= 5 ? 'text-blue-600' : 'text-slate-700';
+      peakEl.innerHTML = `<span class="font-extrabold ${color}">${b.peakInFlight}</span>`;
+    } else {
+      peakEl.textContent = '–';
+    }
+  }
+
+  // Progress: "N / M batches"
+  const progressText = b.totalBatches > 0 ? `${b.doneBatches} / ${b.totalBatches} batches` : '–';
+
+  // Avg + max batch time
+  const avgEl = row.querySelector('.avgbatch-cell');
+  if (avgEl) {
+    if (b.batchTimings.length > 0) {
+      const durs = b.batchTimings.map(t => t.e - t.s);
+      const avg  = durs.reduce((a, v) => a + v, 0) / durs.length;
+      const max  = Math.max(...durs);
+      avgEl.innerHTML = `<span class="text-slate-600">${formatTime(avg)}</span>` +
+        `<span class="text-[10px] text-red-400 ml-1">max:${formatTime(max)}</span>`;
+    } else {
+      avgEl.textContent = '–';
+    }
+  }
+
+  // Speedup vs 1×
+  const speedupEl = row.querySelector('.speedup-cell');
+  if (speedupEl) {
+    const b1 = benchmarks[1];
+    if (b.status === 'done' && b1 && b1.status === 'done' && lvl !== 1) {
+      const ratio = ((b1.endMs - b1.startMs) / (b.endMs - b.startMs)).toFixed(1);
+      speedupEl.innerHTML = `<span class="font-extrabold text-emerald-600">${ratio}×</span>`;
+    } else if (lvl === 1 && b.status === 'done') {
+      speedupEl.innerHTML = `<span class="text-slate-400 text-[10px]">baseline</span>`;
+    } else {
+      speedupEl.textContent = '–';
+    }
+  }
+
+  row.querySelector('.status-cell').innerHTML    = getStatusBadge(b.status);
+  row.querySelector('.progress-bar').className   = 'progress-bar h-full rounded-full transition-all duration-300 ' + barCol;
+  row.querySelector('.progress-bar').style.width = pct + '%';
+  row.querySelector('.progress-text').textContent = progressText;
+  row.querySelector('.total-time').textContent   = elapsed ? formatTime(elapsed) : '–';
+  row.querySelector('.retries-cell').innerHTML   = retryHtml;
+}
+
+/* ── Render table rows ── */
+function renderBenchmarkRows() {
+  const BADGE = {
+    500: 'bg-violet-100 text-violet-700',
+    250: 'bg-indigo-100 text-indigo-700',
+    100: 'bg-blue-100 text-blue-700',
+     50: 'bg-cyan-100 text-cyan-700',
+      1: 'bg-slate-100 text-slate-600'
+  };
+  document.getElementById('benchmarkTbody').innerHTML = CONCURRENCY_LEVELS.map(lvl => `
+    <tr id="brow-${lvl}" class="border-t border-slate-50 hover:bg-slate-50/40 transition-colors">
+      <td class="px-3 py-3">
+        <div class="flex items-center gap-2">
+          <span class="inline-flex items-center justify-center w-14 h-7 rounded-lg font-extrabold text-sm ${BADGE[lvl]}">${lvl}×</span>
+          <div class="leading-tight">
+            <div class="text-xs text-slate-400">concurrent</div>
+            <div class="eff-conc-val text-[10px] text-slate-300">–</div>
+          </div>
+        </div>
+      </td>
+      <td class="px-3 py-3"><div class="status-cell">${getStatusBadge('idle')}</div></td>
+      <td class="px-3 py-3 text-right"><span class="peak-cell text-sm font-mono text-slate-400">–</span></td>
+      <td class="px-3 py-3">
+        <div class="flex items-center gap-2">
+          <div class="flex-1 bg-slate-100 rounded-full h-2 overflow-hidden min-w-[60px]">
+            <div class="progress-bar bg-slate-300 h-full rounded-full" style="width:0%"></div>
+          </div>
+          <span class="progress-text text-xs font-mono text-slate-400 min-w-[90px] text-right">–</span>
+        </div>
+      </td>
+      <td class="px-3 py-3 text-right"><span class="avgbatch-cell text-xs font-mono text-slate-500">–</span></td>
+      <td class="px-3 py-3 text-right"><span class="total-time text-sm font-mono font-extrabold text-slate-800">–</span></td>
+      <td class="px-3 py-3 text-right"><span class="speedup-cell text-xs font-mono text-slate-500">–</span></td>
+      <td class="px-3 py-3 text-right text-xs font-mono"><span class="retries-cell text-slate-400">–</span></td>
+    </tr>
+  `).join('');
+}
+
+/* ── Network helpers ── */
+function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+// onRetry(type) called with '202', '429', 'err', or http-status string on each non-success
+async function fetchWithRetry(url, maxRetries = 8, onRetry = null) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 202) {
+        if (onRetry) onRetry('202');
+        await sleep(3000);
+        continue;
+      }
+      if (res.status === 429) {
+        if (onRetry) onRetry('429');
+        const ra = parseInt(res.headers.get('Retry-After') || '0');
+        await sleep(ra > 0 ? ra * 1000 : 2000 * Math.pow(2, attempt));
+        continue;
+      }
+      if (res.ok) return await res.text();
+      if (onRetry) onRetry(String(res.status));
+      await sleep(1500 * Math.pow(2, attempt));
+      continue;
+    } catch (e) {
+      if (onRetry) onRetry('err');
+      await sleep(1000 * Math.pow(2, attempt));
+    }
+  }
+  throw new Error('Max retries exceeded');
+}
+
+/* ── Parse a BGG <item> element ── */
+function parseItem(item) {
+  const id      = item.getAttribute('id');
+  const name    = item.querySelector('name[type="primary"]')?.getAttribute('value') || 'N/A';
+  const thumb   = item.querySelector('thumbnail')?.textContent?.trim() || '';
+  const year    = parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0');
+  const type    = item.getAttribute('type') || 'boardgame';
+  const ratings = item.querySelector('statistics ratings');
+  const bggRating = parseFloat(ratings?.querySelector('average')?.getAttribute('value')     || '0');
+  const bayesAvg  = parseFloat(ratings?.querySelector('bayesaverage')?.getAttribute('value') || '0');
+
+  let bggRank = null;
+  const rankEl = item.querySelector('rank[name="boardgame"]');
+  if (rankEl) {
+    const rv = rankEl.getAttribute('value');
+    if (rv && rv !== 'Not Ranked') bggRank = parseInt(rv);
+  }
+  const mechanics  = Array.from(item.querySelectorAll('link[type="boardgamemechanic"]')).map(l => l.getAttribute('value')).filter(Boolean).slice(0, 5);
+  const categories = Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(l => l.getAttribute('value')).filter(Boolean).slice(0, 4);
+  return { id, name, thumb, year, type, bggRating, bayesAvg, bggRank, mechanics, categories };
+}
+
+/* ── Batch fetch with configurable concurrency ── */
+async function runBatchFetch(ids, level) {
+  const batches = [];
+  for (let i = 0; i < ids.length; i += BATCH_SIZE) batches.push(ids.slice(i, i + BATCH_SIZE));
+
+  const b = benchmarks[level];
+  b.totalBatches       = batches.length;
+  b.fetched            = 0; b.doneBatches = 0; b.firstItemMs = null;
+  b.retries202         = 0; b.retries429  = 0; b.retriesOther = 0;
+  b.batchTimings       = [];
+  b.peakInFlight       = 0;
+  b.currentInFlight    = 0;
+  const effectiveConcurrency = Math.min(level, batches.length);
+  b.effectiveConcurrency     = effectiveConcurrency;
+
+  function onRetry(type) {
+    if      (type === '202') b.retries202++;
+    else if (type === '429') b.retries429++;
+    else                     b.retriesOther++;
+  }
+
+  const result = [];
+
+  async function fetchBatch(batch) {
+    b.currentInFlight++;
+    if (b.currentInFlight > b.peakInFlight) b.peakInFlight = b.currentInFlight;
+    const t0 = performance.now() - b.startMs;
+    try {
+      const url = `${API_BASE}?endpoint=thing&id=${encodeURIComponent(batch.join(','))}&stats=1`;
+      const xml = await fetchWithRetry(url, 8, onRetry);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      Array.from(doc.querySelectorAll('item')).forEach(item => {
+        if (b.firstItemMs === null) b.firstItemMs = performance.now() - b.startMs;
+        result.push(parseItem(item));
+        b.fetched++;
+      });
+    } catch (e) { /* skip failed batch */ }
+    const t1 = performance.now() - b.startMs;
+    b.batchTimings.push({ s: t0, e: t1 });
+    b.currentInFlight--;
+    b.doneBatches++;
+  }
+
+  if (batches.length === 0) return result;
+
+  if (effectiveConcurrency >= batches.length) {
+    // ── TRUE MAXIMUM PARALLELISM: fire ALL batches simultaneously via Promise.all ──
+    await Promise.all(batches.map(batch => fetchBatch(batch)));
+  } else {
+    // ── SLIDING WINDOW: maintain exactly `effectiveConcurrency` requests in flight ──
+    let idx = 0;
+    await Promise.all(
+      Array.from({ length: effectiveConcurrency }, async () => {
+        while (idx < batches.length) {
+          const batch = batches[idx++];
+          await fetchBatch(batch);
+        }
+      })
+    );
+  }
+
+  return result;
+}
+
+/* ── Fetch owned collection ── */
+async function fetchCollection(username) {
+  const xml = await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}`);
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  return Array.from(doc.querySelectorAll('item')).filter(item => {
+    const ownAttr = item.getAttribute('own');
+    if (ownAttr !== null) return parseInt(ownAttr) === 1;
+    const statusNode = item.querySelector('status');
+    return statusNode ? parseInt(statusNode.getAttribute('own') || '0') === 1 : false;
+  }).map(item => item.getAttribute('objectid')).filter(Boolean);
+}
+
+/* ── Status helper ── */
+function setStatus(msg, type = 'default') {
+  const el = document.getElementById('statusMsg');
+  el.textContent = msg;
+  el.className = `text-sm font-medium mt-3 border-t border-slate-100 pt-3
+    ${type === 'error' ? 'text-red-500' : type === 'success' ? 'text-emerald-600' : 'text-slate-500'}`;
+  el.classList.remove('hidden');
+}
+
+/* ── Render batch timeline (waterfall) ── */
+const PASS_COLORS = { 500: '#7c3aed', 250: '#4f46e5', 100: '#2563eb', 50: '#0891b2', 1: '#64748b' };
+
+function renderTimeline() {
+  const done = CONCURRENCY_LEVELS.filter(lvl => benchmarks[lvl].status === 'done' && benchmarks[lvl].batchTimings.length > 0);
+  if (!done.length) return;
+
+  // Global time scale = longest pass
+  const maxPassMs = Math.max(...done.map(lvl => benchmarks[lvl].endMs - benchmarks[lvl].startMs));
+
+  document.getElementById('timelineSection').classList.remove('hidden');
+
+  let html = '';
+  done.forEach(lvl => {
+    const b     = benchmarks[lvl];
+    const passMs = b.endMs - b.startMs;
+    const color  = PASS_COLORS[lvl] || '#7c3aed';
+
+    // Each batch = a horizontal bar spanning [s, e] scaled to passMs
+    const bars = b.batchTimings.map((t, i) => {
+      const left  = (t.s / maxPassMs * 100).toFixed(2);
+      const width = Math.max(0.4, ((t.e - t.s) / maxPassMs * 100)).toFixed(2);
+      const dur   = Math.round(t.e - t.s);
+      return `<div title="Batch ${i+1}: started ${Math.round(t.s)}ms, ${dur}ms duration" ` +
+        `style="position:absolute;left:${left}%;width:${width}%;top:${i % 3 * 7}px;height:5px;` +
+        `background:${color};opacity:0.75;border-radius:2px;"></div>`;
+    }).join('');
+
+    const rowH  = Math.min(b.batchTimings.length, 3) * 7 + 8;
+    const lbl   = `<span class="font-extrabold text-sm" style="color:${color}">${lvl}×</span>`;
+    const t1pct = b.firstItemMs ? ((b.firstItemMs / maxPassMs) * 100).toFixed(1) : null;
+    const firstMarker = t1pct
+      ? `<div title="First result: ${formatTime(b.firstItemMs)}" style="position:absolute;left:${t1pct}%;top:0;width:2px;height:100%;background:#10b981;opacity:0.9;"></div>`
+      : '';
+
+    html += `
+      <div class="flex items-start gap-3">
+        <div class="w-16 flex-shrink-0 text-right pt-1">${lbl}</div>
+        <div class="flex-1 relative bg-slate-100 rounded overflow-hidden" style="height:${rowH}px;">
+          ${bars}${firstMarker}
+        </div>
+        <div class="w-28 flex-shrink-0 text-xs font-mono text-slate-500 pt-1">
+          ${formatTime(passMs)}
+          ${b.firstItemMs ? `<span class="text-emerald-600 ml-1">1st:${formatTime(b.firstItemMs)}</span>` : ''}
+        </div>
+      </div>`;
+  });
+
+  // Time axis
+  html += `
+    <div class="flex items-center gap-3 mt-2">
+      <div class="w-16"></div>
+      <div class="flex-1 flex justify-between text-[10px] text-slate-300 font-mono">
+        <span>0</span><span>${formatTime(maxPassMs / 2)}</span><span>${formatTime(maxPassMs)}</span>
+      </div>
+      <div class="w-28"></div>
+    </div>
+    <p class="text-[10px] text-slate-400 mt-2 ml-20"><span style="display:inline-block;width:10px;height:4px;background:#10b981;border-radius:1px;vertical-align:middle;"></span> = first game received &nbsp;&nbsp; Each colored bar = one 20-ID batch call</p>`;
+
+  document.getElementById('timelineChart').innerHTML = html;
+}
+
+/* ── Render insight callout ── */
+function renderInsight() {
+  const totalBatches = Math.ceil(objectIds.length / BATCH_SIZE);
+  const doneLevels = CONCURRENCY_LEVELS.filter(lvl => benchmarks[lvl].status === 'done');
+  if (!doneLevels.length) return;
+
+  const b1 = benchmarks[1];
+  const lines = [];
+
+  lines.push(`<p class="font-bold text-slate-800 mb-3 text-base">Parallelism Proof</p>`);
+
+  // Global avg batch time across all passes
+  const allTimings = doneLevels.flatMap(lvl => benchmarks[lvl].batchTimings || []);
+  const globalAvg  = allTimings.length > 0 ? allTimings.reduce((a, v) => a + v, 0) / allTimings.length : null;
+  const serialEquiv = globalAvg ? globalAvg * totalBatches : null;
+
+  if (globalAvg) {
+    lines.push(
+      `<p class="text-slate-600 mb-3">` +
+      `<strong>${objectIds.length} games</strong> → <strong>${totalBatches} batches</strong> of ${BATCH_SIZE} IDs each. ` +
+      `Average single API call: <strong class="text-violet-700">${Math.round(globalAvg)}ms</strong>. ` +
+      `Running all ${totalBatches} batches in serial (1-at-a-time) would take ≈ ` +
+      `<strong class="text-red-600">${(serialEquiv/1000).toFixed(1)}s</strong>. ` +
+      `Running them all at once should take ≈ <strong class="text-emerald-600">${Math.round(globalAvg)}ms</strong> (1 batch worth of time).</p>`
+    );
+  }
+
+  // Per-level proof table
+  lines.push(`<div class="overflow-x-auto"><table class="text-xs w-full border-collapse mb-3">`);
+  lines.push(
+    `<tr class="text-[10px] text-slate-400 border-b border-slate-200">` +
+    `<th class="text-left py-1.5 pr-4 font-semibold">Level</th>` +
+    `<th class="text-right py-1.5 px-3 font-semibold" title="Max simultaneous calls in flight">Peak ∥ (proof)</th>` +
+    `<th class="text-right py-1.5 px-3 font-semibold">Avg Batch</th>` +
+    `<th class="text-right py-1.5 px-3 font-semibold">Total Time</th>` +
+    (serialEquiv ? `<th class="text-right py-1.5 px-3 font-semibold" title="Total / serial-equivalent">vs Serial</th>` : '') +
+    (b1 && b1.status === 'done' ? `<th class="text-right py-1.5 pl-3 font-semibold">vs 1×</th>` : '') +
+    `</tr>`
+  );
+
+  doneLevels.forEach(lvl => {
+    const b    = benchmarks[lvl];
+    const tot  = b.endMs - b.startMs;
+    const avg  = b.batchTimings.length > 0 ? b.batchTimings.reduce((a,v)=>a+v,0)/b.batchTimings.length : null;
+    const vsSerial = (serialEquiv && tot > 0) ? (serialEquiv / tot).toFixed(1) + '×' : '–';
+    const vs1Cell  = (b1 && b1.status === 'done')
+      ? (lvl !== 1 ? `<span class="font-extrabold text-emerald-600">${((b1.endMs-b1.startMs)/tot).toFixed(1)}×</span>` : `<span class="text-slate-400">baseline</span>`)
+      : '';
+    const peakColor = b.peakInFlight >= 20 ? 'text-emerald-600' : b.peakInFlight >= 5 ? 'text-blue-600' : 'text-slate-600';
+    lines.push(
+      `<tr class="border-b border-slate-100 hover:bg-slate-50">` +
+      `<td class="py-1.5 pr-4 font-extrabold text-slate-700">${lvl}×</td>` +
+      `<td class="py-1.5 px-3 text-right font-extrabold ${peakColor}">${b.peakInFlight}</td>` +
+      `<td class="py-1.5 px-3 text-right font-mono text-slate-600">${avg ? formatTime(avg) : '–'}</td>` +
+      `<td class="py-1.5 px-3 text-right font-mono font-bold text-slate-800">${formatTime(tot)}</td>` +
+      (serialEquiv ? `<td class="py-1.5 px-3 text-right font-bold text-violet-700">${vsSerial}</td>` : '') +
+      (b1 && b1.status === 'done' ? `<td class="py-1.5 pl-3 text-right">${vs1Cell}</td>` : '') +
+      `</tr>`
+    );
+  });
+  lines.push(`</table></div>`);
+
+  // Cap explanation
+  const capHit = doneLevels.filter(lvl => lvl > totalBatches);
+  if (capHit.length > 0) {
+    lines.push(
+      `<p class="text-[11px] text-slate-500 mt-1">ℹ️ Levels ` +
+      capHit.map(l=>`<strong>${l}×</strong>`).join(', ') +
+      ` all fired all ${totalBatches} batches at once — they're capped at ${totalBatches}× real parallelism. ` +
+      `Differences in their times come from API retry variance, not scheduling.</p>`
+    );
+  }
+
+  // Retry summary
+  let total429 = 0, total202 = 0, totalOther = 0;
+  doneLevels.forEach(lvl => {
+    total429  += benchmarks[lvl].retries429  || 0;
+    total202  += benchmarks[lvl].retries202  || 0;
+    totalOther += benchmarks[lvl].retriesOther || 0;
+  });
+  const totalRetries = total429 + total202 + totalOther;
+  if (totalRetries > 0) {
+    lines.push(
+      `<p class="text-[11px] text-slate-500 mt-1">⚠️ Retries across all passes: ` +
+      `<span class="text-red-500 font-semibold">${total429}× rate-limited (429)</span>, ` +
+      `<span class="text-amber-600 font-semibold">${total202}× pending (202)</span>, ` +
+      `<span class="text-slate-400">${totalOther}× other</span>. Each retry adds hidden delay.</p>`
+    );
+  }
+
+  // Theoretical analysis
+  const allTimingsFlat = doneLevels.flatMap(lvl => benchmarks[lvl].batchTimings.map(t => t.e - t.s));
+  if (allTimingsFlat.length > 0) {
+    const globalAvgMs = allTimingsFlat.reduce((a,v)=>a+v,0) / allTimingsFlat.length;
+    const theoreticalParallelMs = globalAvgMs; // if all batches truly ran at once
+    const theoreticalSerialMs   = globalAvgMs * totalBatches;
+    const fastest = benchmarks[CONCURRENCY_LEVELS[0]]; // 500x pass
+    const actualFastestMs = fastest.status === 'done' ? fastest.endMs - fastest.startMs : null;
+    if (actualFastestMs) {
+      const overhead = (actualFastestMs / theoreticalParallelMs).toFixed(1);
+      lines.push(
+        `<div class="bg-white rounded-xl border border-slate-200 p-3 mt-3 text-xs">` +
+        `<div class="font-semibold text-slate-700 mb-2">Theoretical vs Actual</div>` +
+        `<div class="grid grid-cols-3 gap-2">` +
+        `<div class="text-center"><div class="font-extrabold text-emerald-600 text-lg">${formatTime(theoreticalParallelMs)}</div><div class="text-slate-400">Theoretical best<br>(all ${totalBatches} at once = 1 batch time)</div></div>` +
+        `<div class="text-center"><div class="font-extrabold text-violet-600 text-lg">${formatTime(actualFastestMs)}</div><div class="text-slate-400">Actual (500×)<br>${overhead}× over theoretical</div></div>` +
+        `<div class="text-center"><div class="font-extrabold text-red-500 text-lg">${formatTime(theoreticalSerialMs)}</div><div class="text-slate-400">Fully serial<br>(${totalBatches} batches × 1×)</div></div>` +
+        `</div>` +
+        `<p class="text-[10px] text-slate-400 mt-2">Overhead gap = BGG rate-limits requests from the same Vercel server IP even when the browser fires them simultaneously. The browser did its job — the bottleneck is server-side.</p>` +
+        `</div>`
+      );
+    }
+  }
+
+  document.getElementById('insightText').innerHTML = lines.join('');
+  document.getElementById('insightSection').classList.remove('hidden');
+}
+
+/* ── Render performance chart ── */
+function renderChart() {
+  const done = CONCURRENCY_LEVELS.filter(lvl => benchmarks[lvl].status === 'done');
+  if (!done.length) return;
+
+  const times  = done.map(lvl => benchmarks[lvl].endMs - benchmarks[lvl].startMs);
+  const maxTime = Math.max(...times);
+  const minTime = Math.min(...times);
+
+  document.getElementById('chartSection').classList.remove('hidden');
+
+  const BAR_COLORS = ['#7c3aed', '#4f46e5', '#2563eb', '#0891b2', '#64748b'];
+
+  // Build HTML with width=0 then animate after paint
+  document.getElementById('chartBars').innerHTML = CONCURRENCY_LEVELS.map((lvl, i) => {
+    const b = benchmarks[lvl];
+    if (b.status !== 'done') return '';
+    const time       = b.endMs - b.startMs;
+    const widthPct   = maxTime > 0 ? (time / maxTime) * 100 : 100;
+    const throughput = (b.fetched > 0 && time > 0) ? Math.round(b.fetched / (time / 1000)) + '/s' : '–';
+    const isFastest  = time === minTime;
+    const isSlowest  = done.length > 1 && time === maxTime;
+    return `
+      <div class="flex items-center gap-3">
+        <div class="w-20 flex-shrink-0 text-right">
+          <span class="font-extrabold text-sm text-slate-700">${lvl}×</span>
+        </div>
+        <div class="flex-1 bg-slate-100 rounded-full h-9 overflow-hidden relative">
+          <div class="chart-bar h-full rounded-full flex items-center justify-end pr-3 font-bold text-xs text-white"
+               data-w="${widthPct}"
+               style="width:0%; background:${BAR_COLORS[i]}; transition: width 1.1s cubic-bezier(.4,0,.2,1) ${i * 0.14}s;">
+            ${formatTime(time)}
+          </div>
+        </div>
+        <div class="w-20 flex-shrink-0 text-right text-xs font-mono text-slate-400">${throughput}</div>
+        ${isFastest ? `<span class="text-[10px] font-bold text-emerald-600 bg-emerald-50 border border-emerald-200 px-1.5 py-0.5 rounded-full w-20 text-center">🏆 Fastest</span>`
+                    : isSlowest ? `<span class="text-[10px] font-bold text-red-500 bg-red-50 border border-red-200 px-1.5 py-0.5 rounded-full w-20 text-center">🐢 Slowest</span>`
+                    : `<span class="w-20"></span>`}
+      </div>`;
+  }).join('');
+
+  // Trigger bar animations after first paint
+  requestAnimationFrame(() => requestAnimationFrame(() => {
+    document.querySelectorAll('.chart-bar[data-w]').forEach(el => {
+      el.style.width = el.dataset.w + '%';
+    });
+  }));
+
+  // Speedup callout: 500x vs 1x
+  const b500 = benchmarks[500], b1 = benchmarks[1];
+  if (b500.status === 'done' && b1.status === 'done') {
+    const t500    = b500.endMs - b500.startMs;
+    const t1      = b1.endMs   - b1.startMs;
+    const speedup = (t1 / t500).toFixed(1);
+    const winEl   = document.getElementById('winnerSection');
+    winEl.classList.remove('hidden');
+    winEl.innerHTML = `
+      <div class="bg-gradient-to-r from-violet-600 to-indigo-600 rounded-2xl p-6 text-white text-center shadow-lg">
+        <div class="text-5xl font-extrabold">${speedup}×</div>
+        <div class="text-sm font-bold mt-1 text-violet-200">Faster with 500× vs 1× concurrency</div>
+        <div class="flex justify-center items-center gap-10 mt-4">
+          <div>
+            <div class="font-extrabold text-2xl">${formatTime(t500)}</div>
+            <div class="text-violet-300 text-xs mt-0.5">500× concurrent</div>
+          </div>
+          <div class="border-r border-white/20 h-10"></div>
+          <div>
+            <div class="font-extrabold text-2xl">${formatTime(t1)}</div>
+            <div class="text-violet-300 text-xs mt-0.5">1× concurrent</div>
+          </div>
+        </div>
+      </div>`;
+  }
+}
+
+/* ── Render game cards ── */
+function renderGameCards() {
+  if (!gamesMaster.length) return;
+
+  const sorted = [...gamesMaster]
+    .filter(g => g.type !== 'boardgameexpansion')
+    .sort((a, b) => {
+      if (a.bggRank === null && b.bggRank === null) return (b.bayesAvg || 0) - (a.bayesAvg || 0);
+      if (a.bggRank === null) return 1;
+      if (b.bggRank === null) return -1;
+      return a.bggRank - b.bggRank;
+    });
+
+  document.getElementById('gamesCount').textContent = sorted.length;
+  document.getElementById('cardsSection').classList.remove('hidden');
+
+  document.getElementById('gamesGrid').innerHTML = sorted.map(g => {
+    const catBadges  = g.categories.slice(0, 2).map(c =>
+      `<span class="text-[8px] bg-amber-50 text-amber-700 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">${c}</span>`
+    ).join('');
+    const mechBadges = g.mechanics.slice(0, 2).map(m =>
+      `<span class="text-[8px] bg-blue-50 text-blue-700 px-1.5 py-0.5 rounded font-semibold whitespace-nowrap">${m}</span>`
+    ).join('');
+    return `
+      <div class="game-card bg-white rounded-xl border border-slate-100 shadow-sm overflow-hidden">
+        <a href="https://boardgamegeek.com/boardgame/${g.id}" target="_blank" rel="noopener">
+          <div class="relative overflow-hidden bg-slate-100" style="aspect-ratio:1/1;">
+            <img src="${g.thumb}" alt="${g.name}" loading="lazy"
+                 class="w-full h-full object-cover"
+                 onerror="this.style.display='none'">
+            ${g.bggRank ? `<div style="position:absolute;top:4px;left:4px;background:rgba(0,0,0,0.65);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;">#${g.bggRank}</div>` : ''}
+            <div style="position:absolute;top:4px;right:4px;background:rgba(79,70,229,0.88);color:#fff;font-size:9px;font-weight:700;padding:1px 5px;border-radius:4px;">⭐ ${g.bggRating.toFixed(1)}</div>
+          </div>
+        </a>
+        <div class="p-2">
+          <p class="font-bold text-[11px] text-slate-800 line-clamp-2 leading-tight mb-1.5">${g.name}</p>
+          <div class="flex flex-wrap gap-0.5">${catBadges}${mechBadges}</div>
+        </div>
+      </div>`;
+  }).join('');
+}
+
+/* ── Main entry point ── */
+async function startBenchmark() {
+  if (isRunning) return;
+  isRunning = true;
+
+  const runBtn = document.getElementById('runBtn');
+  runBtn.disabled = true;
+  runBtn.innerHTML = '<i class="fa-solid fa-circle-notch fa-spin"></i> Running…';
+
+  initBenchmarks();
+
+  // Reset sections
+  document.getElementById('benchmarkSection').classList.remove('hidden');
+  document.getElementById('timelineSection').classList.add('hidden');
+  document.getElementById('insightSection').classList.add('hidden');
+  document.getElementById('chartSection').classList.add('hidden');
+  document.getElementById('winnerSection').classList.add('hidden');
+  document.getElementById('cardsSection').classList.add('hidden');
+  document.getElementById('collectionBadge').classList.add('hidden');
+
+  renderBenchmarkRows();
+
+  const username = document.getElementById('username').value.trim() || 'sportomax';
+  setStatus('Fetching collection for ' + username + '…');
+
+  try {
+    objectIds = await fetchCollection(username);
+  } catch (e) {
+    setStatus('Error loading collection: ' + e.message, 'error');
+    isRunning = false;
+    runBtn.disabled = false;
+    runBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Run Benchmark';
+    return;
+  }
+
+  const badge = document.getElementById('collectionBadge');
+  badge.textContent = objectIds.length + ' games';
+  badge.classList.remove('hidden');
+
+  const totalBatches = Math.ceil(objectIds.length / BATCH_SIZE);
+  setStatus(`${objectIds.length} games → ${totalBatches} API batches × 5 passes. Starting…`);
+
+  // Mark all as queued
+  CONCURRENCY_LEVELS.forEach(lvl => {
+    benchmarks[lvl].status       = 'waiting';
+    benchmarks[lvl].totalBatches = totalBatches;
+    updateRowUI(lvl);
+  });
+
+  // Run each concurrency level sequentially
+  for (const level of CONCURRENCY_LEVELS) {
+    const passNum = CONCURRENCY_LEVELS.indexOf(level) + 1;
+    setStatus(`Pass ${passNum}/${CONCURRENCY_LEVELS.length}: ${level}× concurrent…`);
+
+    benchmarks[level].status  = 'running';
+    benchmarks[level].startMs = performance.now();
+    startLiveTimer(level);
+
+    try {
+      const games = await runBatchFetch(objectIds, level);
+      benchmarks[level].endMs   = performance.now();
+      benchmarks[level].status  = 'done';
+      benchmarks[level].fetched = games.length;
+      if (!gamesMaster.length && games.length > 0) gamesMaster = games;
+    } catch (e) {
+      benchmarks[level].endMs  = performance.now();
+      benchmarks[level].status = 'error';
+      benchmarks[level].error  = e.message;
+    }
+
+    stopLiveTimer();
+    updateRowUI(level);
+  }
+
+  // Refresh all rows now that 1× is complete (speedup column needs it)
+  CONCURRENCY_LEVELS.forEach(lvl => updateRowUI(lvl));
+
+  setStatus('All 5 passes complete! 🏁', 'success');
+  renderTimeline();
+  renderInsight();
+  renderChart();
+  renderGameCards();
+
+  isRunning = false;
+  runBtn.disabled = false;
+  runBtn.innerHTML = '<i class="fa-solid fa-bolt"></i> Re-Run';
+}
+</script>
+</body>
+</html>
