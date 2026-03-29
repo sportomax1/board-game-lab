@@ -568,6 +568,8 @@
         let includePreviouslyOwned = false; 
         let checkoutCounts = {}; 
         let unsubCheckouts = null; 
+        // Lightweight cache for BGG "thing" responses to avoid repeated 502s
+        const bggThingCache = new Map();
 
         // Initial check for password in localStorage and UI hooks
         window.addEventListener('DOMContentLoaded', () => {
@@ -741,6 +743,21 @@
                     }
                 });
             } catch (error) { console.error('Error fetching plays:', error); }
+        }
+
+        // Safe fetch wrapper for BGG thing endpoint with caching
+        async function fetchThingData(id) {
+            if (!id) return null;
+            if (bggThingCache.has(id)) return bggThingCache.get(id);
+            try {
+                const text = await fetchBGG('thing', { id });
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                bggThingCache.set(id, xml);
+                return xml;
+            } catch (e) {
+                bggThingCache.set(id, null);
+                return null;
+            }
         }
 
         async function fetchAllPlays(username) {
@@ -991,10 +1008,27 @@
                 </div>
             `;
 
+            // Compute next H-index and deficits required to reach it
+            const nextH = hIndex + 1;
+            const countsDesc = sortedCounts;
+            // Build array of top (nextH) counts (pad with zeros if not enough)
+            const topCounts = [];
+            for (let i = 0; i < nextH; i++) topCounts.push(countsDesc[i] || 0);
+            // Count how many already meet nextH
+            const already = topCounts.filter(c => c >= nextH).length;
+            const missingGames = Math.max(0, nextH - already);
+            const totalDeficit = topCounts.reduce((sum, c) => sum + Math.max(0, nextH - c), 0);
+
             document.getElementById('hIndexDisplay').innerHTML = `
                 <div class="flex items-center gap-4">
-                    <div class="text-4xl font-800 text-primary-500">${hIndex}</div>
-                    <p class="text-xs font-bold text-slate-500 leading-relaxed">${hIndex} games have been checked out at least ${hIndex} times each.</p>
+                    <div>
+                        <div class="text-4xl font-800 text-primary-500">${hIndex}</div>
+                        <div class="text-xs font-bold text-slate-500">H-Index</div>
+                    </div>
+                    <div>
+                        <p class="text-xs font-bold text-slate-500 leading-relaxed">${hIndex} games have been checked out at least ${hIndex} times each.</p>
+                        <p class="text-[11px] text-slate-400 mt-1">Next: ${nextH} — ${already}/${nextH} games already at ${nextH}+. ${missingGames} more game${missingGames!==1?'s':''} need boosting (total ${totalDeficit} extra checkouts).</p>
+                    </div>
                 </div>
             `;
             renderMostCheckedOut(hIndex);
@@ -1010,7 +1044,7 @@
             document.getElementById('mostCheckedOut').innerHTML = sorted.map(([id, d], idx) => `
                 <div class="p-4 flex items-center gap-4 hover:bg-slate-50 transition-colors cursor-pointer" onclick="showCheckoutDatesModal('${id}', '${d.name.replace(/'/g, "\\'")}', ${d.count})">
                     <div class="text-[10px] font-800 text-slate-300 w-4">${idx + 1}</div>
-                    <img src="${d.image}" class="w-10 h-14 rounded-lg object-cover bg-slate-50">
+                    <img src="${d.image || PLACEHOLDER_SVG}" onerror="this.onerror=null;this.src='${PLACEHOLDER_SVG}'" class="w-10 h-14 rounded-lg object-cover bg-slate-50">
                     <div class="flex-1">
                         <h4 class="text-sm font-bold truncate ${d.count >= hIndex ? 'text-primary-600' : ''}">${d.name}</h4>
                         <p class="text-[10px] font-bold text-slate-400 mt-0.5">${d.count} Checkouts</p>
@@ -1041,7 +1075,7 @@
             const zeros = allGames.filter(g => !coSet.has(g.id)).sort((a, b) => a.name.localeCompare(b.name));
             document.getElementById('zeroCheckouts').innerHTML = zeros.map(g => `
                 <div class="p-4 flex items-center gap-4 bg-slate-50/50">
-                    <img src="${g.image}" class="w-10 h-14 rounded-lg object-cover grayscale opacity-50">
+                    <img src="${g.image || PLACEHOLDER_SVG}" onerror="this.onerror=null;this.src='${PLACEHOLDER_SVG}'" class="w-10 h-14 rounded-lg object-cover grayscale opacity-50">
                     <div class="flex-1">
                         <h4 class="text-sm font-bold text-slate-400 truncate">${g.name}</h4>
                         <p class="text-[10px] font-bold text-slate-300 mt-0.5">Never checked out</p>
@@ -1128,8 +1162,8 @@
             document.getElementById('modalPeriodTitle').textContent = label;
             document.getElementById('modalCheckoutCount').textContent = `${matches.length} checkout${matches.length !== 1 ? 's' : ''}`;
             document.getElementById('modalGamesContainer').innerHTML = matches.map(c => `
-                <div class="flex items-center gap-3 p-3 bg-slate-50 rounded-2xl">
-                    <img src="${c.gameImage}" class="w-12 h-16 rounded-xl object-cover bg-white border">
+                <div class="flex items-center gap-3 p-3 bg-slate-50 rounded-xl">
+                    <img src="${c.gameImage || PLACEHOLDER_SVG}" onerror="this.onerror=null;this.src='${PLACEHOLDER_SVG}'" class="w-12 h-16 rounded-xl object-cover bg-white border">
                     <div class="flex-1 min-w-0">
                         <h4 class="font-bold text-sm truncate">${c.gameName}</h4>
                         <p class="text-[10px] font-bold text-slate-400">${c.checkoutDate.toDate().toLocaleTimeString([], {hour:'2-digit', minute:'2-digit'})}</p>
@@ -1182,9 +1216,8 @@
             const out = [];
             for (const g of games) {
                 try {
-                    const text = await fetchBGG('thing', { id: g.id });
-                    const xml = new DOMParser().parseFromString(text, 'text/xml');
-                    const item = xml.querySelector('item');
+                            const xml = await fetchThingData(g.id);
+                            const item = xml ? xml.querySelector('item') : null;
                     if (item) {
                         const minP = parseInt(item.querySelector('minplayers')?.textContent || 1);
                         const maxP = parseInt(item.querySelector('maxplayers')?.textContent || 1);
@@ -1199,7 +1232,7 @@
             document.getElementById('randomGamesList').innerHTML = games.map((g, i) => `
                 <div class="bg-white p-4 rounded-2xl border border-slate-100 flex items-center gap-4">
                     <div class="text-xs font-800 text-primary-500 w-4">${i + 1}</div>
-                    <img src="${g.image}" class="w-10 h-14 rounded-lg object-cover">
+                    <img src="${g.image || PLACEHOLDER_SVG}" onerror="this.onerror=null;this.src='${PLACEHOLDER_SVG}'" class="w-10 h-14 rounded-lg object-cover">
                     <div class="flex-1">
                         <h4 class="text-sm font-bold truncate">${g.name}</h4>
                         <p class="text-[10px] font-bold text-slate-400 mt-0.5">${g.minPlayers || '?'}-${g.maxPlayers || '?'} players • ${g.year}</p>
@@ -1259,9 +1292,8 @@
                 if (list.length === 0) { status.textContent = "No placeholders found."; return; }
                 status.textContent = `Found ${list.length} records. Updating...`;
                 for (const item of list) {
-                    const text = await fetchBGG('thing', { id: item.gameId });
-                    const xml = new DOMParser().parseFromString(text, 'text/xml');
-                    const node = xml.querySelector('item');
+                    const xml = await fetchThingData(item.gameId);
+                    const node = xml ? xml.querySelector('item') : null;
                     if (node) {
                         const name = node.querySelector('name[type="primary"]')?.getAttribute('value') || node.querySelector('name')?.getAttribute('value');
                         const img = node.querySelector('image')?.textContent;
@@ -1280,9 +1312,8 @@
                 for (const r of recs) {
                     let name = r.gameName, img = r.gameImage;
                     if (!name || !img) {
-                        const text = await fetchBGG('thing', { id: r.gameId });
-                        const xml = new DOMParser().parseFromString(text, 'text/xml');
-                        const node = xml.querySelector('item');
+                        const xml = await fetchThingData(r.gameId);
+                        const node = xml ? xml.querySelector('item') : null;
                         name = node?.querySelector('name[type="primary"]')?.getAttribute('value');
                         img = node?.querySelector('image')?.textContent;
                     }
@@ -1304,9 +1335,8 @@
                     const id = cols[idIdx];
                     let name = nameIdx >= 0 ? cols[nameIdx] : null, img = imgIdx >= 0 ? cols[imgIdx] : null;
                     if (!name || !img) {
-                        const text = await fetchBGG('thing', { id });
-                        const xml = new DOMParser().parseFromString(text, 'text/xml');
-                        const node = xml.querySelector('item');
+                        const xml = await fetchThingData(id);
+                        const node = xml ? xml.querySelector('item') : null;
                         name = name || node?.querySelector('name[type="primary"]')?.getAttribute('value');
                         img = img || node?.querySelector('image')?.textContent;
                     }
