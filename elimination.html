@@ -641,6 +641,12 @@
                 class="input-field text-center text-sm" />
             </div>
           </div>
+          <div>
+            <div class="section-label mb-1">Random pool % (before subpool)</div>
+            <input type="number" id="s-randthresh" min="0" max="100" value="50"
+              class="input-field text-center text-sm" style="max-width:96px" />
+            <div class="text-xs text-slate-400 italic mt-1">Percent of the full pool to randomly select from before taking the visible subpool.</div>
+          </div>
           <p class="text-xs text-slate-400 italic">Total pool size updates automatically</p>
         </div>
       </div>
@@ -680,7 +686,7 @@
       round:          1,
       unseenIds:      [],      // IDs of games not yet seen in this round (pairwise fullRound)
       mode:           'pairwise',
-      settings: { fullRound: true, poolSize: 6, keepCount: 3, dropCount: 3 },
+      settings: { fullRound: true, poolSize: 6, keepCount: 3, dropCount: 3, randomThreshold: 50 },
       currentPair:    null,    // { left, right }
       phase:          'setup', // 'setup' | 'playing' | 'champion'
       totalStart:     0,
@@ -689,6 +695,7 @@
     let markedKeep = new Set(); // KD mode: IDs marked to keep this round
     let toastTimer  = null;
     let auditOpen   = false;
+    
 
     // ═══════════════════════════════════════════════════════════════════════
     // PERSISTENCE
@@ -797,6 +804,8 @@
         phase:       'playing',
         totalStart:  games.length,
         kdPoolIndex: 0,
+        appearances: games.reduce((acc,g) => (acc[g.id]=0, acc), {}),
+        matchups: [],
       };
       saveState();
       enterPlayingUI();
@@ -841,6 +850,12 @@
     function enterPlayingUI() {
       state.phase = 'playing';
       syncSettings(); // Sync any form changes into state before rendering
+      // Ensure appearances and matchups exist after resume
+      if (!state.appearances) state.appearances = (state.games || []).reduce((acc,g) => (acc[g.id]=0, acc), {});
+      else {
+        (state.games || []).forEach(g => { if (!(g.id in state.appearances)) state.appearances[g.id] = 0; });
+      }
+      if (!state.matchups) state.matchups = [];
       document.getElementById('stats-strip').style.display = 'block';
       document.getElementById('audit-panel').style.display = 'block';
       updateStats();
@@ -928,6 +943,9 @@
       }
 
       state.currentPair = { left, right };
+      // Record matchup for audit/history
+      state.matchups.push({ leftId: left.id, rightId: right.id, leftName: left.name, rightName: right.name, round: state.round, timestamp: new Date().toISOString(), winnerId: null });
+      if (state.matchups.length > MAX_HISTORY) state.matchups.shift();
       saveState();
       renderPairCards(left, right);
     }
@@ -1003,6 +1021,13 @@
           timestamp:    new Date().toISOString(),
           mode:         'pairwise',
         });
+        // Mark last matchup with winner
+        if (state.matchups && state.matchups.length) {
+          const last = state.matchups[state.matchups.length - 1];
+          if (last && last.leftId === left.id && last.rightId === right.id) {
+            last.winnerId = winner.id;
+          }
+        }
         state.currentPair = null;
         saveState();
         updateStats();
@@ -1044,18 +1069,29 @@
       document.getElementById('kd-warning').style.display = state.games.length <= 4 ? 'flex' : 'none';
 
       // Show poolSize games (round-robin pool rotation for full-round mode)
+      // First apply randomThreshold: pick a random candidate pool from the full games list
+      const fullPool = [...state.games];
+      const randPct = Math.max(0, Math.min(100, parseInt(state.settings.randomThreshold || 50)));
+      const candidateCount = Math.max(state.settings.poolSize, Math.min(fullPool.length, Math.round(fullPool.length * randPct / 100)));
+      // Shuffle fullPool and take candidateCount
+      const shuffledFull = fullPool.sort(() => Math.random() - 0.5);
+      const candidatePool = shuffledFull.slice(0, candidateCount);
+
       let poolThisRound;
       if (state.settings.fullRound) {
-        // Cycle through games, taking poolSize from kdPoolIndex
+        // Cycle through candidatePool, taking poolSize from kdPoolIndex (rotate within candidatePool)
         poolThisRound = [];
-        for (let i = 0; i < state.settings.poolSize && state.games.length > 0; i++) {
-          const idx = (state.kdPoolIndex + i) % state.games.length;
-          poolThisRound.push(state.games[idx]);
+        for (let i = 0; i < state.settings.poolSize && candidatePool.length > 0; i++) {
+          const idx = (state.kdPoolIndex + i) % candidatePool.length;
+          poolThisRound.push(candidatePool[idx]);
         }
       } else {
-        // No round-robin, just take first poolSize games
-        poolThisRound = state.games.slice(0, state.settings.poolSize);
+        // No round-robin, just take first poolSize from candidatePool
+        poolThisRound = candidatePool.slice(0, state.settings.poolSize);
       }
+
+      // Track appearances for fairness/equalization checks
+      poolThisRound.forEach(g => { state.appearances[g.id] = (state.appearances[g.id] || 0) + 1; });
 
       poolThisRound.forEach(game => {
         const el = document.createElement('div');
@@ -1150,12 +1186,20 @@
         // Check if all games in the pool pool have now been "processed"
         // Advance pool index to next batch
         state.kdPoolIndex = (state.kdPoolIndex + state.settings.poolSize) % Math.max(1, state.games.length);
-        
-        // If we've cycled through all games (pool index wraps), advance round
-        if (state.kdPoolIndex === 0 || state.games.length <= state.settings.poolSize) {
+
+        // Only advance round when appearances are equal across remaining games
+        const counts = Object.values(state.appearances || {}).filter((_,i) => true);
+        const visibleCounts = state.games.map(g => state.appearances[g.id] || 0);
+        const allEqual = visibleCounts.length === 0 ? true : (Math.min(...visibleCounts) === Math.max(...visibleCounts));
+
+        // If we've cycled through all games (pool index wraps) AND appearances are equal, advance round
+        if ((state.kdPoolIndex === 0 || state.games.length <= state.settings.poolSize) && allEqual) {
           state.round++;
           state.kdPoolIndex = 0;
           showToast(`🔔 Round ${state.round - 1} complete — Round ${state.round} starting!`);
+        } else if (state.kdPoolIndex === 0) {
+          // Wrapped but not equalized yet — inform user
+          showToast('Waiting for equal appearances across games before advancing round');
         }
       } else {
         state.round++;
@@ -1260,11 +1304,44 @@
 
       if (state.eliminated.length === 0) {
         list.innerHTML = '<p style="font-size:12px;color:#94a3b8;text-align:center;padding:16px 0">No eliminations yet.</p>';
+        // still show matchups if present
+        if (state.matchups && state.matchups.length) {
+          const revM = [...state.matchups].reverse();
+          const mhtml = revM.map(m => {
+            const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+            const winner = m.winnerId ? (m.winnerId === m.leftId ? m.leftName : m.rightName) : '—';
+            return `<div class="audit-row">
+              <div style="flex:1;min-width:0">
+                <div style="font-size:12px;font-weight:800;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(m.leftName)} vs ${escapeHtml(m.rightName)}</div>
+                <div style="font-size:10px;color:#94a3b8;margin-top:2px">⚔️ Rd ${m.round} &middot; winner: <span style="color:#10b981;font-weight:700">${escapeHtml(winner)}</span></div>
+              </div>
+              <div style="font-size:10px;color:#94a3b8;font-weight:600;flex-shrink:0">${time}</div>
+            </div>`;
+          }).join('');
+          list.innerHTML = mhtml + list.innerHTML;
+        }
         return;
       }
 
       const reversed = [...state.eliminated].reverse();
-      list.innerHTML = reversed.map(rec => {
+      // prepend recent matchups
+      let matchupHtml = '';
+      if (state.matchups && state.matchups.length) {
+        const revM = [...state.matchups].reverse();
+        matchupHtml = revM.map(m => {
+          const time = new Date(m.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+          const winner = m.winnerId ? (m.winnerId === m.leftId ? m.leftName : m.rightName) : '—';
+          return `<div class="audit-row">
+            <div style="flex:1;min-width:0">
+              <div style="font-size:12px;font-weight:800;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${escapeHtml(m.leftName)} vs ${escapeHtml(m.rightName)}</div>
+              <div style="font-size:10px;color:#94a3b8;margin-top:2px">⚔️ Rd ${m.round} &middot; winner: <span style="color:#10b981;font-weight:700">${escapeHtml(winner)}</span></div>
+            </div>
+            <div style="font-size:10px;color:#94a3b8;font-weight:600;flex-shrink:0">${time}</div>
+          </div>`;
+        }).join('');
+      }
+
+      list.innerHTML = matchupHtml + reversed.map(rec => {
         const time    = new Date(rec.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         const imgSrc  = rec.game.image ? IMG_PROXY + encodeURIComponent(rec.game.image) : '';
         const icon    = rec.mode === 'keepdrop' ? '🗂️' : '⚔️';
@@ -1317,6 +1394,7 @@
       state.settings.poolSize   = parseInt(document.getElementById('s-poolsize').value) || 6;
       state.settings.keepCount  = parseInt(document.getElementById('s-keepcount').value) || 3;
       state.settings.dropCount  = parseInt(document.getElementById('s-dropcount').value) || 3;
+      state.settings.randomThreshold = parseInt(document.getElementById('s-randthresh')?.value) || 50;
     }
 
     // ═══════════════════════════════════════════════════════════════════════
