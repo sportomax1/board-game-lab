@@ -109,20 +109,20 @@
     .kd-card .kd-drop-overlay {
       position: absolute;
       inset: 0;
-      background: rgba(239,68,68,0.2);
+      background: rgba(16,185,129,0.2);
       border-radius: 14px;
       opacity: 0;
       pointer-events: none;
       transition: opacity 0.15s;
     }
     .kd-card.marked .kd-drop-overlay { opacity: 1; }
-    .kd-card.marked { border-color: var(--danger); box-shadow: 0 0 0 3px rgba(239,68,68,0.15); }
+    .kd-card.marked { border-color: var(--success); box-shadow: 0 0 0 3px rgba(16,185,129,0.15); }
     .kd-card .kd-x-badge {
       position: absolute;
       top: 5px; right: 5px;
       width: 22px; height: 22px;
       border-radius: 50%;
-      background: var(--danger);
+      background: var(--success);
       color: white;
       font-size: 9px;
       font-weight: 900;
@@ -455,9 +455,9 @@
       <!-- Header -->
       <div class="flex items-end justify-between">
         <div>
-          <div class="section-label">Mark <span id="kd-keep-target">3</span> keep · <span id="kd-drop-target">3</span> drop</div>
+          <div class="section-label">Mark <span id="kd-keep-target">3</span> to KEEP · Drop <span id="kd-drop-target">3</span></div>
           <div class="text-xl font-extrabold text-slate-800 mt-0.5">
-            This round: <span id="kd-pool-desc" class="text-indigo-600">6 games</span>
+            This round: <span id="kd-pool-desc" class="text-emerald-600">6 games</span>
           </div>
         </div>
         <div id="kd-round-badge" class="px-3 py-1.5 bg-indigo-50 text-indigo-700 text-xs font-extrabold rounded-full border border-indigo-100">
@@ -481,12 +481,12 @@
       <div id="kd-footer-bar" class="bg-white rounded-2xl border border-slate-200 shadow-sm p-4">
         <div class="flex items-center gap-3">
           <div class="flex items-center gap-1.5">
-            <span id="kd-marked-num" class="text-rose-500 text-xl font-extrabold">0</span>
-            <span class="text-sm font-bold text-slate-500">marked</span>
+            <span id="kd-marked-num" class="text-emerald-600 text-xl font-extrabold">0</span>
+            <span class="text-sm font-bold text-slate-500">marked to keep</span>
           </div>
-          <button id="kd-confirm-btn" onclick="confirmDrops()" disabled
-            class="flex-1 py-3 rounded-2xl font-extrabold text-sm text-white bg-rose-500 hover:bg-rose-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2">
-            <i class="fa-solid fa-skull-crossbones"></i> Confirm Elimination
+          <button id="kd-confirm-btn" onclick="confirmKeeps()" disabled
+            class="flex-1 py-3 rounded-2xl font-extrabold text-sm text-white bg-emerald-500 hover:bg-emerald-600 transition-all disabled:opacity-30 disabled:cursor-not-allowed flex items-center justify-center gap-2">
+            <i class="fa-solid fa-check-double"></i> Confirm Keepers & Drop Rest
           </button>
         </div>
       </div>
@@ -686,7 +686,7 @@
       totalStart:     0,
     };
 
-    let markedDrop = new Set(); // KD mode: IDs marked for this round's drop
+    let markedKeep = new Set(); // KD mode: IDs marked to keep this round
     let toastTimer  = null;
     let auditOpen   = false;
 
@@ -796,6 +796,7 @@
         currentPair: null,
         phase:       'playing',
         totalStart:  games.length,
+        kdPoolIndex: 0,
       };
       saveState();
       enterPlayingUI();
@@ -1029,7 +1030,7 @@
     // KEEP / DROP GRID MODE
     // ═══════════════════════════════════════════════════════════════════════
     function renderKDGrid() {
-      markedDrop.clear();
+      markedKeep.clear();
       updateKDFooter();
       const grid = document.getElementById('kd-grid');
       grid.innerHTML = '';
@@ -1042,8 +1043,19 @@
       // Auto-warn when few remain
       document.getElementById('kd-warning').style.display = state.games.length <= 4 ? 'flex' : 'none';
 
-      // Show only poolSize games (slice the pool)
-      const poolThisRound = state.games.slice(0, state.settings.poolSize);
+      // Show poolSize games (round-robin pool rotation for full-round mode)
+      let poolThisRound;
+      if (state.settings.fullRound) {
+        // Cycle through games, taking poolSize from kdPoolIndex
+        poolThisRound = [];
+        for (let i = 0; i < state.settings.poolSize && state.games.length > 0; i++) {
+          const idx = (state.kdPoolIndex + i) % state.games.length;
+          poolThisRound.push(state.games[idx]);
+        }
+      } else {
+        // No round-robin, just take first poolSize games
+        poolThisRound = state.games.slice(0, state.settings.poolSize);
+      }
 
       poolThisRound.forEach(game => {
         const el = document.createElement('div');
@@ -1051,7 +1063,7 @@
         el.dataset.id = game.id;
         const imgSrc = game.image ? IMG_PROXY + encodeURIComponent(game.image) : '';
         el.innerHTML = `
-          <div class="kd-x-badge"><i class="fa-solid fa-xmark" style="font-size:9px"></i></div>
+          <div class="kd-x-badge"><i class="fa-solid fa-check" style="font-size:11px"></i></div>
           <div class="kd-drop-overlay"></div>
           <img src="${imgSrc}" alt="${escapeHtml(game.name)}" loading="lazy" />
           <div style="padding:6px 8px 8px;text-align:center">
@@ -1065,49 +1077,62 @@
     }
 
     function toggleKDMark(id, el) {
-      if (markedDrop.has(id)) {
-        markedDrop.delete(id);
+      if (markedKeep.has(id)) {
+        markedKeep.delete(id);
         el.classList.remove('marked');
       } else {
-        // Can't mark more than dropCount games
-        if (markedDrop.size >= state.settings.dropCount) {
-          showToast(`⚠️ Can only mark ${state.settings.dropCount} game(s) per round`);
+        // Can't mark more than keepCount games
+        if (markedKeep.size >= state.settings.keepCount) {
+          showToast(`⚠️ Can only keep ${state.settings.keepCount} game(s) per round`);
           return;
         }
-        markedDrop.add(id);
+        markedKeep.add(id);
         el.classList.add('marked');
       }
       updateKDFooter();
     }
 
     function updateKDFooter() {
-      const n = markedDrop.size;
+      const n = markedKeep.size;
       document.getElementById('kd-marked-num').textContent = n;
-      document.getElementById('kd-confirm-btn').disabled = n === 0;
+      document.getElementById('kd-confirm-btn').disabled = n !== state.settings.keepCount;
     }
 
-    function confirmDrops() {
-      if (markedDrop.size === 0) return;
+    function confirmKeeps() {
+      if (markedKeep.size === 0) return;
       
-      // Enforce exact drop count requirement
-      if (markedDrop.size !== state.settings.dropCount) {
-        showToast(`⚠️ Mark exactly ${state.settings.dropCount} game(s) to drop`);
+      // Enforce exact keep count requirement
+      if (markedKeep.size !== state.settings.keepCount) {
+        showToast(`⚠️ Mark exactly ${state.settings.keepCount} game(s) to keep`);
         return;
       }
 
-      const dropped   = state.games.filter(g => markedDrop.has(g.id));
-      const remaining = state.games.filter(g => !markedDrop.has(g.id));
+      // Build current pool
+      let poolThisRound;
+      if (state.settings.fullRound) {
+        poolThisRound = [];
+        for (let i = 0; i < state.settings.poolSize && state.games.length > 0; i++) {
+          const idx = (state.kdPoolIndex + i) % state.games.length;
+          poolThisRound.push(state.games[idx]);
+        }
+      } else {
+        poolThisRound = state.games.slice(0, state.settings.poolSize);
+      }
+
+      // Determine which games in this pool to eliminate (not in markedKeep)
+      const toEliminate = poolThisRound.filter(g => !markedKeep.has(g.id));
+      const surviving   = state.games.filter(g => !toEliminate.find(te => te.id === g.id));
 
       pushHistory({
         type:        'keepdrop',
         timestamp:   new Date().toISOString(),
-        description: `${dropped.length} game(s) eliminated in Round ${state.round}`,
-        eliminated:  dropped,
+        description: `${toEliminate.length} game(s) eliminated in Round ${state.round}`,
+        eliminated:  toEliminate,
         prevState: snapshot()
       });
 
       const ts = new Date().toISOString();
-      dropped.forEach(game => {
+      toEliminate.forEach(game => {
         state.eliminated.push({
           game,
           survivorName: 'Keep/Drop selection',
@@ -1118,9 +1143,25 @@
         });
       });
 
-      state.games = remaining;
-      state.round++;
-      markedDrop.clear();
+      state.games = surviving;
+      
+      // Pool rotation for full-round mode
+      if (state.settings.fullRound) {
+        // Check if all games in the pool pool have now been "processed"
+        // Advance pool index to next batch
+        state.kdPoolIndex = (state.kdPoolIndex + state.settings.poolSize) % Math.max(1, state.games.length);
+        
+        // If we've cycled through all games (pool index wraps), advance round
+        if (state.kdPoolIndex === 0 || state.games.length <= state.settings.poolSize) {
+          state.round++;
+          state.kdPoolIndex = 0;
+          showToast(`🔔 Round ${state.round - 1} complete — Round ${state.round} starting!`);
+        }
+      } else {
+        state.round++;
+      }
+
+      markedKeep.clear();
       saveState();
       updateStats();
       updateUndoBtn();
@@ -1128,7 +1169,7 @@
 
       if (state.games.length <= 1) { showChampion(); return; }
 
-      showToast(`💀 ${dropped.length} eliminated — Round ${state.round - 1} done!`);
+      showToast(`✓ ${toEliminate.length} eliminated — ${state.games.length} survive!`);
       renderKDGrid();
     }
 
