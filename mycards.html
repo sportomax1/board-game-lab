@@ -825,9 +825,9 @@
                         <div class="form-group">
                             <label class="form-label" for="cardGap">Card Spacing</label>
                             <select id="cardGap" class="form-select">
-                                <option value="0">None</option>
+                                <option value="0" selected>None</option>
                                 <option value="0.05">Minimal (0.05″)</option>
-                                <option value="0.1" selected>Small (0.1″)</option>
+                                <option value="0.1">Small (0.1″)</option>
                                 <option value="0.2">Medium (0.2″)</option>
                                 <option value="0.3">Large (0.3″)</option>
                             </select>
@@ -848,6 +848,23 @@
                                 <option value="rank-asc">BGG Rank (Best First)</option>
                                 <option value="avg-desc">Rating (Highest First)</option>
                                 <option value="year-desc">Year (Newest First)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="imageSource">Image Source</label>
+                            <select id="imageSource" class="form-select">
+                                <option value="thumbnail" selected>Thumbnail (fast)</option>
+                                <option value="fullimage">Full Image (slower)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="imageHeight">Image Height</label>
+                            <select id="imageHeight" class="form-select">
+                                <option value="30%">Small (30%)</option>
+                                <option value="45%">Medium (45%)</option>
+                                <option value="55%" selected>Default (55%)</option>
+                                <option value="70%">Large (70%)</option>
+                                <option value="85%">Extra Large (85%)</option>
                             </select>
                         </div>
                     </div>
@@ -1030,14 +1047,20 @@
             { elements: ['players', 'bestwith', 'recommendwith'], align: 'center' },
             { elements: ['image'], align: 'center' },
             { elements: ['playtime', 'weight'], align: 'center' },
-            { elements: ['rank', 'average', 'rating'], align: 'center' }
+            { elements: ['rank', 'average', 'rating'], align: 'center' },
+            { elements: ['publisher'], align: 'center' },
+            { elements: ['designer'], align: 'center' },
+            { elements: ['artist'], align: 'center' },
+            { elements: ['minage', 'suggestedage'], align: 'center' },
+            { elements: ['todaydate'], align: 'center' }
         ];
     }
 
     function isLegacyDefaultLayout(rows) {
         const signatures = [
             'playerstime|name|image|statsrow|year',
-            'players|playtime|name|image|statsrow|year'
+            'players|playtime|name|image|statsrow|year',
+            'name|year+type|players+bestwith+recommendwith|image|playtime+weight|rank+average+rating'
         ];
         const signature = rows.map(row => (row.elements || []).join('+')).join('|');
         return signatures.includes(signature);
@@ -1262,6 +1285,12 @@
                 rank: parseInt(rankEl?.getAttribute('value') || 0),
                 own: parseInt(status?.getAttribute('own') || 0),
                 prevowned: parseInt(status?.getAttribute('prevowned') || 0),
+                image: '',
+                minAge: 0,
+                suggestedAge: '',
+                publishers: [],
+                designers: [],
+                artists: [],
             };
         });
     }
@@ -1320,6 +1349,29 @@
 
                         game.bestWith = getBestWithValue(game);
                         game.recommendWith = getRecommendWithValue(game);
+
+                        // Full image URL
+                        game.image = item.querySelector('image')?.textContent?.trim() || game.thumbnail;
+
+                        // Min age
+                        game.minAge = parseInt(item.querySelector('minage')?.getAttribute('value') || '0');
+
+                        // Suggested age from community poll
+                        const agePoll = item.querySelector('poll[name="suggested_playerage"]');
+                        if (agePoll) {
+                            let maxVotes = 0, bestAge = '';
+                            agePoll.querySelectorAll('result').forEach(r => {
+                                const votes = parseInt(r.getAttribute('numvotes') || '0');
+                                if (votes > maxVotes) { maxVotes = votes; bestAge = r.getAttribute('value'); }
+                            });
+                            game.suggestedAge = bestAge;
+                        }
+
+                        // Publisher, designer, artist
+                        game.publishers = Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(l => l.getAttribute('value')).filter(Boolean);
+                        game.designers  = Array.from(item.querySelectorAll('link[type="boardgamedesigner"]')).map(l => l.getAttribute('value')).filter(v => v && v !== '(Uncredited)');
+                        game.artists    = Array.from(item.querySelectorAll('link[type="boardgameartist"]')).map(l => l.getAttribute('value')).filter(v => v && v !== '(Uncredited)');
+
                         enriched++;
                     });
 
@@ -1520,8 +1572,12 @@
        ══════════════════════════════════════════════════ */
     const CARD_ELEMENTS = {
         image: {
-            label: 'Thumbnail', icon: '🖼️',
-            render: (g) => `<img src="${g.thumbnail}" alt="${g.name}" style="max-width:90%;max-height:55%;object-fit:contain;border-radius:3px;" onerror="this.style.display='none'">`
+            label: 'Game Image', icon: '🖼️',
+            render: (g) => {
+                const src = $('imageSource')?.value === 'fullimage' ? (g.image || g.thumbnail) : g.thumbnail;
+                const h = $('imageHeight')?.value || '55%';
+                return `<img src="${src}" alt="${g.name}" style="max-width:90%;max-height:${h};object-fit:contain;border-radius:3px;" onerror="this.style.display='none'">`;
+            }
         },
         name: {
             label: 'Game Name', icon: '🏷️',
@@ -1574,6 +1630,45 @@
         playerstime: {
             label: 'Players + Time', icon: '🎯',
             render: (g) => { const p = g.minPlayers === g.maxPlayers ? `${g.minPlayers}` : `${g.minPlayers}–${g.maxPlayers}`; const t = g.playingTime ? g.playingTime + 'm' : '—'; return `<div style="display:flex;gap:.5rem;justify-content:space-between;width:100%;padding:0 4px;font-size:.6rem;font-weight:600;color:#333;"><span>👥 ${p}</span><span>⏱️ ${t}</span></div>`; }
+        },
+        publisher: {
+            label: 'Publisher', icon: '🏢',
+            render: (g) => {
+                const list = g.publishers || [];
+                if (!list.length) return `<div style="font-size:.55rem;font-weight:600;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95%;">🏢 —</div>`;
+                const extra = list.length > 1 ? ` <span style="color:#888;">+${list.length - 1}</span>` : '';
+                return `<div style="font-size:.55rem;font-weight:600;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95%;">🏢 ${list[0]}${extra}</div>`;
+            }
+        },
+        designer: {
+            label: 'Designer', icon: '✏️',
+            render: (g) => {
+                const list = g.designers || [];
+                if (!list.length) return `<div style="font-size:.55rem;font-weight:600;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95%;">✏️ —</div>`;
+                const extra = list.length > 1 ? ` <span style="color:#888;">+${list.length - 1}</span>` : '';
+                return `<div style="font-size:.55rem;font-weight:600;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95%;">✏️ ${list[0]}${extra}</div>`;
+            }
+        },
+        artist: {
+            label: 'Artist', icon: '🎨',
+            render: (g) => {
+                const list = g.artists || [];
+                if (!list.length) return `<div style="font-size:.55rem;font-weight:600;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95%;">🎨 —</div>`;
+                const extra = list.length > 1 ? ` <span style="color:#888;">+${list.length - 1}</span>` : '';
+                return `<div style="font-size:.55rem;font-weight:600;color:#555;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:95%;">🎨 ${list[0]}${extra}</div>`;
+            }
+        },
+        minage: {
+            label: 'Min Age', icon: '👶',
+            render: (g) => `<div style="font-size:.6rem;font-weight:600;color:#333;">👶 ${g.minAge > 0 ? g.minAge + '+' : '—'}</div>`
+        },
+        suggestedage: {
+            label: 'Suggested Age', icon: '🎯',
+            render: (g) => `<div style="font-size:.6rem;font-weight:600;color:#333;">🎯 ${g.suggestedAge ? g.suggestedAge + '+' : '—'}</div>`
+        },
+        todaydate: {
+            label: "Today's Date", icon: '📆',
+            render: () => `<div style="font-size:.5rem;font-weight:600;color:#888;">${new Date().toLocaleDateString('en-US',{month:'short',day:'numeric',year:'numeric'})}</div>`
         }
     };
 
@@ -1816,7 +1911,7 @@
             .zone-top { flex-shrink: 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: .2rem .25rem; background: rgba(255,255,255,.97); font-size: .65rem; border-bottom: 1px solid #e5e7eb; width: 100%; }
             .zone-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; padding: .35rem; gap: 2px; overflow: hidden; }
             .zone-bottom { flex-shrink: 0; text-align: center; padding: .15rem .25rem; background: rgba(255,255,255,.97); border-top: 1px solid #e5e7eb; font-size: .65rem; width: 100%; }
-            img { max-width: 90%; max-height: 55%; object-fit: contain; border-radius: 3px; }
+            img { max-width: 90%; object-fit: contain; border-radius: 3px; }
         `;
 
         const printWin = window.open('', '_blank');
@@ -2010,14 +2105,7 @@
     $('designNext').addEventListener('click', () => { designPreviewIdx++; renderLiveCard(); });
 
     $('resetLayoutBtn').addEventListener('click', () => {
-        cardLayout = [
-            { elements: ['players'], align: 'center' },
-            { elements: ['playtime'], align: 'center' },
-            { elements: ['name'], align: 'center' },
-            { elements: ['image'], align: 'center' },
-            { elements: ['statsrow'], align: 'center' },
-            { elements: ['year'], align: 'center' }
-        ];
+        cardLayout = getDefaultCardLayout();
         saveLayout();
         buildLayoutEditor();
         buildPalette();
@@ -2045,29 +2133,52 @@
     /* ══════════════════════════════════════════════════
        FILTER CHANGE HANDLERS
        ══════════════════════════════════════════════════ */
-    ['statusOwned', 'statusPrevOwned', 'includeExpansions', 'sortOrder'].forEach(id => {
+    ['statusOwned', 'statusPrevOwned', 'includeExpansions'].forEach(id => {
         $(id).addEventListener('change', () => {
             if (!allGames.length) return;
             addDebugLog(`Filter changed: ${id}`, 'info');
-            // If on preview tab, re-render immediately
             if ($('previewView').classList.contains('active')) renderPreview();
             if ($('designView').classList.contains('active')) { buildLayoutEditor(); renderLiveCard(); }
         });
     });
 
-    // Settings that affect card layout/dimensions → re-render preview
-    ['cardSize', 'orientation', 'cardGap', 'printMargin'].forEach(id => {
-        $(id).addEventListener('change', () => {
-            if (!allGames.length) return;
-            addDebugLog(`Setting changed: ${id}`, 'info');
-            if ($('previewView').classList.contains('active')) renderPreview();
+    /* ══════════════════════════════════════════════════
+       SETTINGS PERSISTENCE
+       ══════════════════════════════════════════════════ */
+    const SETTINGS_KEYS = ['cardSize', 'orientation', 'cardGap', 'printMargin', 'sortOrder', 'imageSource', 'imageHeight'];
+
+    function saveSettings() {
+        const out = {};
+        SETTINGS_KEYS.forEach(id => { const el = $(id); if (el) out[id] = el.value; });
+        localStorage.setItem('mycards_settings', JSON.stringify(out));
+    }
+
+    function restoreSettings() {
+        try {
+            const saved = JSON.parse(localStorage.getItem('mycards_settings') || '{}');
+            SETTINGS_KEYS.forEach(id => {
+                const el = $(id);
+                if (el && saved[id] !== undefined) el.value = saved[id];
+            });
+        } catch(e) {}
+    }
+
+    SETTINGS_KEYS.forEach(id => {
+        const el = $(id);
+        if (el) el.addEventListener('change', () => {
+            saveSettings();
+            if (allGames.length) {
+                if ($('previewView').classList.contains('active')) renderPreview();
+                if ($('designView').classList.contains('active')) renderLiveCard();
+            }
         });
     });
 
     /* ══════════════════════════════════════════════════
        INIT
        ══════════════════════════════════════════════════ */
-    // Restore username
+    // Restore settings + username
+    restoreSettings();
     $('username').value = localStorage.getItem('mycards_username') || '';
     $('username').addEventListener('change', () => {
         localStorage.setItem('mycards_username', $('username').value.trim());
