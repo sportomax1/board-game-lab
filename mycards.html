@@ -439,6 +439,12 @@
             font-weight: 700;
             white-space: nowrap;
         }
+        .row-chip-controls {
+            display: inline-flex;
+            align-items: center;
+            gap: 2px;
+        }
+        .row-chip-move,
         .row-chip-remove {
             width: 16px;
             height: 16px;
@@ -453,6 +459,7 @@
             align-items: center;
             justify-content: center;
         }
+        .row-chip-move:hover,
         .row-chip-remove:hover { background: #a5b4fc; }
         .row-add-select {
             max-width: 150px;
@@ -768,6 +775,14 @@
             </button>
         </header>
 
+        <!-- ════════════ LOADING BAR ════════════ -->
+        <div id="loadingBar" style="display:none;padding:8px 16px;background:#f8fafc;border-bottom:1px solid #e2e8f0;">
+            <div id="loadingStatus" style="font-size:12px;font-weight:600;color:#475569;margin-bottom:4px;">Loading…</div>
+            <div style="background:#e2e8f0;border-radius:4px;height:6px;overflow:hidden;">
+                <div id="progressBar" style="background:#6366f1;height:100%;width:0%;transition:width .3s ease;border-radius:4px;"></div>
+            </div>
+        </div>
+
         <!-- ════════════ TABS ════════════ -->
         <div class="tab-bar" role="tablist">
             <button class="tab-btn active" id="tabSettings" role="tab" aria-selected="true" aria-controls="settingsView">
@@ -1008,39 +1023,53 @@
     let isFetching = false;
     let thingDataLoaded = false;
 
+    function getDefaultCardLayout() {
+        return [
+            { elements: ['name'], align: 'center' },
+            { elements: ['year', 'type'], align: 'center' },
+            { elements: ['players', 'bestwith', 'recommendwith'], align: 'center' },
+            { elements: ['image'], align: 'center' },
+            { elements: ['playtime', 'weight'], align: 'center' },
+            { elements: ['rank', 'average', 'rating'], align: 'center' }
+        ];
+    }
+
+    function isLegacyDefaultLayout(rows) {
+        const signatures = [
+            'playerstime|name|image|statsrow|year',
+            'players|playtime|name|image|statsrow|year'
+        ];
+        const signature = rows.map(row => (row.elements || []).join('+')).join('|');
+        return signatures.includes(signature);
+    }
+
     // Layout state — stored in localStorage
-    let cardLayout = JSON.parse(localStorage.getItem('mycards_layout') || 'null') || {
-        top:    ['playerstime'],
-        center: ['name', 'image', 'statsrow'],
-        bottom: ['year']
-    };
+    let cardLayout = JSON.parse(localStorage.getItem('mycards_layout') || 'null') || getDefaultCardLayout();
 
     function normalizeLayout(layout) {
         if (Array.isArray(layout) && layout.length > 0 && layout[0].elements) {
-            return layout.map(row => ({
+            const rows = layout.map(row => ({
                 align: row.align || 'center',
                 elements: Array.isArray(row.elements) ? row.elements.filter(key => CARD_ELEMENT_KEYS.includes(key)) : []
             })).filter(row => row.elements.length);
+            return isLegacyDefaultLayout(rows) ? getDefaultCardLayout() : rows;
         }
         if (Array.isArray(layout) && layout.length > 0 && layout[0].element) {
-            return layout.map(row => ({
+            const rows = layout.map(row => ({
                 align: row.align || 'center',
                 elements: row.element && CARD_ELEMENT_KEYS.includes(row.element) ? [row.element] : []
             })).filter(row => row.elements.length);
+            return isLegacyDefaultLayout(rows) ? getDefaultCardLayout() : rows;
         }
         const arr = [];
         if (layout && layout.top) arr.push(...layout.top.map(e => ({ elements: [e], align: 'center' })));
         if (layout && layout.center) arr.push(...layout.center.map(e => ({ elements: [e], align: 'center' })));
         if (layout && layout.bottom) arr.push(...layout.bottom.map(e => ({ elements: [e], align: 'center' })));
         if (arr.length === 0) {
-            arr.push({ elements: ['players'], align: 'center' });
-            arr.push({ elements: ['playtime'], align: 'center' });
-            arr.push({ elements: ['name'], align: 'center' });
-            arr.push({ elements: ['image'], align: 'center' });
-            arr.push({ elements: ['statsrow'], align: 'center' });
-            arr.push({ elements: ['year'], align: 'center' });
+            return getDefaultCardLayout();
         }
-        return arr.filter(row => row.elements.every(key => CARD_ELEMENT_KEYS.includes(key)));
+        const rows = arr.filter(row => row.elements.every(key => CARD_ELEMENT_KEYS.includes(key)));
+        return isLegacyDefaultLayout(rows) ? getDefaultCardLayout() : rows;
     }
 
     // Snapshot of settings at last preview render (for print sync)
@@ -1058,6 +1087,9 @@
     const printContainer= $('printContainer');
     const emptyState    = $('emptyState');
     const gameCountBadge= $('gameCountBadge');
+    const loadingBar    = $('loadingBar');
+    const loadingStatus = $('loadingStatus');
+    const progressBar   = $('progressBar');
 
     /* ══════════════════════════════════════════════════
        UTILITY: Debug Log
@@ -1076,6 +1108,25 @@
         debugPanel.style.display = open ? 'none' : 'block';
         this.textContent = (open ? '▶' : '▼') + ' Debug Log';
     });
+
+    function updateLoadingStatus(msg) {
+        loadingStatus.textContent = msg;
+        addDebugLog(msg, 'info');
+    }
+
+    function updateProgress(percent) {
+        progressBar.style.width = Math.min(100, Math.max(0, percent)) + '%';
+    }
+
+    function showLoadingBar() {
+        loadingBar.style.display = 'block';
+        updateProgress(0);
+    }
+
+    function hideLoadingBar() {
+        loadingBar.style.display = 'none';
+        updateProgress(0);
+    }
 
     /* ══════════════════════════════════════════════════
        UTILITY: Toast
@@ -1133,24 +1184,50 @@
     $('cricutModal').addEventListener('click', e => { if (e.target === $('cricutModal')) closeCricut(); });
 
     /* ══════════════════════════════════════════════════
-       BGG FETCH
+       BGG FETCH  (matches players.html / weight.html pattern)
        ══════════════════════════════════════════════════ */
-    async function fetchWithRetry(url, maxRetries = 3) {
-        for (let i = 0; i < maxRetries; i++) {
-            try {
-                const res = await fetch(url);
-                if (res.ok) return await res.text();
-                if (res.status === 429 || res.status === 202 || res.status === 502) {
-                    const wait = Math.min(1000 * Math.pow(2, i), 5000);
-                    addDebugLog(`Retry ${i+1}/${maxRetries} after ${wait}ms (HTTP ${res.status})`, 'warn');
-                    await new Promise(r => setTimeout(r, wait));
+    function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+
+    async function fetchAPI(endpoint, idOrUser, queryParams = '') {
+        if (endpoint === 'thing') {
+            const url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(idOrUser)}${queryParams}`;
+            for (let attempt = 0; attempt < 5; attempt++) {
+                let res;
+                try { res = await fetch(url); } catch (e) {
+                    addDebugLog(`Thing fetch network error, retry ${attempt+1}/5 — waiting ${1500 * Math.pow(2, attempt)}ms`, 'warn');
+                    await wait(1500 * Math.pow(2, attempt));
                     continue;
                 }
-                throw new Error(`HTTP ${res.status}`);
-            } catch (e) {
-                if (i === maxRetries - 1) throw e;
-                await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+                if (res.status === 202) {
+                    addDebugLog(`Thing fetch 202 (queued), retry ${attempt+1}/5 — waiting 3000ms`, 'warn');
+                    await wait(3000);
+                    continue;
+                }
+                if (res.ok) return await res.text();
+                addDebugLog(`Thing fetch HTTP ${res.status}, retry ${attempt+1}/5 — waiting 2000ms`, 'warn');
+                await wait(2000);
             }
+            throw new Error('Failed to fetch thing data from BGG API after 5 attempts');
+        } else {
+            const url = `/api/bgg-helper?endpoint=${endpoint}&username=${encodeURIComponent(idOrUser)}${queryParams}`;
+            addDebugLog(`Collection URL: ${url}`, 'info');
+            for (let attempt = 0; attempt < 5; attempt++) {
+                let res;
+                try { res = await fetch(url); } catch (e) {
+                    addDebugLog(`Collection fetch network error, retry ${attempt+1}/5 — waiting ${1000 * Math.pow(2, attempt)}ms`, 'warn');
+                    await wait(1000 * Math.pow(2, attempt));
+                    continue;
+                }
+                if (res.status === 202) {
+                    addDebugLog(`Collection fetch 202 (queued by BGG), retry ${attempt+1}/5 — waiting 2000ms`, 'warn');
+                    await wait(2000);
+                    continue;
+                }
+                if (res.ok) return await res.text();
+                addDebugLog(`Collection fetch HTTP ${res.status}, retry ${attempt+1}/5 — waiting 1500ms`, 'warn');
+                await wait(1500);
+            }
+            throw new Error('Failed to fetch collection from BGG API after 5 attempts');
         }
     }
 
@@ -1163,16 +1240,20 @@
             const rating = stats?.querySelector('rating');
             const rankEl = rating?.querySelector('rank[name="boardgame"]') || rating?.querySelector('rank');
             const status = item.querySelector('status');
+            const average = parseFloat(rating?.querySelector('average')?.getAttribute('value') || '0');
+            const userRating = parseFloat(rating?.getAttribute('value') || stats?.getAttribute('rating') || '0');
             return {
                 id: item.getAttribute('objectid'),
                 name: item.querySelector('name')?.textContent || 'Unknown',
                 thumbnail: item.querySelector('thumbnail')?.textContent || '',
                 subtype: item.getAttribute('subtype') || item.getAttribute('type') || 'boardgame',
+                thingType: '',
                 yearPublished: parseInt(item.querySelector('yearpublished')?.textContent) || 0,
                 minPlayers: parseInt(stats?.getAttribute('minplayers') || 1),
                 maxPlayers: parseInt(stats?.getAttribute('maxplayers') || 1),
                 playingTime: parseInt(stats?.getAttribute('playingtime') || 0),
-                average: parseFloat(rating?.querySelector('average')?.getAttribute('value') || 0),
+                average: Number.isFinite(average) ? average : 0,
+                userRating: Number.isFinite(userRating) ? userRating : 0,
                 averageweight: 0,
                 numweights: 0,
                 playerCounts: [],
@@ -1188,33 +1269,71 @@
     async function enrichGamesWithThingData(games) {
         if (!games.length) return;
         const batchSize = 20;
+        const parallelBatches = 100;
+        const batches = [];
+        const startTime = performance.now();
+
         for (let i = 0; i < games.length; i += batchSize) {
-            const batch = games.slice(i, i + batchSize);
-            const ids = batch.map(game => game.id).join(',');
-            const thingText = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`);
-            const parser = new DOMParser();
-            const xml = parser.parseFromString(thingText, 'text/xml');
-            Array.from(xml.querySelectorAll('item')).forEach(item => {
-                const game = games.find(entry => entry.id === item.getAttribute('id'));
-                if (!game) return;
-                game.averageweight = parseFloat(item.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
-                game.numweights = parseInt(item.querySelector('statistics ratings numweights')?.getAttribute('value') || '0');
-                const polls = Array.from(item.querySelectorAll('poll'));
-                const playerPoll = polls.find(poll => poll.getAttribute('name') === 'suggested_numplayers');
-                if (playerPoll) {
-                    game.playerCounts = Array.from(playerPoll.querySelectorAll('results')).map(result => {
-                        const numplayers = result.getAttribute('numplayers');
-                        const votes = {};
-                        Array.from(result.querySelectorAll('result')).forEach(vote => {
-                            votes[vote.getAttribute('value')] = parseInt(vote.getAttribute('numvotes') || '0');
-                        });
-                        return { numplayers, votes };
-                    }).filter(pc => pc.numplayers);
-                    game.bestWith = getBestWithValue(game);
-                    game.recommendWith = getRecommendWithValue(game);
-                }
-            });
+            batches.push(games.slice(i, i + batchSize));
         }
+
+        addDebugLog(`Thing enrichment: ${games.length} games → ${batches.length} batches (${batchSize}/batch, ${parallelBatches}x parallel)`, 'info');
+
+        for (let i = 0; i < batches.length; i += parallelBatches) {
+            const batchGroup = batches.slice(i, i + parallelBatches);
+            const groupEnd = Math.min(i + parallelBatches, batches.length);
+            const pct = 30 + (groupEnd / batches.length) * 70; // 30–100% overall
+
+            updateLoadingStatus(`Loading thing data… batch ${groupEnd}/${batches.length} (${Math.round((groupEnd / batches.length) * 100)}%)`);
+            updateProgress(pct);
+            showToast(`Loading thing data ${groupEnd}/${batches.length}…`, 'loading', 0);
+
+            await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+                const ids = batch.map(game => game.id).join(',');
+                const batchNum = i + batchIndex + 1;
+                try {
+                    const thingText = await fetchAPI('thing', ids, '&stats=1');
+                    const parser = new DOMParser();
+                    const xml = parser.parseFromString(thingText, 'text/xml');
+                    let enriched = 0;
+
+                    Array.from(xml.querySelectorAll('item')).forEach(item => {
+                        const game = games.find(entry => entry.id === item.getAttribute('id'));
+                        if (!game) return;
+
+                        game.thingType = item.getAttribute('type') || game.thingType || game.subtype;
+                        game.averageweight = parseFloat(item.querySelector('statistics ratings averageweight')?.getAttribute('value') || '0');
+                        game.numweights = parseInt(item.querySelector('statistics ratings numweights')?.getAttribute('value') || '0');
+
+                        const polls = Array.from(item.querySelectorAll('poll'));
+                        const playerPoll = polls.find(poll => poll.getAttribute('name') === 'suggested_numplayers');
+                        if (playerPoll) {
+                            game.playerCounts = Array.from(playerPoll.querySelectorAll('results')).map(result => {
+                                const numplayers = result.getAttribute('numplayers');
+                                const votes = {};
+                                Array.from(result.querySelectorAll('result')).forEach(vote => {
+                                    votes[vote.getAttribute('value')] = parseInt(vote.getAttribute('numvotes') || '0');
+                                });
+                                return { numplayers, votes };
+                            }).filter(pc => pc.numplayers);
+                        }
+
+                        game.bestWith = getBestWithValue(game);
+                        game.recommendWith = getRecommendWithValue(game);
+                        enriched++;
+                    });
+
+                    addDebugLog(`Batch ${batchNum}/${batches.length}: enriched ${enriched} games`, 'success');
+                } catch (e) {
+                    addDebugLog(`Batch ${batchNum}/${batches.length} FAILED: ${e.message}`, 'error');
+                }
+            }));
+
+            await wait(500);
+        }
+
+        const elapsed = ((performance.now() - startTime) / 1000).toFixed(1);
+        addDebugLog(`Thing enrichment complete in ${elapsed}s — ${games.length} games processed`, 'success');
         thingDataLoaded = true;
     }
 
@@ -1228,47 +1347,99 @@
         fetchBtnText.textContent = 'Loading…';
         setFilterControlsEnabled(false);
         printBtn.style.display = 'none';
+        showLoadingBar();
+        const fetchStart = performance.now();
+
+        // ── Read filter state BEFORE making API calls ──
+        let wantOwned = $('statusOwned').checked;
+        let wantPrevOwned = $('statusPrevOwned').checked;
+        const wantExpansions = $('includeExpansions').checked;
+        if (!wantOwned && !wantPrevOwned) wantOwned = true; // default fallback
+
         addDebugLog(`=== FETCH STARTED === user: ${username}`, 'info');
-        showToast('Fetching board games…', 'loading', 0);
+        addDebugLog(`Filters → owned=${wantOwned}, prevowned=${wantPrevOwned}, expansions=${wantExpansions}`, 'info');
 
         try {
-            const baseUrl = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
+            let games = [];
+            let apiCalls = 0;
 
-            // Fetch base games
-            addDebugLog('Fetching boardgames…', 'info');
-            const bgText = await fetchWithRetry(`${baseUrl}&subtype=boardgame`);
-            let games = parseGamesFromXml(bgText);
-            addDebugLog(`Boardgames: ${games.length}`, 'success');
+            // ── Build collection fetch plan based on filters ──
+            const subtypes = ['boardgame'];
+            if (wantExpansions) subtypes.push('boardgameexpansion');
+            addDebugLog(`Subtypes to fetch: ${subtypes.join(', ')}`, 'info');
 
-            // Fetch expansions (non-fatal)
-            addDebugLog('Fetching expansions…', 'info');
-            showToast('Fetching expansions…', 'loading', 0);
-            try {
-                const expText = await fetchWithRetry(`${baseUrl}&subtype=boardgameexpansion`);
-                const exps = parseGamesFromXml(expText);
-                games = games.concat(exps);
-                addDebugLog(`Expansions: ${exps.length}`, 'success');
-            } catch (e) {
-                addDebugLog(`Expansion fetch failed (non-fatal): ${e.message}`, 'warn');
+            const ownershipParams = [];
+            if (wantOwned) ownershipParams.push('&own=1');
+            if (wantPrevOwned) ownershipParams.push('&prevowned=1');
+            addDebugLog(`Ownership params: ${ownershipParams.length ? ownershipParams.join(' + ') : '(none — default owned)'}`, 'info');
+
+            // ── Fetch collections ──
+            const totalSteps = subtypes.length * ownershipParams.length;
+            let step = 0;
+
+            for (const subtype of subtypes) {
+                for (const ownParam of ownershipParams) {
+                    step++;
+                    const pct = (step / (totalSteps + 1)) * 30; // collection = first 30% of progress
+                    updateLoadingStatus(`Fetching ${subtype}${ownParam}… (${step}/${totalSteps})`);
+                    updateProgress(pct);
+                    showToast(`Fetching ${subtype}…`, 'loading', 0);
+
+                    try {
+                        const text = await fetchAPI('collection', username, `&stats=1&subtype=${subtype}${ownParam}`);
+                        const parsed = parseGamesFromXml(text);
+                        apiCalls++;
+                        addDebugLog(`✓ ${subtype}${ownParam}: ${parsed.length} games (API call #${apiCalls})`, 'success');
+                        games = games.concat(parsed);
+                    } catch (e) {
+                        apiCalls++;
+                        if (subtype === 'boardgameexpansion') {
+                            addDebugLog(`Expansion fetch failed (non-fatal): ${e.message}`, 'warn');
+                        } else {
+                            throw e;
+                        }
+                    }
+                }
             }
 
-            // Filter out games without thumbnails
+            // ── Deduplicate by game ID (in case owned + prevowned overlap) ──
+            const seen = new Set();
+            games = games.filter(g => {
+                if (seen.has(g.id)) return false;
+                seen.add(g.id);
+                return true;
+            });
+            addDebugLog(`After dedup: ${games.length} unique games`, 'info');
+
+            // ── Filter out games without thumbnails ──
+            const beforeThumb = games.length;
             games = games.filter(g => g.thumbnail);
+            if (beforeThumb !== games.length) {
+                addDebugLog(`Removed ${beforeThumb - games.length} games without thumbnails`, 'warn');
+            }
             if (!games.length) throw new Error('No games with thumbnails found');
 
-            showToast('Loading weights and player poll data…', 'loading', 0);
-            addDebugLog('Fetching thing data for weight and player recommendations…', 'info');
+            addDebugLog(`Collection loaded: ${games.length} games from ${apiCalls} API calls`, 'success');
+            updateLoadingStatus(`${games.length} games loaded — fetching thing data…`);
+            updateProgress(30);
+            showToast(`Loading thing data for ${games.length} games…`, 'loading', 0);
+
+            // ── Enrich with thing data ──
             await enrichGamesWithThingData(games);
-            addDebugLog('Thing data loaded', 'success');
 
             allGames = games;
-            addDebugLog(`Total loaded: ${allGames.length} games with thumbnails`, 'success');
+            updateProgress(100);
 
-            // Log status breakdown
+            // ── Summary logging ──
+            const elapsed = ((performance.now() - fetchStart) / 1000).toFixed(1);
             const owned = games.filter(g => g.own === 1).length;
             const prevowned = games.filter(g => g.prevowned === 1).length;
             const expansions = games.filter(g => (g.subtype || '').toLowerCase().includes('expansion')).length;
-            addDebugLog(`Status: owned=${owned}, prevowned=${prevowned}, expansions=${expansions}`, 'info');
+            const thingBatches = Math.ceil(games.length / 20);
+            const totalApiCalls = apiCalls + thingBatches;
+            addDebugLog(`=== FETCH COMPLETE in ${elapsed}s ===`, 'success');
+            addDebugLog(`Total: ${allGames.length} games | ${totalApiCalls} API calls (${apiCalls} collection + ${thingBatches} thing)`, 'info');
+            addDebugLog(`Breakdown: owned=${owned}, prevowned=${prevowned}, expansions=${expansions}`, 'info');
 
             // Update badge
             gameCountBadge.textContent = `${allGames.length} games`;
@@ -1277,11 +1448,11 @@
             // Save username
             localStorage.setItem('mycards_username', username);
 
-            // Render preview if we're on the preview tab
+            // Render
             if ($('previewView').classList.contains('active')) renderPreview();
             if ($('designView').classList.contains('active')) { buildLayoutEditor(); buildPalette(); renderLiveCard(); }
 
-            showToast(`Loaded ${allGames.length} games`, 'success');
+            showToast(`Loaded ${allGames.length} games in ${elapsed}s`, 'success');
             printBtn.style.display = 'inline-flex';
         } catch (err) {
             addDebugLog(`ERROR: ${err.message}`, 'error');
@@ -1291,6 +1462,7 @@
             fetchBtn.disabled = false;
             fetchBtnText.textContent = 'Load';
             setFilterControlsEnabled(true);
+            hideLoadingBar();
         }
     }
 
@@ -1375,9 +1547,13 @@
             label: 'Recommend With', icon: '👍',
             render: (g) => `<div style="font-size:.6rem;font-weight:600;color:#333;">👍 ${g.recommendWith || '—'}</div>`
         },
+        average: {
+            label: 'Average', icon: '📈',
+            render: (g) => `<div style="font-size:.6rem;font-weight:600;color:#333;">📈 ${g.average > 0 ? g.average.toFixed(1) : '—'}</div>`
+        },
         rating: {
-            label: 'Avg Rating', icon: '⭐',
-            render: (g) => `<div style="font-size:.6rem;font-weight:600;color:#333;">⭐ ${g.average > 0 ? g.average.toFixed(1) : '—'}</div>`
+            label: 'Your Rating', icon: '⭐',
+            render: (g) => `<div style="font-size:.6rem;font-weight:600;color:#333;">⭐ ${g.userRating > 0 ? g.userRating.toFixed(1) : '—'}</div>`
         },
         rank: {
             label: 'BGG Rank', icon: '🏆',
@@ -1389,11 +1565,11 @@
         },
         type: {
             label: 'Type Badge', icon: '🔖',
-            render: (g) => `<div style="font-size:.45rem;font-weight:700;padding:1px 5px;border-radius:3px;background:#1e293b;color:#fff;text-transform:uppercase;letter-spacing:.5px;">${(g.subtype || 'boardgame').replace('boardgame', 'Base Game').replace('expansion', 'Expansion')}</div>`
+            render: (g) => `<div style="font-size:.45rem;font-weight:700;padding:1px 5px;border-radius:3px;background:#1e293b;color:#fff;text-transform:uppercase;letter-spacing:.5px;">${formatGameType(g)}</div>`
         },
         statsrow: {
             label: 'Stats Row', icon: '📊',
-            render: (g) => { const a = g.average > 0 ? g.average.toFixed(1) : '—'; const r = g.rank > 0 ? '#' + g.rank : '—'; return `<div style="display:flex;gap:.4rem;justify-content:center;font-size:.6rem;font-weight:600;color:#333;"><span>⭐ ${a}</span><span>🏆 ${r}</span></div>`; }
+            render: (g) => { const a = g.average > 0 ? g.average.toFixed(1) : '—'; const r = g.rank > 0 ? '#' + g.rank : '—'; const ur = g.userRating > 0 ? g.userRating.toFixed(1) : '—'; return `<div style="display:flex;gap:.4rem;justify-content:center;font-size:.6rem;font-weight:600;color:#333;"><span>🏆 ${r}</span><span>📈 ${a}</span><span>⭐ ${ur}</span></div>`; }
         },
         playerstime: {
             label: 'Players + Time', icon: '🎯',
@@ -1406,6 +1582,26 @@
 
     function getPlayersLabel(game) {
         return game.minPlayers === game.maxPlayers ? `${game.minPlayers}` : `${game.minPlayers}–${game.maxPlayers}`;
+    }
+
+    function formatGameType(game) {
+        const rawType = (game.thingType || game.subtype || 'boardgame').toLowerCase();
+        const typeMap = {
+            boardgame: 'Board Game',
+            boardgameexpansion: 'Expansion',
+            boardgameaccessory: 'Accessory',
+            boardgamecompilation: 'Compilation',
+            boardgameintegration: 'Integration',
+            rpgitem: 'RPG Item'
+        };
+        if (typeMap[rawType]) return typeMap[rawType];
+        return rawType
+            .replace(/boardgame/g, 'board game')
+            .replace(/([a-z])([A-Z])/g, '$1 $2')
+            .replace(/[_-]+/g, ' ')
+            .replace(/\s+/g, ' ')
+            .trim()
+            .replace(/\b\w/g, char => char.toUpperCase());
     }
 
     function getBestWithValue(game) {
@@ -1488,6 +1684,18 @@
         if (!row.elements.length) {
             cardLayout.splice(rowIdx, 1);
         }
+        saveLayout();
+        buildLayoutEditor();
+        buildPalette();
+        renderLiveCard();
+    }
+
+    function moveElementWithinRow(rowIdx, fromIdx, toIdx) {
+        const row = cardLayout[rowIdx];
+        if (!row) return;
+        if (fromIdx < 0 || toIdx < 0 || fromIdx >= row.elements.length || toIdx >= row.elements.length || fromIdx === toIdx) return;
+        const [moved] = row.elements.splice(fromIdx, 1);
+        row.elements.splice(toIdx, 0, moved);
         saveLayout();
         buildLayoutEditor();
         buildPalette();
@@ -1642,10 +1850,10 @@
                     <span class="row-index">${idx + 1}</span>
                     <span class="row-drag-handle" title="Drag to reorder">⋮</span>
                     <div class="row-elements">
-                        ${row.elements.map(key => {
+                        ${row.elements.map((key, elementIdx) => {
                             const el = CARD_ELEMENTS[key];
                             if (!el) return '';
-                            return `<span class="row-chip">${el.icon} ${el.label}<button class="row-chip-remove" data-idx="${idx}" data-key="${key}" title="Remove from row">×</button></span>`;
+                            return `<span class="row-chip">${el.icon} ${el.label}<span class="row-chip-controls"><button class="row-chip-move" data-idx="${idx}" data-element-idx="${elementIdx}" data-dir="left" title="Move left">←</button><button class="row-chip-move" data-idx="${idx}" data-element-idx="${elementIdx}" data-dir="right" title="Move right">→</button><button class="row-chip-remove" data-idx="${idx}" data-key="${key}" title="Remove from row">×</button></span></span>`;
                         }).join('')}
                         <select class="row-add-select" data-idx="${idx}">
                             <option value="">Add to row…</option>
@@ -1684,6 +1892,15 @@
             btn.addEventListener('click', e => {
                 e.stopPropagation();
                 removeElementFromRow(parseInt(btn.dataset.idx, 10), btn.dataset.key);
+            });
+        });
+
+        editor.querySelectorAll('.row-chip-move').forEach(btn => {
+            btn.addEventListener('click', e => {
+                e.stopPropagation();
+                const rowIdx = parseInt(btn.dataset.idx, 10);
+                const elementIdx = parseInt(btn.dataset.elementIdx, 10);
+                moveElementWithinRow(rowIdx, elementIdx, btn.dataset.dir === 'left' ? elementIdx - 1 : elementIdx + 1);
             });
         });
 
