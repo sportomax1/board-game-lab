@@ -250,6 +250,14 @@
             border-color: var(--primary);
             color: var(--primary);
         }
+
+        /* Prestige Table */
+        .prestige-table { width: 100%; border-collapse: collapse; font-size: 0.78rem; }
+        .prestige-table th { padding: 10px 8px; text-align: center; font-size: 0.65rem; font-weight: 800; text-transform: uppercase; color: var(--secondary); background: var(--primary-light); border-bottom: 2px solid var(--border); }
+        .prestige-table th:first-child { text-align: left; padding-left: 12px; }
+        .prestige-table td { padding: 8px; text-align: center; border-bottom: 1px solid var(--border); vertical-align: middle; }
+        .prestige-table td:first-child { text-align: left; padding-left: 12px; font-weight: 600; max-width: 170px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+        .prestige-table tr:nth-child(even) td { background: #fafafa; }
     </style>
 </head>
 <body>
@@ -340,6 +348,38 @@
                 <!-- All Games -->
             </div>
         </section>
+
+        <!-- Prestige View -->
+        <section id="view-prestige" class="view-content">
+            <div class="card">
+                <h3 class="card-title">Paste Prestige Stats</h3>
+                <input type="text" id="prestige-name" placeholder="Player Name" style="margin-bottom: 12px;">
+                <textarea id="prestige-raw" placeholder="Paste BGA prestige data here&#10;(game name, score, plays/wins line, repeat...)" style="height: 160px; margin-bottom: 16px; font-size: 0.8rem;"></textarea>
+                <button class="btn" onclick="savePrestigeData()">Save &amp; Show Table</button>
+            </div>
+
+            <div style="display:flex; gap: 10px; align-items: center; margin-bottom: 8px;">
+                <select id="prestige-player-select" onchange="renderPrestigeTable()" style="flex:1;">
+                    <option value="">Select a player dataset</option>
+                </select>
+                <button id="prestige-delete-btn" onclick="deletePrestigeData()" disabled
+                    style="padding: 12px 16px; border-radius: 12px; border: 1.5px solid var(--border); background: white; cursor: pointer; color: #ef4444;">
+                    <i class="fa-solid fa-trash-can"></i>
+                </button>
+            </div>
+
+            <div class="sort-bar">
+                <button class="sort-btn active" onclick="setPrestigeSort('prestige', this)">Prestige ▼</button>
+                <button class="sort-btn" onclick="setPrestigeSort('plays', this)">Plays</button>
+                <button class="sort-btn" onclick="setPrestigeSort('victories', this)">Wins</button>
+                <button class="sort-btn" onclick="setPrestigeSort('winPct', this)">Win%</button>
+                <button class="sort-btn" onclick="setPrestigeSort('name', this)">A-Z</button>
+            </div>
+
+            <div id="prestige-table-container">
+                <div style="text-align:center;padding:40px;color:var(--secondary);font-size:0.8rem;">Paste and save data above to see table</div>
+            </div>
+        </section>
     </main>
 
     <nav>
@@ -359,6 +399,10 @@
             <i class="fa-solid fa-layer-group"></i>
             <span>Library</span>
         </div>
+        <div class="nav-item" onclick="switchTab('prestige', this)">
+            <i class="fa-solid fa-star"></i>
+            <span>Prestige</span>
+        </div>
     </nav>
 
     <script>
@@ -368,6 +412,8 @@
         let dbClient = null;
         let compareSort = 'overlap';
         let libSort = 'name';
+        let prestigeDatasets = {};
+        let prestigeSort = 'prestige';
 
         async function unlock() {
             const key = document.getElementById('access-key').value.trim();
@@ -387,7 +433,12 @@
             const { data } = await dbClient.from('bga_datasets').select('name, data, updated_at').eq('owner', owner);
             if (data) {
                 data.forEach(row => {
-                    datasets[row.name] = { data: row.data, updated: row.updated_at };
+                    if (row.name.startsWith('[P]')) {
+                        const pName = row.name.slice(3);
+                        prestigeDatasets[pName] = { data: row.data, updated: row.updated_at };
+                    } else {
+                        datasets[row.name] = { data: row.data, updated: row.updated_at };
+                    }
                 });
                 updateUI();
             }
@@ -402,6 +453,7 @@
             if (viewId === 'manage') renderManage();
             if (viewId === 'compare') renderCompare();
             if (viewId === 'library') renderLibrary();
+            if (viewId === 'prestige') { updatePrestigeUI(); renderPrestigeTable(); }
         }
 
         function updateUI() {
@@ -568,6 +620,140 @@
                     </div>
                 `;
             }).join('');
+        }
+
+        // --- Prestige Logic ---
+        function parsePrestige(raw) {
+            const lines = raw.split('\n').map(l => l.trim());
+            const games = [];
+            let i = 0;
+            while (i < lines.length) {
+                const line = lines[i];
+                if (!line || /my statistics/i.test(line) || /^\d+$/.test(line) || /games.*victories/i.test(line)) {
+                    i++; continue;
+                }
+                // Check if next non-empty line is a prestige number, then a stats line
+                let j = i + 1;
+                while (j < lines.length && !lines[j]) j++;
+                if (j < lines.length && /^\d+$/.test(lines[j])) {
+                    const prestige = parseInt(lines[j]);
+                    j++;
+                    while (j < lines.length && !lines[j]) j++;
+                    if (j < lines.length && /games/i.test(lines[j])) {
+                        const statsLine = lines[j];
+                        const playsMatch = statsLine.match(/^(\d+)(?:\s*\(\+(\d+)\))?\s*games/i);
+                        const victoriesMatch = statsLine.match(/(\d+)\s*victories/i);
+                        const winsMatch = statsLine.match(/(\d+)%\s*wins/i);
+                        games.push({
+                            name: line,
+                            prestige,
+                            plays: playsMatch ? parseInt(playsMatch[1]) : 0,
+                            newPlays: playsMatch?.[2] ? parseInt(playsMatch[2]) : 0,
+                            victories: victoriesMatch ? parseInt(victoriesMatch[1]) : 0,
+                            winPct: winsMatch ? parseInt(winsMatch[1]) : 0
+                        });
+                        i = j + 1;
+                        continue;
+                    }
+                }
+                i++;
+            }
+            return games;
+        }
+
+        async function savePrestigeData() {
+            const name = document.getElementById('prestige-name').value.trim();
+            const raw = document.getElementById('prestige-raw').value.trim();
+            if (!name || !raw) return;
+            const data = parsePrestige(raw);
+            if (!data.length) { alert('No games found. Check the paste format.'); return; }
+            if (dbClient) await dbClient.from('bga_datasets').upsert({ owner, name: `[P]${name}`, data, updated_at: new Date() }, { onConflict: 'owner,name' });
+            prestigeDatasets[name] = { data, updated: new Date() };
+            document.getElementById('prestige-name').value = '';
+            document.getElementById('prestige-raw').value = '';
+            updatePrestigeUI();
+            alert(`Prestige data for ${name} saved! (${data.length} games)`);
+        }
+
+        async function deletePrestigeData() {
+            const name = document.getElementById('prestige-player-select').value;
+            if (!name || !confirm(`Remove prestige data for ${name}?`)) return;
+            if (dbClient) await dbClient.from('bga_datasets').delete().eq('owner', owner).eq('name', `[P]${name}`);
+            delete prestigeDatasets[name];
+            updatePrestigeUI();
+        }
+
+        function updatePrestigeUI() {
+            const select = document.getElementById('prestige-player-select');
+            if (!select) return;
+            const current = select.value;
+            const names = Object.keys(prestigeDatasets).sort();
+            select.innerHTML = '<option value="">Select a player dataset</option>' +
+                names.map(n => `<option value="${n}" ${n === current ? 'selected' : ''}>${n} (${prestigeDatasets[n].data.length} games)</option>`).join('');
+            const btn = document.getElementById('prestige-delete-btn');
+            if (btn) btn.disabled = !select.value;
+            if (!current && names.length === 1) {
+                select.value = names[0];
+                if (btn) btn.disabled = false;
+            }
+            renderPrestigeTable();
+        }
+
+        function setPrestigeSort(sort, el) {
+            prestigeSort = sort;
+            el.parentElement.querySelectorAll('.sort-btn').forEach(b => b.classList.remove('active'));
+            el.classList.add('active');
+            renderPrestigeTable();
+        }
+
+        function renderPrestigeTable() {
+            const player = document.getElementById('prestige-player-select')?.value;
+            const container = document.getElementById('prestige-table-container');
+            if (!container) return;
+            const btn = document.getElementById('prestige-delete-btn');
+            if (btn) btn.disabled = !player;
+            if (!player || !prestigeDatasets[player]) {
+                container.innerHTML = '<div style="text-align:center;padding:40px;color:var(--secondary);font-size:0.8rem;">No data selected</div>';
+                return;
+            }
+            let rows = [...prestigeDatasets[player].data];
+            if (prestigeSort === 'name') rows.sort((a,b) => a.name.localeCompare(b.name));
+            else if (prestigeSort === 'plays') rows.sort((a,b) => b.plays - a.plays || a.name.localeCompare(b.name));
+            else if (prestigeSort === 'victories') rows.sort((a,b) => b.victories - a.victories || a.name.localeCompare(b.name));
+            else if (prestigeSort === 'winPct') rows.sort((a,b) => b.winPct - a.winPct || a.name.localeCompare(b.name));
+            else rows.sort((a,b) => b.prestige - a.prestige || a.name.localeCompare(b.name));
+
+            container.innerHTML = `
+                <div class="card" style="padding:0;overflow:hidden;">
+                    <table class="prestige-table">
+                        <thead>
+                            <tr>
+                                <th>Game</th>
+                                <th style="color:var(--primary);">&#9733; Prestige</th>
+                                <th>Plays</th>
+                                <th>Wins</th>
+                                <th>Win%</th>
+                            </tr>
+                        </thead>
+                        <tbody>
+                            ${rows.map(g => {
+                                const thumb = metaCache[g.name]?.thumb || '';
+                                const thumbHtml = thumb
+                                    ? `<img src="${thumb}" style="width:22px;height:22px;border-radius:4px;object-fit:cover;vertical-align:middle;margin-right:6px;border:1px solid var(--border);" loading="lazy">`
+                                    : `<span style="display:inline-block;width:22px;height:22px;border-radius:4px;background:#f1f5f9;vertical-align:middle;margin-right:6px;"></span>`;
+                                const winColor = g.winPct >= 65 ? '#16a34a' : g.winPct >= 50 ? 'var(--text-main)' : '#dc2626';
+                                const newPlaysHtml = g.newPlays ? `<span style="font-size:0.6rem;color:#16a34a;font-weight:700;"> +${g.newPlays}</span>` : '';
+                                return `<tr>
+                                    <td title="${g.name}">${thumbHtml}${g.name}</td>
+                                    <td style="font-weight:800;color:var(--primary);">${g.prestige}</td>
+                                    <td>${g.plays}${newPlaysHtml}</td>
+                                    <td>${g.victories}</td>
+                                    <td style="font-weight:700;color:${winColor};">${g.winPct}%</td>
+                                </tr>`;
+                            }).join('')}
+                        </tbody>
+                    </table>
+                </div>`;
         }
 
         // --- Data Logic ---
