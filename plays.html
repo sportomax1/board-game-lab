@@ -219,10 +219,9 @@
                             <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('bga')">BGA</th>
                             <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('irl')">IRL</th>
                             <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('total')">Sum</th>
-                            <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('firstBGA')">First BGA</th>
-                            <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('lastBGA')">Last BGA</th>
-                            <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('firstIRL')">First IRL</th>
-                            <th class="px-4 py-2 border-b text-right sortable" onclick="sortStats('lastIRL')">Last IRL</th>
+                            <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('learnedBGA')" title="Did you learn this game on BGA or IRL first?">Learned</th>
+                            <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('first')">First</th>
+                            <th class="px-4 py-2 border-b text-right sortable" onclick="sortStats('last')">Last</th>
                         </tr>
                     </thead>
                     <tbody id="statsTableBody" class="text-[11px] divide-y divide-slate-50"></tbody>
@@ -331,13 +330,19 @@
     </div>
 
     <!-- Calendar Modal -->
-    <div id="calendarModal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center">
-        <div class="bg-white rounded-xl shadow-2xl max-w-2xl w-full max-h-[80vh] overflow-hidden">
-            <div class="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-4 flex justify-between items-center">
+    <div id="calendarModal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-2">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-h-[96vh] overflow-hidden flex flex-col" style="max-width: min(95vw, 900px);">
+            <div class="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-4 flex justify-between items-center flex-shrink-0">
                 <h2 class="text-lg font-bold">Plays Calendar</h2>
                 <button onclick="closeCalendarModal()" class="text-2xl font-light hover:text-blue-100">×</button>
             </div>
-            <div id="calendarContent" class="p-4 overflow-y-auto" style="max-height: calc(80vh - 60px);">
+            <!-- Location filter bar -->
+            <div class="border-b border-slate-100 bg-slate-50 px-4 py-2 flex-shrink-0 overflow-x-auto" style="-webkit-overflow-scrolling:touch; scrollbar-width:none;">
+                <div id="calendarLocationFilter" class="flex items-center gap-1.5 flex-nowrap min-w-max">
+                    <!-- chips rendered by JS -->
+                </div>
+            </div>
+            <div id="calendarContent" class="p-4 overflow-y-auto flex-1 custom-scrollbar">
                 <!-- Calendar will be rendered here -->
             </div>
         </div>
@@ -531,6 +536,8 @@
         let locationsSortDir = 1;
         // Days view location filter: 'both' | 'bga' | 'irl'
         let daysLocationFilter = 'both';
+        // Calendar modal location filter: empty Set = all locations
+        let calendarSelectedLocations = new Set();
 
 
 
@@ -847,6 +854,20 @@
             `}).join('') || '<tr><td colspan="8" class="py-10 text-center text-slate-300 text-[10px]">No records match selected filters.</td></tr>';
         }
 
+        // Returns a Map<gameId, boolean> where true = first ever play was BGA
+        function getFirstPlayLocMap() {
+            const map = new Map();
+            totalPlays.forEach(p => {
+                if (!p.gameId || !p.date) return;
+                const isBGA = ((p.location || '').toLowerCase().includes('boardgamearena') || (p.location || '').toLowerCase().includes('bga'));
+                const existing = map.get(p.gameId);
+                if (!existing || p.date < existing.date) {
+                    map.set(p.gameId, { date: p.date, isBGA });
+                }
+            });
+            return map;
+        }
+
         function renderStats(plays) {
             const ownedOnly = document.getElementById('ownedOnlyToggle').checked;
             const combineMode = document.getElementById('splitModeToggle').checked;
@@ -894,6 +915,7 @@
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('avg')">Avg</th>
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('rating')">Rating</th>
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('total')">Plays</th>
+                        <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('learnedBGA')" title="Did you learn this game on BGA or IRL first?">Learned</th>
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('first')">First</th>
                         <th class="px-4 py-2 border-b text-right sortable" onclick="sortStats('last')">Last</th>
                     </tr>
@@ -909,22 +931,26 @@
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('bga')">BGA</th>
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('irl')">IRL</th>
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('total')">Sum</th>
+                        <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('learnedBGA')" title="Did you learn this game on BGA or IRL first?">Learned</th>
                         <th class="px-4 py-2 border-b text-center sortable" onclick="sortStats('first')">First</th>
                         <th class="px-4 py-2 border-b text-right sortable" onclick="sortStats('last')">Last</th>
                     </tr>
                 `;
             }
 
+            const firstPlayLocMap = getFirstPlayLocMap();
             const statsArr = [...statsMap.values()].map(s => {
                 const details = gameDetailsMap.get(s.id) || {};
                 const collRating = collectionRatings.get(s.id);
                 const detailsRating = details.rating;
                 const ratingValue = (collRating && collRating > 0) ? collRating : ((detailsRating && detailsRating > 0) ? detailsRating : 0);
+                const firstPlayInfo = firstPlayLocMap.get(s.id);
                 return {
                     ...s,
                     rank: details.rank || 999999,
                     avg: details.average || 0,
-                    rating: ratingValue
+                    rating: ratingValue,
+                    learnedBGA: firstPlayInfo ? firstPlayInfo.isBGA : null
                 };
             }).sort((a, b) => {
                 let valA = a[statsSortField];
@@ -935,6 +961,11 @@
 
             const tbody = document.getElementById('statsTableBody');
             tbody.innerHTML = statsArr.map(s => {
+                const learnedCell = s.learnedBGA === true
+                    ? '<span class="px-1.5 py-0.5 bg-blue-50 text-blue-600 text-[8px] font-bold rounded border border-blue-100">BGA</span>'
+                    : s.learnedBGA === false
+                        ? '<span class="px-1.5 py-0.5 bg-slate-100 text-slate-500 text-[8px] font-bold rounded border border-slate-200">IRL</span>'
+                        : '—';
                 if (splitMode) {
                     return `
                         <tr class="hover:bg-slate-50 transition-colors">
@@ -948,6 +979,7 @@
                             <td class="px-4 py-1.5 text-center text-slate-600 font-mono text-[9px]">${s.avg ? s.avg.toFixed(2) : '—'}</td>
                             <td class="px-4 py-1.5 text-center text-slate-600 font-mono text-[9px]">${s.rating ? s.rating.toFixed(1) : '—'}</td>
                             <td class="px-4 py-1.5 text-center font-black text-slate-900">${s.total}</td>
+                            <td class="px-4 py-1.5 text-center">${learnedCell}</td>
                             <td class="px-4 py-1.5 text-center font-mono text-[8px] text-slate-300">${s.first || '-'}</td>
                             <td class="px-4 py-1.5 text-right font-mono text-[8px] text-slate-300">${s.last || '-'}</td>
                         </tr>
@@ -967,6 +999,7 @@
                             <td class="px-4 py-1.5 text-center text-blue-600 font-bold">${s.bga || '0'}</td>
                             <td class="px-4 py-1.5 text-center text-slate-500 font-bold">${s.irl || '0'}</td>
                             <td class="px-4 py-1.5 text-center font-black text-slate-900">${s.total}</td>
+                            <td class="px-4 py-1.5 text-center">${learnedCell}</td>
                             <td class="px-4 py-1.5 text-center font-mono text-[8px] text-slate-300">${s.first || '-'}</td>
                             <td class="px-4 py-1.5 text-right font-mono text-[8px] text-slate-300">${s.last || '-'}</td>
                         </tr>
@@ -1412,12 +1445,43 @@
         }
         
         function openCalendarModal() {
+            calendarSelectedLocations = new Set();
+            buildCalendarLocationChips();
             renderCalendar();
             document.getElementById('calendarModal').classList.remove('hidden');
         }
-        
+
         function closeCalendarModal() {
             document.getElementById('calendarModal').classList.add('hidden');
+        }
+
+        function buildCalendarLocationChips() {
+            const locs = [...new Set(totalPlays.map(p => p.location || 'IRL'))].sort();
+            const bar = document.getElementById('calendarLocationFilter');
+            const allActive = calendarSelectedLocations.size === 0;
+            let html = `<button onclick="calendarToggleLocation(null)" class="flex-shrink-0 px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-tighter border transition-colors ${allActive ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}">All</button>`;
+            locs.forEach(loc => {
+                const active = calendarSelectedLocations.has(loc);
+                const isBGA = loc.toLowerCase().includes('boardgamearena') || loc.toLowerCase().includes('bga');
+                const color = isBGA ? (active ? 'bg-blue-600 text-white border-blue-600' : 'bg-blue-50 text-blue-600 border-blue-200 hover:border-blue-400')
+                                    : (active ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400');
+                html += `<button onclick="calendarToggleLocation(${JSON.stringify(loc)})" class="flex-shrink-0 px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-tighter border transition-colors ${color}">${escapeHtml(loc)}</button>`;
+            });
+            bar.innerHTML = html;
+        }
+
+        function calendarToggleLocation(loc) {
+            if (loc === null) {
+                calendarSelectedLocations.clear();
+            } else {
+                if (calendarSelectedLocations.has(loc)) {
+                    calendarSelectedLocations.delete(loc);
+                } else {
+                    calendarSelectedLocations.add(loc);
+                }
+            }
+            buildCalendarLocationChips();
+            renderCalendar();
         }
 
         // Player modal sorting state
@@ -1531,56 +1595,111 @@
             const days = parseInt(document.getElementById('locationTimePeriod').value) || 999999;
             const cutoffDate = new Date();
             cutoffDate.setDate(cutoffDate.getDate() - days);
-            
-            // Count plays per day
-            const playsByDay = {};
-            totalPlays.forEach(p => {
-                if (p.date < cutoffDate.toISOString().split('T')[0]) return;
-                playsByDay[p.date] = (playsByDay[p.date] || 0) + 1;
+            const cutoffStr = cutoffDate.toISOString().split('T')[0];
+
+            // Build filtered plays
+            const filteredPlays = totalPlays.filter(p => {
+                if (p.date < cutoffStr) return false;
+                if (calendarSelectedLocations.size > 0 && !calendarSelectedLocations.has(p.location || 'IRL')) return false;
+                return true;
             });
-            
-            // Generate months to display (last 12 months from today)
-            let html = '<div class="space-y-6">';
+
+            // Count plays per day, and track which locations played
+            const playsByDay = {}; // date -> { count, locations: Set }
+            filteredPlays.forEach(p => {
+                if (!p.date) return;
+                if (!playsByDay[p.date]) playsByDay[p.date] = { count: 0, locations: new Set() };
+                playsByDay[p.date].count++;
+                playsByDay[p.date].locations.add(p.location || 'IRL');
+            });
+
+            // Determine range: show months from the earliest play to today
+            const allDates = Object.keys(playsByDay);
             const today = new Date();
-            
-            for (let m = 11; m >= 0; m--) {
-                const monthDate = new Date(today.getFullYear(), today.getMonth() - m, 1);
+
+            let startYear = today.getFullYear(), startMonth = today.getMonth() - 11;
+            if (allDates.length > 0) {
+                const minDate = new Date(Math.min(...allDates.map(d => new Date(d))));
+                startYear = minDate.getFullYear();
+                startMonth = minDate.getMonth();
+            }
+
+            // Build months list newest first
+            const months = [];
+            let cur = new Date(today.getFullYear(), today.getMonth(), 1);
+            const floor = new Date(startYear, startMonth, 1);
+            while (cur >= floor) {
+                months.push(new Date(cur));
+                cur.setMonth(cur.getMonth() - 1);
+            }
+
+            // Assign a consistent color per location
+            const allLocs = [...new Set(totalPlays.map(p => p.location || 'IRL'))].sort();
+            const locColors = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16'];
+            const locColorMap = {};
+            allLocs.forEach((l, i) => { locColorMap[l] = locColors[i % locColors.length]; });
+
+            // Legend HTML
+            const showingLocs = calendarSelectedLocations.size > 0 ? [...calendarSelectedLocations] : allLocs;
+            let legendHtml = '<div class="flex flex-wrap gap-2 mb-4">';
+            showingLocs.forEach(l => {
+                legendHtml += `<div class="flex items-center gap-1"><div class="w-2.5 h-2.5 rounded-sm flex-shrink-0" style="background:${locColorMap[l] || '#94a3b8'}"></div><span class="text-[9px] text-slate-500 font-medium">${escapeHtml(l)}</span></div>`;
+            });
+            legendHtml += '</div>';
+
+            let html = legendHtml + '<div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">';
+
+            months.forEach(monthDate => {
                 const year = monthDate.getFullYear();
                 const month = monthDate.getMonth();
-                
-                const monthName = monthDate.toLocaleDateString('en-US', { month: 'long', year: 'numeric' });
+                const monthKey = `${year}-${String(month + 1).padStart(2, '0')}`;
+                const monthName = monthDate.toLocaleDateString('en-US', { month: 'short', year: 'numeric' });
                 const firstDay = new Date(year, month, 1).getDay();
                 const daysInMonth = new Date(year, month + 1, 0).getDate();
-                
-                html += `<div class="border border-slate-200 rounded-lg p-3">
-                    <h3 class="font-bold text-slate-700 mb-3 text-sm">${monthName}</h3>
-                    <div class="grid grid-cols-7 gap-1">`;
-                
-                // Day headers
-                ['Sun', 'Mon', 'Tue', 'Wed', 'Thu', 'Fri', 'Sat'].forEach(d => {
-                    html += `<div class="text-center text-[9px] font-bold text-slate-400 py-1">${d}</div>`;
+
+                // Count total plays this month for the header badge
+                const monthTotal = Object.entries(playsByDay)
+                    .filter(([d]) => d.startsWith(monthKey))
+                    .reduce((s, [, v]) => s + v.count, 0);
+
+                html += `<div class="border border-slate-200 rounded-lg p-2 bg-white">
+                    <div class="flex items-center justify-between mb-2">
+                        <span class="font-bold text-slate-700 text-[11px]">${monthName}</span>
+                        ${monthTotal > 0 ? `<span class="bg-blue-50 text-blue-600 text-[8px] font-bold px-1.5 py-0.5 rounded">${monthTotal}</span>` : ''}
+                    </div>
+                    <div class="grid grid-cols-7 gap-0.5">`;
+
+                ['S','M','T','W','T','F','S'].forEach(d => {
+                    html += `<div class="text-center text-[7px] font-bold text-slate-300 pb-0.5">${d}</div>`;
                 });
-                
-                // Empty cells for days before month starts
-                for (let i = 0; i < firstDay; i++) {
-                    html += '<div></div>';
-                }
-                
-                // Days of month
+
+                for (let i = 0; i < firstDay; i++) html += '<div></div>';
+
                 for (let day = 1; day <= daysInMonth; day++) {
                     const dateStr = `${year}-${String(month + 1).padStart(2, '0')}-${String(day).padStart(2, '0')}`;
-                    const count = playsByDay[dateStr] || 0;
-                    const isPast = new Date(year, month, day) > today;
-                    
-                    html += `<div class="text-center p-1.5 rounded border border-slate-100 ${isPast ? 'bg-white' : 'hover:bg-blue-50'} transition-colors">
-                        <div class="text-[9px] font-semibold text-gray-300">${day}</div>
-                        ${count > 0 ? `<div class="text-[10px] font-bold text-slate-800">${count}</div>` : ''}
-                    </div>`;
+                    const info = playsByDay[dateStr];
+                    const isFuture = new Date(year, month, day) > today;
+
+                    if (info && !isFuture) {
+                        // Build a small color strip for each location played that day
+                        const locDots = [...info.locations].map(l =>
+                            `<div class="w-full h-1" style="background:${locColorMap[l] || '#94a3b8'}"></div>`
+                        ).join('');
+                        html += `<div class="rounded text-center overflow-hidden border border-slate-200 bg-slate-50" title="${dateStr}: ${info.count} play(s) @ ${[...info.locations].join(', ')}">
+                            <div class="text-[8px] font-semibold text-slate-600 leading-tight pt-0.5">${day}</div>
+                            <div class="text-[8px] font-black text-slate-800 leading-tight">${info.count}</div>
+                            <div class="flex flex-col gap-px mt-0.5">${locDots}</div>
+                        </div>`;
+                    } else {
+                        html += `<div class="rounded text-center ${isFuture ? 'opacity-20' : ''}">
+                            <div class="text-[8px] text-slate-300 leading-tight pt-0.5">${day}</div>
+                        </div>`;
+                    }
                 }
-                
+
                 html += '</div></div>';
-            }
-            
+            });
+
             html += '</div>';
             document.getElementById('calendarContent').innerHTML = html;
         }
