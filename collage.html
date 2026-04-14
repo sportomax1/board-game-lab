@@ -268,6 +268,7 @@
             justify-content: space-between;
             gap: 8px;
             flex-shrink: 0;
+            flex-wrap: wrap;
         }
 
         .panel-header-left {
@@ -331,7 +332,9 @@
             transition: border-color 0.2s;
         }
         .grid-cell:hover { border-color: rgba(255,255,255,0.2); }
-        .grid-cell.has-image { border-style: solid; border-color: rgba(255,255,255,0.06); }
+        .grid-cell.has-image { border-style: solid; border-color: rgba(255,255,255,0.06); cursor: grab; }
+        .grid-cell.has-image:active { cursor: grabbing; }
+        .grid-cell.drag-over { border-color: var(--accent) !important; background: rgba(16,185,129,0.12) !important; }
         .grid-cell img { width: 100%; height: 100%; object-fit: contain; pointer-events: none; display: block; }
 
         .cell-plus {
@@ -486,7 +489,7 @@
             <!-- RIGHT: Grid builder -->
             <div class="right-panel" id="panel-grid">
                 <div class="panel-header">
-                    <div class="panel-header-left">
+                    <div class="panel-header-left" style="flex:1;min-width:0">
                         <span class="count-badge" id="countBadge">0 / 9</span>
                         <div class="size-selector">
                             <button class="size-btn" onclick="setGridSize(2)">2×2</button>
@@ -494,7 +497,11 @@
                             <button class="size-btn" onclick="setGridSize(4)">4×4</button>
                         </div>
                     </div>
-                    <button class="btn btn-ghost" onclick="clearGrid()" style="padding:5px 12px">Clear</button>
+                    <div style="display:flex;gap:6px;align-items:center;flex-shrink:0">
+                        <button class="btn btn-ghost" onclick="clearGrid()" style="padding:5px 12px">Clear</button>
+                        <button class="btn btn-primary" id="generateBtn" onclick="generateCollage()" disabled>Generate Poster</button>
+                        <a id="downloadLink" download="bgg-collage.png" class="btn btn-ghost" style="display:none;text-decoration:none">Save PNG</a>
+                    </div>
                 </div>
 
                 <div class="panel-scroll" id="gridScrollArea">
@@ -505,13 +512,10 @@
                     <div id="downloadArea" class="download-area hidden">
                         <p class="download-label">Poster Ready</p>
                         <img id="collagePreview" class="download-preview">
-                        <a id="downloadLink" download="bgg-collage.png" class="btn-download">Download PNG</a>
                     </div>
                 </div>
 
-                <div class="action-bar">
-                    <button class="btn btn-primary" id="generateBtn" onclick="generateCollage()" disabled style="flex:1">Generate Poster</button>
-                </div>
+
             </div>
         </div>
     </div>
@@ -522,6 +526,7 @@
         let searchResults = [];
         let gridSize = 3;
         let totalCells = 9;
+        let dragIdx = null;
 
         // ── Mobile tab switching ──
         function mobSwitchTab(tab) {
@@ -658,6 +663,7 @@
             selectedGames = [];
             updateGrid();
             document.getElementById('downloadArea').classList.add('hidden');
+            document.getElementById('downloadLink').style.display = 'none';
             hideStatus();
         }
 
@@ -675,8 +681,39 @@
                         ${game.thumb ? `<img src="${IMAGE_PROXY}${encodeURIComponent(game.thumb)}" loading="lazy">` : ''}
                         <button class="remove-btn" onclick="event.stopPropagation(); removeGame(${i})">✕</button>
                     `;
+                    cell.setAttribute('draggable', 'true');
+                    const idx = i;
+                    cell.addEventListener('dragstart', () => { dragIdx = idx; cell.style.opacity = '0.4'; });
+                    cell.addEventListener('dragend', () => {
+                        cell.style.opacity = '';
+                        dragIdx = null;
+                        document.querySelectorAll('.drag-over').forEach(el => el.classList.remove('drag-over'));
+                    });
+                    cell.addEventListener('dragover', e => { e.preventDefault(); if (dragIdx !== idx) cell.classList.add('drag-over'); });
+                    cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
+                    cell.addEventListener('drop', e => {
+                        e.preventDefault();
+                        cell.classList.remove('drag-over');
+                        if (dragIdx !== null && dragIdx !== idx) {
+                            const tmp = selectedGames[dragIdx];
+                            selectedGames[dragIdx] = selectedGames[idx];
+                            selectedGames[idx] = tmp;
+                            updateGrid();
+                        }
+                    });
                 } else {
                     cell.innerHTML = `<span class="cell-plus">+</span>`;
+                    cell.addEventListener('dragover', e => { e.preventDefault(); cell.classList.add('drag-over'); });
+                    cell.addEventListener('dragleave', () => cell.classList.remove('drag-over'));
+                    cell.addEventListener('drop', e => {
+                        e.preventDefault();
+                        cell.classList.remove('drag-over');
+                        if (dragIdx !== null) {
+                            const g = selectedGames.splice(dragIdx, 1)[0];
+                            selectedGames.push(g);
+                            updateGrid();
+                        }
+                    });
                     cell.onclick = () => mobSwitchTab('search');
                 }
 
@@ -752,7 +789,9 @@
 
             const dataUrl = canvas.toDataURL('image/png');
             document.getElementById('collagePreview').src = dataUrl;
-            document.getElementById('downloadLink').href = dataUrl;
+            const dl = document.getElementById('downloadLink');
+            dl.href = dataUrl;
+            dl.style.display = '';
             document.getElementById('downloadArea').classList.remove('hidden');
 
             if (failed > 0) showStatus(`${failed} image(s) failed to load.`);
