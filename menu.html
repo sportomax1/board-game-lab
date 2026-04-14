@@ -518,8 +518,9 @@ async function fetchCollection() {
       return;
     }
 
-    // Capture number of plays from the collection response so we can sort by it
+    // Capture number of plays and personal collection rating
     const playsMap = {};
+    const collRatingMap = {};
     collItems.forEach(item => {
       const oid = item.getAttribute('objectid');
       let plays = 0;
@@ -527,6 +528,8 @@ async function fetchCollection() {
       if (numplaysNode) plays = parseInt(numplaysNode.textContent || '0') || 0;
       else plays = parseInt(item.getAttribute('numplays') || '0') || 0;
       playsMap[oid] = plays;
+      const rv = item.querySelector('stats rating')?.getAttribute('value');
+      collRatingMap[oid] = (rv && rv !== 'N/A' && !isNaN(rv)) ? parseFloat(rv) : null;
     });
 
     const objectIds = collItems.map(i => i.getAttribute('objectid'));
@@ -542,13 +545,15 @@ async function fetchCollection() {
 
     await batchFetchWithLimit(batches, 100);
 
-    // Merge plays from the collection into the fetched game objects
+    // Merge plays and collection rating into the fetched game objects
     try {
       allGames.forEach(g => {
         g.plays = (playsMap && playsMap[g.id]) ? playsMap[g.id] : 0;
+        const rv = collRatingMap[g.id];
+        g.collRating = (rv != null) ? rv : null;
       });
     } catch (e) {
-      console.warn('Failed to merge plays map:', e);
+      console.warn('Failed to merge plays/rating map:', e);
     }
 
     updateLoadingStatus('Complete!');
@@ -614,10 +619,13 @@ async function loadBoth() {
       return false;
     });
     const playsMap = {};
+    const collRatingMap = {};
     collItems.forEach(item => {
       const oid = item.getAttribute('objectid');
       const numplaysNode = item.querySelector('numplays');
       playsMap[oid] = numplaysNode ? (parseInt(numplaysNode.textContent || '0') || 0) : (parseInt(item.getAttribute('numplays') || '0') || 0);
+      const rv = item.querySelector('stats rating')?.getAttribute('value');
+      collRatingMap[oid] = (rv && rv !== 'N/A' && !isNaN(rv)) ? parseFloat(rv) : null;
     });
 
     const bggIds = new Set(collItems.map(i => i.getAttribute('objectid')));
@@ -629,6 +637,7 @@ async function loadBoth() {
     const batches = [];
     for (let i = 0; i < allIds.length; i += batchSize) batches.push(allIds.slice(i, i + batchSize));
     await batchFetchBoth(batches, csvById, playsMap, allIds.length);
+    allGames.forEach(g => { const rv = collRatingMap[g.id]; if (rv != null) g.collRating = rv; });
 
     updateLoadingStatus('Complete!');
     document.getElementById('controlsSection').classList.remove('hidden');
@@ -1690,19 +1699,15 @@ function getGameStatStr(g) {
   const weightV = fmtK(g.numweights);
   const voters  = fmtK(g.usersrated);
   const plays   = g.plays != null && +g.plays > 0 ? fmtK(g.plays) : '\u2014';
-  const minT = +(g.minplaytime || 0), maxT = +(g.maxplaytime || 0);
-  let time = '\u2014';
-  if (minT > 0 && maxT > 0 && minT !== maxT) time = minT + '\u2013' + maxT + 'm';
-  else if (minT > 0 || maxT > 0) time = (minT || maxT) + 'm';
-  else if (+g.playingtime > 0) time = Math.round(+g.playingtime) + 'm';
+  const timeVal = +(g.playingtime || 0);
+  const time = timeVal > 0 ? Math.round(timeVal) + 'm' : '\u2014';
+  const collRating = (g.collRating != null && +g.collRating > 0) ? (+g.collRating).toFixed(1) : '\u2014';
   const year  = g.year  || '\u2014';
   const overallRank = g.bggOverallRank != null ? '#' + g.bggOverallRank
                     : (g.bggrank || g.rank ? '#' + (g.bggrank || g.rank) : '\u2014');
   const catRanks = Array.isArray(g.categoryRanks) && g.categoryRanks.length
     ? g.categoryRanks.map(r => {
-        const sn = (r.name || '').replace(' Game Rank','').replace('Strategy','Strat').replace('Family','Fam')
-          .replace('Thematic','Them').replace('Abstract','Abs').replace("Children's",'Kids')
-          .replace('Wargames','War').replace('Customizable','Cust');
+        const sn = (r.name || '').replace(' Game Rank', '').replace(' Rank', '').trim();
         return sn + ' #' + r.value;
       }).join(' \u00b7 ')
     : '';
@@ -1750,7 +1755,7 @@ function getGameStatStr(g) {
   else if (r >= 6.5) { rBg = '#713f12'; rCol = '#fef08a'; }
   else if (r >= 6.0) { rBg = '#92400e'; rCol = '#fde68a'; }
   else               { rBg = '#7f1d1d'; rCol = '#fecaca'; }
-  return { rating, bayes, weight, weightV, voters, plays, time, year, overallRank, catRanks, invdt, owned, bestAt, recRange, rBg, rCol };
+  return { rating, bayes, weight, weightV, voters, plays, time, collRating, year, overallRank, catRanks, invdt, owned, bestAt, recRange, rBg, rCol };
 }
 
 function printStatsSheet() {
@@ -1773,14 +1778,15 @@ function printStatsSheet() {
     };
   };
   const pcts = {
-    rating:  mkPct(g => g.bggRating),
-    bayes:   mkPct(g => g.bayesaverage),
-    weight:  mkPct(g => g.averageweight),
-    weightV: mkPct(g => g.numweights),
-    voters:  mkPct(g => g.usersrated),
-    plays:   mkPct(g => g.plays),
-    year:    mkPct(g => g.year),
-    rank:    mkPct(g => g.bggOverallRank || g.bggrank || g.rank, true),
+    rating:     mkPct(g => g.bggRating),
+    collRating: mkPct(g => g.collRating),
+    bayes:      mkPct(g => g.bayesaverage),
+    weight:     mkPct(g => g.averageweight),
+    voters:     mkPct(g => g.usersrated),
+    plays:      mkPct(g => g.plays),
+    time:       mkPct(g => g.playingtime),
+    year:       mkPct(g => g.year),
+    rank:       mkPct(g => g.bggOverallRank || g.bggrank || g.rank, true),
   };
   // tiny percentile annotation: "85%"
   const p$ = (n) => n != null ? '<span style="font-size:4.5px;color:#94a3b8;font-weight:400;"> ' + n + '%</span>' : '';
@@ -1798,10 +1804,11 @@ function printStatsSheet() {
     const cardsHtml = games.map((g, i) => {
       const idx = i + 1, s = getGameStatStr(g);
       const gp = {
-        rating: pcts.rating(g.bggRating), bayes: pcts.bayes(g.bayesaverage),
-        weight: pcts.weight(g.averageweight), weightV: pcts.weightV(g.numweights),
+        collRating: pcts.collRating(g.collRating), rating: pcts.rating(g.bggRating),
+        bayes: pcts.bayes(g.bayesaverage), weight: pcts.weight(g.averageweight),
         voters: pcts.voters(g.usersrated), plays: pcts.plays(g.plays),
-        year: pcts.year(g.year), rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
+        time: pcts.time(g.playingtime), year: pcts.year(g.year),
+        rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
       };
       const mg = (pairs) => pairs.map(([l, v, p]) =>
         '<div style="text-align:center;background:#f8fafc;border-radius:2px;padding:1px 0;">' +
@@ -1811,11 +1818,12 @@ function printStatsSheet() {
         '<div style="position:relative;height:78px;background:#f8fafc;flex-shrink:0;">' +
         '<img src="' + g.thumb + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onerror="this.style.display=\'none\'">' +
         '<div style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,0.6);color:#fff;font-size:7px;font-weight:700;padding:1px 4px;border-radius:2px;">#' + idx + '</div>' +
+        (s.collRating !== '\u2014' ? '<div style="position:absolute;top:2px;right:2px;background:#7c3aed;color:#ede9fe;font-size:7px;font-weight:700;padding:1px 4px;border-radius:2px;">My ' + s.collRating + '</div>' : '') +
         '<div style="position:absolute;bottom:2px;right:2px;background:' + s.rBg + ';color:' + s.rCol + ';font-size:7px;font-weight:700;padding:1px 4px;border-radius:2px;">' + s.rating + p$(gp.rating) + '</div></div>' +
         '<div style="padding:3px 4px;flex:1;display:flex;flex-direction:column;gap:2px;">' +
         '<div style="font-size:7px;font-weight:700;color:#0f172a;line-height:1.2;overflow:hidden;display:-webkit-box;-webkit-line-clamp:2;-webkit-box-orient:vertical;">' + g.name + '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">' + mg([['Avg',s.rating,gp.rating],['Bayes',s.bayes,gp.bayes],['Wt',s.weight,gp.weight]]) + '</div>' +
-        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">' + mg([['Plays',s.plays,gp.plays],['Time',s.time,null],['Voters',s.voters,gp.voters]]) + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">' + mg([['Avg',s.rating,gp.rating],['Bayes',s.bayes,gp.bayes],['Weight',s.weight,gp.weight]]) + '</div>' +
+        '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">' + mg([['Plays',s.plays,gp.plays],['Time',s.time,gp.time],['Voters',s.voters,gp.voters]]) + '</div>' +
         '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:1px;">' + mg([['Best@',s.bestAt,null],['Rec',s.recRange,null],['Year',s.year,gp.year]]) + '</div>' +
         (s.catRanks ? '<div style="font-size:5.5px;color:#94a3b8;border-top:1px solid #f1f5f9;padding-top:1px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + s.catRanks + '</div>' : '') +
         '</div></div>';
@@ -1832,10 +1840,11 @@ function printStatsSheet() {
     const rowsHtml = games.map((g, i) => {
       const idx = i + 1, s = getGameStatStr(g);
       const gp = {
-        rating: pcts.rating(g.bggRating), bayes: pcts.bayes(g.bayesaverage),
-        weight: pcts.weight(g.averageweight), weightV: pcts.weightV(g.numweights),
+        collRating: pcts.collRating(g.collRating), rating: pcts.rating(g.bggRating),
+        bayes: pcts.bayes(g.bayesaverage), weight: pcts.weight(g.averageweight),
         voters: pcts.voters(g.usersrated), plays: pcts.plays(g.plays),
-        year: pcts.year(g.year), rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
+        time: pcts.time(g.playingtime), year: pcts.year(g.year),
+        rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
       };
       const pCell = (v, p) => v + (p != null ? '<span style="font-size:5.5px;color:#94a3b8;"> ' + p + '%</span>' : '');
       const bg = i % 2 === 0 ? '#fff' : '#f8fafc';
@@ -1845,11 +1854,11 @@ function printStatsSheet() {
         '<img src="' + g.thumb + '" alt="" style="width:20px;height:20px;object-fit:contain;flex-shrink:0;" onerror="this.style.display=\'none\'">' +
         '<div><div style="font-size:7.5px;font-weight:700;color:#0f172a;overflow:hidden;max-width:1.4in;text-overflow:ellipsis;white-space:nowrap;">' + g.name + '</div>' +
         '<div style="font-size:6px;color:#94a3b8;">' + pCell(s.year, gp.year) + (s.catRanks ? ' \u00b7 ' + s.catRanks : '') + '</div></div></div></td>' +
+        (s.collRating !== '\u2014' ? '<td style="' + tdS('center') + '"><span style="background:#7c3aed;color:#ede9fe;padding:1px 4px;border-radius:3px;font-size:7px;font-weight:700;">' + pCell(s.collRating, gp.collRating) + '</span></td>' : '<td style="' + tdS('center') + '">\u2014</td>') +
         '<td style="' + tdS('center') + '"><span style="background:' + s.rBg + ';color:' + s.rCol + ';padding:1px 4px;border-radius:3px;font-size:7px;font-weight:700;">' + s.rating + '</span>' + p$(gp.rating) + '</td>' +
         '<td style="' + tdS('center') + '">' + pCell(s.bayes, gp.bayes) + '</td>' +
         '<td style="' + tdS('center') + '">' + pCell(s.weight, gp.weight) + '</td>' +
-        '<td style="' + tdS('center') + '">' + pCell(s.weightV, gp.weightV) + '</td>' +
-        '<td style="' + tdS('center') + '">' + s.time + '</td>' +
+        '<td style="' + tdS('center') + '">' + pCell(s.time, gp.time) + '</td>' +
         '<td style="' + tdS('center') + '">' + pCell(s.plays, gp.plays) + '</td>' +
         '<td style="' + tdS('center') + '">' + pCell(s.voters, gp.voters) + '</td>' +
         '<td style="' + tdS('center') + '">' + s.bestAt + '</td><td style="' + tdS('center') + '">' + s.recRange + '</td>' +
@@ -1862,8 +1871,8 @@ function printStatsSheet() {
       '<table style="width:100%;border-collapse:collapse;table-layout:fixed;">' +
       '<thead style="display:table-header-group;"><tr style="background:#0f172a;color:#f1f5f9;">' +
       '<th style="' + thS + 'width:18px;">#</th><th style="' + thS + '">Game</th>' +
-      '<th style="' + thS + '">Avg</th><th style="' + thS + '">Bayes</th><th style="' + thS + '">Wt</th>' +
-      '<th style="' + thS + '">WtV</th><th style="' + thS + '">Time</th><th style="' + thS + '">Plays</th>' +
+      '<th style="' + thS + '">My</th><th style="' + thS + '">Avg</th><th style="' + thS + '">Bayes</th>' +
+      '<th style="' + thS + '">Weight</th><th style="' + thS + '">Time</th><th style="' + thS + '">Plays</th>' +
       '<th style="' + thS + '">Voters</th><th style="' + thS + '">Best@</th><th style="' + thS + '">Rec</th>' +
       (hasRank ? '<th style="' + thS + '">Rank</th>' : '') +
       (hasInv  ? '<th style="' + thS + '">Acq</th>' : '') +
@@ -1875,24 +1884,28 @@ function printStatsSheet() {
     const cardsHtml = games.map((g, i) => {
       const idx = i + 1, s = getGameStatStr(g);
       const gp = {
-        rating: pcts.rating(g.bggRating), bayes: pcts.bayes(g.bayesaverage),
-        weight: pcts.weight(g.averageweight), voters: pcts.voters(g.usersrated), plays: pcts.plays(g.plays)
+        collRating: pcts.collRating(g.collRating), rating: pcts.rating(g.bggRating),
+        bayes: pcts.bayes(g.bayesaverage), weight: pcts.weight(g.averageweight),
+        voters: pcts.voters(g.usersrated), plays: pcts.plays(g.plays),
+        time: pcts.time(g.playingtime)
       };
       return '<div style="border:1px solid #e2e8f0;border-radius:5px;overflow:hidden;background:#fff;display:flex;flex-direction:column;break-inside:avoid;page-break-inside:avoid;">' +
         '<div style="position:relative;height:92px;background:#0f172a;flex-shrink:0;">' +
         '<img src="' + g.thumb + '" alt="" style="position:absolute;inset:0;width:100%;height:100%;object-fit:contain;" onerror="this.style.display=\'none\'">' +
         '<div style="position:absolute;inset:0;background:linear-gradient(to top,rgba(0,0,0,0.6) 0%,transparent 70%);"></div>' +
-        '<div style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,0.7);color:#fbbf24;font-size:7px;font-weight:900;padding:1px 4px;border-radius:2px;">#' + idx + '</div></div>' +
+        '<div style="position:absolute;top:2px;left:2px;background:rgba(0,0,0,0.7);color:#fbbf24;font-size:7px;font-weight:900;padding:1px 4px;border-radius:2px;">#' + idx + '</div>' +
+        (s.collRating !== '\u2014' ? '<div style="position:absolute;top:2px;right:2px;background:#7c3aed;color:#ede9fe;font-size:7px;font-weight:700;padding:1px 4px;border-radius:2px;">My ' + s.collRating + p$(gp.collRating) + '</div>' : '') +
+        '</div>' +
         '<div style="padding:3px 4px;flex:1;display:flex;flex-direction:column;gap:2px;">' +
         '<div style="font-size:7px;font-weight:700;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + g.name + '</div>' +
         '<div style="display:flex;align-items:center;gap:4px;">' +
         '<span style="background:' + s.rBg + ';color:' + s.rCol + ';font-size:10px;font-weight:900;padding:2px 5px;border-radius:3px;">' + s.rating + p$(gp.rating) + '</span>' +
-        '<div style="flex:1;font-size:6px;color:#64748b;">Bayes: <b>' + s.bayes + p$(gp.bayes) + '</b> &bull; Wt: <b>' + s.weight + p$(gp.weight) + '</b><br>Voters: <b>' + s.voters + p$(gp.voters) + '</b></div></div>' +
+        '<div style="flex:1;font-size:6px;color:#64748b;">Bayes: <b>' + s.bayes + p$(gp.bayes) + '</b> &bull; Weight: <b>' + s.weight + p$(gp.weight) + '</b><br>Voters: <b>' + s.voters + p$(gp.voters) + '</b></div></div>' +
         '<div style="display:grid;grid-template-columns:1fr 1fr;gap:2px;">' +
         '<div style="background:#eff6ff;border-radius:2px;text-align:center;padding:1px 0;"><div style="font-size:5.5px;color:#1d4ed8;">Best@</div><div style="font-size:7px;font-weight:700;color:#1e40af;">' + s.bestAt + '</div></div>' +
         '<div style="background:#f0fdf4;border-radius:2px;text-align:center;padding:1px 0;"><div style="font-size:5.5px;color:#16a34a;">Rec</div><div style="font-size:7px;font-weight:700;color:#15803d;">' + s.recRange + '</div></div></div>' +
         '<div style="display:flex;justify-content:space-between;font-size:6px;color:#64748b;border-top:1px solid #f1f5f9;padding-top:2px;">' +
-        '<span>&#9654; ' + s.plays + p$(gp.plays) + '</span><span>&#128337; ' + s.time + '</span>' +
+        '<span>&#9654; ' + s.plays + p$(gp.plays) + '</span><span>&#128337; ' + s.time + p$(gp.time) + '</span>' +
         (s.catRanks ? '<span style="font-size:5.5px;color:#94a3b8;">' + s.catRanks + '</span>' : '<span>' + s.overallRank + '</span>') + '</div>' +
         '</div></div>';
     }).join('');
@@ -1910,10 +1923,10 @@ function printStatsSheet() {
     const cardsHtml = games.map((g, i) => {
       const idx = i + 1, s = getGameStatStr(g);
       const gp = {
-        rating: pcts.rating(g.bggRating), bayes: pcts.bayes(g.bayesaverage),
-        weight: pcts.weight(g.averageweight), weightV: pcts.weightV(g.numweights),
+        collRating: pcts.collRating(g.collRating), rating: pcts.rating(g.bggRating),
+        bayes: pcts.bayes(g.bayesaverage), weight: pcts.weight(g.averageweight),
         voters: pcts.voters(g.usersrated), plays: pcts.plays(g.plays),
-        rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
+        time: pcts.time(g.playingtime), rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
       };
       return '<div style="border:1px solid #e2e8f0;border-radius:5px;overflow:hidden;background:#fff;display:flex;flex-direction:row;break-inside:avoid;page-break-inside:avoid;">' +
         '<div style="position:relative;width:88px;flex-shrink:0;background:#f1f5f9;">' +
@@ -1924,9 +1937,9 @@ function printStatsSheet() {
         '<div style="font-size:8.5px;font-weight:900;color:#0f172a;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;">' + g.name + '</div>' +
         '<div style="font-size:6.5px;color:#64748b;">' + s.year + (s.invdt ? ' &bull; Acq: ' + s.invdt : '') + '</div>' +
         '<div style="display:grid;grid-template-columns:repeat(3,1fr);gap:2px;">' +
-        sc('Avg', s.rating, '#4f46e5', gp.rating) + sc('Bayes', s.bayes, '#0891b2', gp.bayes) + sc('Weight', s.weight, '#d97706', gp.weight) +
-        sc('Wt Votes', s.weightV, '#64748b', gp.weightV) + sc('Voters', s.voters, '#64748b', gp.voters) + sc('Plays', s.plays, '#7c3aed', gp.plays) +
-        sc('Time', s.time, '#0f766e', null) + sc('Best@', s.bestAt, '#1d4ed8', null) + sc('Rec', s.recRange, '#166534', null) +
+        sc('My Rating', s.collRating, '#7c3aed', gp.collRating) + sc('Avg', s.rating, '#4f46e5', gp.rating) + sc('Bayes', s.bayes, '#0891b2', gp.bayes) +
+        sc('Weight', s.weight, '#d97706', gp.weight) + sc('Voters', s.voters, '#64748b', gp.voters) + sc('Plays', s.plays, '#7c3aed', gp.plays) +
+        sc('Time', s.time, '#0f766e', gp.time) + sc('Best@', s.bestAt, '#1d4ed8', null) + sc('Rec', s.recRange, '#166534', null) +
         '</div>' +
         '<div style="font-size:6px;color:#94a3b8;border-top:1px solid #f1f5f9;padding-top:2px;">Rank: ' + s.overallRank + p$(gp.rank) + (s.catRanks ? ' \u00b7 ' + s.catRanks : '') + ' &bull; Owned: ' + s.owned + '</div>' +
         '</div></div>';
@@ -1943,10 +1956,11 @@ function printStatsSheet() {
     const rowsHtml = games.map((g, i) => {
       const idx = i + 1, s = getGameStatStr(g);
       const gp = {
-        rating: pcts.rating(g.bggRating), bayes: pcts.bayes(g.bayesaverage),
-        weight: pcts.weight(g.averageweight), weightV: pcts.weightV(g.numweights),
+        collRating: pcts.collRating(g.collRating), rating: pcts.rating(g.bggRating),
+        bayes: pcts.bayes(g.bayesaverage), weight: pcts.weight(g.averageweight),
         voters: pcts.voters(g.usersrated), plays: pcts.plays(g.plays),
-        year: pcts.year(g.year), rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
+        time: pcts.time(g.playingtime), year: pcts.year(g.year),
+        rank: pcts.rank(g.bggOverallRank || g.bggrank || g.rank)
       };
       const pCell = (v, p) => v + (p != null ? '<span style="font-size:5px;color:#94a3b8;"> ' + p + '%</span>' : '');
       const bg = i % 2 === 0 ? '#fff' : '#f8fafc';
@@ -1956,11 +1970,11 @@ function printStatsSheet() {
         '<img src="' + g.thumb + '" alt="" style="width:16px;height:16px;object-fit:contain;" onerror="this.style.display=\'none\'">' +
         '<div><span style="font-size:7px;font-weight:600;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;max-width:1.2in;display:block;">' + g.name + '</span>' +
         (s.catRanks ? '<span style="font-size:5px;color:#94a3b8;">' + s.catRanks + '</span>' : '') + '</div></div></td>' +
+        (s.collRating !== '\u2014' ? '<td style="' + td5('center') + '"><span style="background:#7c3aed;color:#ede9fe;padding:0 2px;border-radius:2px;font-size:6.5px;font-weight:700;">' + pCell(s.collRating, gp.collRating) + '</span></td>' : '<td style="' + td5('center') + '">\u2014</td>') +
         '<td style="' + td5('center') + '"><span style="background:' + s.rBg + ';color:' + s.rCol + ';padding:0px 3px;border-radius:2px;font-size:6.5px;font-weight:700;">' + pCell(s.rating, gp.rating) + '</span></td>' +
         '<td style="' + td5('center') + '">' + pCell(s.bayes, gp.bayes) + '</td>' +
         '<td style="' + td5('center') + '">' + pCell(s.weight, gp.weight) + '</td>' +
-        '<td style="' + td5('center') + '">' + pCell(s.weightV, gp.weightV) + '</td>' +
-        '<td style="' + td5('center') + '">' + s.time + '</td>' +
+        '<td style="' + td5('center') + '">' + pCell(s.time, gp.time) + '</td>' +
         '<td style="' + td5('center') + '">' + pCell(s.plays, gp.plays) + '</td>' +
         '<td style="' + td5('center') + '">' + pCell(s.voters, gp.voters) + '</td>' +
         '<td style="' + td5('center') + '">' + s.bestAt + '</td><td style="' + td5('center') + '">' + s.recRange + '</td>' +
@@ -1973,8 +1987,9 @@ function printStatsSheet() {
       subHdr('Compact Table') +
       '<table style="width:100%;border-collapse:collapse;">' +
       '<thead style="display:table-header-group;"><tr style="background:#0f172a;color:#f1f5f9;">' +
-      '<th style="' + th5 + '">#</th><th style="' + th5 + '">Game</th><th style="' + th5 + '">Avg</th>' +
-      '<th style="' + th5 + '">Bayes</th><th style="' + th5 + '">Wt</th><th style="' + th5 + '">WtV</th>' +
+      '<th style="' + th5 + '">#</th><th style="' + th5 + '">Game</th>' +
+      '<th style="' + th5 + '">My</th><th style="' + th5 + '">Avg</th>' +
+      '<th style="' + th5 + '">Bayes</th><th style="' + th5 + '">Weight</th>' +
       '<th style="' + th5 + '">Time</th><th style="' + th5 + '">Plays</th><th style="' + th5 + '">Voters</th>' +
       '<th style="' + th5 + '">Best@</th><th style="' + th5 + '">Rec</th><th style="' + th5 + '">Year</th>' +
       (hasRank ? '<th style="' + th5 + '">Rank</th>' : '') +
@@ -2045,6 +2060,7 @@ async function batchFetchWithLimit(batches, maxConcurrent = 100) {
           const categoryRanks = rankEls.filter(r => r.getAttribute('type') === 'family').map(r => { const v = r.getAttribute('value'); return { name: r.getAttribute('friendlyname') || r.getAttribute('name'), value: (v && v !== 'Not Ranked') ? parseInt(v) : null }; }).filter(r => r.value != null);
           const minplaytime = parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0');
           const maxplaytime = parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0');
+          const playingtime = parseInt(item.querySelector('playingtime')?.getAttribute('value') || '0') || Math.round((minplaytime + maxplaytime) / 2);
 
           const gameData = {
             id, name, thumb, year,
@@ -2061,8 +2077,7 @@ async function batchFetchWithLimit(batches, maxConcurrent = 100) {
             numcomments: parseInt(ratings?.querySelector('numcomments')?.getAttribute('value') || '0'),
             numweights: parseInt(ratings?.querySelector('numweights')?.getAttribute('value') || '0'),
             averageweight: parseFloat(ratings?.querySelector('averageweight')?.getAttribute('value') || '0'),
-            minplaytime, maxplaytime,
-            playingtime: (minplaytime + maxplaytime) / 2,
+            minplaytime, maxplaytime, playingtime,
             minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value') || '0'),
             maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value') || '0'),
             playerCountData, bestWith, recommendedWith, bggOverallRank, categoryRanks,
@@ -2191,6 +2206,7 @@ async function batchFetchBoth(batches, csvById, playsMap, totalIds) {
           const categoryRanks = rankEls.filter(r => r.getAttribute('type') === 'family').map(r => { const v = r.getAttribute('value'); return { name: r.getAttribute('friendlyname') || r.getAttribute('name'), value: (v && v !== 'Not Ranked') ? parseInt(v) : null }; }).filter(r => r.value != null);
           const minplaytime = parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0');
           const maxplaytime = parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0');
+          const playingtime = parseInt(item.querySelector('playingtime')?.getAttribute('value') || '0') || Math.round((minplaytime + maxplaytime) / 2);
           const csvRow = csvById[id] || {};
           const rawType = (csvRow.objecttype || csvRow.objectType || csvRow.itemtype || type || '').toLowerCase();
           const normalizedType = rawType.includes('expansion') ? 'boardgameexpansion' : (type || 'boardgame');
@@ -2210,8 +2226,7 @@ async function batchFetchBoth(batches, csvById, playsMap, totalIds) {
             numcomments: parseInt(ratings?.querySelector('numcomments')?.getAttribute('value') || '0'),
             numweights: parseInt(ratings?.querySelector('numweights')?.getAttribute('value') || '0'),
             averageweight: parseFloat(ratings?.querySelector('averageweight')?.getAttribute('value') || '0'),
-            minplaytime, maxplaytime,
-            playingtime: (minplaytime + maxplaytime) / 2,
+            minplaytime, maxplaytime, playingtime,
             minPlayers: parseInt(item.querySelector('minplayers')?.getAttribute('value') || '0'),
             maxPlayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value') || '0'),
             playerCountData, bestWith, recommendedWith, bggOverallRank, categoryRanks,
