@@ -249,9 +249,14 @@
   <!-- Toolbar row -->
   <div class="flex flex-wrap items-center gap-3 mb-5">
     <div class="seg">
-      <button id="rateViewAll"  onclick="setRatesView('all')"  class="seg-btn on">All Pairs</button>
-      <button id="rateViewMine" onclick="setRatesView('mine')" class="seg-btn">My Ranking</button>
+      <button id="rateViewAll" onclick="setRatesView('all')" class="seg-btn on">All vs All</button>
+      <button id="rateViewOne" onclick="setRatesView('one')" class="seg-btn">One vs All</button>
     </div>
+    <!-- User picker: visible only in One vs All mode -->
+    <select id="ratesUserPicker" onchange="setRatesUser(this.value)"
+      class="hidden"
+      style="padding:5px 10px;border-radius:8px;border:1.5px solid #e2e8f0;font-size:12px;font-weight:700;font-family:inherit;background:#fff;color:#475569;cursor:pointer;outline:none;">
+    </select>
     <span style="font-size:12px;color:#94a3b8;font-weight:500" id="ratesViewHint">All pairwise comparisons</span>
   </div>
 
@@ -282,13 +287,18 @@
       class="inp" style="width:auto;cursor:pointer;font-weight:600">
       <option value="all">All Games</option>
       <option value="shared-all">Owned by Everyone</option>
-      <option value="shared-some">Owned by 2+</option>
+      <option value="shared-some" selected>Owned by 2+</option>
       <option value="exclusive">Exclusive</option>
     </select>
     <select id="gridSort" onchange="renderGrid()"
       class="inp" style="width:auto;cursor:pointer;font-weight:600">
       <option value="matches">↓ Most Matches</option>
       <option value="bayes">↓ Bayes Rating</option>
+    </select>
+    <select id="gridColSort" onchange="renderGrid()"
+      class="inp" style="width:auto;cursor:pointer;font-weight:600">
+      <option value="primary-alpha">Cols: Primary first</option>
+      <option value="size">Cols: ↓ Collection size</option>
     </select>
     <span style="font-size:12px;color:#94a3b8;font-weight:600;flex-shrink:0" id="gridCount"></span>
   </div>
@@ -323,7 +333,8 @@ const S = {
   filterOwn: true,
   excludeExp: true,
   gridSort: 'matches',  // 'matches' | 'bayes'
-  ratesView: 'all',     // 'all' | 'mine'
+  ratesView: 'all',     // 'all' | 'one'
+  ratesUser: null,      // null = use users[0]
 };
 
 const COLORS = [
@@ -517,6 +528,7 @@ async function runWithUsers(users) {
 
   buildData();
   S.ratesView = 'all';
+  S.ratesUser = S.users[0];
   renderRates();
   renderGrid();
 
@@ -643,23 +655,36 @@ function buildData() {
 function setRatesView(view) {
   S.ratesView = view;
   document.getElementById('rateViewAll').classList.toggle('on', view === 'all');
-  document.getElementById('rateViewMine').classList.toggle('on', view === 'mine');
+  document.getElementById('rateViewOne').classList.toggle('on', view === 'one');
 
-  const myUser = S.users[0];
+  const picker = document.getElementById('ratesUserPicker');
   if (view === 'all') {
     document.getElementById('ratesViewHint').textContent = 'All pairwise comparisons';
     document.getElementById('rateCardsWrap').classList.remove('hidden');
     document.getElementById('rateRankWrap').classList.add('hidden');
+    picker.classList.add('hidden');
   } else {
-    document.getElementById('ratesViewHint').textContent = `${myUser}'s match rate vs everyone`;
+    // Populate picker with all users, default to ratesUser or users[0]
+    if (!S.ratesUser) S.ratesUser = S.users[0];
+    picker.innerHTML = S.users.map(u =>
+      `<option value="${u}"${u === S.ratesUser ? ' selected' : ''}>${u}</option>`
+    ).join('');
+    picker.classList.remove('hidden');
+    document.getElementById('ratesViewHint').textContent = `${S.ratesUser}'s match rate vs everyone`;
     document.getElementById('rateCardsWrap').classList.add('hidden');
     document.getElementById('rateRankWrap').classList.remove('hidden');
     renderMyRanking();
   }
 }
 
+function setRatesUser(user) {
+  S.ratesUser = user;
+  document.getElementById('ratesViewHint').textContent = `${user}'s match rate vs everyone`;
+  renderMyRanking();
+}
+
 function renderMyRanking() {
-  const me = S.users[0];
+  const me = S.ratesUser || S.users[0];
   const myPairs = S.pairs
     .filter(p => p.a === me || p.b === me)
     .sort((a, b) => b.matchAvg - a.matchAvg);
@@ -856,25 +881,49 @@ function togglePair(key) {
 }
 
 // ─── Render: Match Grid tab ───────────────────────────────────────────────────
+// Track which column is being sorted by (null = row sort)
+let gridUserSort = null; // username or null
+
 function renderGrid() {
-  const search = (document.getElementById('gridSearch')?.value || '').toLowerCase();
-  const filter = document.getElementById('gridFilter')?.value || 'all';
-  const sort = document.getElementById('gridSort')?.value || 'matches';
+  const search    = (document.getElementById('gridSearch')?.value || '').toLowerCase();
+  const filter    = document.getElementById('gridFilter')?.value    || 'shared-some';
+  const rowSort   = document.getElementById('gridSort')?.value      || 'matches';
+  const colSort   = document.getElementById('gridColSort')?.value   || 'primary-alpha';
   const playerCount = S.users.length;
 
+  // ── Column order ──────────────────────────────────────────────────────────
+  let displayUsers;
+  if (colSort === 'size') {
+    displayUsers = [...S.users].sort((a, b) =>
+      (S.collections[b]?.length || 0) - (S.collections[a]?.length || 0));
+  } else {
+    // primary first, rest alphabetical
+    displayUsers = S.users.length > 1
+      ? [S.users[0], ...[...S.users.slice(1)].sort((a, b) => a.localeCompare(b))]
+      : [...S.users];
+  }
+
+  // ── Filter rows ───────────────────────────────────────────────────────────
   let games = S.allGames.filter(g => {
     if (search && !g.name.toLowerCase().includes(search)) return false;
-    if (filter === 'shared-all' && g.ownedBy.length !== playerCount) return false;
-    if (filter === 'shared-some' && g.ownedBy.length < 2) return false;
-    if (filter === 'exclusive' && g.ownedBy.length !== 1) return false;
+    if (filter === 'shared-all'  && g.ownedBy.length !== playerCount) return false;
+    if (filter === 'shared-some' && g.ownedBy.length < 2)             return false;
+    if (filter === 'exclusive'   && g.ownedBy.length !== 1)           return false;
     return true;
   });
 
-  // Apply sort
-  if (sort === 'bayes') {
+  // ── Row sort ──────────────────────────────────────────────────────────────
+  if (gridUserSort) {
+    // Sort by whether this user owns it first, then bayes
+    games = [...games].sort((a, b) => {
+      const aOwns = a.ownedBy.includes(gridUserSort) ? 1 : 0;
+      const bOwns = b.ownedBy.includes(gridUserSort) ? 1 : 0;
+      if (bOwns !== aOwns) return bOwns - aOwns;
+      return b.bayesaverage - a.bayesaverage;
+    });
+  } else if (rowSort === 'bayes') {
     games = [...games].sort((a, b) => b.bayesaverage - a.bayesaverage);
   } else {
-    // matches desc, tiebreak bayes desc
     games = [...games].sort((a, b) =>
       b.ownedBy.length !== a.ownedBy.length
         ? b.ownedBy.length - a.ownedBy.length
@@ -885,19 +934,30 @@ function renderGrid() {
   document.getElementById('gridCount').textContent = `${games.length} games`;
 
   const GH = ['#3b82f6','#10b981','#f97316','#ec4899','#6366f1','#f59e0b','#ef4444','#14b8a6'];
-  const TH_STYLE = 'padding:10px 12px;background:#f8fafc;border-right:1px solid #eef0f4;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em';
+  const TH = 'padding:8px 10px;background:#f8fafc;border-right:1px solid #eef0f4;font-size:11px;font-weight:700;color:#64748b;text-transform:uppercase;letter-spacing:.04em;white-space:nowrap';
 
   const head = document.getElementById('gridHead');
   head.innerHTML = `<tr>
-    <th class="sticky-col" style="${TH_STYLE};text-align:left;min-width:200px">Game</th>
-    <th style="${TH_STYLE};text-align:center;white-space:nowrap">⭐ Bayes</th>
-    ${S.users.map((u, i) => `
-      <th class="owns-cell" style="${TH_STYLE};text-align:center;border-right:1px solid #eef0f4">
-        <div style="display:flex;flex-direction:column;align-items:center;gap:3px">
-          <div style="width:22px;height:22px;border-radius:50%;background:${GH[i%GH.length]};color:#fff;font-weight:800;font-size:11px;display:flex;align-items:center;justify-content:center">${u[0].toUpperCase()}</div>
-          <span style="color:${GH[i%GH.length]};white-space:nowrap;font-size:10px">${u}</span>
+    <th class="sticky-col" style="${TH};text-align:left;min-width:200px">Game</th>
+    <th style="${TH};text-align:center;cursor:pointer" onclick="setGridUserSort(null,'matches')" title="Sort by matches">
+      <div style="display:flex;flex-direction:column;align-items:center;gap:1px">
+        <span>#</span>
+        <span style="font-size:9px;color:#94a3b8">${playerCount} users</span>
+      </div>
+    </th>
+    <th style="${TH};text-align:center;cursor:pointer" onclick="setGridUserSort(null,'bayes')" title="Sort by Bayes rating">⭐ Bayes</th>
+    ${displayUsers.map((u, i) => {
+      const colSize = S.collections[u]?.length || 0;
+      const isActive = gridUserSort === u;
+      const bg = isActive ? `background:${GH[S.users.indexOf(u)%GH.length]}18;` : '';
+      return `<th class="owns-cell" style="${TH};text-align:center;border-right:1px solid #eef0f4;cursor:pointer;${bg}" onclick="setGridUserSort('${u}',null)" title="Sort by ${u}'s games">
+        <div style="display:flex;flex-direction:column;align-items:center;gap:2px">
+          <div style="width:22px;height:22px;border-radius:50%;background:${GH[S.users.indexOf(u)%GH.length]};color:#fff;font-weight:800;font-size:11px;display:flex;align-items:center;justify-content:center">${u[0].toUpperCase()}</div>
+          <span style="color:${GH[S.users.indexOf(u)%GH.length]};font-size:10px">${u}</span>
+          <span style="color:#94a3b8;font-size:9px">${colSize} games</span>
         </div>
-      </th>`).join('')}
+      </th>`;
+    }).join('')}
   </tr>`;
 
   if (games.length === 0) {
@@ -907,7 +967,6 @@ function renderGrid() {
   }
   document.getElementById('gridEmpty').classList.add('hidden');
 
-  // Rows (virtual for perf — render up to 500, warn beyond)
   const MAX_ROWS = 500;
   const shown = games.slice(0, MAX_ROWS);
 
@@ -915,18 +974,21 @@ function renderGrid() {
   const GC = ['#2563eb','#059669','#ea580c','#db2777','#4f46e5','#d97706','#dc2626','#0d9488'];
 
   document.getElementById('gridBody').innerHTML = shown.map(g => {
-    const allOwn = g.ownedBy.length === playerCount;
+    const matchCount = g.ownedBy.length;
+    const allOwn = matchCount === playerCount;
+    const matchColor = allOwn ? '#059669' : matchCount >= playerCount * 0.6 ? '#d97706' : '#64748b';
     const rowAccent = allOwn ? 'background:#f0fdf4' : '';
 
-    const cells = S.users.map((u, i) => {
+    const cells = displayUsers.map(u => {
+      const ui = S.users.indexOf(u) % GL.length;
       const owns = g.ownedBy.includes(u);
       const rating = owns ? S.collections[u]?.find(x => x.id === g.id)?.userRating : null;
       if (!owns) {
-        return `<td class="owns-cell" style="text-align:center;border-right:1px solid #f1f5f9;color:#e2e8f0;font-size:16px">—</td>`;
+        return `<td class="owns-cell" style="text-align:center;border-right:1px solid #f1f5f9;color:#e2e8f0;font-size:14px">—</td>`;
       }
-      return `<td class="owns-cell" style="text-align:center;border-right:1px solid #f1f5f9;background:${GL[i%GL.length]}">
-        <div style="display:flex;flex-direction:column;align-items:center;padding:4px 0">
-          <span style="color:${GC[i%GC.length]};font-weight:800;font-size:13px">✓</span>
+      return `<td class="owns-cell" style="text-align:center;border-right:1px solid #f1f5f9;background:${GL[ui]}">
+        <div style="display:flex;flex-direction:column;align-items:center;padding:3px 0">
+          <span style="color:${GC[ui]};font-weight:800;font-size:13px">✓</span>
           ${rating ? `<span style="font-size:11px;font-weight:700;color:#475569">${rating}</span>` : ''}
         </div>
       </td>`;
@@ -945,6 +1007,10 @@ function renderGrid() {
             </div>
           </div>
         </td>
+        <td style="text-align:center;border-right:1px solid #f1f5f9;padding:0 8px">
+          <span style="font-size:13px;font-weight:800;color:${matchColor}">${matchCount}</span>
+          <div style="font-size:9px;color:#94a3b8">/${playerCount}</div>
+        </td>
         <td style="text-align:center;border-right:1px solid #f1f5f9;padding:0 8px;font-size:12px;font-weight:700;color:#475569">${g.bayesaverage > 0 ? g.bayesaverage.toFixed(1) : '—'}</td>
         ${cells}
       </tr>
@@ -953,10 +1019,18 @@ function renderGrid() {
 
   if (games.length > MAX_ROWS) {
     document.getElementById('gridBody').innerHTML +=
-      `<tr><td colspan="${S.users.length + 2}" style="text-align:center;padding:10px;font-size:11px;color:#94a3b8">
+      `<tr><td colspan="${displayUsers.length + 3}" style="text-align:center;padding:10px;font-size:11px;color:#94a3b8">
         Showing first ${MAX_ROWS} of ${games.length} — search to narrow results
       </td></tr>`;
   }
+}
+
+function setGridUserSort(user, rowSortOverride) {
+  gridUserSort = user;
+  if (rowSortOverride) {
+    document.getElementById('gridSort').value = rowSortOverride;
+  }
+  renderGrid();
 }
 
 // ─── Misc helpers ─────────────────────────────────────────────────────────────
