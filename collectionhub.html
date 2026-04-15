@@ -1240,6 +1240,26 @@
     console.log('[collectionthumbs] 🎲 App ready — waiting for Load button.');
 
     const API_BASE = '/api/bgg-helper';
+    
+    /* ── API retry helper (handles 202 processing responses) ── */
+    async function fetchWithRetry(url, maxRetries = 3) {
+      for (let i = 0; i < maxRetries; i++) {
+        try {
+          const response = await fetch(url);
+          if (response.status === 202) {
+            // BGG API says "processing, try again later"
+            await new Promise(r => setTimeout(r, 2000 * (i + 1)));
+            continue;
+          }
+          if (!response.ok) throw new Error(`HTTP ${response.status}`);
+          return response;
+        } catch (error) {
+          if (i === maxRetries - 1) throw error;
+          await new Promise(r => setTimeout(r, 1000 * (i + 1)));
+        }
+      }
+    }
+    
     let allGames    = [];
     let currentTab  = 'columns';
     let colViewMode = 'list';
@@ -2733,7 +2753,7 @@
 
       await Promise.all(batches.map(async batchIds => {
         try {
-          const res = await fetch(`${API_BASE}?endpoint=thing&id=${batchIds.join(',')}&stats=1&versions=1&videos=1`);
+          const res = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${batchIds.join(',')}&stats=1&versions=1&videos=1`);
           if (!res.ok) return;
           const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
           xml.querySelectorAll('item').forEach(item => {
@@ -3371,7 +3391,7 @@
         await Promise.all(group.map(async batch =>
           Promise.all(batch.map(async g => {
             try {
-              const res = await fetch(`${API_BASE}?endpoint=forumlist&type=thing&id=${g.id}`);
+              const res = await fetchWithRetry(`${API_BASE}?endpoint=forumlist&type=thing&id=${g.id}`);
               if (res.ok) {
                 const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
                 g.forums = Array.from(xml.querySelectorAll('forum')).map(f => ({
@@ -3413,7 +3433,7 @@
         const batch = list.slice(i, i + bSize);
         const ids   = batch.map(t => t.fid).join(',');
         try {
-          const res = await fetch(`${API_BASE}?endpoint=thread&id=${ids}`);
+          const res = await fetchWithRetry(`${API_BASE}?endpoint=thread&id=${ids}`);
           if (res.ok) {
             const xml = new DOMParser().parseFromString(await res.text(), 'text/xml');
             xml.querySelectorAll('thread').forEach(t => {
