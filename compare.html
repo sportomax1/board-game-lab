@@ -247,29 +247,30 @@
 <div id="pane-rates" class="hidden flex-1 max-w-6xl mx-auto w-full px-4 py-6">
 
   <!-- Toolbar row -->
-  <div class="flex flex-wrap items-center gap-3 mb-5">
+  <div class="flex flex-wrap items-center gap-3 mb-4">
     <div class="seg">
       <button id="rateViewAll" onclick="setRatesView('all')" class="seg-btn on">All vs All</button>
       <button id="rateViewOne" onclick="setRatesView('one')" class="seg-btn">One vs All</button>
     </div>
-    <!-- User picker: visible only in One vs All mode -->
-    <select id="ratesUserPicker" onchange="setRatesUser(this.value)"
-      class="hidden"
+    <select id="ratesUserPicker" onchange="setRatesUser(this.value)" class="hidden"
       style="padding:5px 10px;border-radius:8px;border:1.5px solid #e2e8f0;font-size:12px;font-weight:700;font-family:inherit;background:#fff;color:#475569;cursor:pointer;outline:none;">
     </select>
+    <!-- 5 presentation styles -->
+    <div class="seg">
+      <button class="seg-btn" id="rs-cards"  onclick="setRatesStyle('cards')" title="Card grid">🃏 Cards</button>
+      <button class="seg-btn on" id="rs-rows" onclick="setRatesStyle('rows')"  title="Compact rows">☰ Rows</button>
+      <button class="seg-btn" id="rs-table"  onclick="setRatesStyle('table')" title="Sortable table">📋 Table</button>
+      <button class="seg-btn" id="rs-bars"   onclick="setRatesStyle('bars')"  title="Bar chart">📊 Bars</button>
+      <button class="seg-btn" id="rs-matrix" onclick="setRatesStyle('matrix')" title="Heatmap matrix">🔲 Matrix</button>
+    </div>
     <span style="font-size:12px;color:#94a3b8;font-weight:500" id="ratesViewHint">All pairwise comparisons</span>
   </div>
 
   <!-- Summary stats -->
-  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-6" id="rateSummary"></div>
+  <div class="grid grid-cols-2 sm:grid-cols-4 gap-3 mb-5" id="rateSummary"></div>
 
-  <!-- Cards grid -->
-  <div id="rateCardsWrap">
-    <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 gap-4" id="rateCards"></div>
-  </div>
-
-  <!-- My Ranking list -->
-  <div id="rateRankWrap" class="hidden space-y-3 max-w-2xl"></div>
+  <!-- Single content area for all styles -->
+  <div id="ratesContent"></div>
 </div>
 
 <!-- ══════════════════════ MATCH GRID TAB ══════════════════════ -->
@@ -335,6 +336,7 @@ const S = {
   gridSort: 'matches',  // 'matches' | 'bayes'
   ratesView: 'all',     // 'all' | 'one'
   ratesUser: null,      // null = use users[0]
+  ratesStyle: 'rows',   // 'cards' | 'rows' | 'table' | 'bars' | 'matrix'
 };
 
 const COLORS = [
@@ -514,7 +516,8 @@ async function runWithUsers(users) {
   setProgress(95, 'Computing matches…', '');
   await tick();
 
-  S.users = Object.keys(S.collections);
+  // Preserve original order (parallel fetch resolves out of order via Object.keys)
+  S.users = users.filter(u => S.collections[u]);
 
   if (S.users.length < 2) {
     alert('Could not load enough collections. Failed: ' + (failed.join(', ') || 'unknown'));
@@ -609,7 +612,8 @@ function buildData() {
       if (!gameMap[g.id]) {
         gameMap[g.id] = { ...g, ownedBy: [] };
       }
-      gameMap[g.id].ownedBy.push(u);
+      // Guard against duplicate game IDs in a single collection
+      if (!gameMap[g.id].ownedBy.includes(u)) gameMap[g.id].ownedBy.push(u);
     }
   }
   S.allGames = Object.values(gameMap).sort((a, b) =>
@@ -652,181 +656,298 @@ function buildData() {
 }
 
 // ─── Render: Match Rates tab ──────────────────────────────────────────────────
+const HEX = ['#3b82f6','#10b981','#f97316','#ec4899','#6366f1','#f59e0b','#ef4444','#14b8a6'];
+const HEX_LIGHT = ['#eff6ff','#ecfdf5','#fff7ed','#fdf2f8','#eef2ff','#fffbeb','#fff1f2','#f0fdfa'];
+let ratesTableSort = { col: 'avg', dir: -1 };
+
+function pctColor(pct) { return pct >= 60 ? '#059669' : pct >= 35 ? '#d97706' : '#dc2626'; }
+function pctGrad(pct)  { return pct >= 60 ? 'linear-gradient(90deg,#34d399,#10b981)' : pct >= 35 ? 'linear-gradient(90deg,#fbbf24,#f59e0b)' : 'linear-gradient(90deg,#fb7185,#ef4444)'; }
+function pctBg(pct)    { return pct >= 60 ? '#dcfce7' : pct >= 35 ? '#fef3c7' : '#fee2e2'; }
+function avatar(u, size=28) {
+  const i = S.users.indexOf(u) % HEX.length;
+  return `<span style="width:${size}px;height:${size}px;border-radius:50%;background:${HEX[i]};color:#fff;font-weight:800;font-size:${Math.round(size*.42)}px;display:inline-flex;align-items:center;justify-content:center;flex-shrink:0">${u[0].toUpperCase()}</span>`;
+}
+function expandBlock(key, sharedLen) {
+  return `<div class="expand-body" id="expand-${key}" style="border-top:1px solid #f1f5f9">
+    <div style="padding:8px 12px;max-height:260px;overflow-y:auto" id="expand-inner-${key}"></div>
+  </div>`;
+}
+
 function setRatesView(view) {
   S.ratesView = view;
   document.getElementById('rateViewAll').classList.toggle('on', view === 'all');
   document.getElementById('rateViewOne').classList.toggle('on', view === 'one');
-
   const picker = document.getElementById('ratesUserPicker');
-  if (view === 'all') {
-    document.getElementById('ratesViewHint').textContent = 'All pairwise comparisons';
-    document.getElementById('rateCardsWrap').classList.remove('hidden');
-    document.getElementById('rateRankWrap').classList.add('hidden');
-    picker.classList.add('hidden');
-  } else {
-    // Populate picker with all users, default to ratesUser or users[0]
+  if (view === 'one') {
     if (!S.ratesUser) S.ratesUser = S.users[0];
     picker.innerHTML = S.users.map(u =>
-      `<option value="${u}"${u === S.ratesUser ? ' selected' : ''}>${u}</option>`
-    ).join('');
+      `<option value="${u}"${u === S.ratesUser ? ' selected' : ''}>${u}</option>`).join('');
     picker.classList.remove('hidden');
-    document.getElementById('ratesViewHint').textContent = `${S.ratesUser}'s match rate vs everyone`;
-    document.getElementById('rateCardsWrap').classList.add('hidden');
-    document.getElementById('rateRankWrap').classList.remove('hidden');
-    renderMyRanking();
+    document.getElementById('ratesViewHint').textContent = `${S.ratesUser} vs everyone`;
+  } else {
+    picker.classList.add('hidden');
+    document.getElementById('ratesViewHint').textContent = 'All pairwise comparisons';
   }
+  renderRatesContent();
 }
 
 function setRatesUser(user) {
   S.ratesUser = user;
-  document.getElementById('ratesViewHint').textContent = `${user}'s match rate vs everyone`;
-  renderMyRanking();
+  document.getElementById('ratesViewHint').textContent = `${user} vs everyone`;
+  renderRatesContent();
 }
 
-function renderMyRanking() {
-  const me = S.ratesUser || S.users[0];
-  const myPairs = S.pairs
-    .filter(p => p.a === me || p.b === me)
-    .sort((a, b) => b.matchAvg - a.matchAvg);
-
-  if (!myPairs.length) {
-    document.getElementById('rateRankWrap').innerHTML = '<p class="text-slate-400 text-sm text-center py-8">No comparisons available</p>';
-    return;
-  }
-
-  const medals = ['🥇','🥈','🥉'];
-  document.getElementById('rateRankWrap').innerHTML = myPairs.map((pair, i) => {
-    const other = pair.a === me ? pair.b : pair.a;
-    const myMatch = pair.a === me ? pair.matchA : pair.matchB;
-    const theirMatch = pair.a === me ? pair.matchB : pair.matchA;
-    const ci = S.users.indexOf(other) % COLORS.length;
-    const pct = pair.matchAvg;
-    const barColor = pct >= 60 ? 'bg-emerald-500' : pct >= 35 ? 'bg-amber-500' : 'bg-rose-500';
-    const pctColor = pct >= 60 ? 'text-emerald-600' : pct >= 35 ? 'text-amber-600' : 'text-rose-600';
-    const medal = medals[i] || `${i+1}.`;
-    const pairKey = pair.a === me ? `${me}__${other}` : `${other}__${me}`;
-    // Normalise the key to match what was built in buildData
-    const canonKey = `${pair.a}__${pair.b}`;
-
-    return `
-      <div class="bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden">
-        <div class="flex items-center gap-3 px-4 py-3">
-          <div class="text-2xl w-8 text-center shrink-0">${medal}</div>
-          <div class="w-8 h-8 rounded-full ${COLORS[ci].bg} flex items-center justify-center text-white font-bold text-sm shrink-0">${other[0].toUpperCase()}</div>
-          <div class="flex-1 min-w-0">
-            <div class="font-bold text-sm text-slate-900">${other}</div>
-            <div class="text-xs text-slate-400">${pair.a === me ? pair.sizeB : pair.sizeA} games in collection</div>
-          </div>
-          <div class="text-right shrink-0">
-            <div class="text-xl font-extrabold ${pctColor}">${pct}%</div>
-            <div class="text-xs text-slate-400">${pair.shared.length} shared</div>
-          </div>
-        </div>
-        <!-- Dual bar: my% vs their% -->
-        <div class="px-4 pb-1 grid grid-cols-2 gap-1">
-          <div>
-            <div class="text-xs text-slate-400 mb-0.5">${me}: ${myMatch}%</div>
-            <div class="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-              <div class="h-full bg-blue-400 rounded-full" style="width:${myMatch}%"></div>
-            </div>
-          </div>
-          <div>
-            <div class="text-xs text-slate-400 mb-0.5">${other}: ${theirMatch}%</div>
-            <div class="h-1.5 rounded-full bg-slate-100 overflow-hidden">
-              <div class="h-full ${COLORS[ci].bg} rounded-full opacity-80" style="width:${theirMatch}%"></div>
-            </div>
-          </div>
-        </div>
-        ${pair.avgRatingDiff !== null
-          ? `<div class="px-4 py-1.5 text-xs text-slate-400">Rating diff: <b class="text-slate-600">±${pair.avgRatingDiff}</b></div>`
-          : ''}
-        <button onclick="togglePair('${canonKey}')"
-          class="w-full px-4 py-2 text-xs font-bold text-violet-600 hover:bg-violet-50 transition border-t border-slate-100 flex items-center justify-center gap-1"
-          id="toggle-${canonKey}">
-          <span id="toggle-label-${canonKey}">▼ See ${pair.shared.length} shared games</span>
-        </button>
-        <div class="match-card-expand border-t border-slate-100" id="expand-${canonKey}">
-          <div class="px-4 py-3 max-h-80 overflow-y-auto" id="expand-inner-${canonKey}"></div>
-        </div>
-      </div>
-    `;
-  }).join('');
+function setRatesStyle(style) {
+  S.ratesStyle = style;
+  ['cards','rows','table','bars','matrix'].forEach(s =>
+    document.getElementById('rs-'+s).classList.toggle('on', s === style));
+  renderRatesContent();
 }
 
 function renderRates() {
-  // Summary
   const playerCount = S.users.length;
   const ownedByAll = S.allGames.filter(g => g.ownedBy.length === playerCount).length;
   const avgMatch = S.pairs.length
-    ? Math.round(S.pairs.reduce((s, p) => s + p.matchAvg, 0) / S.pairs.length)
-    : 0;
-
+    ? Math.round(S.pairs.reduce((s, p) => s + p.matchAvg, 0) / S.pairs.length) : 0;
   document.getElementById('rateSummary').innerHTML = [
-    { label: 'Players',      value: playerCount,         color: '#7c3aed' },
-    { label: 'Total Games',  value: S.allGames.length,   color: '#1e293b' },
-    { label: 'Shared by All',value: ownedByAll,           color: '#059669' },
-    { label: 'Avg Match',    value: avgMatch + '%',       color: '#2563eb' },
-  ].map(s => `
-    <div class="stat-pill">
-      <div style="font-size:22px;font-weight:800;color:${s.color};line-height:1">${s.value}</div>
-      <div style="font-size:11px;font-weight:600;color:#94a3b8;margin-top:3px">${s.label}</div>
-    </div>
-  `).join('');
+    { label:'Players',      value:playerCount,       color:'#7c3aed' },
+    { label:'Total Games',  value:S.allGames.length, color:'#1e293b' },
+    { label:'Shared by All',value:ownedByAll,          color:'#059669' },
+    { label:'Avg Match',    value:avgMatch+'%',        color:'#2563eb' },
+  ].map(s => `<div class="stat-pill">
+    <div style="font-size:22px;font-weight:800;color:${s.color};line-height:1">${s.value}</div>
+    <div style="font-size:11px;font-weight:600;color:#94a3b8;margin-top:3px">${s.label}</div>
+  </div>`).join('');
+  renderRatesContent();
+}
 
-  const HEX = ['#3b82f6','#10b981','#f97316','#ec4899','#6366f1','#f59e0b','#ef4444','#14b8a6'];
+function renderRatesContent() {
+  const pairs = S.ratesView === 'one'
+    ? S.pairs.filter(p => p.a === S.ratesUser || p.b === S.ratesUser)
+             .sort((a, b) => b.matchAvg - a.matchAvg)
+    : [...S.pairs].sort((a, b) => b.matchAvg - a.matchAvg);
+  const el = document.getElementById('ratesContent');
+  if (!pairs.length) { el.innerHTML = '<p style="text-align:center;color:#94a3b8;padding:32px">No pairs available</p>'; return; }
 
-  // Pair cards
-  document.getElementById('rateCards').innerHTML = S.pairs.map((pair) => {
-    const ciA = S.users.indexOf(pair.a) % HEX.length;
-    const ciB = S.users.indexOf(pair.b) % HEX.length;
-    const pairKey = `${pair.a}__${pair.b}`;
+  switch (S.ratesStyle) {
+    case 'cards':  el.innerHTML = renderRatesCards(pairs);  break;
+    case 'rows':   el.innerHTML = renderRatesRows(pairs);   break;
+    case 'table':  el.innerHTML = renderRatesTableHTML(pairs); break;
+    case 'bars':   el.innerHTML = renderRatesBars(pairs);   break;
+    case 'matrix': el.innerHTML = S.ratesView === 'one'
+                     ? renderRatesRows(pairs)
+                     : renderRatesMatrix();                  break;
+  }
+}
+
+// ── Style 1: Cards ────────────────────────────────────────────────────────────
+function renderRatesCards(pairs) {
+  const cards = pairs.map(pair => {
+    const key = `${pair.a}__${pair.b}`;
+    const me = S.ratesView === 'one' ? S.ratesUser : null;
+    const [nameA, nameB] = me ? [me, me === pair.a ? pair.b : pair.a] : [pair.a, pair.b];
+    const matchA = me ? (me === pair.a ? pair.matchA : pair.matchB) : pair.matchA;
+    const matchB = me ? (me === pair.a ? pair.matchB : pair.matchA) : pair.matchB;
     const pct = pair.matchAvg;
-    const barGrad = pct >= 60
-      ? 'linear-gradient(90deg,#34d399,#10b981)'
-      : pct >= 35
-        ? 'linear-gradient(90deg,#fbbf24,#f59e0b)'
-        : 'linear-gradient(90deg,#fb7185,#ef4444)';
-    const pctCol = pct >= 60 ? '#059669' : pct >= 35 ? '#d97706' : '#dc2626';
-
-    return `
-      <div class="card overflow-hidden">
-        <div style="padding:16px 16px 10px;display:flex;align-items:center;gap:12px">
-          <div style="display:flex;flex-shrink:0">
-            <div style="width:36px;height:36px;border-radius:50%;background:${HEX[ciA]};color:#fff;font-weight:800;font-size:14px;display:flex;align-items:center;justify-content:center;outline:3px solid #fff;z-index:1">${pair.a[0].toUpperCase()}</div>
-            <div style="width:36px;height:36px;border-radius:50%;background:${HEX[ciB]};color:#fff;font-weight:800;font-size:14px;display:flex;align-items:center;justify-content:center;outline:3px solid #fff;margin-left:-10px">${pair.b[0].toUpperCase()}</div>
-          </div>
-          <div style="flex:1;min-width:0">
-            <div style="font-weight:700;font-size:13px;color:#1e293b;white-space:nowrap;overflow:hidden;text-overflow:ellipsis">${pair.a} &amp; ${pair.b}</div>
-            <div style="font-size:11px;color:#94a3b8;margin-top:1px">${pair.sizeA} vs ${pair.sizeB} games</div>
-          </div>
-          <div style="font-size:26px;font-weight:900;color:${pctCol};flex-shrink:0;line-height:1">${pct}%</div>
+    return `<div class="card overflow-hidden">
+      <div style="padding:14px 14px 8px;display:flex;align-items:center;gap:10px">
+        <div style="display:flex;flex-shrink:0">
+          ${avatar(nameA,34)}<span style="margin-left:-8px;outline:2px solid #fff;border-radius:50%">${avatar(nameB,34)}</span>
         </div>
-
-        <div style="padding:0 16px 6px">
-          <div style="height:6px;border-radius:99px;background:#f1f5f9;overflow:hidden">
-            <div style="height:100%;border-radius:99px;background:${barGrad};width:${pct}%"></div>
-          </div>
+        <div style="flex:1;min-width:0">
+          <div style="font-weight:700;font-size:13px;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${nameA} &amp; ${nameB}</div>
+          <div style="font-size:11px;color:#94a3b8">${pair.sizeA} vs ${pair.sizeB} games</div>
         </div>
-
-        <div style="padding:4px 16px 10px;display:flex;flex-wrap:wrap;gap:10px;font-size:11px;color:#64748b">
-          <span><b style="color:#334155">${pair.shared.length}</b> shared</span>
-          <span>${pair.a}: <b style="color:#334155">${pair.matchA}%</b></span>
-          <span>${pair.b}: <b style="color:#334155">${pair.matchB}%</b></span>
-          ${pair.avgRatingDiff !== null ? `<span>±<b style="color:#334155">${pair.avgRatingDiff}</b> rating diff</span>` : ''}
-        </div>
-
-        <button onclick="togglePair('${pairKey}')" id="toggle-${pairKey}"
-          style="width:100%;padding:9px 16px;font-size:12px;font-weight:700;color:#7c3aed;background:none;border:none;border-top:1px solid #f1f5f9;cursor:pointer;transition:background .12s;display:flex;align-items:center;justify-content:center;gap:4px"
-          onmouseover="this.style.background='#faf5ff'" onmouseout="this.style.background='none'">
-          <span id="toggle-label-${pairKey}">▾ ${pair.shared.length} shared games</span>
-        </button>
-
-        <div class="expand-body" id="expand-${pairKey}" style="border-top:1px solid #f8f8fb">
-          <div style="padding:10px 14px;max-height:300px;overflow-y:auto" id="expand-inner-${pairKey}"></div>
+        <div style="font-size:24px;font-weight:900;color:${pctColor(pct)};flex-shrink:0">${pct}%</div>
+      </div>
+      <div style="padding:0 14px 4px">
+        <div style="height:5px;border-radius:99px;background:#f1f5f9;overflow:hidden">
+          <div style="height:100%;border-radius:99px;background:${pctGrad(pct)};width:${pct}%"></div>
         </div>
       </div>
-    `;
-  }).join('') || `<div style="grid-column:1/-1;text-align:center;padding:40px;color:#94a3b8;font-size:14px">No pairs found</div>`;
+      <div style="padding:3px 14px 8px;display:flex;gap:10px;font-size:11px;color:#64748b;flex-wrap:wrap">
+        <span><b style="color:#334155">${pair.shared.length}</b> shared</span>
+        <span>${nameA}: <b>${matchA}%</b></span>
+        <span>${nameB}: <b>${matchB}%</b></span>
+        ${pair.avgRatingDiff ? `<span>±<b>${pair.avgRatingDiff}</b> diff</span>` : ''}
+      </div>
+      <button onclick="togglePair('${key}')" id="toggle-${key}"
+        style="width:100%;padding:7px;font-size:11px;font-weight:700;color:#7c3aed;background:none;border:none;border-top:1px solid #f1f5f9;cursor:pointer"
+        onmouseover="this.style.background='#faf5ff'" onmouseout="this.style.background=''">
+        <span id="toggle-label-${key}">▾ ${pair.shared.length} shared games</span>
+      </button>
+      ${expandBlock(key, pair.shared.length)}
+    </div>`;
+  }).join('');
+  return `<div style="display:grid;grid-template-columns:repeat(auto-fill,minmax(260px,1fr));gap:12px">${cards}</div>`;
+}
+
+// ── Style 2: Rows (compact) ───────────────────────────────────────────────────
+function renderRatesRows(pairs) {
+  const medals = ['🥇','🥈','🥉'];
+  const rows = pairs.map((pair, i) => {
+    const key = `${pair.a}__${pair.b}`;
+    const me = S.ratesView === 'one' ? S.ratesUser : null;
+    const other = me ? (me === pair.a ? pair.b : pair.a) : null;
+    const label = me ? other : `${pair.a} &amp; ${pair.b}`;
+    const myPct = me ? (me === pair.a ? pair.matchA : pair.matchB) : null;
+    const pct = pair.matchAvg;
+    const medal = i < 3 ? medals[i] : '';
+    return `<div style="background:#fff;border:1px solid #e8eaf0;border-radius:12px;overflow:hidden;margin-bottom:4px">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer"
+           onclick="togglePair('${key}')">
+        ${medal ? `<span style="width:20px;font-size:14px;flex-shrink:0">${medal}</span>` : `<span style="width:20px;text-align:right;font-size:11px;font-weight:700;color:#94a3b8;flex-shrink:0">${i+1}</span>`}
+        ${me ? avatar(other,24) : `<div style="display:flex">${avatar(pair.a,22)}<span style="margin-left:-5px">${avatar(pair.b,22)}</span></div>`}
+        <span style="flex:1;font-size:12px;font-weight:700;color:#1e293b;overflow:hidden;text-overflow:ellipsis;white-space:nowrap">${label}</span>
+        ${me ? `<span style="font-size:10px;color:#94a3b8;flex-shrink:0">me ${myPct}%</span>` : ''}
+        <div style="width:80px;flex-shrink:0;margin:0 6px">
+          <div style="height:5px;border-radius:99px;background:#f1f5f9;overflow:hidden">
+            <div style="height:100%;border-radius:99px;background:${pctGrad(pct)};width:${pct}%"></div>
+          </div>
+        </div>
+        <span style="font-size:13px;font-weight:800;color:${pctColor(pct)};flex-shrink:0;min-width:34px;text-align:right">${pct}%</span>
+        <span style="font-size:10px;color:#94a3b8;flex-shrink:0;min-width:48px;text-align:right">${pair.shared.length} shared</span>
+        <span style="font-size:10px;color:#94a3b8;flex-shrink:0" id="toggle-label-${key}">▾</span>
+      </div>
+      ${expandBlock(key, pair.shared.length)}
+    </div>`;
+  }).join('');
+  return `<div>${rows}</div>`;
+}
+
+// ── Style 3: Table ────────────────────────────────────────────────────────────
+let _ratesTablePairs = [];
+function renderRatesTableHTML(pairs) {
+  _ratesTablePairs = pairs;
+  return buildRatesTable();
+}
+function buildRatesTable() {
+  const pairs = [..._ratesTablePairs];
+  const { col, dir } = ratesTableSort;
+  pairs.sort((a, b) => {
+    const v = { avg: p => p.matchAvg, a: p => p.matchA, b: p => p.matchB,
+                shared: p => p.shared.length, diff: p => parseFloat(p.avgRatingDiff||0) };
+    return dir * ((v[col]?.(b)||0) - (v[col]?.(a)||0));
+  });
+  const th = (label, c) => {
+    const active = ratesTableSort.col === c;
+    const arrow  = active ? (ratesTableSort.dir < 0 ? ' ↓' : ' ↑') : '';
+    return `<th onclick="sortRatesTable('${c}')" style="padding:8px 10px;background:#f8fafc;font-size:11px;font-weight:700;color:${active?'#7c3aed':'#64748b'};text-transform:uppercase;letter-spacing:.04em;cursor:pointer;white-space:nowrap;border-bottom:2px solid #e8eaf0">${label}${arrow}</th>`;
+  };
+  const rows = pairs.map(pair => {
+    const key = `${pair.a}__${pair.b}`;
+    const me = S.ratesView === 'one' ? S.ratesUser : null;
+    const [dispA, dispB] = me ? [me, me===pair.a?pair.b:pair.a] : [pair.a,pair.b];
+    return `<tr style="border-bottom:1px solid #f1f5f9;cursor:pointer" onclick="togglePair('${key}')" onmouseover="this.style.background='#fafafa'" onmouseout="this.style.background=''">
+      <td style="padding:7px 10px;white-space:nowrap">
+        <div style="display:flex;align-items:center;gap:5px">
+          ${avatar(dispA,20)}${avatar(dispB,20)}
+          <span style="font-size:12px;font-weight:600;color:#1e293b">${dispA} &amp; ${dispB}</span>
+        </div>
+      </td>
+      <td style="padding:7px 10px;text-align:center">
+        <span style="font-size:13px;font-weight:800;color:${pctColor(pair.matchAvg)};background:${pctBg(pair.matchAvg)};padding:2px 8px;border-radius:6px">${pair.matchAvg}%</span>
+      </td>
+      <td style="padding:7px 10px;text-align:center;font-size:12px;color:#475569;font-weight:600">${pair.matchA}%</td>
+      <td style="padding:7px 10px;text-align:center;font-size:12px;color:#475569;font-weight:600">${pair.matchB}%</td>
+      <td style="padding:7px 10px;text-align:center;font-size:12px;font-weight:700;color:#334155">${pair.shared.length}</td>
+      <td style="padding:7px 10px;text-align:center;font-size:11px;color:#94a3b8">${pair.avgRatingDiff ? '±'+pair.avgRatingDiff : '—'}</td>
+      <td style="padding:7px 10px;text-align:center;font-size:10px;color:#94a3b8" id="toggle-label-${key}">▾</td>
+    </tr>
+    <tr id="expand-row-${key}" style="display:none"><td colspan="7" style="padding:0">
+      <div class="expand-body" id="expand-${key}"><div style="padding:8px 12px;max-height:220px;overflow-y:auto" id="expand-inner-${key}"></div></div>
+    </td></tr>`;
+  }).join('');
+  return `<div style="background:#fff;border-radius:14px;border:1px solid #e8eaf0;overflow:hidden;box-shadow:0 2px 8px rgba(15,23,42,.05)">
+    <table style="width:100%;border-collapse:collapse">
+      <thead><tr>${th('Pair','pair')}${th('Avg%','avg')}${th('A%','a')}${th('B%','b')}${th('Shared','shared')}${th('Diff','diff')}<th style="padding:8px 6px;background:#f8fafc;border-bottom:2px solid #e8eaf0"></th></tr></thead>
+      <tbody id="ratesTableBody">${rows}</tbody>
+    </table>
+  </div>`;
+}
+function sortRatesTable(col) {
+  ratesTableSort.dir = ratesTableSort.col === col ? -ratesTableSort.dir : -1;
+  ratesTableSort.col = col;
+  document.getElementById('ratesContent').innerHTML = buildRatesTable();
+}
+
+// ── Style 4: Bars ─────────────────────────────────────────────────────────────
+function renderRatesBars(pairs) {
+  const medals = ['🥇','🥈','🥉'];
+  const rows = pairs.map((pair, i) => {
+    const key = `${pair.a}__${pair.b}`;
+    const me = S.ratesView === 'one' ? S.ratesUser : null;
+    const other = me ? (me===pair.a?pair.b:pair.a) : null;
+    const label = me ? other : `${pair.a} & ${pair.b}`;
+    const myPct = me ? (me===pair.a?pair.matchA:pair.matchB) : null;
+    const theirPct = me ? (me===pair.a?pair.matchB:pair.matchA) : null;
+    const pct = pair.matchAvg;
+    const medal = i < 3 ? medals[i] : '';
+    return `<div style="background:#fff;border:1px solid #e8eaf0;border-radius:10px;overflow:hidden;margin-bottom:4px">
+      <div style="display:flex;align-items:center;gap:8px;padding:8px 12px;cursor:pointer" onclick="togglePair('${key}')">
+        <span style="width:22px;font-size:${medal?'14':'11'}px;font-weight:700;color:#94a3b8;text-align:center;flex-shrink:0">${medal||i+1}</span>
+        ${me ? avatar(other,26) : `<div style="display:flex">${avatar(pair.a,22)}<span style="margin-left:-5px">${avatar(pair.b,22)}</span></div>`}
+        <span style="font-size:12px;font-weight:700;color:#1e293b;min-width:120px;max-width:160px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${label}</span>
+        <div style="flex:1;min-width:60px">
+          ${me ? `
+            <div style="display:flex;align-items:center;gap:4px;margin-bottom:3px">
+              <span style="font-size:9px;color:#94a3b8;width:44px;flex-shrink:0">me ${myPct}%</span>
+              <div style="flex:1;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;background:#818cf8;border-radius:3px;width:${myPct}%"></div></div>
+            </div>
+            <div style="display:flex;align-items:center;gap:4px">
+              <span style="font-size:9px;color:#94a3b8;width:44px;overflow:hidden;text-overflow:ellipsis;white-space:nowrap;flex-shrink:0">${other?.slice(0,7)} ${theirPct}%</span>
+              <div style="flex:1;height:6px;background:#f1f5f9;border-radius:3px;overflow:hidden"><div style="height:100%;background:${HEX[S.users.indexOf(other)%HEX.length]};border-radius:3px;width:${theirPct}%;opacity:.7"></div></div>
+            </div>` : `
+            <div style="display:flex;align-items:center;gap:4px">
+              <div style="flex:1;height:8px;background:#f1f5f9;border-radius:4px;overflow:hidden"><div style="height:100%;background:${pctGrad(pct)};border-radius:4px;width:${pct}%"></div></div>
+            </div>`}
+        </div>
+        <span style="font-size:14px;font-weight:900;color:${pctColor(pct)};flex-shrink:0;min-width:38px;text-align:right">${pct}%</span>
+        <span style="font-size:10px;color:#94a3b8;flex-shrink:0;min-width:48px;text-align:right">${pair.shared.length} shared</span>
+        <span style="font-size:10px;color:#94a3b8" id="toggle-label-${key}">▾</span>
+      </div>
+      ${expandBlock(key, pair.shared.length)}
+    </div>`;
+  }).join('');
+  return `<div>${rows}</div>`;
+}
+
+// ── Style 5: Matrix ───────────────────────────────────────────────────────────
+function renderRatesMatrix() {
+  const users = S.users;
+  const lookup = {};
+  S.pairs.forEach(p => { lookup[`${p.a}__${p.b}`] = p; lookup[`${p.b}__${p.a}`] = p; });
+  const cellSize = Math.max(44, Math.min(70, Math.floor(600 / users.length)));
+  const nameCols = users.map(u =>
+    `<th style="padding:4px;font-size:10px;font-weight:700;color:#475569;text-align:center;white-space:nowrap;max-width:${cellSize}px;overflow:hidden;text-overflow:ellipsis">
+      ${avatar(u,22)}<div style="margin-top:2px;overflow:hidden;text-overflow:ellipsis">${u.slice(0,8)}</div>
+    </th>`).join('');
+  const rows = users.map(rowUser => {
+    const cells = users.map(colUser => {
+      if (rowUser === colUser) {
+        const size = S.collections[rowUser]?.length || 0;
+        return `<td style="padding:2px;text-align:center"><div style="width:${cellSize}px;height:${cellSize}px;background:#f1f5f9;border-radius:6px;display:flex;align-items:center;justify-content:center;flex-direction:column;font-size:11px;font-weight:800;color:#475569"><div>${size}</div><div style="font-size:8px;font-weight:600;color:#94a3b8">games</div></div></td>`;
+      }
+      const key = `${rowUser}__${colUser}`;
+      const pair = lookup[key];
+      if (!pair) return `<td style="padding:2px"><div style="width:${cellSize}px;height:${cellSize}px"></div></td>`;
+      const pct = pair.matchAvg;
+      const canonKey = `${pair.a}__${pair.b}`;
+      return `<td style="padding:2px;cursor:pointer" onclick="togglePair('${canonKey}');event.stopPropagation()" title="${rowUser} ↔ ${colUser}: ${pct}%">
+        <div style="width:${cellSize}px;height:${cellSize}px;background:${pctBg(pct)};border-radius:6px;display:flex;align-items:center;justify-content:center;flex-direction:column;font-size:13px;font-weight:800;color:${pctColor(pct)};transition:opacity .1s" onmouseover="this.style.opacity='.75'" onmouseout="this.style.opacity='1'">
+          <div>${pct}%</div>
+          <div style="font-size:9px;font-weight:600;color:#94a3b8">${pair.shared.length}sh</div>
+        </div>
+      </td>`;
+    }).join('');
+    return `<tr><th style="padding:4px 6px 4px 0;font-size:10px;font-weight:700;color:#475569;white-space:nowrap;text-align:right;max-width:80px;overflow:hidden;text-overflow:ellipsis">${rowUser.slice(0,10)}</th>${cells}</tr>`;
+  }).join('');
+  // Shared games expand divs (off-grid, lazily filled by togglePair)
+  const expDivs = S.pairs.map(p => {
+    const k = `${p.a}__${p.b}`;
+    return `<div class="expand-body" id="expand-${k}" style="display:none;position:fixed;bottom:16px;left:50%;transform:translateX(-50%);width:340px;max-height:320px;overflow-y:auto;background:#fff;border:1px solid #e8eaf0;border-radius:14px;box-shadow:0 8px 30px rgba(0,0,0,.15);z-index:100;padding:10px 14px"><div id="expand-inner-${k}"></div><button onclick="document.getElementById('expand-${k}').classList.remove('open')" style="width:100%;margin-top:6px;padding:5px;font-size:11px;font-weight:700;color:#7c3aed;background:#faf5ff;border:none;border-radius:6px;cursor:pointer">Close ✕</button></div>`;
+  }).join('');
+  return `<div style="overflow-x:auto;padding-bottom:8px"><table style="border-collapse:separate;border-spacing:0"><thead><tr><th></th>${nameCols}</tr></thead><tbody>${rows}</tbody></table></div>${expDivs}`;
 }
 
 function togglePair(key) {
