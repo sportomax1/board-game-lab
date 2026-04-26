@@ -1,0 +1,492 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Upload Matcher + Rank Analytics</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: radial-gradient(1200px 700px at 20% -10%, #1e293b, #020617 65%); }
+    .card { background: rgba(15, 23, 42, 0.78); backdrop-filter: blur(10px); border: 1px solid rgba(148, 163, 184, 0.2); }
+    .mono { font-variant-numeric: tabular-nums; }
+    .thumb { width: 56px; height: 56px; object-fit: cover; border-radius: 10px; border: 1px solid rgba(148,163,184,.3); }
+    .pill { border: 1px solid rgba(148,163,184,.35); border-radius: 9999px; padding: 2px 10px; font-size: 11px; }
+    canvas { width: 100%; height: 270px; background: rgba(2,6,23,.35); border-radius: 12px; border: 1px solid rgba(148,163,184,.2); }
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen">
+<main class="max-w-7xl mx-auto p-4 md:p-8 space-y-5">
+  <section class="card rounded-2xl p-5 md:p-6">
+    <h1 class="text-2xl md:text-3xl font-black">📤 Upload + BGG Thumbnail Matching</h1>
+    <p class="text-slate-300 mt-2 text-sm md:text-base">
+      Uses high-parallel API matching (up to <strong>100 concurrent search requests</strong>) and batched thing lookups
+      (<strong>20 IDs per request</strong>) via <code class="text-indigo-300">/api/bgg-helper</code>.
+      Matching priority: exact → filler-word normalized → partial → spelling/fuzzy.
+    </p>
+
+    <div class="mt-4 grid md:grid-cols-2 gap-3">
+      <textarea id="rawInput" rows="10" class="w-full bg-slate-950/70 border border-slate-700 rounded-xl p-3 text-sm mono" spellcheck="false">Year\tRank\tItem
+2026\t1\tForest Shuffle
+2026\t2\tIn the Footsteps of Darwin
+2026\t3\tPaladins of the West Kingdom
+2026\t4\tEverdell Farshore
+2026\t5\tSushi Go Party!</textarea>
+      <div class="space-y-3">
+        <div class="card rounded-xl p-3">
+          <label class="text-xs text-slate-300">Optional file upload (.csv / .tsv / .txt)</label>
+          <input id="fileInput" type="file" class="mt-2 w-full text-xs" accept=".csv,.tsv,.txt" />
+        </div>
+        <div class="card rounded-xl p-3 grid grid-cols-2 gap-2 text-center">
+          <div><div class="text-xs text-slate-400">Rows Parsed</div><div id="rowsParsed" class="text-2xl font-black mono">0</div></div>
+          <div><div class="text-xs text-slate-400">Matches Found</div><div id="rowsMatched" class="text-2xl font-black mono">0</div></div>
+          <div><div class="text-xs text-slate-400">Overall Avg Rank</div><div id="overallAvg" class="text-2xl font-black mono">-</div></div>
+          <div><div class="text-xs text-slate-400">Avg Confidence</div><div id="avgConf" class="text-2xl font-black mono">-</div></div>
+        </div>
+        <div class="grid grid-cols-2 gap-2">
+          <button id="parseBtn" class="py-2 px-3 rounded-xl bg-slate-700 hover:bg-slate-600 font-semibold">Parse Input</button>
+          <button id="matchBtn" class="py-2 px-3 rounded-xl bg-indigo-600 hover:bg-indigo-500 font-semibold">Find BGG Matches</button>
+        </div>
+        <div id="status" class="text-xs text-slate-300 min-h-[20px]"></div>
+      </div>
+    </div>
+  </section>
+
+  <section class="grid xl:grid-cols-2 gap-5">
+    <div class="card rounded-2xl p-4">
+      <h2 class="font-bold mb-3">📊 Yearly Average Rank</h2>
+      <canvas id="yearlyChart" width="900" height="270"></canvas>
+    </div>
+    <div class="card rounded-2xl p-4">
+      <h2 class="font-bold mb-3">🎯 Confidence Distribution</h2>
+      <canvas id="confChart" width="900" height="270"></canvas>
+    </div>
+  </section>
+
+  <section class="card rounded-2xl p-4">
+    <h2 class="font-bold text-lg">🖼️ Match Results + Thumbnail Options</h2>
+    <p class="text-xs text-slate-400 mt-1">Low-confidence rows expose alternate thumbnail choices for manual selection.</p>
+    <div id="results" class="mt-4 overflow-x-auto"></div>
+  </section>
+</main>
+
+<script>
+const MAX_PARALLEL = 100;
+const THING_BATCH_SIZE = 20;
+const SEARCH_CANDIDATE_LIMIT = 12;
+const FILLER_WORDS = new Set(['the','a','an','of','and','for','to','in','on','at','with','from','edition','game','board','deluxe','big','small']);
+const state = { rows: [], results: [] };
+
+const PLACEHOLDER = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 100 100"><rect width="100" height="100" fill="%230f172a"/><text x="50" y="56" text-anchor="middle" fill="%2394a3b8" font-size="11">No Img</text></svg>';
+const setStatus = msg => document.getElementById('status').textContent = msg;
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const esc = s => String(s || '').replace(/[&<>"]/g, m => ({ '&':'&amp;', '<':'&lt;', '>':'&gt;', '"':'&quot;' }[m]));
+
+function normalize(s) {
+  return String(s || '')
+    .toLowerCase()
+    .replace(/&/g, ' and ')
+    .replace(/[^a-z0-9\s]/g, ' ')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function removeFillers(s) {
+  return normalize(s).split(' ').filter(w => w && !FILLER_WORDS.has(w)).join(' ');
+}
+
+function spellKey(s) {
+  return normalize(s)
+    .replace(/ph/g, 'f')
+    .replace(/ck/g, 'k')
+    .replace(/qu/g, 'kw')
+    .replace(/([a-z])\1+/g, '$1')
+    .replace(/\b(\w+?)s\b/g, '$1')
+    .replace(/\s+/g, ' ')
+    .trim();
+}
+
+function parseDelimited(raw) {
+  const lines = raw.split(/\r?\n/).map(x => x.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const headerLine = lines[0];
+  const delim = headerLine.includes('\t') ? '\t' : ',';
+  const headers = headerLine.split(delim).map(h => h.trim().toLowerCase());
+
+  const yearIdx = headers.findIndex(h => h === 'year');
+  const rankIdx = headers.findIndex(h => h === 'rank');
+  const itemIdx = headers.findIndex(h => h === 'item' || h === 'name' || h === 'title');
+  if (yearIdx < 0 || rankIdx < 0 || itemIdx < 0) throw new Error('Could not find Year / Rank / Item columns in header row.');
+
+  return lines.slice(1).map(line => {
+    const cells = line.split(delim).map(c => c.trim().replace(/^"|"$/g, ''));
+    return { year: Number(cells[yearIdx]), rank: Number(cells[rankIdx]), item: cells[itemIdx] || '' };
+  }).filter(r => r.year && r.rank && r.item);
+}
+
+function levenshtein(a, b) {
+  if (a === b) return 0;
+  const m = a.length, n = b.length;
+  if (!m) return n;
+  if (!n) return m;
+  const dp = Array.from({ length: m + 1 }, () => Array(n + 1).fill(0));
+  for (let i = 0; i <= m; i++) dp[i][0] = i;
+  for (let j = 0; j <= n; j++) dp[0][j] = j;
+  for (let i = 1; i <= m; i++) {
+    for (let j = 1; j <= n; j++) {
+      const cost = a[i - 1] === b[j - 1] ? 0 : 1;
+      dp[i][j] = Math.min(dp[i - 1][j] + 1, dp[i][j - 1] + 1, dp[i - 1][j - 1] + cost);
+    }
+  }
+  return dp[m][n];
+}
+
+function baseSimilarity(a, b) {
+  const na = normalize(a), nb = normalize(b);
+  if (!na || !nb) return 0;
+  if (na === nb) return 1;
+  const dist = levenshtein(na, nb);
+  const levScore = 1 - dist / Math.max(na.length, nb.length);
+  const ta = new Set(na.split(' '));
+  const tb = new Set(nb.split(' '));
+  const inter = [...ta].filter(t => tb.has(t)).length;
+  const union = new Set([...ta, ...tb]).size;
+  const jaccard = union ? inter / union : 0;
+  return Math.max(0, Math.min(1, levScore * 0.7 + jaccard * 0.3));
+}
+
+function scoreCandidate(inputName, candidateName, inputYear, candidateYear) {
+  const inNorm = normalize(inputName);
+  const canNorm = normalize(candidateName);
+  const inNoFill = removeFillers(inputName);
+  const canNoFill = removeFillers(candidateName);
+  const inSpell = spellKey(inputName);
+  const canSpell = spellKey(candidateName);
+
+  let tier = 'fuzzy';
+  let conf = 0;
+  if (inNorm && inNorm === canNorm) {
+    tier = 'exact';
+    conf = 1.0;
+  } else if (inNoFill && inNoFill === canNoFill) {
+    tier = 'filler-normalized';
+    conf = 0.94;
+  } else if (inNorm.includes(canNorm) || canNorm.includes(inNorm) || inNoFill.includes(canNoFill) || canNoFill.includes(inNoFill)) {
+    tier = 'partial';
+    conf = 0.86;
+  } else if (inSpell && inSpell === canSpell) {
+    tier = 'spelling-normalized';
+    conf = 0.8;
+  } else {
+    tier = 'fuzzy';
+    conf = baseSimilarity(inputName, candidateName);
+  }
+
+  const yearBonus = inputYear && candidateYear && Math.abs(inputYear - candidateYear) <= 1 ? 0.05 : 0;
+  return { conf: Math.min(1, conf + yearBonus), tier };
+}
+
+async function runPool(items, worker, maxParallel = MAX_PARALLEL) {
+  const out = new Array(items.length);
+  let next = 0;
+  const runners = Array.from({ length: Math.min(maxParallel, items.length || 1) }, async () => {
+    while (true) {
+      const idx = next++;
+      if (idx >= items.length) break;
+      out[idx] = await worker(items[idx], idx);
+    }
+  });
+  await Promise.all(runners);
+  return out;
+}
+
+async function bggSearch(query) {
+  const url = `/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}&type=boardgame`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Search failed: ${res.status}`);
+  const xml = new DOMParser().parseFromString(await res.text(), 'application/xml');
+  return [...xml.querySelectorAll('item')].slice(0, SEARCH_CANDIDATE_LIMIT).map(it => ({
+    id: it.getAttribute('id'),
+    name: it.querySelector('name')?.getAttribute('value') || '',
+    year: Number(it.querySelector('yearpublished')?.getAttribute('value') || 0)
+  })).filter(x => x.id && x.name);
+}
+
+async function bggThingBatch(ids) {
+  if (!ids.length) return [];
+  const url = `/api/bgg-helper?endpoint=thing&id=${encodeURIComponent(ids.join(','))}`;
+  const res = await fetch(url);
+  if (!res.ok) throw new Error(`Thing failed: ${res.status}`);
+  const xml = new DOMParser().parseFromString(await res.text(), 'application/xml');
+  return [...xml.querySelectorAll('item')].map(it => ({
+    id: it.getAttribute('id'),
+    thumb: it.querySelector('thumbnail')?.textContent || it.querySelector('image')?.textContent || '',
+    year: Number(it.querySelector('yearpublished')?.getAttribute('value') || 0),
+    name: it.querySelector('name[type="primary"]')?.getAttribute('value') || it.querySelector('name')?.getAttribute('value') || ''
+  })).filter(x => x.id);
+}
+
+function chunk(arr, size) {
+  const out = [];
+  for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+  return out;
+}
+
+function analyzeStats() {
+  const yearly = new Map();
+  for (const r of state.rows) {
+    if (!yearly.has(r.year)) yearly.set(r.year, []);
+    yearly.get(r.year).push(r.rank);
+  }
+  const yearlyAvg = [...yearly.entries()].sort((a, b) => a[0] - b[0]).map(([year, ranks]) => ({
+    year,
+    avg: ranks.reduce((a, b) => a + b, 0) / ranks.length,
+    count: ranks.length,
+  }));
+  const overallAvg = state.rows.length ? state.rows.reduce((a, b) => a + b.rank, 0) / state.rows.length : 0;
+  return { yearlyAvg, overallAvg };
+}
+
+function drawYearlyChart(points) {
+  const c = document.getElementById('yearlyChart');
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+  if (!points.length) return;
+
+  const pad = { l: 55, r: 20, t: 25, b: 40 };
+  const w = c.width - pad.l - pad.r;
+  const h = c.height - pad.t - pad.b;
+  const values = points.map(p => p.avg);
+  const min = Math.min(...values);
+  const max = Math.max(...values);
+  const span = Math.max(1, max - min);
+
+  g.strokeStyle = 'rgba(148,163,184,.35)';
+  g.lineWidth = 1;
+  for (let i = 0; i < 5; i++) {
+    const y = pad.t + i * (h / 4);
+    g.beginPath(); g.moveTo(pad.l, y); g.lineTo(c.width - pad.r, y); g.stroke();
+  }
+
+  const bw = Math.min(120, (w / points.length) * .64);
+  points.forEach((p, i) => {
+    const x = pad.l + (i + 0.5) * (w / points.length) - bw / 2;
+    const yNorm = (p.avg - min) / span;
+    const bh = 10 + (1 - yNorm) * (h - 10);
+    const y = pad.t + h - bh;
+
+    const grad = g.createLinearGradient(0, y, 0, y + bh);
+    grad.addColorStop(0, '#22d3ee');
+    grad.addColorStop(1, '#2563eb');
+    g.fillStyle = grad;
+    g.fillRect(x, y, bw, bh);
+
+    g.fillStyle = '#cbd5e1';
+    g.font = '12px sans-serif';
+    g.fillText(String(p.year), x + bw / 2 - 14, c.height - 16);
+    g.fillStyle = '#f8fafc';
+    g.font = 'bold 12px sans-serif';
+    g.fillText(p.avg.toFixed(2), x + bw / 2 - 14, Math.max(16, y - 6));
+  });
+}
+
+function drawConfidenceChart(results) {
+  const c = document.getElementById('confChart');
+  const g = c.getContext('2d');
+  g.clearRect(0, 0, c.width, c.height);
+
+  const buckets = { high: 0, medium: 0, low: 0, none: 0 };
+  for (const r of results) {
+    if (!r.match) buckets.none++;
+    else if (r.conf >= 0.85) buckets.high++;
+    else if (r.conf >= 0.65) buckets.medium++;
+    else buckets.low++;
+  }
+
+  const data = [
+    { k: 'High', v: buckets.high, c: '#10b981' },
+    { k: 'Medium', v: buckets.medium, c: '#f59e0b' },
+    { k: 'Low', v: buckets.low, c: '#fb7185' },
+    { k: 'No match', v: buckets.none, c: '#64748b' },
+  ];
+  const total = data.reduce((a, b) => a + b.v, 0) || 1;
+
+  const cx = c.width * 0.38, cy = c.height * 0.52, r = 94;
+  let ang = -Math.PI / 2;
+  data.forEach(d => {
+    const slice = (d.v / total) * Math.PI * 2;
+    g.beginPath(); g.moveTo(cx, cy); g.arc(cx, cy, r, ang, ang + slice); g.closePath();
+    g.fillStyle = d.c; g.fill(); ang += slice;
+  });
+
+  g.beginPath(); g.fillStyle = 'rgba(2,6,23,.85)'; g.arc(cx, cy, 48, 0, Math.PI * 2); g.fill();
+  g.fillStyle = '#e2e8f0'; g.font = 'bold 14px sans-serif'; g.fillText('Matches', cx - 26, cy - 2);
+  g.font = 'bold 20px sans-serif'; g.fillText(String(total - buckets.none), cx - 15, cy + 24);
+
+  data.forEach((d, i) => {
+    const y = 60 + i * 42;
+    g.fillStyle = d.c; g.fillRect(c.width * 0.67, y - 12, 14, 14);
+    g.fillStyle = '#e2e8f0'; g.font = '13px sans-serif'; g.fillText(`${d.k}: ${d.v}`, c.width * 0.67 + 22, y);
+  });
+}
+
+function confidenceBadge(conf) {
+  const pct = (conf * 100).toFixed(1) + '%';
+  if (conf >= 0.85) return `<span class="pill text-emerald-300 border-emerald-400/40">High ${pct}</span>`;
+  if (conf >= 0.65) return `<span class="pill text-amber-300 border-amber-400/40">Medium ${pct}</span>`;
+  return `<span class="pill text-rose-300 border-rose-400/40">Low ${pct}</span>`;
+}
+
+function renderResults() {
+  const el = document.getElementById('results');
+  const rows = state.results;
+  if (!rows.length) {
+    el.innerHTML = '<div class="text-slate-400 text-sm">No rows to show.</div>';
+    return;
+  }
+
+  const table = rows.map((r, i) => {
+    const m = r.match;
+    const options = (r.candidates || []).slice(0, 6).map((c, idx) => {
+      const selected = m && c.id === m.id;
+      return `<button data-row="${i}" data-cand="${idx}" class="candidateBtn p-1 rounded-lg border ${selected ? 'border-indigo-400 bg-indigo-500/20' : 'border-slate-700 hover:border-slate-500'}">
+        <img class="thumb" src="${esc(c.thumb) || PLACEHOLDER}" alt="${esc(c.name)}">
+        <div class="text-[10px] mt-1 w-[92px] truncate" title="${esc(c.name)}">${esc(c.name)}</div>
+      </button>`;
+    }).join('');
+
+    return `<tr class="border-b border-slate-800/80 align-top">
+      <td class="p-2 mono">${r.year}</td>
+      <td class="p-2 mono">${r.rank}</td>
+      <td class="p-2 min-w-[220px]">${esc(r.item)}</td>
+      <td class="p-2">
+        ${m ? `<div class="flex items-center gap-2"><img class="thumb" src="${esc(m.thumb) || PLACEHOLDER}"><div><div class="font-semibold text-sm">${esc(m.name)}</div><div class="text-[11px] text-slate-400">ID ${esc(m.id)}${m.year ? ` • ${m.year}` : ''}${r.tier ? ` • ${esc(r.tier)}` : ''}</div></div></div>` : '<span class="text-rose-300 text-sm">No match</span>'}
+      </td>
+      <td class="p-2">${m ? confidenceBadge(r.conf) : '<span class="pill text-slate-300">0%</span>'}</td>
+      <td class="p-2"><div class="flex flex-wrap gap-1">${options || '<span class="text-xs text-slate-500">none</span>'}</div></td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<table class="w-full text-sm"><thead><tr class="text-left text-slate-300 border-b border-slate-700"><th class="p-2">Year</th><th class="p-2">Rank</th><th class="p-2">Item</th><th class="p-2">Matched</th><th class="p-2">Confidence</th><th class="p-2">Options</th></tr></thead><tbody>${table}</tbody></table>`;
+
+  document.querySelectorAll('.candidateBtn').forEach(btn => {
+    btn.addEventListener('click', (e) => {
+      const rIdx = Number(e.currentTarget.dataset.row);
+      const cIdx = Number(e.currentTarget.dataset.cand);
+      const row = state.results[rIdx];
+      if (!row || !row.candidates?.[cIdx]) return;
+      row.match = row.candidates[cIdx];
+      const s = scoreCandidate(row.item, row.match.name, row.year, row.match.year);
+      row.conf = s.conf;
+      row.tier = s.tier;
+      renderResults();
+      updateSummary();
+      drawConfidenceChart(state.results);
+    });
+  });
+}
+
+function updateSummary() {
+  document.getElementById('rowsParsed').textContent = String(state.rows.length);
+  const matched = state.results.filter(r => r.match).length;
+  document.getElementById('rowsMatched').textContent = String(matched);
+  const { overallAvg } = analyzeStats();
+  document.getElementById('overallAvg').textContent = state.rows.length ? overallAvg.toFixed(2) : '-';
+  const avgC = matched ? state.results.filter(r => r.match).reduce((a, b) => a + b.conf, 0) / matched : 0;
+  document.getElementById('avgConf').textContent = matched ? `${(avgC * 100).toFixed(1)}%` : '-';
+}
+
+async function matchAll() {
+  if (!state.rows.length) {
+    setStatus('Parse data first.');
+    return;
+  }
+
+  state.results = state.rows.map(r => ({ ...r, match: null, conf: 0, tier: '', candidates: [] }));
+  renderResults();
+
+  setStatus(`Step 1/3: Running up to ${MAX_PARALLEL} parallel BGG search requests...`);
+  const searches = await runPool(state.rows, async (row, i) => {
+    try {
+      const list = await bggSearch(row.item);
+      if (i % 25 === 0) setStatus(`Search progress: ${Math.min(i + 1, state.rows.length)}/${state.rows.length}`);
+      return list;
+    } catch {
+      return [];
+    }
+  }, MAX_PARALLEL);
+
+  const allIds = [...new Set(searches.flat().map(s => s.id).filter(Boolean))];
+  const idChunks = chunk(allIds, THING_BATCH_SIZE);
+  const detailsMap = new Map();
+
+  setStatus(`Step 2/3: Fetching thing details in batches of ${THING_BATCH_SIZE} IDs (${idChunks.length} calls)...`);
+  const chunkResults = await runPool(idChunks, async (ids, i) => {
+    try {
+      const out = await bggThingBatch(ids);
+      if (i % 20 === 0) setStatus(`Thing progress: ${Math.min(i + 1, idChunks.length)}/${idChunks.length}`);
+      return out;
+    } catch {
+      return [];
+    }
+  }, MAX_PARALLEL);
+
+  chunkResults.flat().forEach(d => detailsMap.set(String(d.id), d));
+
+  setStatus('Step 3/3: Scoring exact/partial/fuzzy candidates...');
+  state.results = state.rows.map((row, idx) => {
+    const merged = searches[idx].map(s => {
+      const d = detailsMap.get(String(s.id)) || {};
+      const name = d.name || s.name;
+      const score = scoreCandidate(row.item, name, row.year, d.year || s.year);
+      return { ...s, ...d, name, conf: score.conf, tier: score.tier };
+    }).sort((a, b) => b.conf - a.conf);
+
+    const best = merged[0];
+    const hasExact = merged.find(x => x.tier === 'exact' || x.tier === 'filler-normalized');
+    const pick = hasExact || (best && best.conf >= 0.5 ? best : null);
+
+    return {
+      ...row,
+      match: pick || null,
+      conf: pick?.conf || 0,
+      tier: pick?.tier || '',
+      candidates: merged
+    };
+  });
+
+  renderResults();
+  updateSummary();
+  drawConfidenceChart(state.results);
+  setStatus('Done. Exact matches were prioritized first; use options to override any row.');
+}
+
+function parseAndRender() {
+  try {
+    const raw = document.getElementById('rawInput').value;
+    state.rows = parseDelimited(raw);
+    state.results = state.rows.map(r => ({ ...r, match: null, conf: 0, tier: '', candidates: [] }));
+    const stats = analyzeStats();
+    drawYearlyChart(stats.yearlyAvg);
+    drawConfidenceChart(state.results);
+    renderResults();
+    updateSummary();
+    setStatus(`Parsed ${state.rows.length} rows.`);
+  } catch (e) {
+    setStatus(`Parse error: ${e.message}`);
+  }
+}
+
+document.getElementById('parseBtn').addEventListener('click', parseAndRender);
+document.getElementById('matchBtn').addEventListener('click', matchAll);
+document.getElementById('fileInput').addEventListener('change', async (e) => {
+  const file = e.target.files?.[0];
+  if (!file) return;
+  const txt = await file.text();
+  document.getElementById('rawInput').value = txt;
+  parseAndRender();
+});
+
+parseAndRender();
+</script>
+</body>
+</html>
