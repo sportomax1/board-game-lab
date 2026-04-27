@@ -330,7 +330,7 @@ def generate_html_index(output_file='index.html'):
         /* App List */
         .app-list {{
             display: grid;
-            gap: 12px;
+            gap: 4px;
             grid-template-columns: 1fr;
         }}
         
@@ -340,40 +340,44 @@ def generate_html_index(output_file='index.html'):
 
         .app-card {{
             background-color: var(--bg-card);
-            border-radius: var(--radius);
-            box-shadow: var(--shadow-sm);
+            border-radius: 8px;
+            box-shadow: none;
             text-decoration: none;
             color: inherit;
             display: flex;
-            flex-direction: column;
-            padding: 16px;
-            transition: transform 0.2s, box-shadow 0.2s;
+            flex-direction: row;
+            align-items: center;
+            gap: 7px;
+            padding: 6px 8px;
+            transition: background-color 0.15s, border-color 0.15s;
             border: 1px solid var(--border);
             position: relative;
             overflow: hidden;
+            min-width: 0;
         }}
 
-        .app-card:active {{ transform: scale(0.98); }}
+        .app-card:active {{ opacity: 0.8; }}
         .app-card:hover {{
-            box-shadow: var(--shadow-md);
+            background-color: var(--primary-light);
             border-color: var(--primary);
         }}
 
         .card-header {{
             display: flex;
             align-items: center;
-            justify-content: space-between;
-            margin-bottom: 8px;
+            flex-shrink: 0;
+            margin-bottom: 0;
         }}
 
         .file-type {{
-            font-size: 10px;
+            font-size: 9px;
             font-weight: 700;
             text-transform: uppercase;
-            padding: 4px 8px;
-            border-radius: 6px;
+            padding: 2px 5px;
+            border-radius: 4px;
             background-color: var(--bg-body);
             color: var(--text-muted);
+            flex-shrink: 0;
         }}
         
         .badge-html {{ color: #e34c26; background: #fff0eb; }}
@@ -387,47 +391,38 @@ def generate_html_index(output_file='index.html'):
         }}
 
         .app-name {{
-            font-size: 16px;
-            font-weight: 600;
+            font-size: 12px;
+            font-weight: 500;
             color: var(--text-main);
-            margin-bottom: 4px;
-            word-break: break-word;
-            line-height: 1.3;
+            margin-bottom: 0;
+            flex: 1;
+            min-width: 0;
+            white-space: nowrap;
+            overflow: hidden;
+            text-overflow: ellipsis;
+            line-height: 1.2;
         }}
 
         .app-path {{
-            font-size: 12px;
-            color: var(--text-muted);
-            margin-bottom: 12px;
-            display: block;
-            opacity: 0.8;
+            display: none;
         }}
 
         .card-footer {{
-            margin-top: auto;
-            display: flex;
-            justify-content: space-between;
-            align-items: flex-end;
-            font-size: 12px;
+            margin-top: 0;
+            margin-left: auto;
+            flex-shrink: 0;
+            font-size: 11px;
             color: var(--text-muted);
         }}
 
         .time-badge {{
             display: flex;
             align-items: center;
-            gap: 4px;
+            gap: 3px;
         }}
         
         .arrow-icon {{
-            color: var(--primary);
-            opacity: 0;
-            transform: translateX(-10px);
-            transition: all 0.2s;
-        }}
-        
-        .app-card:hover .arrow-icon {{
-            opacity: 1;
-            transform: translateX(0);
+            display: none;
         }}
 
         /* Buttons */
