@@ -1972,6 +1972,50 @@
             renderDaysView();
         }
 
+        function renderFreqPlayerChart() {
+            const select = document.getElementById('freqPlayerSelect');
+            const chart = document.getElementById('freqPlayerChart');
+            if (!select || !chart || !window.__freqData) return;
+            const player = select.value;
+            const gamesMap = window.__freqData.playerGamesData[player] || {};
+            const entries = Object.entries(gamesMap)
+                .map(([id, {game, count}]) => ({id, game, count}))
+                .sort((a, b) => b.count - a.count)
+                .slice(0, 20);
+            if (entries.length === 0) { chart.innerHTML = '<div class="text-slate-400 text-[11px]">No data</div>'; return; }
+            const maxV = Math.max(...entries.map(e => e.count), 1);
+            chart.innerHTML = entries.map(e => {
+                const thumb = gameThumbnails.has(e.id)
+                    ? `<img src="${gameThumbnails.get(e.id)}" class="w-5 h-5 rounded object-cover flex-shrink-0 border border-slate-200">`
+                    : `<div class="w-5 h-5 rounded bg-slate-100 flex-shrink-0"></div>`;
+                return `<div class="mb-2">
+                    <div class="flex items-center gap-1.5 mb-0.5">${thumb}<span class="flex-1 text-[12px] text-slate-700 font-medium truncate">${escapeHtml(e.game)}</span><span class="text-[10px] text-slate-400 ml-1 flex-shrink-0">${e.count}</span></div>
+                    <div class="w-full bg-slate-100 h-1.5 rounded"><div class="bg-indigo-300 h-1.5 rounded" style="width:${Math.round((e.count/maxV)*100)}%"></div></div>
+                </div>`;
+            }).join('');
+        }
+
+        function renderFreqComboChart() {
+            const select = document.getElementById('freqComboPlayerSelect');
+            const chart = document.getElementById('freqComboChart');
+            if (!select || !chart || !window.__freqData) return;
+            const filterPlayer = select.value;
+            let entries = Object.entries(window.__freqData.comboData)
+                .map(([key, {label, count}]) => ({key, label, count}));
+            if (filterPlayer) entries = entries.filter(e => e.key.split(' + ').includes(filterPlayer));
+            entries.sort((a, b) => b.count - a.count);
+            entries = entries.slice(0, 20);
+            if (entries.length === 0) { chart.innerHTML = '<div class="text-slate-400 text-[11px]">No data</div>'; return; }
+            const maxV = Math.max(...entries.map(e => e.count), 1);
+            chart.innerHTML = entries.map(e => `<div class="mb-2">
+                <div class="flex justify-between gap-2 mb-0.5">
+                    <span class="text-[11px] text-slate-700 font-medium truncate">${escapeHtml(e.label)}</span>
+                    <span class="text-[10px] text-slate-400 flex-shrink-0">${e.count}</span>
+                </div>
+                <div class="w-full bg-slate-100 h-1.5 rounded"><div class="bg-violet-300 h-1.5 rounded" style="width:${Math.round((e.count/maxV)*100)}%"></div></div>
+            </div>`).join('');
+        }
+
         function getTop3ThumbsHTML(playsArr) {
             const counts = {};
             playsArr.forEach(p => { if (p.gameId) counts[p.gameId] = (counts[p.gameId] || 0) + 1; });
@@ -2133,20 +2177,58 @@
             yearsArr.forEach(([k, arr]) => { periodPlaysCache['years-' + k] = arr; });
             document.getElementById('yearsList').innerHTML = yearsArr.map(([k, arr]) => periodCard(k, arr, maxYear, 'years-' + k)).join('');
 
-            // Frequency view (unchanged — stats only, not clickable)
+            // Frequency view
             const dayNum = Array.from({length:31}, () => 0);
             const monthNum = Array.from({length:12}, () => 0);
             const dayOfWeek = Array.from({length:7}, () => 0);
+            const playerCountHist = {};   // {N: count} — plays by number of players
+            const playerGamesData = {};   // {playerName: {gameId: {game, count}}}
+            const comboData = {};         // {comboKey: {label, count}}
             plays.forEach(p => {
-                if (!p.date) return;
-                const d = new Date(p.date);
-                dayNum[d.getDate() - 1]++;
-                monthNum[d.getMonth()]++;
-                dayOfWeek[d.getDay()]++;
+                if (p.date) {
+                    const d = new Date(p.date);
+                    dayNum[d.getDate() - 1]++;
+                    monthNum[d.getMonth()]++;
+                    dayOfWeek[d.getDay()]++;
+                }
+                // Parse players (cached per play)
+                if (!p._cachedPlayers) {
+                    try {
+                        const doc = new DOMParser().parseFromString(p.rawXml || '', 'text/xml');
+                        const els = doc.getElementsByTagName('player');
+                        const names = [];
+                        for (let i = 0; i < els.length; i++) {
+                            const n = (els[i].getAttribute('username') || els[i].getAttribute('name') || '').trim();
+                            if (n) names.push(n);
+                        }
+                        p._cachedPlayers = names;
+                    } catch(e) { p._cachedPlayers = []; }
+                }
+                const players = p._cachedPlayers;
+                // Player count histogram
+                const cnt = players.length;
+                playerCountHist[cnt] = (playerCountHist[cnt] || 0) + 1;
+                // Games with specific player
+                players.forEach(name => {
+                    if (!playerGamesData[name]) playerGamesData[name] = {};
+                    const gid = p.gameId || '';
+                    if (!playerGamesData[name][gid]) playerGamesData[name][gid] = {game: p.game || gid, count: 0};
+                    playerGamesData[name][gid].count++;
+                });
+                // Exact player combos
+                if (players.length > 0) {
+                    const key = players.slice().sort().join(' + ');
+                    if (!comboData[key]) comboData[key] = {label: key, count: 0};
+                    comboData[key].count++;
+                }
             });
+            window.__freqData = {playerGamesData, comboData};
+
             const maxDayNum = Math.max(...dayNum, 1);
             const maxMonthNum = Math.max(...monthNum, 1);
             const maxDow = Math.max(...dayOfWeek, 1);
+
+            // Row 1: Day of month / By month / By day of week
             let freqHtml = '<div class="grid md:grid-cols-3 gap-4">';
             freqHtml += `<div class="bg-white p-3 rounded shadow-sm"><div class="font-bold mb-2">By Day of Month</div>`;
             for (let i = 0; i < 31; i++) { const v = dayNum[i]; freqHtml += `<div class="mb-2 text-[13px]"><div class="flex justify-between"><div>Day ${i+1}</div><div class="text-slate-500">${v}</div></div><div class="w-full bg-slate-100 h-2 rounded mt-1"><div class="bg-indigo-200 h-2 rounded" style="width:${Math.round((v/maxDayNum)*100)}%"></div></div></div>`; }
@@ -2159,7 +2241,40 @@
             freqHtml += `<div class="bg-white p-3 rounded shadow-sm"><div class="font-bold mb-2">By Day of Week</div>`;
             for (let i = 0; i < 7; i++) { const v = dayOfWeek[i]; freqHtml += `<div class="mb-2 text-[13px]"><div class="flex justify-between"><div>${dowNames[i]}</div><div class="text-slate-500">${v}</div></div><div class="w-full bg-slate-100 h-2 rounded mt-1"><div class="bg-indigo-200 h-2 rounded" style="width:${Math.round((v/maxDow)*100)}%"></div></div></div>`; }
             freqHtml += `</div></div>`;
+
+            // Row 2: Player count bar chart
+            const pcEntries = Object.entries(playerCountHist).sort((a,b) => +a[0]-+b[0]);
+            const maxPCnt = Math.max(...pcEntries.map(([,v])=>v), 1);
+            freqHtml += `<div class="bg-white p-3 rounded shadow-sm mt-4"><div class="font-bold mb-2">By Player Count</div>`;
+            pcEntries.forEach(([cnt, v]) => {
+                freqHtml += `<div class="mb-2 text-[13px]"><div class="flex justify-between"><div>${cnt} player${+cnt===1?'':'s'}</div><div class="text-slate-500">${v}</div></div><div class="w-full bg-slate-100 h-2 rounded mt-1"><div class="bg-indigo-300 h-2 rounded" style="width:${Math.round((v/maxPCnt)*100)}%"></div></div></div>`;
+            });
+            freqHtml += `</div>`;
+
+            // Row 3: Games with specific player + Exact combos (side by side)
+            const allPlayerNames = Object.keys(playerGamesData).sort();
+            const playerOpts = allPlayerNames.map(n => `<option value="${escapeHtmlAttr(n)}">${escapeHtml(n)}</option>`).join('');
+            const comboFilterOpts = '<option value="">All combos</option>' + allPlayerNames.map(n => `<option value="${escapeHtmlAttr(n)}">${escapeHtml(n)}</option>`).join('');
+            freqHtml += `<div class="grid md:grid-cols-2 gap-4 mt-4">`;
+            freqHtml += `<div class="bg-white p-3 rounded shadow-sm">
+                <div class="flex items-center gap-2 mb-3 flex-wrap">
+                    <div class="font-bold text-sm">Games With Player</div>
+                    <select id="freqPlayerSelect" onchange="renderFreqPlayerChart()" class="ml-auto text-[11px] border border-slate-200 rounded px-2 py-0.5 outline-none bg-white">${playerOpts}</select>
+                </div>
+                <div id="freqPlayerChart"></div>
+            </div>`;
+            freqHtml += `<div class="bg-white p-3 rounded shadow-sm">
+                <div class="flex items-center gap-2 mb-3 flex-wrap">
+                    <div class="font-bold text-sm">Player Combos</div>
+                    <select id="freqComboPlayerSelect" onchange="renderFreqComboChart()" class="ml-auto text-[11px] border border-slate-200 rounded px-2 py-0.5 outline-none bg-white">${comboFilterOpts}</select>
+                </div>
+                <div id="freqComboChart"></div>
+            </div>`;
+            freqHtml += `</div>`;
+
             document.getElementById('freqList').innerHTML = freqHtml;
+            renderFreqPlayerChart();
+            renderFreqComboChart();
 
             // Calendar: group by month with day-of-week headers, firstDay offset, and clickable cells
             const calendarEl = document.getElementById('daysCalendar');
