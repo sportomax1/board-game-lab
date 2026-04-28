@@ -217,7 +217,7 @@ const PLACEHOLDER   = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg
 
 const state = {
   rows: [], results: [],
-  collection: [], collectionUser: '',
+  collection: [], collectionUser: '', collNormMap: new Map(),
   busy: false, editIdx: -1,
 };
 
@@ -239,7 +239,10 @@ function levenshtein(a, b) {
   return dp[a.length][b.length];
 }
 function similarity(a, b) {
-  const na=norm(a), nb=norm(b);
+  return simNorm(norm(a), norm(b));
+}
+// Fast path: accepts already-normalised strings (avoids re-normalising collection on every call)
+function simNorm(na, nb) {
   if (!na||!nb) return 0; if (na===nb) return 1;
   const lev  = 1 - levenshtein(na,nb)/Math.max(na.length,nb.length);
   const sa=new Set(na.split(' ')), sb=new Set(nb.split(' '));
@@ -280,6 +283,12 @@ async function loadCollection(username) {
       thumb:it.querySelector('thumbnail')?.textContent?.trim()||'',
       year: Number(it.querySelector('yearpublished')?.textContent||0),
     })).filter(g=>g.name);
+    // Pre-normalise every name once so matching never re-computes it
+    state.collNormMap = new Map();
+    for (const g of state.collection) {
+      g._norm = norm(g.name);
+      if (!state.collNormMap.has(g._norm)) state.collNormMap.set(g._norm, g);
+    }
     state.collectionUser=username;
     el.textContent=`✅ ${state.collection.length} games (${username})`;
     el.className='text-sm font-medium text-emerald-400';
@@ -292,26 +301,28 @@ async function loadCollection(username) {
 
 function findInCollection(item, year) {
   if (!state.collection.length) return null;
-  const na=norm(item);
+  const na = norm(item);
+  // O(1) exact lookup via pre-built Map
   if (qs('chkExact').checked) {
-    const hits=state.collection.filter(c=>norm(c.name)===na);
-    if (hits.length) {
-      const best=hits.slice().sort((a,b)=>Math.abs((a.year||9999)-year)-Math.abs((b.year||9999)-year))[0];
-      return {game:best,type:'exact',conf:1.0};
-    }
+    const exact = state.collNormMap.get(na);
+    if (exact) return {game:exact, type:'exact', conf:1.0};
   }
+  // Partial — iterate once using pre-normalised _norm, no repeated norm() calls
   if (qs('chkPartial').checked) {
-    const scored=state.collection
-      .map(c=>({game:c,conf:Math.min(1,similarity(item,c.name)+yearBonus(c.year,year))}))
-      .filter(c=>c.conf>=CONF_MIN).sort((a,b)=>b.conf-a.conf);
-    if (scored.length) return {game:scored[0].game,type:'partial',conf:scored[0].conf};
+    let bestConf=0, bestGame=null;
+    for (const c of state.collection) {
+      const conf = Math.min(1, simNorm(na, c._norm||norm(c.name)) + yearBonus(c.year, year));
+      if (conf > bestConf) { bestConf=conf; bestGame=c; }
+    }
+    if (bestConf>=CONF_MIN) return {game:bestGame, type:'partial', conf:bestConf};
   }
   return null;
 }
 
 function collectionCandidates(item, year, n=5) {
+  const na = norm(item);
   return state.collection
-    .map(c=>({...c,conf:Math.min(1,similarity(item,c.name)+yearBonus(c.year,year))}))
+    .map(c=>({...c, conf:Math.min(1, simNorm(na, c._norm||norm(c.name))+yearBonus(c.year,year))}))
     .filter(c=>c.conf>=CONF_MIN).sort((a,b)=>b.conf-a.conf).slice(0,n);
 }
 
@@ -355,21 +366,31 @@ async function runMatch() {
   state.busy=true; qs('matchBtn').disabled=true;
   qs('progressBar').style.width='0%';
 
-  // Phase 1 — instant collection check for every row
-  const pending=[]; // {origIdx, row, collHit}
-  state.results=state.rows.map((row,origIdx)=>{
+  // Phase 1 — async collection check, yielding to the browser every 8 rows
+  // (avoids freezing the UI thread on large collections)
+  const pending=[];
+  state.results = new Array(state.rows.length);
+  for (let origIdx=0; origIdx<state.rows.length; origIdx++) {
+    const row=state.rows[origIdx];
     const cHit=findInCollection(row.item,row.year);
     if (cHit&&cHit.conf>=CONF_SKIP_BGG) {
-      return {...row,source:cHit.type==='exact'?'coll_exact':'coll_partial',
+      state.results[origIdx]={...row,source:cHit.type==='exact'?'coll_exact':'coll_partial',
         match:cHit.game,conf:cHit.conf,
         candidates:collectionCandidates(row.item,row.year,5),locked:false};
+    } else {
+      pending.push({origIdx,row,collHit:cHit});
+      state.results[origIdx]={...row,source:'_pending',match:null,conf:0,candidates:[],locked:false};
     }
-    pending.push({origIdx,row,collHit:cHit});
-    return {...row,source:'_pending',match:null,conf:0,candidates:[],locked:false};
-  });
+    // Yield every 8 rows so the browser can repaint and stay responsive
+    if (origIdx % 8 === 7) {
+      setProgress(origIdx+1, state.rows.length);
+      msg('status',`Collection scan ${origIdx+1}/${state.rows.length}…`);
+      await sleep(0);
+    }
+  }
 
   const collHits=state.results.filter(r=>r.source!=='_pending').length;
-  msg('status',`${collHits} collection hits instantly. ${pending.length} queued for BGG search…`);
+  msg('status',`${collHits} collection hits. ${pending.length} queued for BGG search…`);
   setProgress(collHits, state.rows.length);
   renderResults(); updateSummary(); drawCharts();
 
