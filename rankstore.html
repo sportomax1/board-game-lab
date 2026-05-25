@@ -209,7 +209,7 @@
                 <div class="flex flex-col md:flex-row gap-3">
                     <input type="text" id="historySearch" placeholder="Search games..." oninput="renderHistory()">
                     <select id="historyFilter" onchange="renderHistory()">
-                        <option value="all">All Snapshots</option>
+                        <option value="all">All Periods</option>
                         <option value="7">Last 7 Days</option>
                         <option value="30">Last 30 Days</option>
                     </select>
@@ -275,10 +275,11 @@
     </nav>
 
     <script>
-        // State
         const state = {
             db: null,
-            history: [],
+            periods: [],
+            currentRanks: [],
+            runs: [],
             uniqueGames: new Map(),
             isSyncing: false,
             thumbCache: JSON.parse(localStorage.getItem('rankstore_thumbs') || '{}')
@@ -288,16 +289,159 @@
             localStorage.setItem('rankstore_thumbs', JSON.stringify(state.thumbCache));
         }
 
-        // Initialize Supabase
+        function log(msg) {
+            console.log(`[RankStore] ${msg}`);
+            const el = document.getElementById('fetchLogs');
+            el.innerHTML = `<div><span class="text-slate-600">[${new Date().toLocaleTimeString()}]</span> ${msg}</div>` + el.innerHTML;
+        }
+
+        function switchTab(id, btn) {
+            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
+            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+            document.getElementById(`view-${id}`).classList.add('active');
+            btn.classList.add('active');
+
+            if (id === 'history') renderHistory();
+            if (id === 'trends') renderTrends();
+            if (id === 'games') renderGameList();
+        }
+
+        async function bggFetch(url, retries = 5, delay = 2000) {
+            for (let i = 0; i < retries; i++) {
+                const res = await fetch(url);
+                if (res.status === 202) {
+                    log(`BGG Queued (202). Retrying in ${delay / 1000}s...`);
+                    await new Promise(r => setTimeout(r, delay));
+                    delay *= 1.5;
+                    continue;
+                }
+                if (!res.ok) throw new Error(`HTTP ${res.status}`);
+                return await res.text();
+            }
+            throw new Error('Max retries exceeded for BGG');
+        }
+
+        function chunkArray(arr, size) {
+            const out = [];
+            for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
+            return out;
+        }
+
+        async function batchedUpsert(table, rows, options = {}, batchSize = 500) {
+            if (!rows.length) return;
+            const batches = chunkArray(rows, batchSize);
+            for (let i = 0; i < batches.length; i++) {
+                const { error } = await state.db.from(table).upsert(batches[i], options);
+                if (error) throw error;
+                log(`${table}: saved batch ${i + 1}/${batches.length}`);
+            }
+        }
+
+        async function batchedInsert(table, rows, batchSize = 500) {
+            if (!rows.length) return;
+            const batches = chunkArray(rows, batchSize);
+            for (let i = 0; i < batches.length; i++) {
+                const { error } = await state.db.from(table).insert(batches[i]);
+                if (error) throw error;
+                log(`${table}: inserted batch ${i + 1}/${batches.length}`);
+            }
+        }
+
+        async function loadCurrentRankMap(bggIds, batchSize = 500) {
+            const result = new Map();
+            if (!bggIds.length) return result;
+            const batches = chunkArray(bggIds, batchSize);
+            for (const ids of batches) {
+                const { data, error } = await state.db
+                    .from('rank_current')
+                    .select('bgg_id,bgg_rank')
+                    .in('bgg_id', ids);
+                if (error) throw error;
+                data.forEach(row => result.set(row.bgg_id, row));
+            }
+            return result;
+        }
+
+        function buildUniqueGames(currentRows, periodRows) {
+            const map = new Map();
+
+            currentRows.forEach(row => {
+                map.set(row.bgg_id, {
+                    name: row.game_name,
+                    current: row.bgg_rank,
+                    history: []
+                });
+            });
+
+            periodRows.forEach(row => {
+                if (!map.has(row.bgg_id)) {
+                    map.set(row.bgg_id, {
+                        name: row.game_name,
+                        current: row.valid_to === null ? row.bgg_rank : null,
+                        history: []
+                    });
+                }
+                const game = map.get(row.bgg_id);
+                if (!game.name && row.game_name) game.name = row.game_name;
+                game.history.push(row);
+                if (row.valid_to === null) game.current = row.bgg_rank;
+            });
+
+            map.forEach(game => game.history.sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from)));
+            return map;
+        }
+
+        function renderLastSync(run) {
+            const card = document.getElementById('lastSyncCard');
+            const stats = document.getElementById('syncStats');
+            if (!run) {
+                card.classList.add('hidden');
+                return;
+            }
+
+            card.classList.remove('hidden');
+            stats.innerHTML = [
+                { label: 'Checked', value: run.checked_count ?? 0, color: 'text-slate-200' },
+                { label: 'Ranked', value: run.ranked_count ?? 0, color: 'text-indigo-300' },
+                { label: 'New', value: run.inserted_count ?? 0, color: 'text-emerald-400' },
+                { label: 'Changed', value: run.changed_count ?? 0, color: 'text-amber-400' },
+                { label: 'Same', value: run.unchanged_count ?? 0, color: 'text-sky-300' }
+            ].map(s => `
+                <div class="stat-card !p-3">
+                    <div class="text-lg font-black ${s.color}">${s.value}</div>
+                    <div class="text-[8px] font-black uppercase text-slate-500">${s.label}</div>
+                </div>
+            `).join('');
+        }
+
+        async function loadStoreData() {
+            const [currentRes, periodsRes, runsRes] = await Promise.all([
+                state.db.from('rank_current').select('*').order('bgg_rank', { ascending: true, nullsFirst: false }),
+                state.db.from('rank_periods').select('*').order('valid_from', { ascending: false }),
+                state.db.from('rank_runs').select('*').order('started_at', { ascending: false }).limit(10)
+            ]);
+
+            if (currentRes.error) throw currentRes.error;
+            if (periodsRes.error) throw periodsRes.error;
+            if (runsRes.error) throw runsRes.error;
+
+            state.currentRanks = currentRes.data || [];
+            state.periods = periodsRes.data || [];
+            state.runs = runsRes.data || [];
+            state.uniqueGames = buildUniqueGames(state.currentRanks, state.periods);
+
+            document.getElementById('recordCount').textContent = `${state.currentRanks.length} Current Games • ${state.periods.length} Rank Periods`;
+            renderLastSync(state.runs[0]);
+        }
+
         async function initDb() {
             try {
                 const res = await fetch('/api/supabase-config');
                 const cfg = await res.json();
                 state.db = supabase.createClient(cfg.url, cfg.anonKey);
                 document.getElementById('syncStatus').classList.replace('bg-slate-700', 'bg-emerald-500');
-                await loadAllHistory();
-                // Efficiently fill missing thumbnails if history exists
-                if (state.history.length > 0) fetchMissingThumbnails();
+                await loadStoreData();
+                if (state.uniqueGames.size > 0) fetchMissingThumbnails();
             } catch (err) {
                 console.error('DB Config failed', err);
                 document.getElementById('syncStatus').classList.replace('bg-slate-700', 'bg-red-500');
@@ -307,13 +451,13 @@
         async function fetchMissingThumbnails() {
             const missingIds = Array.from(state.uniqueGames.keys()).filter(id => !state.thumbCache[id]);
             if (missingIds.length === 0) return;
-            
+
             log(`Fetching thumbnails for ${missingIds.length} games...`);
             const username = document.getElementById('usernameInput').value || 'sportomax';
             try {
                 const xmlText = await bggFetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`);
                 const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+                const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
                 const items = xmlDoc.querySelectorAll('item');
                 items.forEach(it => {
                     const id = it.getAttribute('objectid');
@@ -324,185 +468,233 @@
                 renderHistory();
                 renderGameList();
             } catch (e) {
-                log("Background thumb fetch failed.");
+                log('Background thumb fetch failed.');
             }
-        }
-
-        function log(msg) {
-            const el = document.getElementById('fetchLogs');
-            el.innerHTML = `<div><span class="text-slate-600">[${new Date().toLocaleTimeString()}]</span> ${msg}</div>` + el.innerHTML;
-        }
-
-        function switchTab(id, btn) {
-            document.querySelectorAll('.view').forEach(v => v.classList.remove('active'));
-            document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-            document.getElementById(`view-${id}`).classList.add('active');
-            btn.classList.add('active');
-            
-            if (id === 'history') renderHistory();
-            if (id === 'trends') renderTrends();
-            if (id === 'games') renderGameList();
-        }
-
-        // Improved Fetch with 202 Backoff
-        async function bggFetch(url, retries = 5, delay = 2000) {
-            for (let i = 0; i < retries; i++) {
-                const res = await fetch(url);
-                if (res.status === 202) {
-                    log(`BGG Queued (202). Retrying in ${delay/1000}s...`);
-                    await new Promise(r => setTimeout(r, delay));
-                    delay *= 1.5;
-                    continue;
-                }
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                return await res.text();
-            }
-            throw new Error("Max retries exceeded for BGG");
         }
 
         async function syncData() {
             if (state.isSyncing) return;
             const username = document.getElementById('usernameInput').value.trim();
-            if (!username) return alert("Enter username");
+            if (!username) return alert('Enter username');
 
             state.isSyncing = true;
             document.getElementById('syncBtn').disabled = true;
+            const syncAt = new Date().toISOString();
+            let runId = null;
+
             log(`Starting sync for ${username}...`);
 
             try {
+                const { data: runRow, error: runError } = await state.db
+                    .from('rank_runs')
+                    .insert({ username, status: 'running', started_at: syncAt, notes: 'Sync started from RankStore Pro' })
+                    .select('id')
+                    .single();
+                if (runError) throw runError;
+                runId = runRow.id;
+
                 const xmlText = await bggFetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
                 const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlText, "text/xml");
+                const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
                 const items = Array.from(xmlDoc.querySelectorAll('item'));
-                
                 log(`Fetched ${items.length} owned games.`);
-                
+
                 const seenIds = new Set();
-                const today = new Date().toISOString().split('T')[0];
-                const rankData = items.map(it => {
-                    const bggId = parseInt(it.getAttribute('objectid'));
-                    if (seenIds.has(bggId)) return null;
+                const allGames = [];
+                const rankedGames = [];
+
+                items.forEach(it => {
+                    const rawId = it.getAttribute('objectid');
+                    const bggId = Number.parseInt(rawId, 10);
+                    if (!Number.isFinite(bggId) || seenIds.has(bggId)) return;
                     seenIds.add(bggId);
 
-                    const name = it.querySelector('name')?.textContent;
-                    const thumb = it.querySelector('thumbnail')?.textContent;
+                    const name = it.querySelector('name')?.textContent?.trim() || `BGG #${bggId}`;
+                    const thumb = it.querySelector('thumbnail')?.textContent?.trim() || null;
                     if (thumb) state.thumbCache[bggId] = thumb;
 
-                    let rank = null;
+                    allGames.push({
+                        bgg_id: bggId,
+                        game_name: name,
+                        thumbnail_url: thumb,
+                        updated_at: syncAt
+                    });
+
                     const rankEl = it.querySelector('rank[name="boardgame"]');
-                    if (rankEl) {
-                        const val = rankEl.getAttribute('value');
-                        rank = val === 'Not Ranked' ? null : parseInt(val);
-                    }
-                    return { bgg_id: bggId, game_name: name, bgg_rank: rank, snapshot_date: today };
-                }).filter(r => r !== null && r.bgg_rank !== null);
+                    if (!rankEl) return;
+                    const rankVal = rankEl.getAttribute('value');
+                    if (!rankVal || rankVal === 'Not Ranked') return;
+                    const rank = Number.parseInt(rankVal, 10);
+                    if (!Number.isFinite(rank)) return;
+
+                    rankedGames.push({
+                        bgg_id: bggId,
+                        game_name: name,
+                        bgg_rank: rank,
+                        last_checked_at: syncAt,
+                        updated_at: syncAt
+                    });
+                });
 
                 saveThumbCache();
-                log(`Filtering valid ranks... found ${rankData.length} records.`);
+                log(`Parsed ${rankedGames.length} ranked games.`);
 
-                const BATCH_SIZE = 50;
-                let upserted = 0;
-                for (let i = 0; i < rankData.length; i += BATCH_SIZE) {
-                    const batch = rankData.slice(i, i + BATCH_SIZE);
-                    const { error } = await state.db.from('rank_history').upsert(batch, { onConflict: 'bgg_id,snapshot_date' });
+                await batchedUpsert('bgg_games', allGames, { onConflict: 'bgg_id' });
+
+                const existingCurrent = await loadCurrentRankMap(rankedGames.map(g => g.bgg_id));
+                const insertedIds = [];
+                const changedIds = [];
+                const unchangedIds = [];
+
+                rankedGames.forEach(game => {
+                    const prev = existingCurrent.get(game.bgg_id);
+                    if (!prev) {
+                        insertedIds.push(game.bgg_id);
+                        return;
+                    }
+                    if (prev.bgg_rank === game.bgg_rank) unchangedIds.push(game.bgg_id);
+                    else changedIds.push(game.bgg_id);
+                });
+
+                await batchedUpsert('rank_current', rankedGames, { onConflict: 'bgg_id' });
+
+                const closeBatches = chunkArray(changedIds, 500);
+                for (const ids of closeBatches) {
+                    if (!ids.length) continue;
+                    const { error } = await state.db
+                        .from('rank_periods')
+                        .update({ valid_to: syncAt })
+                        .in('bgg_id', ids)
+                        .is('valid_to', null);
                     if (error) throw error;
-                    upserted += batch.length;
-                    log(`Saved batch ${Math.floor(i/BATCH_SIZE) + 1}...`);
                 }
 
-                log(`Sync complete! Saved ${upserted} records.`);
-                await loadAllHistory();
+                const insertedSet = new Set(insertedIds);
+                const changedSet = new Set(changedIds);
+                const newPeriodRows = rankedGames
+                    .filter(g => insertedSet.has(g.bgg_id) || changedSet.has(g.bgg_id))
+                    .map(g => ({
+                        bgg_id: g.bgg_id,
+                        game_name: g.game_name,
+                        bgg_rank: g.bgg_rank,
+                        valid_from: syncAt,
+                        valid_to: null
+                    }));
+                await batchedInsert('rank_periods', newPeriodRows, 500);
+
+                const finishedAt = new Date().toISOString();
+                const summary = {
+                    finished_at: finishedAt,
+                    checked_count: items.length,
+                    ranked_count: rankedGames.length,
+                    inserted_count: insertedIds.length,
+                    changed_count: changedIds.length,
+                    unchanged_count: unchangedIds.length,
+                    status: 'success',
+                    notes: `Processed ${rankedGames.length} ranked games at ${syncAt}`
+                };
+
+                const { error: updateRunError } = await state.db
+                    .from('rank_runs')
+                    .update(summary)
+                    .eq('id', runId);
+                if (updateRunError) throw updateRunError;
+
+                log(`Sync complete. Inserted: ${insertedIds.length}, changed: ${changedIds.length}, unchanged: ${unchangedIds.length}.`);
+
+                await loadStoreData();
                 renderHistory();
+                renderGameList();
+                renderTrends();
             } catch (err) {
                 log(`Error: ${err.message}`);
-                alert("Sync failed: " + err.message);
+                if (runId) {
+                    await state.db
+                        .from('rank_runs')
+                        .update({
+                            finished_at: new Date().toISOString(),
+                            status: 'error',
+                            notes: err.message
+                        })
+                        .eq('id', runId);
+                }
+                alert('Sync failed: ' + err.message);
             } finally {
                 state.isSyncing = false;
                 document.getElementById('syncBtn').disabled = false;
             }
         }
 
-        async function loadAllHistory() {
-            const { data, error } = await state.db.from('rank_history').select('*').order('snapshot_date', { ascending: false });
-            if (error) return console.error(error);
-            
-            state.history = data;
-            document.getElementById('recordCount').textContent = `${data.length} Total Records`;
-            
-            state.uniqueGames = new Map();
-            data.forEach(r => {
-                if (!state.uniqueGames.has(r.bgg_id)) {
-                    state.uniqueGames.set(r.bgg_id, { 
-                        name: r.game_name, 
-                        current: r.bgg_rank, 
-                        history: [] 
-                    });
-                }
-                state.uniqueGames.get(r.bgg_id).history.push(r);
-            });
-        }
-
         function renderHistory() {
             const container = document.getElementById('historyContainer');
             const search = document.getElementById('historySearch').value.toLowerCase();
             const days = document.getElementById('historyFilter').value;
-            
-            let filtered = state.history;
-            if (search) filtered = filtered.filter(r => r.game_name.toLowerCase().includes(search));
+
+            let filtered = state.periods;
+            if (search) filtered = filtered.filter(r => (r.game_name || '').toLowerCase().includes(search));
             if (days !== 'all') {
                 const cutoff = new Date();
-                cutoff.setDate(cutoff.getDate() - parseInt(days));
-                const cutStr = cutoff.toISOString().split('T')[0];
-                filtered = filtered.filter(r => r.snapshot_date >= cutStr);
+                cutoff.setDate(cutoff.getDate() - Number.parseInt(days, 10));
+                filtered = filtered.filter(r => new Date(r.valid_from) >= cutoff);
             }
 
-            container.innerHTML = filtered.slice(0, 100).map(r => {
+            const rows = filtered
+                .slice()
+                .sort((a, b) => new Date(b.valid_from) - new Date(a.valid_from));
+
+            container.innerHTML = rows.map(r => {
                 const thumb = state.thumbCache[r.bgg_id] || '';
+                const start = new Date(r.valid_from).toLocaleDateString();
+                const end = r.valid_to ? new Date(r.valid_to).toLocaleDateString() : 'Active';
                 return `
                 <div class="history-row" onclick="openGameDetail(${r.bgg_id})">
                     <img src="${thumb}" class="game-thumb-sm" onerror="this.style.display='none'">
                     <div class="flex-1 overflow-hidden">
-                        <div class="text-sm font-black truncate text-slate-200">${r.game_name}</div>
-                        <div class="text-[9px] font-bold text-slate-500 uppercase">${r.snapshot_date}</div>
+                        <div class="text-sm font-black truncate text-slate-200">${r.game_name || `BGG #${r.bgg_id}`}</div>
+                        <div class="text-[9px] font-bold text-slate-500 uppercase">${start} → ${end}</div>
                     </div>
-                    <div class="text-lg font-black text-indigo-400">${r.bgg_rank}</div>
+                    <div class="text-lg font-black text-indigo-400">${r.bgg_rank ?? 'N/A'}</div>
                 </div>
-            `}).join('');
+            `;
+            }).join('') || '<div class="p-8 text-center text-slate-500 text-xs uppercase font-black tracking-wider">No rank periods found.</div>';
         }
 
         function renderGameList() {
             const container = document.getElementById('gameListContainer');
             const search = document.getElementById('gameListSearch').value.toLowerCase();
-            
-            const games = Array.from(state.uniqueGames.entries());
-            const filtered = search ? games.filter(([id, g]) => g.name.toLowerCase().includes(search)) : games;
 
-            container.innerHTML = filtered.sort((a,b) => a[1].current - b[1].current).map(([id, g]) => {
-                const thumb = state.thumbCache[id] || '';
-                return `
-                <div class="glass p-4 rounded-3xl flex items-center gap-4 hover:border-indigo-500/30 transition-all cursor-pointer" onclick="openGameDetail(${id})">
-                    <img src="${thumb}" class="game-thumb-sm" onerror="this.style.display='none'">
-                    <div class="flex-1 flex flex-col">
-                        <span class="text-xs font-black text-white">${g.name}</span>
-                        <span class="text-[9px] font-bold text-slate-500 uppercase">${g.history.length} snapshots</span>
+            const games = Array.from(state.uniqueGames.entries());
+            const filtered = search
+                ? games.filter(([, g]) => (g.name || '').toLowerCase().includes(search))
+                : games;
+
+            container.innerHTML = filtered
+                .sort((a, b) => (a[1].current ?? Number.MAX_SAFE_INTEGER) - (b[1].current ?? Number.MAX_SAFE_INTEGER))
+                .map(([id, g]) => {
+                    const thumb = state.thumbCache[id] || '';
+                    return `
+                    <div class="glass p-4 rounded-3xl flex items-center gap-4 hover:border-indigo-500/30 transition-all cursor-pointer" onclick="openGameDetail(${id})">
+                        <img src="${thumb}" class="game-thumb-sm" onerror="this.style.display='none'">
+                        <div class="flex-1 flex flex-col">
+                            <span class="text-xs font-black text-white">${g.name || `BGG #${id}`}</span>
+                            <span class="text-[9px] font-bold text-slate-500 uppercase">${g.history.length} periods</span>
+                        </div>
+                        <div class="text-xl font-black text-indigo-400">${g.current ?? 'N/A'}</div>
                     </div>
-                    <div class="text-xl font-black text-indigo-400">${g.current || 'N/A'}</div>
-                </div>
-            `}).join('');
+                `;
+                }).join('') || '<div class="glass p-5 rounded-3xl text-center text-slate-500 text-xs uppercase font-black tracking-wider">No current ranks found.</div>';
         }
 
         function renderTrends() {
-            if (!state.history.length) return;
+            const current = state.currentRanks.filter(r => Number.isFinite(r.bgg_rank));
+            if (!current.length) return;
 
             const bins = { '1-100': 0, '101-500': 0, '501-1k': 0, '1k-5k': 0, '5k+': 0 };
-            const games = Array.from(state.uniqueGames.values());
-            
-            games.forEach(g => {
-                if (!g.current) return;
-                if (g.current <= 100) bins['1-100']++;
-                else if (g.current <= 500) bins['101-500']++;
-                else if (g.current <= 1000) bins['501-1k']++;
-                else if (g.current <= 5000) bins['1k-5k']++;
+            current.forEach(g => {
+                if (g.bgg_rank <= 100) bins['1-100']++;
+                else if (g.bgg_rank <= 500) bins['101-500']++;
+                else if (g.bgg_rank <= 1000) bins['501-1k']++;
+                else if (g.bgg_rank <= 5000) bins['1k-5k']++;
                 else bins['5k+']++;
             });
 
@@ -529,14 +721,17 @@
                 }
             });
 
-            const movers = games.map(g => {
-                if (g.history.length < 2) return null;
-                const sorted = [...g.history].sort((a,b) => new Date(a.snapshot_date) - new Date(b.snapshot_date));
-                const first = sorted[0].bgg_rank;
-                const last = sorted[sorted.length-1].bgg_rank;
-                const id = sorted[0].bgg_id;
-                return { name: g.name, change: first - last, id: id };
-            }).filter(m => m !== null).sort((a,b) => b.change - a.change);
+            const movers = Array.from(state.uniqueGames.entries())
+                .map(([id, g]) => {
+                    if (g.history.length < 2) return null;
+                    const sorted = [...g.history].sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from));
+                    const first = sorted[0].bgg_rank;
+                    const last = sorted[sorted.length - 1].bgg_rank;
+                    if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
+                    return { name: g.name || `BGG #${id}`, change: first - last, id };
+                })
+                .filter(Boolean)
+                .sort((a, b) => b.change - a.change);
 
             const moversContainer = document.getElementById('topMovers');
             moversContainer.innerHTML = movers.slice(0, 5).map(m => `
@@ -545,18 +740,22 @@
                     <span class="text-[11px] font-black truncate flex-1 text-slate-200">${m.name}</span>
                     <span class="text-[10px] font-black text-emerald-400">↑ ${m.change}</span>
                 </div>
-            `).join('') || '<div class="text-[10px] text-slate-600 text-center py-4 italic">Need more snapshots...</div>';
+            `).join('') || '<div class="text-[10px] text-slate-600 text-center py-4 italic">Need more rank changes...</div>';
         }
 
         function openGameDetail(id) {
             const game = state.uniqueGames.get(id);
+            if (!game) return;
+
             const modal = document.getElementById('detailModal');
             const content = document.getElementById('modalContent');
-            
-            const ranks = game.history.map(h => h.bgg_rank).filter(r => r !== null);
-            const min = Math.min(...ranks);
-            const max = Math.max(...ranks);
-            const avg = Math.round(ranks.reduce((a,b) => a+b, 0) / ranks.length);
+
+            const history = [...game.history].sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from));
+            const ranks = history.map(h => h.bgg_rank).filter(r => Number.isFinite(r));
+            const current = game.current ?? 'N/A';
+            const min = ranks.length ? Math.min(...ranks) : 'N/A';
+            const max = ranks.length ? Math.max(...ranks) : 'N/A';
+            const avg = ranks.length ? Math.round(ranks.reduce((a, b) => a + b, 0) / ranks.length) : 'N/A';
             const thumb = state.thumbCache[id] || '';
 
             content.innerHTML = `
@@ -564,12 +763,12 @@
                     <img src="${thumb}" class="w-24 h-24 rounded-3xl object-contain glass p-2" onerror="this.style.display='none'">
                     <div class="space-y-1">
                         <div class="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Game Insights</div>
-                        <h2 class="text-2xl font-black text-white leading-tight">${game.name}</h2>
+                        <h2 class="text-2xl font-black text-white leading-tight">${game.name || `BGG #${id}`}</h2>
                         <div class="text-xs text-slate-500 font-bold">BGG ID #${id}</div>
                     </div>
                 </div>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
-                    <div class="stat-card"><div class="text-lg font-black text-white">${game.current}</div><div class="text-[8px] font-black uppercase text-slate-500">Current</div></div>
+                    <div class="stat-card"><div class="text-lg font-black text-white">${current}</div><div class="text-[8px] font-black uppercase text-slate-500">Current</div></div>
                     <div class="stat-card"><div class="text-lg font-black text-emerald-400">${min}</div><div class="text-[8px] font-black uppercase text-slate-500">Best</div></div>
                     <div class="stat-card"><div class="text-lg font-black text-red-400">${max}</div><div class="text-[8px] font-black uppercase text-slate-500">Worst</div></div>
                     <div class="stat-card"><div class="text-lg font-black text-indigo-400">${avg}</div><div class="text-[8px] font-black uppercase text-slate-500">Avg</div></div>
@@ -577,7 +776,7 @@
             `;
 
             modal.classList.add('open');
-            renderGameChart(game.history);
+            renderGameChart(history);
         }
 
         function closeModal(e) {
@@ -589,13 +788,12 @@
         function renderGameChart(history) {
             const ctx = document.getElementById('gameChart').getContext('2d');
             if (gameChartInst) gameChartInst.destroy();
-            
-            const data = [...history].sort((a,b) => new Date(a.snapshot_date) - new Date(b.snapshot_date));
-            
+
+            const data = [...history].sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from));
             gameChartInst = new Chart(ctx, {
                 type: 'line',
                 data: {
-                    labels: data.map(r => r.snapshot_date),
+                    labels: data.map(r => new Date(r.valid_from).toLocaleDateString()),
                     datasets: [{
                         label: 'Rank',
                         data: data.map(r => r.bgg_rank),
@@ -617,8 +815,30 @@
             });
         }
 
-        // Init
+        async function cleanupInvalidRanks() {
+            if (!confirm('Delete null-rank current rows and close active null-rank periods?')) return;
+            try {
+                const now = new Date().toISOString();
+                const { error: curError } = await state.db.from('rank_current').delete().is('bgg_rank', null);
+                if (curError) throw curError;
+                const { error: periodError } = await state.db.from('rank_periods').update({ valid_to: now }).is('bgg_rank', null).is('valid_to', null);
+                if (periodError) throw periodError;
+                log('Cleanup complete for null ranks.');
+                await loadStoreData();
+                renderHistory();
+                renderGameList();
+                renderTrends();
+            } catch (err) {
+                alert(`Cleanup failed: ${err.message}`);
+            }
+        }
+
+        async function cleanupNonOwned() {
+            alert('Non-owned cleanup is still manual in this version. Use sync logs to review removed games.');
+        }
+
         initDb();
     </script>
+
 </body>
 </html>
