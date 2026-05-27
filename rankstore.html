@@ -275,18 +275,22 @@
     </nav>
 
     <script>
+        // ═══════════════════════════════════════════════════════════════════
+        // STATE
+        // Tables: rank_games · rank_current · rank_periods · rank_runs
+        // ═══════════════════════════════════════════════════════════════════
         const state = {
             db: null,
-            periods: [],
-            currentRanks: [],
-            runs: [],
-            uniqueGames: new Map(),
+            periods: [],       // rank_periods rows
+            currentRanks: [],  // rank_current rows
+            runs: [],          // rank_runs rows (last 10)
+            uniqueGames: new Map(), // bgg_id → { name, current, history[] }
             isSyncing: false,
             thumbCache: JSON.parse(localStorage.getItem('rankstore_thumbs') || '{}')
         };
 
         function saveThumbCache() {
-            localStorage.setItem('rankstore_thumbs', JSON.stringify(state.thumbCache));
+            try { localStorage.setItem('rankstore_thumbs', JSON.stringify(state.thumbCache)); } catch (_) {}
         }
 
         function log(msg) {
@@ -300,27 +304,28 @@
             document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
             document.getElementById(`view-${id}`).classList.add('active');
             btn.classList.add('active');
-
             if (id === 'history') renderHistory();
             if (id === 'trends') renderTrends();
             if (id === 'games') renderGameList();
         }
 
+        // ─── BGG fetch with 202 retry ───────────────────────────────────────
         async function bggFetch(url, retries = 5, delay = 2000) {
             for (let i = 0; i < retries; i++) {
                 const res = await fetch(url);
                 if (res.status === 202) {
-                    log(`BGG Queued (202). Retrying in ${delay / 1000}s...`);
+                    log(`BGG queued (202) — retrying in ${delay / 1000}s…`);
                     await new Promise(r => setTimeout(r, delay));
-                    delay *= 1.5;
+                    delay = Math.min(delay * 1.5, 10000);
                     continue;
                 }
-                if (!res.ok) throw new Error(`HTTP ${res.status}`);
-                return await res.text();
+                if (!res.ok) throw new Error(`BGG HTTP ${res.status}`);
+                return res.text();
             }
-            throw new Error('Max retries exceeded for BGG');
+            throw new Error('Max BGG retries exceeded');
         }
 
+        // ─── Batch helpers ─────────────────────────────────────────────────
         function chunkArray(arr, size) {
             const out = [];
             for (let i = 0; i < arr.length; i += size) out.push(arr.slice(i, i + size));
@@ -329,11 +334,11 @@
 
         async function batchedUpsert(table, rows, options = {}, batchSize = 500) {
             if (!rows.length) return;
-            const batches = chunkArray(rows, batchSize);
-            for (let i = 0; i < batches.length; i++) {
-                const { error } = await state.db.from(table).upsert(batches[i], options);
+            const chunks = chunkArray(rows, batchSize);
+            for (let i = 0; i < chunks.length; i++) {
+                const { error } = await state.db.from(table).upsert(chunks[i], options);
                 if (error) throw error;
-                log(`${table}: saved batch ${i + 1}/${batches.length}`);
+                log(`${table}: upserted batch ${i + 1}/${chunks.length}`);
             }
         }
 
@@ -347,11 +352,10 @@
             }
         }
 
-        async function loadCurrentRankMap(bggIds, batchSize = 500) {
+        async function loadCurrentRankMap(bggIds) {
             const result = new Map();
             if (!bggIds.length) return result;
-            const batches = chunkArray(bggIds, batchSize);
-            for (const ids of batches) {
+            for (const ids of chunkArray(bggIds, 500)) {
                 const { data, error } = await state.db
                     .from('rank_current')
                     .select('bgg_id,bgg_rank')
@@ -362,17 +366,12 @@
             return result;
         }
 
+        // ─── Build uniqueGames map from DB rows ────────────────────────────
         function buildUniqueGames(currentRows, periodRows) {
             const map = new Map();
-
             currentRows.forEach(row => {
-                map.set(row.bgg_id, {
-                    name: row.game_name,
-                    current: row.bgg_rank,
-                    history: []
-                });
+                map.set(row.bgg_id, { name: row.game_name, current: row.bgg_rank, history: [] });
             });
-
             periodRows.forEach(row => {
                 if (!map.has(row.bgg_id)) {
                     map.set(row.bgg_id, {
@@ -386,52 +385,48 @@
                 game.history.push(row);
                 if (row.valid_to === null) game.current = row.bgg_rank;
             });
-
-            map.forEach(game => game.history.sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from)));
+            map.forEach(g => g.history.sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from)));
             return map;
         }
 
         function renderLastSync(run) {
             const card = document.getElementById('lastSyncCard');
-            const stats = document.getElementById('syncStats');
-            if (!run) {
-                card.classList.add('hidden');
-                return;
-            }
-
+            if (!run) { card.classList.add('hidden'); return; }
             card.classList.remove('hidden');
-            stats.innerHTML = [
-                { label: 'Checked', value: run.checked_count ?? 0, color: 'text-slate-200' },
-                { label: 'Ranked', value: run.ranked_count ?? 0, color: 'text-indigo-300' },
-                { label: 'New', value: run.inserted_count ?? 0, color: 'text-emerald-400' },
-                { label: 'Changed', value: run.changed_count ?? 0, color: 'text-amber-400' },
-                { label: 'Same', value: run.unchanged_count ?? 0, color: 'text-sky-300' }
+            document.getElementById('syncStats').innerHTML = [
+                { label: 'Checked', value: run.checked_count  ?? 0, color: 'text-slate-200' },
+                { label: 'Ranked',  value: run.ranked_count   ?? 0, color: 'text-indigo-300' },
+                { label: 'New',     value: run.inserted_count ?? 0, color: 'text-emerald-400' },
+                { label: 'Changed', value: run.changed_count  ?? 0, color: 'text-amber-400' },
+                { label: 'Same',    value: run.unchanged_count ?? 0, color: 'text-sky-300' }
             ].map(s => `
                 <div class="stat-card !p-3">
                     <div class="text-lg font-black ${s.color}">${s.value}</div>
                     <div class="text-[8px] font-black uppercase text-slate-500">${s.label}</div>
-                </div>
-            `).join('');
+                </div>`).join('');
         }
 
+        // ─── Load all data from DB ─────────────────────────────────────────
         async function loadStoreData() {
+            log('Loading data from DB…');
             const [currentRes, periodsRes, runsRes] = await Promise.all([
                 state.db.from('rank_current').select('*').order('bgg_rank', { ascending: true, nullsFirst: false }),
                 state.db.from('rank_periods').select('*').order('valid_from', { ascending: false }),
                 state.db.from('rank_runs').select('*').order('started_at', { ascending: false }).limit(10)
             ]);
-
             if (currentRes.error) throw currentRes.error;
             if (periodsRes.error) throw periodsRes.error;
             if (runsRes.error) throw runsRes.error;
 
             state.currentRanks = currentRes.data || [];
-            state.periods = periodsRes.data || [];
-            state.runs = runsRes.data || [];
-            state.uniqueGames = buildUniqueGames(state.currentRanks, state.periods);
+            state.periods      = periodsRes.data || [];
+            state.runs         = runsRes.data    || [];
+            state.uniqueGames  = buildUniqueGames(state.currentRanks, state.periods);
 
-            document.getElementById('recordCount').textContent = `${state.currentRanks.length} Current Games • ${state.periods.length} Rank Periods`;
+            document.getElementById('recordCount').textContent =
+                `${state.currentRanks.length} Current Games • ${state.periods.length} Rank Periods`;
             renderLastSync(state.runs[0]);
+            log(`Loaded ${state.currentRanks.length} games, ${state.periods.length} periods.`);
         }
 
         async function initDb() {
@@ -443,182 +438,203 @@
                 await loadStoreData();
                 if (state.uniqueGames.size > 0) fetchMissingThumbnails();
             } catch (err) {
-                console.error('DB Config failed', err);
+                console.error('[RankStore] DB init failed:', err);
                 document.getElementById('syncStatus').classList.replace('bg-slate-700', 'bg-red-500');
             }
         }
 
+        // ─── Background thumbnail backfill ────────────────────────────────
         async function fetchMissingThumbnails() {
             const missingIds = Array.from(state.uniqueGames.keys()).filter(id => !state.thumbCache[id]);
-            if (missingIds.length === 0) return;
-
-            log(`Fetching thumbnails for ${missingIds.length} games...`);
+            if (!missingIds.length) return;
+            log(`Backfilling thumbnails for ${missingIds.length} games…`);
             const username = document.getElementById('usernameInput').value || 'sportomax';
             try {
-                const xmlText = await bggFetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`);
-                const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-                const items = xmlDoc.querySelectorAll('item');
-                items.forEach(it => {
-                    const id = it.getAttribute('objectid');
-                    const thumb = it.querySelector('thumbnail')?.textContent;
-                    if (id && thumb) state.thumbCache[id] = thumb;
-                });
+                const xml = await bggFetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`);
+                new DOMParser().parseFromString(xml, 'text/xml')
+                    .querySelectorAll('item')
+                    .forEach(it => {
+                        const id    = Number(it.getAttribute('objectid'));
+                        const thumb = it.querySelector('thumbnail')?.textContent?.trim();
+                        if (id && thumb) state.thumbCache[id] = thumb;
+                    });
                 saveThumbCache();
                 renderHistory();
                 renderGameList();
             } catch (e) {
-                log('Background thumb fetch failed.');
+                log('Thumbnail backfill failed (non-critical).');
             }
         }
 
         async function syncData() {
             if (state.isSyncing) return;
             const username = document.getElementById('usernameInput').value.trim();
-            if (!username) return alert('Enter username');
+            if (!username) { alert('Enter a BGG username first.'); return; }
 
             state.isSyncing = true;
             document.getElementById('syncBtn').disabled = true;
-            const syncAt = new Date().toISOString();
+            const now = new Date().toISOString();
             let runId = null;
 
-            log(`Starting sync for ${username}...`);
+            log(`Starting sync for "${username}"…`);
 
             try {
-                const { data: runRow, error: runError } = await state.db
+                // ── 1. Open a rank_runs record ──────────────────────────────
+                const { data: runRow, error: runErr } = await state.db
                     .from('rank_runs')
-                    .insert({ username, status: 'running', started_at: syncAt, notes: 'Sync started from RankStore Pro' })
+                    .insert({ username, status: 'running', started_at: now, notes: 'Sync started' })
                     .select('id')
                     .single();
-                if (runError) throw runError;
+                if (runErr) throw runErr;
                 runId = runRow.id;
+                log(`Run #${runId} opened.`);
 
-                const xmlText = await bggFetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
-                const parser = new DOMParser();
-                const xmlDoc = parser.parseFromString(xmlText, 'text/xml');
-                const items = Array.from(xmlDoc.querySelectorAll('item'));
-                log(`Fetched ${items.length} owned games.`);
+                // ── 2. Fetch BGG collection ─────────────────────────────────
+                const xml = await bggFetch(
+                    `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`
+                );
+                const items = Array.from(
+                    new DOMParser().parseFromString(xml, 'text/xml').querySelectorAll('item')
+                );
+                log(`Fetched ${items.length} owned items from BGG.`);
 
-                const seenIds = new Set();
-                const allGames = [];
-                const rankedGames = [];
+                // ── 3. Parse items ──────────────────────────────────────────
+                const seen        = new Set();
+                const gameRows    = []; // → rank_games
+                const rankedGames = []; // → rank_current
 
                 items.forEach(it => {
-                    const rawId = it.getAttribute('objectid');
-                    const bggId = Number.parseInt(rawId, 10);
-                    if (!Number.isFinite(bggId) || seenIds.has(bggId)) return;
-                    seenIds.add(bggId);
+                    const bggId = Number(it.getAttribute('objectid'));
+                    if (!Number.isFinite(bggId) || seen.has(bggId)) return;
+                    seen.add(bggId);
 
-                    const name = it.querySelector('name')?.textContent?.trim() || `BGG #${bggId}`;
+                    const name  = it.querySelector('name')?.textContent?.trim() || `BGG #${bggId}`;
                     const thumb = it.querySelector('thumbnail')?.textContent?.trim() || null;
                     if (thumb) state.thumbCache[bggId] = thumb;
 
-                    allGames.push({
-                        bgg_id: bggId,
-                        game_name: name,
-                        thumbnail_url: thumb,
-                        updated_at: syncAt
-                    });
+                    gameRows.push({ bgg_id: bggId, game_name: name, thumbnail_url: thumb, updated_at: now });
 
-                    const rankEl = it.querySelector('rank[name="boardgame"]');
-                    if (!rankEl) return;
-                    const rankVal = rankEl.getAttribute('value');
+                    const rankEl  = it.querySelector('rank[name="boardgame"]');
+                    const rankVal = rankEl?.getAttribute('value');
                     if (!rankVal || rankVal === 'Not Ranked') return;
-                    const rank = Number.parseInt(rankVal, 10);
+                    const rank = Number(rankVal);
                     if (!Number.isFinite(rank)) return;
 
                     rankedGames.push({
-                        bgg_id: bggId,
-                        game_name: name,
-                        bgg_rank: rank,
-                        last_checked_at: syncAt,
-                        updated_at: syncAt
+                        bgg_id:          bggId,
+                        game_name:       name,
+                        bgg_rank:        rank,
+                        last_checked_at: now,
+                        updated_at:      now
                     });
                 });
 
                 saveThumbCache();
-                log(`Parsed ${rankedGames.length} ranked games.`);
+                log(`Parsed: ${items.length} owned, ${rankedGames.length} ranked.`);
 
-                await batchedUpsert('bgg_games', allGames, { onConflict: 'bgg_id' });
+                // ── 4. Upsert rank_games (game metadata cache) ──────────────
+                await batchedUpsert('rank_games', gameRows, { onConflict: 'bgg_id' });
 
-                const existingCurrent = await loadCurrentRankMap(rankedGames.map(g => g.bgg_id));
-                const insertedIds = [];
-                const changedIds = [];
+                // ── 5. Load existing rank_current in batches → Map ──────────
+                const existingMap = await loadCurrentRankMap(rankedGames.map(g => g.bgg_id));
+                log(`Loaded ${existingMap.size} existing current ranks for comparison.`);
+
+                // ── 6. Categorize: new / changed / unchanged ────────────────
+                const insertedIds  = [];
+                const changedIds   = [];
                 const unchangedIds = [];
+                const toClose      = []; // bgg_ids needing active period closed
+                const newPeriods   = []; // rows to insert into rank_periods
 
                 rankedGames.forEach(game => {
-                    const prev = existingCurrent.get(game.bgg_id);
+                    const prev = existingMap.get(game.bgg_id);
                     if (!prev) {
+                        // Brand-new game — open first period
                         insertedIds.push(game.bgg_id);
-                        return;
+                        newPeriods.push({
+                            bgg_id:     game.bgg_id,
+                            game_name:  game.game_name,
+                            bgg_rank:   game.bgg_rank,
+                            valid_from: now,
+                            valid_to:   null
+                        });
+                    } else if (prev.bgg_rank === game.bgg_rank) {
+                        // Rank unchanged — only update last_checked_at, no new period row
+                        unchangedIds.push(game.bgg_id);
+                    } else {
+                        // Rank changed — close old period, open new one
+                        changedIds.push(game.bgg_id);
+                        toClose.push(game.bgg_id);
+                        newPeriods.push({
+                            bgg_id:     game.bgg_id,
+                            game_name:  game.game_name,
+                            bgg_rank:   game.bgg_rank,
+                            valid_from: now,
+                            valid_to:   null
+                        });
                     }
-                    if (prev.bgg_rank === game.bgg_rank) unchangedIds.push(game.bgg_id);
-                    else changedIds.push(game.bgg_id);
                 });
 
+                log(`Categorized — new: ${insertedIds.length}, changed: ${changedIds.length}, same: ${unchangedIds.length}.`);
+
+                // ── 7. Upsert all ranked games into rank_current ────────────
+                //      Handles inserts (new) and updates (changed/unchanged) in one pass
                 await batchedUpsert('rank_current', rankedGames, { onConflict: 'bgg_id' });
 
-                const closeBatches = chunkArray(changedIds, 500);
-                for (const ids of closeBatches) {
-                    if (!ids.length) continue;
-                    const { error } = await state.db
-                        .from('rank_periods')
-                        .update({ valid_to: syncAt })
-                        .in('bgg_id', ids)
-                        .is('valid_to', null);
-                    if (error) throw error;
+                // ── 8. Close old active periods for changed games ───────────
+                if (toClose.length) {
+                    for (const ids of chunkArray(toClose, 500)) {
+                        const { error } = await state.db
+                            .from('rank_periods')
+                            .update({ valid_to: now })
+                            .in('bgg_id', ids)
+                            .is('valid_to', null);
+                        if (error) throw error;
+                    }
+                    log(`Closed active periods for ${toClose.length} changed games.`);
                 }
 
-                const insertedSet = new Set(insertedIds);
-                const changedSet = new Set(changedIds);
-                const newPeriodRows = rankedGames
-                    .filter(g => insertedSet.has(g.bgg_id) || changedSet.has(g.bgg_id))
-                    .map(g => ({
-                        bgg_id: g.bgg_id,
-                        game_name: g.game_name,
-                        bgg_rank: g.bgg_rank,
-                        valid_from: syncAt,
-                        valid_to: null
-                    }));
-                await batchedInsert('rank_periods', newPeriodRows, 500);
+                // ── 9. Insert new rank_periods (only for new + changed) ─────
+                if (newPeriods.length) {
+                    await batchedInsert('rank_periods', newPeriods);
+                    log(`Inserted ${newPeriods.length} new rank periods.`);
+                } else {
+                    log('No rank changes this sync — zero new periods written.');
+                }
 
-                const finishedAt = new Date().toISOString();
-                const summary = {
-                    finished_at: finishedAt,
-                    checked_count: items.length,
-                    ranked_count: rankedGames.length,
-                    inserted_count: insertedIds.length,
-                    changed_count: changedIds.length,
-                    unchanged_count: unchangedIds.length,
-                    status: 'success',
-                    notes: `Processed ${rankedGames.length} ranked games at ${syncAt}`
-                };
-
-                const { error: updateRunError } = await state.db
+                // ── 10. Close the rank_runs record ──────────────────────────
+                const { error: updateRunErr } = await state.db
                     .from('rank_runs')
-                    .update(summary)
+                    .update({
+                        finished_at:     new Date().toISOString(),
+                        status:          'success',
+                        checked_count:   items.length,
+                        ranked_count:    rankedGames.length,
+                        inserted_count:  insertedIds.length,
+                        changed_count:   changedIds.length,
+                        unchanged_count: unchangedIds.length,
+                        notes:           `OK: ${rankedGames.length} ranked, ${newPeriods.length} new periods.`
+                    })
                     .eq('id', runId);
-                if (updateRunError) throw updateRunError;
+                if (updateRunErr) throw updateRunErr;
 
-                log(`Sync complete. Inserted: ${insertedIds.length}, changed: ${changedIds.length}, unchanged: ${unchangedIds.length}.`);
-
+                log(`Sync complete — run #${runId} closed.`);
                 await loadStoreData();
                 renderHistory();
                 renderGameList();
                 renderTrends();
+
             } catch (err) {
+                console.error('[RankStore] Sync error:', err);
                 log(`Error: ${err.message}`);
                 if (runId) {
-                    await state.db
-                        .from('rank_runs')
-                        .update({
-                            finished_at: new Date().toISOString(),
-                            status: 'error',
-                            notes: err.message
-                        })
-                        .eq('id', runId);
+                    await state.db.from('rank_runs').update({
+                        finished_at: new Date().toISOString(),
+                        status:      'error',
+                        notes:       err.message
+                    }).eq('id', runId).catch(() => {});
                 }
-                alert('Sync failed: ' + err.message);
+                alert(`Sync failed: ${err.message}`);
             } finally {
                 state.isSyncing = false;
                 document.getElementById('syncBtn').disabled = false;
@@ -638,24 +654,20 @@
                 filtered = filtered.filter(r => new Date(r.valid_from) >= cutoff);
             }
 
-            const rows = filtered
-                .slice()
-                .sort((a, b) => new Date(b.valid_from) - new Date(a.valid_from));
+            const rows = [...filtered].sort((a, b) => new Date(b.valid_from) - new Date(a.valid_from));
 
             container.innerHTML = rows.map(r => {
                 const thumb = state.thumbCache[r.bgg_id] || '';
                 const start = new Date(r.valid_from).toLocaleDateString();
-                const end = r.valid_to ? new Date(r.valid_to).toLocaleDateString() : 'Active';
-                return `
-                <div class="history-row" onclick="openGameDetail(${r.bgg_id})">
+                const end   = r.valid_to ? new Date(r.valid_to).toLocaleDateString() : 'Active';
+                return `<div class="history-row" onclick="openGameDetail(${r.bgg_id})">
                     <img src="${thumb}" class="game-thumb-sm" onerror="this.style.display='none'">
                     <div class="flex-1 overflow-hidden">
                         <div class="text-sm font-black truncate text-slate-200">${r.game_name || `BGG #${r.bgg_id}`}</div>
                         <div class="text-[9px] font-bold text-slate-500 uppercase">${start} → ${end}</div>
                     </div>
                     <div class="text-lg font-black text-indigo-400">${r.bgg_rank ?? 'N/A'}</div>
-                </div>
-            `;
+                </div>`;
             }).join('') || '<div class="p-8 text-center text-slate-500 text-xs uppercase font-black tracking-wider">No rank periods found.</div>';
         }
 
@@ -677,7 +689,7 @@
                         <img src="${thumb}" class="game-thumb-sm" onerror="this.style.display='none'">
                         <div class="flex-1 flex flex-col">
                             <span class="text-xs font-black text-white">${g.name || `BGG #${id}`}</span>
-                            <span class="text-[9px] font-bold text-slate-500 uppercase">${g.history.length} periods</span>
+                            <span class="text-[9px] font-bold text-slate-500 uppercase">${g.history.length} period${g.history.length !== 1 ? 's' : ''}</span>
                         </div>
                         <div class="text-xl font-black text-indigo-400">${g.current ?? 'N/A'}</div>
                     </div>
@@ -726,61 +738,56 @@
                     if (g.history.length < 2) return null;
                     const sorted = [...g.history].sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from));
                     const first = sorted[0].bgg_rank;
-                    const last = sorted[sorted.length - 1].bgg_rank;
+                    const last  = sorted[sorted.length - 1].bgg_rank;
                     if (!Number.isFinite(first) || !Number.isFinite(last)) return null;
                     return { name: g.name || `BGG #${id}`, change: first - last, id };
                 })
                 .filter(Boolean)
                 .sort((a, b) => b.change - a.change);
 
-            const moversContainer = document.getElementById('topMovers');
-            moversContainer.innerHTML = movers.slice(0, 5).map(m => `
+            document.getElementById('topMovers').innerHTML = movers.slice(0, 5).map(m => `
                 <div class="flex items-center gap-3 p-3 rounded-2xl bg-slate-900/50 border border-white/5 cursor-pointer hover:border-indigo-500/30" onclick="openGameDetail(${m.id})">
                     <img src="${state.thumbCache[m.id] || ''}" class="w-8 h-8 rounded-lg object-contain" onerror="this.style.display='none'">
                     <span class="text-[11px] font-black truncate flex-1 text-slate-200">${m.name}</span>
                     <span class="text-[10px] font-black text-emerald-400">↑ ${m.change}</span>
-                </div>
-            `).join('') || '<div class="text-[10px] text-slate-600 text-center py-4 italic">Need more rank changes...</div>';
+                </div>`).join('') || '<div class="text-[10px] text-slate-600 text-center py-4 italic">Need more rank changes…</div>';
         }
 
+        // ─── Game detail modal ─────────────────────────────────────────────
         function openGameDetail(id) {
             const game = state.uniqueGames.get(id);
             if (!game) return;
 
-            const modal = document.getElementById('detailModal');
-            const content = document.getElementById('modalContent');
-
             const history = [...game.history].sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from));
-            const ranks = history.map(h => h.bgg_rank).filter(r => Number.isFinite(r));
+            const ranks   = history.map(h => h.bgg_rank).filter(Number.isFinite);
             const current = game.current ?? 'N/A';
-            const min = ranks.length ? Math.min(...ranks) : 'N/A';
-            const max = ranks.length ? Math.max(...ranks) : 'N/A';
-            const avg = ranks.length ? Math.round(ranks.reduce((a, b) => a + b, 0) / ranks.length) : 'N/A';
-            const thumb = state.thumbCache[id] || '';
+            const best    = ranks.length ? Math.min(...ranks) : 'N/A';
+            const worst   = ranks.length ? Math.max(...ranks) : 'N/A';
+            const avg     = ranks.length ? Math.round(ranks.reduce((a, b) => a + b, 0) / ranks.length) : 'N/A';
+            const thumb   = state.thumbCache[id] || '';
 
-            content.innerHTML = `
+            document.getElementById('modalContent').innerHTML = `
                 <div class="flex flex-col items-center text-center space-y-4">
                     <img src="${thumb}" class="w-24 h-24 rounded-3xl object-contain glass p-2" onerror="this.style.display='none'">
                     <div class="space-y-1">
                         <div class="text-[10px] font-black text-indigo-400 uppercase tracking-widest">Game Insights</div>
                         <h2 class="text-2xl font-black text-white leading-tight">${game.name || `BGG #${id}`}</h2>
-                        <div class="text-xs text-slate-500 font-bold">BGG ID #${id}</div>
+                        <div class="text-xs text-slate-500 font-bold">BGG ID #${id} • ${history.length} period${history.length !== 1 ? 's' : ''}</div>
                     </div>
                 </div>
                 <div class="grid grid-cols-2 md:grid-cols-4 gap-3">
                     <div class="stat-card"><div class="text-lg font-black text-white">${current}</div><div class="text-[8px] font-black uppercase text-slate-500">Current</div></div>
-                    <div class="stat-card"><div class="text-lg font-black text-emerald-400">${min}</div><div class="text-[8px] font-black uppercase text-slate-500">Best</div></div>
-                    <div class="stat-card"><div class="text-lg font-black text-red-400">${max}</div><div class="text-[8px] font-black uppercase text-slate-500">Worst</div></div>
+                    <div class="stat-card"><div class="text-lg font-black text-emerald-400">${best}</div><div class="text-[8px] font-black uppercase text-slate-500">Best</div></div>
+                    <div class="stat-card"><div class="text-lg font-black text-red-400">${worst}</div><div class="text-[8px] font-black uppercase text-slate-500">Worst</div></div>
                     <div class="stat-card"><div class="text-lg font-black text-indigo-400">${avg}</div><div class="text-[8px] font-black uppercase text-slate-500">Avg</div></div>
-                </div>
-            `;
+                </div>`;
 
-            modal.classList.add('open');
+            document.getElementById('detailModal').classList.add('open');
             renderGameChart(history);
         }
 
         function closeModal(e) {
-            if (e && e.target.id !== 'detailModal' && e.type !== 'click') return;
+            if (e && e.target.id !== 'detailModal') return;
             document.getElementById('detailModal').classList.remove('open');
         }
 
@@ -788,7 +795,6 @@
         function renderGameChart(history) {
             const ctx = document.getElementById('gameChart').getContext('2d');
             if (gameChartInst) gameChartInst.destroy();
-
             const data = [...history].sort((a, b) => new Date(a.valid_from) - new Date(b.valid_from));
             gameChartInst = new Chart(ctx, {
                 type: 'line',
@@ -815,15 +821,19 @@
             });
         }
 
+        // ─── Maintenance ───────────────────────────────────────────────────
         async function cleanupInvalidRanks() {
-            if (!confirm('Delete null-rank current rows and close active null-rank periods?')) return;
+            if (!confirm('Delete null-rank rows from rank_current and close their active rank_periods?')) return;
             try {
                 const now = new Date().toISOString();
-                const { error: curError } = await state.db.from('rank_current').delete().is('bgg_rank', null);
-                if (curError) throw curError;
-                const { error: periodError } = await state.db.from('rank_periods').update({ valid_to: now }).is('bgg_rank', null).is('valid_to', null);
-                if (periodError) throw periodError;
-                log('Cleanup complete for null ranks.');
+                const { error: e1 } = await state.db.from('rank_current').delete().is('bgg_rank', null);
+                if (e1) throw e1;
+                const { error: e2 } = await state.db.from('rank_periods')
+                    .update({ valid_to: now })
+                    .is('bgg_rank', null)
+                    .is('valid_to', null);
+                if (e2) throw e2;
+                log('Null-rank cleanup complete.');
                 await loadStoreData();
                 renderHistory();
                 renderGameList();
@@ -834,9 +844,10 @@
         }
 
         async function cleanupNonOwned() {
-            alert('Non-owned cleanup is still manual in this version. Use sync logs to review removed games.');
+            alert('Non-owned cleanup is manual in this version. Use sync logs to review removed games.');
         }
 
+        // ── Boot ──────────────────────────────────────────────────────────
         initDb();
     </script>
 
