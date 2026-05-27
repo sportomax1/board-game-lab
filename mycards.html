@@ -330,10 +330,33 @@
             margin-bottom: 12px;
             box-shadow: 0 1px 4px rgba(0,0,0,.05);
         }
+        .sheet-card-slot {
+            position: relative;
+            width: var(--card-width);
+            height: var(--card-height);
+        }
+        .sheet-card-slot.cut-marks::before {
+            content: "";
+            position: absolute;
+            inset: -0.04in;
+            z-index: 3;
+            pointer-events: none;
+            background:
+                linear-gradient(#111827, #111827) left top / .18in 1px no-repeat,
+                linear-gradient(#111827, #111827) left top / 1px .18in no-repeat,
+                linear-gradient(#111827, #111827) right top / .18in 1px no-repeat,
+                linear-gradient(#111827, #111827) right top / 1px .18in no-repeat,
+                linear-gradient(#111827, #111827) left bottom / .18in 1px no-repeat,
+                linear-gradient(#111827, #111827) left bottom / 1px .18in no-repeat,
+                linear-gradient(#111827, #111827) right bottom / .18in 1px no-repeat,
+                linear-gradient(#111827, #111827) right bottom / 1px .18in no-repeat;
+        }
         .game-card {
             position: relative;
             background: white;
-            border: 1px solid #1e293b;
+            width: 100%;
+            height: 100%;
+            border: 1px solid transparent;
             overflow: hidden;
             display: flex;
             flex-direction: column;
@@ -341,6 +364,9 @@
             font-weight: 600;
             color: #000;
         }
+        .game-card.mark-outline,
+        .game-card.mark-both { border-color: #1e293b; }
+        .game-card.mark-cut { border-color: #1e293b; border-style: dashed; }
         .game-card .zone-top {
             flex-shrink: 0;
             display: flex;
@@ -956,17 +982,28 @@
                             <label class="form-label" for="cardGap">Card Spacing</label>
                             <select id="cardGap" class="form-select">
                                 <option value="0" selected>None</option>
-                                <option value="0.05">Minimal (0.05″)</option>
-                                <option value="0.1">Small (0.1″)</option>
-                                <option value="0.2">Medium (0.2″)</option>
-                                <option value="0.3">Large (0.3″)</option>
+                                <option value="0.03">Hairline (0.03″)</option>
+                                <option value="0.06">Tight (0.06″)</option>
+                                <option value="0.12">Comfort (0.12″)</option>
+                                <option value="0.2">Wide (0.2″)</option>
+                                <option value="0.25">Max 3×3 (0.25″)</option>
+                            </select>
+                        </div>
+                        <div class="form-group">
+                            <label class="form-label" for="printMarks">Print Marks</label>
+                            <select id="printMarks" class="form-select">
+                                <option value="outline" selected>Card outline</option>
+                                <option value="none">None</option>
+                                <option value="cut">Dashed cut line</option>
+                                <option value="both">Outline + cut marks</option>
                             </select>
                         </div>
                         <div class="form-group">
                             <label class="form-label" for="printMargin">Print Margins</label>
                             <select id="printMargin" class="form-select">
+                                <option value="auto" selected>Auto center 3×3</option>
                                 <option value="0">None</option>
-                                <option value="0.1" selected>Default (0.1″)</option>
+                                <option value="0.1">Default (0.1″)</option>
                                 <option value="0.25">Standard (0.25″)</option>
                                 <option value="0.5">Wide (0.5″)</option>
                             </select>
@@ -1141,7 +1178,7 @@
         <div class="modal-box" role="dialog" aria-modal="true">
             <button class="modal-close-btn" id="cricutClose">✕</button>
             <h3>✂️ Cricut Print &amp; Cut Guide</h3>
-            <p>Recommendations for Print-then-Cut with Cricut Maker 3 in Design Space.</p>
+            <p>Recommendations for Print-then-Cut with Cricut Maker 4 in Design Space.</p>
             <ol>
                 <li><strong>Print Then Cut area:</strong> Supports ~6.75″ × 9.25″. For full-page layouts, split into sheets or print and trim before cutting.</li>
                 <li><strong>Export / Bleed:</strong> Export each sheet as PNG/PDF at 300 DPI. Add 0.02–0.125″ bleed. Don't remove registration marks.</li>
@@ -1964,8 +2001,8 @@
     /* ══════════════════════════════════════════════════
        BUILD CARD HTML (Flexbox zones — no absolute positioning)
        ══════════════════════════════════════════════════ */
-    function buildCardHtml(game, dims) {
-        let html = `<div class="game-card" style="width:${dims.width}in;height:${dims.height}in;display:flex;flex-direction:column;">`;
+    function buildCardHtml(game, markMode) {
+        let html = `<div class="game-card mark-${markMode}">`;
         
         cardLayout.forEach(row => {
             const rowHtml = renderRowContent(row, game);
@@ -1978,6 +2015,11 @@
         
         html += `</div>`;
         return html;
+    }
+
+    function buildCardSlotHtml(game, dims, markMode) {
+        const cutClass = markMode === 'both' ? ' cut-marks' : '';
+        return `<div class="sheet-card-slot${cutClass}" style="--card-width:${dims.width}in;--card-height:${dims.height}in;">${buildCardHtml(game, markMode)}</div>`;
     }
 
     /* ══════════════════════════════════════════════════
@@ -1997,14 +2039,87 @@
         return { ...d };
     }
 
+    const PRINT_PAGE = { width: 8.5, height: 11 };
+
+    function toInches(value, fallback = 0) {
+        const parsed = parseFloat(value);
+        return Number.isFinite(parsed) ? parsed : fallback;
+    }
+
+    function roundInches(value) {
+        return Math.round(value * 1000) / 1000;
+    }
+
+    function clamp(value, min, max) {
+        return Math.min(Math.max(value, min), max);
+    }
+
+    function isPokerPortrait(dims) {
+        return Math.abs(dims.width - 2.5) < 0.001 && Math.abs(dims.height - 3.5) < 0.001;
+    }
+
+    function getPrintMarkMode() {
+        const mode = $('printMarks')?.value || 'outline';
+        return ['none', 'outline', 'cut', 'both'].includes(mode) ? mode : 'outline';
+    }
+
     function getGridLayout(dims) {
-        const gap = parseFloat($('cardGap').value);
-        const margin = parseFloat($('printMargin').value);
-        const usableW = 8.5 - 2 * margin;
-        const usableH = 11  - 2 * margin;
-        const cols = Math.floor((usableW + gap) / (dims.width + gap)) || 1;
-        const rows = Math.floor((usableH + gap) / (dims.height + gap)) || 1;
-        return { cols, rows, gap, margin, cardsPerPage: cols * rows };
+        const requestedGap = toInches($('cardGap').value);
+        const marginSetting = $('printMargin').value;
+        const requestedMargin = marginSetting === 'auto' ? null : toInches(marginSetting, 0);
+        const fixedPokerSheet = isPokerPortrait(dims);
+
+        let cols;
+        let rows;
+
+        if (fixedPokerSheet) {
+            cols = 3;
+            rows = 3;
+        } else {
+            const margin = requestedMargin ?? 0.1;
+            const usableW = PRINT_PAGE.width - 2 * margin;
+            const usableH = PRINT_PAGE.height - 2 * margin;
+            cols = Math.max(1, Math.floor((usableW + requestedGap) / (dims.width + requestedGap)));
+            rows = Math.max(1, Math.floor((usableH + requestedGap) / (dims.height + requestedGap)));
+        }
+
+        const maxGapX = cols > 1 ? (PRINT_PAGE.width - cols * dims.width) / (cols - 1) : 0;
+        const maxGapY = rows > 1 ? (PRINT_PAGE.height - rows * dims.height) / (rows - 1) : 0;
+        const maxGap = Math.max(0, Math.min(maxGapX, maxGapY));
+        const gap = roundInches(clamp(requestedGap, 0, maxGap));
+        const usedW = cols * dims.width + (cols - 1) * gap;
+        const usedH = rows * dims.height + (rows - 1) * gap;
+        const autoMarginX = Math.max(0, (PRINT_PAGE.width - usedW) / 2);
+        const autoMarginY = Math.max(0, (PRINT_PAGE.height - usedH) / 2);
+        const marginX = requestedMargin === null ? autoMarginX : Math.min(requestedMargin, autoMarginX);
+        const marginY = requestedMargin === null ? autoMarginY : Math.min(requestedMargin, autoMarginY);
+
+        return {
+            cols,
+            rows,
+            gap,
+            marginX: roundInches(marginX),
+            marginY: roundInches(marginY),
+            cardsPerPage: cols * rows,
+            markMode: getPrintMarkMode(),
+            fixedPokerSheet,
+            requestedGap
+        };
+    }
+
+    function getPageStyle(dims, grid) {
+        return [
+            'display:grid',
+            `width:${PRINT_PAGE.width}in`,
+            `height:${PRINT_PAGE.height}in`,
+            `grid-template-columns:repeat(${grid.cols},${dims.width}in)`,
+            `grid-template-rows:repeat(${grid.rows},${dims.height}in)`,
+            `column-gap:${grid.gap}in`,
+            `row-gap:${grid.gap}in`,
+            `padding:${grid.marginY}in ${grid.marginX}in`,
+            'justify-content:start',
+            'align-content:start'
+        ].join(';');
     }
 
     /* ══════════════════════════════════════════════════
@@ -2016,6 +2131,9 @@
         const grid = getGridLayout(dims);
 
         addDebugLog(`renderPreview: ${games.length} cards, ${grid.cols}×${grid.rows} grid`, 'info');
+        if (grid.requestedGap !== grid.gap) {
+            addDebugLog(`Card spacing reduced to ${grid.gap}" so the sheet still fits`, 'info');
+        }
 
         if (!games.length) {
             printContainer.style.display = 'none';
@@ -2034,11 +2152,11 @@
         const totalPages = Math.ceil(games.length / grid.cardsPerPage);
 
         for (let p = 0; p < totalPages; p++) {
-            html += `<div class="page" style="display:grid;width:8.5in;height:11in;grid-template-columns:repeat(${grid.cols},${dims.width}in);grid-template-rows:repeat(${grid.rows},${dims.height}in);gap:${grid.gap}in;padding:${grid.margin}in;justify-content:start;align-content:start;">`;
+            html += `<div class="page" style="${getPageStyle(dims, grid)}">`;
             const start = p * grid.cardsPerPage;
             const end = Math.min(start + grid.cardsPerPage, games.length);
             for (let i = start; i < end; i++) {
-                html += buildCardHtml(games[i], dims);
+                html += buildCardSlotHtml(games[i], dims, grid.markMode);
             }
             html += '</div>';
         }
@@ -2071,7 +2189,11 @@
             *, *::before, *::after { box-sizing: border-box; margin: 0; padding: 0; }
             html, body { margin: 0; padding: 0; background: white; font-family: 'Inter', sans-serif; }
             @page { size: letter; margin: 0; }
-            .game-card { position: relative; background: white; border: 1px solid #1e293b; overflow: hidden; display: flex; flex-direction: column; font-size: .7rem; font-weight: 600; color: #000; }
+            .sheet-card-slot { position: relative; width: var(--card-width); height: var(--card-height); }
+            .sheet-card-slot.cut-marks::before { content: ""; position: absolute; inset: -0.04in; z-index: 3; pointer-events: none; background: linear-gradient(#111827, #111827) left top / .18in 1px no-repeat, linear-gradient(#111827, #111827) left top / 1px .18in no-repeat, linear-gradient(#111827, #111827) right top / .18in 1px no-repeat, linear-gradient(#111827, #111827) right top / 1px .18in no-repeat, linear-gradient(#111827, #111827) left bottom / .18in 1px no-repeat, linear-gradient(#111827, #111827) left bottom / 1px .18in no-repeat, linear-gradient(#111827, #111827) right bottom / .18in 1px no-repeat, linear-gradient(#111827, #111827) right bottom / 1px .18in no-repeat; }
+            .game-card { position: relative; width: 100%; height: 100%; background: white; border: 1px solid transparent; overflow: hidden; display: flex; flex-direction: column; font-size: .7rem; font-weight: 600; color: #000; }
+            .game-card.mark-outline, .game-card.mark-both { border-color: #1e293b; }
+            .game-card.mark-cut { border-color: #1e293b; border-style: dashed; }
             .zone-top { flex-shrink: 0; display: flex; flex-wrap: wrap; justify-content: space-between; align-items: center; padding: .2rem .25rem; background: rgba(255,255,255,.97); font-size: .65rem; border-bottom: 1px solid #e5e7eb; width: 100%; }
             .zone-center { flex: 1; display: flex; flex-direction: column; align-items: center; justify-content: center; width: 100%; padding: .35rem; gap: 2px; overflow: hidden; }
             .zone-bottom { flex-shrink: 0; text-align: center; padding: .15rem .25rem; background: rgba(255,255,255,.97); border-top: 1px solid #e5e7eb; font-size: .65rem; width: 100%; }
@@ -2316,7 +2438,7 @@
     /* ══════════════════════════════════════════════════
        SETTINGS PERSISTENCE
        ══════════════════════════════════════════════════ */
-    const SETTINGS_KEYS = ['cardSize', 'orientation', 'cardGap', 'printMargin', 'sortOrder', 'imageSource', 'imageHeight'];
+    const SETTINGS_KEYS = ['cardSize', 'orientation', 'cardGap', 'printMarks', 'printMargin', 'sortOrder', 'imageSource', 'imageHeight'];
 
     function saveSettings() {
         const out = {};
