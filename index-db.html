@@ -194,6 +194,12 @@
             gap: 10px;
         }
 
+        .api-row {
+            display: grid;
+            grid-template-columns: 1fr;
+            gap: 10px;
+        }
+
         .field {
             display: grid;
             gap: 5px;
@@ -547,6 +553,11 @@
                 grid-template-columns: 1.6fr repeat(3, minmax(135px, 1fr));
             }
 
+            .api-row {
+                grid-template-columns: minmax(190px, 0.55fr) minmax(0, 1fr);
+                align-items: end;
+            }
+
             .button-grid {
                 grid-template-columns: repeat(6, minmax(0, 1fr));
             }
@@ -658,6 +669,16 @@
                         </div>
                     </div>
 
+                    <div class="api-row">
+                        <div class="field">
+                            <label for="bggUsernameInput">BGG Username</label>
+                            <input id="bggUsernameInput" type="search" value="sportomax" placeholder="BGG username for collection API" autocomplete="username">
+                        </div>
+                        <div class="message show info">
+                            API refresh uses the same flow as <code>collection.html</code>: <code>/api/bgg-helper?endpoint=collection</code>, then batched <code>endpoint=thing&amp;stats=1</code>.
+                        </div>
+                    </div>
+
                     <div class="button-grid">
                         <button id="loadLocalBtn" class="btn">Load Local</button>
                         <button id="refreshApiBtn" class="btn primary">Refresh From API</button>
@@ -742,6 +763,7 @@
         var ARTWORK_STORE = "artwork";
         var META_STORE = "meta";
         var BATCH_SIZE = 100;
+        var API_BASE = "/api/bgg-helper";
 
         var db = null;
         var allRecords = [];
@@ -1371,27 +1393,17 @@
 
         async function fetchArtworkFromApi() {
             var started = performance.now();
-            logDebug("fetchArtworkFromApi() placeholder started.");
+            var username = els.bggUsernameInput.value.trim() || "sportomax";
+            logDebug("fetchArtworkFromApi() BGG collection flow started for username:", username);
 
             /*
-                REPLACE THIS MOCK BLOCK WITH YOUR REAL API CALL.
+                THIS IS THE REAL API ADAPTER AREA TO CUSTOMIZE LATER.
 
-                BoardGameGeek helper example from this repo:
-                var response = await fetch("/api/bgg-helper?endpoint=thing&id=174430&stats=1");
-                var xmlText = await response.text();
-                Parse XML into records shaped like:
-                {
-                    id: "bgg_174430",
-                    gameName: "Gloomhaven",
-                    yearPublished: 2017,
-                    imageUrl: "...",
-                    thumbnailUrl: "...",
-                    source: "api",
-                    category: "board game",
-                    rating: 8.6,
-                    rank: 3,
-                    updated_at: new Date().toISOString()
-                }
+                Current behavior intentionally mirrors collection.html:
+                1) Fetch /api/bgg-helper?endpoint=collection&username=...
+                2) Read object IDs from collection XML.
+                3) Batch fetch /api/bgg-helper?endpoint=thing&id=...&stats=1
+                4) Map BGG image/thumbnail/stats/rank/category into artwork records.
 
                 Supabase artwork table example:
                 var response = await fetch("/api/your-artwork-endpoint");
@@ -1402,63 +1414,137 @@
                 Serve it from localhost, GitHub Pages, or Vercel when calling real API routes.
             */
 
-            await new Promise(function (resolve) {
-                window.setTimeout(resolve, 450);
+            var collectionUrl = API_BASE + "?endpoint=collection&username=" + encodeURIComponent(username);
+            logDebug("BGG collection URL:", collectionUrl);
+            var collectionXml = await fetchWithRetry(collectionUrl);
+            var collectionDoc = new DOMParser().parseFromString(collectionXml, "text/xml");
+            var collectionItems = Array.from(collectionDoc.querySelectorAll("item"));
+            var objectIds = collectionItems.map(function (item) {
+                return item.getAttribute("objectid") || item.getAttribute("id");
+            }).filter(function (id, index, ids) {
+                return id && ids.indexOf(id) === index;
             });
 
-            var records = [
-                {
-                    id: "game_1",
-                    gameName: "Slambo",
-                    yearPublished: 2025,
-                    imageUrl: "https://via.placeholder.com/300x220?text=Slambo",
-                    thumbnailUrl: "https://via.placeholder.com/150x110?text=Slambo",
-                    source: "mock",
-                    category: "card game",
-                    rating: 7.8,
-                    rank: 120,
-                    updated_at: "2026-05-29T12:00:00Z"
-                },
-                {
-                    id: "game_2",
-                    gameName: "Moonlit Meeples",
-                    yearPublished: 2024,
-                    imageUrl: "https://via.placeholder.com/300x220?text=Moonlit+Meeples",
-                    thumbnailUrl: "https://via.placeholder.com/150x110?text=Moonlit",
-                    source: "mock",
-                    category: "strategy",
-                    rating: 8.2,
-                    rank: 72,
-                    updated_at: "2026-05-28T18:30:00Z"
-                },
-                {
-                    id: "game_3",
-                    gameName: "Dragon Market",
-                    yearPublished: 2022,
-                    imageUrl: "https://via.placeholder.com/300x220?text=Dragon+Market",
-                    thumbnailUrl: "https://via.placeholder.com/150x110?text=Dragon",
-                    source: "mock",
-                    category: "auction",
-                    rating: 7.1,
-                    rank: 430,
-                    updated_at: "2026-05-27T15:45:00Z"
-                },
-                {
-                    id: "game_4",
-                    gameName: "Tiny Terraformers",
-                    yearPublished: 2026,
-                    imageUrl: "https://via.placeholder.com/300x220?text=Terraformers",
-                    thumbnailUrl: "https://via.placeholder.com/150x110?text=Terraform",
-                    source: "mock",
-                    category: "engine builder",
-                    rating: 8.6,
-                    rank: 28,
-                    updated_at: "2026-05-29T09:15:00Z"
-                }
-            ];
+            logDebug("BGG collection items:", collectionItems.length, "unique object IDs:", objectIds.length);
+            if (objectIds.length === 0) {
+                throw new Error("No BGG collection items found for username: " + username);
+            }
 
-            logDebug("fetchArtworkFromApi() placeholder finished in", Math.round(performance.now() - started) + "ms");
+            var collectionMap = {};
+            collectionItems.forEach(function (item) {
+                var objectId = item.getAttribute("objectid") || item.getAttribute("id");
+                var statusNode = item.querySelector("status");
+                if (!objectId) {
+                    return;
+                }
+                collectionMap[objectId] = {
+                    lastmodified: item.getAttribute("lastmodified") || (statusNode ? statusNode.getAttribute("lastmodified") || "" : "")
+                };
+            });
+
+            var records = [];
+            var batchSize = 20;
+            var batches = [];
+            var batchIndex = 0;
+            for (var i = 0; i < objectIds.length; i += batchSize) {
+                batches.push(objectIds.slice(i, i + batchSize));
+            }
+
+            logDebug("BGG thing batches:", batches.length, "batch size:", batchSize);
+            for (batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
+                var batch = batches[batchIndex];
+                var ids = batch.join(",");
+                var thingUrl = API_BASE + "?endpoint=thing&id=" + encodeURIComponent(ids) + "&stats=1";
+                logDebug("BGG thing batch", batchIndex + 1, "of", batches.length, thingUrl);
+                var thingXml = await fetchWithRetry(thingUrl);
+                var thingDoc = new DOMParser().parseFromString(thingXml, "text/xml");
+                var thingItems = Array.from(thingDoc.querySelectorAll("item"));
+
+                thingItems.forEach(function (item) {
+                    var id = item.getAttribute("id");
+                    var ratings = item.querySelector("statistics ratings") || item.querySelector("statistics > ratings");
+                    var ranksNode = ratings ? ratings.querySelector("ranks") : null;
+                    var primaryRank = ranksNode ? ranksNode.querySelector('rank[type="subtype"]') : null;
+                    var primaryRankValue = primaryRank ? primaryRank.getAttribute("value") : "";
+                    var categories = Array.from(item.querySelectorAll('link[type="boardgamecategory"]')).map(function (link) {
+                        return link.getAttribute("value");
+                    }).filter(Boolean);
+                    var collectionMeta = collectionMap[id] || {};
+                    var updatedAt = collectionMeta.lastmodified || nowIso();
+
+                    records.push({
+                        id: "bgg_" + id,
+                        gameName: getBggPrimaryName(item),
+                        yearPublished: parseInt(getBggValue(item, "yearpublished") || "0", 10) || null,
+                        imageUrl: getBggText(item, "image"),
+                        thumbnailUrl: getBggText(item, "thumbnail"),
+                        source: "api",
+                        category: categories.length ? categories[0] : "board game",
+                        rating: ratings ? parseFloat(getBggRatingValue(ratings, "average") || "0") || null : null,
+                        rank: primaryRankValue && primaryRankValue !== "Not Ranked" ? parseInt(primaryRankValue, 10) || null : null,
+                        updated_at: updatedAt,
+                        bggId: id,
+                        bggUrl: "https://boardgamegeek.com/boardgame/" + id,
+                        categories: categories
+                    });
+                });
+            }
+
+            logDebug("fetchArtworkFromApi() BGG flow finished in", Math.round(performance.now() - started) + "ms", "records:", records.length);
             return records;
+        }
+
+        async function fetchWithRetry(url, maxRetries) {
+            var retries = maxRetries || 5;
+            var attempt = 0;
+            for (attempt = 0; attempt < retries; attempt += 1) {
+                try {
+                    logDebug("fetchWithRetry attempt", attempt + 1, "of", retries, url);
+                    var response = await fetch(url);
+                    if (response.status === 202) {
+                        logDebug("BGG helper returned 202 processing; retrying after delay.");
+                        await wait(3000);
+                        continue;
+                    }
+                    if (response.ok) {
+                        return await response.text();
+                    }
+                    logDebug("Fetch returned non-OK status:", response.status, response.statusText);
+                    await wait(2000);
+                } catch (err) {
+                    logDebug("Fetch attempt failed:", err.message || err);
+                    await wait(1500 * Math.pow(2, attempt));
+                }
+            }
+            throw new Error("Failed to fetch after " + retries + " attempts: " + url);
+        }
+
+        function wait(ms) {
+            return new Promise(function (resolve) {
+                window.setTimeout(resolve, ms);
+            });
+        }
+
+        function getBggText(item, selector) {
+            var node = item.querySelector(selector);
+            return node ? (node.textContent || "").trim() : "";
+        }
+
+        function getBggValue(item, selector) {
+            var node = item.querySelector(selector);
+            return node ? (node.getAttribute("value") || node.textContent || "").trim() : "";
+        }
+
+        function getBggRatingValue(ratingsNode, selector) {
+            var node = ratingsNode ? ratingsNode.querySelector(selector) : null;
+            return node ? (node.getAttribute("value") || node.textContent || "").trim() : "";
+        }
+
+        function getBggPrimaryName(item) {
+            var primary = item.querySelector('name[type="primary"]');
+            var fallback = item.querySelector("name");
+            var node = primary || fallback;
+            return node ? (node.getAttribute("value") || node.textContent || "").trim() : "Untitled BGG Game";
         }
 
         function generateMockRecords(count) {
@@ -1723,6 +1809,7 @@
             els.onlineStatus = document.getElementById("onlineStatus");
             els.onlineBadge = document.getElementById("onlineBadge");
             els.searchInput = document.getElementById("searchInput");
+            els.bggUsernameInput = document.getElementById("bggUsernameInput");
             els.sortSelect = document.getElementById("sortSelect");
             els.sourceFilter = document.getElementById("sourceFilter");
             els.viewMode = document.getElementById("viewMode");
