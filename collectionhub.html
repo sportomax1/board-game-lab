@@ -1294,8 +1294,82 @@
     let forumSortMode = 'name'; 
     let videosFilterQuery = '';
     let forumsFilterQuery = '';
+    const IDB_NAME = 'CollectionHubDB';
+    const IDB_VERSION = 1;
+    const IDB_COLLECTION_STORE = 'collections';
+    let collectionHubDb = null;
+    let cacheRefreshUsername = '';
 
     const FILLER_WORDS = new Set(['the','a','an','and','of','or','in','on','at','to','for','with','is','it','as','by','that','from','be','are','was','were','not','but','this','has','have','had','do','did','can','will','would','could','should','may','might','than','then','its','my','your','his','her','our','their','its']);
+
+    function openCollectionHubDB() {
+      if (collectionHubDb) return Promise.resolve(collectionHubDb);
+      if (!('indexedDB' in window)) {
+        console.warn('[collectionhub:idb] IndexedDB not available');
+        return Promise.resolve(null);
+      }
+      return new Promise((resolve, reject) => {
+        const started = performance.now();
+        const req = indexedDB.open(IDB_NAME, IDB_VERSION);
+        req.onupgradeneeded = event => {
+          const upgradeDb = event.target.result;
+          if (!upgradeDb.objectStoreNames.contains(IDB_COLLECTION_STORE)) {
+            upgradeDb.createObjectStore(IDB_COLLECTION_STORE, { keyPath: 'username' });
+          }
+        };
+        req.onsuccess = () => {
+          collectionHubDb = req.result;
+          console.log('[collectionhub:idb] opened in', Math.round(performance.now() - started) + 'ms');
+          resolve(collectionHubDb);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function getCachedCollection(username) {
+      const db = await openCollectionHubDB();
+      if (!db) return null;
+      return new Promise((resolve, reject) => {
+        const req = db.transaction(IDB_COLLECTION_STORE, 'readonly').objectStore(IDB_COLLECTION_STORE).get(username.toLowerCase());
+        req.onsuccess = () => {
+          console.log('[collectionhub:idb] cache lookup', username, req.result ? 'hit' : 'miss');
+          resolve(req.result || null);
+        };
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function saveCachedCollection(username) {
+      const db = await openCollectionHubDB();
+      if (!db || !username || !allGames.length) return;
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_COLLECTION_STORE, 'readwrite');
+        tx.objectStore(IDB_COLLECTION_STORE).put({
+          username: username.toLowerCase(),
+          displayUsername: username,
+          savedAt: new Date().toISOString(),
+          allGames,
+          pollData,
+          thingDataLoaded,
+          pollsLoaded
+        });
+        tx.oncomplete = () => {
+          console.log('[collectionhub:idb] saved cache', username, allGames.length, 'games');
+          resolve();
+        };
+        tx.onerror = () => reject(tx.error);
+      });
+    }
+
+    function restoreCachedCollection(cache) {
+      allGames = Array.isArray(cache.allGames) ? cache.allGames : [];
+      pollData = cache.pollData || {};
+      thingDataLoaded = !!cache.thingDataLoaded;
+      pollsLoaded = !!cache.pollsLoaded;
+      forumDataLoaded = false;
+      renderCurrentTab();
+      setStatus(`${allGames.length} games loaded from IndexedDB cache (${new Date(cache.savedAt).toLocaleString()}) — click Load again to refresh API`);
+    }
 
     /* ── CSV load ────────────────────────────────────────── */
     function parseCSVLine(line) {
@@ -1553,15 +1627,27 @@
     async function loadCollection() {
       const username = document.getElementById('usernameInput').value.trim();
       if (!username) return;
+      const forceRefresh = cacheRefreshUsername === username.toLowerCase();
 
       const btn = document.getElementById('loadBtn');
       btn.disabled = true;
       btn.innerHTML = '<span class="spin">⏳</span> Loading';
-      setStatus('Fetching collection...');
+      setStatus(forceRefresh ? 'Refreshing collection from API...' : 'Checking IndexedDB cache...');
       showSkeletons();
       allGames = [];
 
       try {
+        if (!forceRefresh) {
+          const cached = await getCachedCollection(username);
+          if (cached && Array.isArray(cached.allGames) && cached.allGames.length) {
+            restoreCachedCollection(cached);
+            cacheRefreshUsername = username.toLowerCase();
+            return;
+          }
+        }
+
+        cacheRefreshUsername = '';
+        setStatus('Fetching collection...');
         const xml = await fetchBGG('collection', { username, stats: '1' });
         const doc = new DOMParser().parseFromString(xml, 'text/xml');
 
@@ -1630,7 +1716,8 @@
         console.log(`[collectionthumbs] ✓ ${allGames.length} games parsed`);
         setStatus(`${allGames.length} games loaded`);
         renderCurrentTab();
-        loadThingData().catch(err => console.error('[collectionthumbs] thing data error', err));
+        saveCachedCollection(username).catch(err => console.warn('[collectionhub:idb] base save failed', err));
+        loadThingData().then(() => saveCachedCollection(username)).catch(err => console.error('[collectionthumbs] thing data error', err));
 
       } catch (err) {
         setStatus(`Error: ${err.message}`);
