@@ -1444,21 +1444,40 @@
 
             var records = [];
             var batchSize = 20;
+            var parallelBatchLimit = 100;
             var batches = [];
             var batchIndex = 0;
             for (var i = 0; i < objectIds.length; i += batchSize) {
                 batches.push(objectIds.slice(i, i + batchSize));
             }
 
-            logDebug("BGG thing batches:", batches.length, "batch size:", batchSize);
-            for (batchIndex = 0; batchIndex < batches.length; batchIndex += 1) {
-                var batch = batches[batchIndex];
+            logDebug("BGG thing batches:", batches.length, "batch size:", batchSize, "parallel limit:", parallelBatchLimit);
+            for (batchIndex = 0; batchIndex < batches.length; batchIndex += parallelBatchLimit) {
+                var batchGroup = batches.slice(batchIndex, batchIndex + parallelBatchLimit);
+                logDebug("Starting parallel BGG thing group:", batchIndex + 1, "through", batchIndex + batchGroup.length, "of", batches.length);
+                var groupResults = await Promise.all(batchGroup.map(function (batch, groupIndex) {
+                    var absoluteBatchIndex = batchIndex + groupIndex;
+                    return fetchBggThingBatch(batch, absoluteBatchIndex, batches.length, collectionMap);
+                }));
+                groupResults.forEach(function (batchRecords) {
+                    records = records.concat(batchRecords);
+                });
+                logDebug("Finished parallel BGG thing group. Records so far:", records.length);
+            }
+
+            logDebug("fetchArtworkFromApi() BGG flow finished in", Math.round(performance.now() - started) + "ms", "records:", records.length);
+            return records;
+        }
+
+        async function fetchBggThingBatch(batch, batchIndex, totalBatches, collectionMap) {
+            try {
                 var ids = batch.join(",");
                 var thingUrl = API_BASE + "?endpoint=thing&id=" + encodeURIComponent(ids) + "&stats=1";
-                logDebug("BGG thing batch", batchIndex + 1, "of", batches.length, thingUrl);
+                logDebug("BGG thing batch", batchIndex + 1, "of", totalBatches, "IDs:", batch.length, thingUrl);
                 var thingXml = await fetchWithRetry(thingUrl);
                 var thingDoc = new DOMParser().parseFromString(thingXml, "text/xml");
                 var thingItems = Array.from(thingDoc.querySelectorAll("item"));
+                var batchRecords = [];
 
                 thingItems.forEach(function (item) {
                     var id = item.getAttribute("id");
@@ -1472,7 +1491,7 @@
                     var collectionMeta = collectionMap[id] || {};
                     var updatedAt = collectionMeta.lastmodified || nowIso();
 
-                    records.push({
+                    batchRecords.push({
                         id: "bgg_" + id,
                         gameName: getBggPrimaryName(item),
                         yearPublished: parseInt(getBggValue(item, "yearpublished") || "0", 10) || null,
@@ -1488,10 +1507,13 @@
                         categories: categories
                     });
                 });
-            }
 
-            logDebug("fetchArtworkFromApi() BGG flow finished in", Math.round(performance.now() - started) + "ms", "records:", records.length);
-            return records;
+                logDebug("BGG thing batch complete", batchIndex + 1, "records:", batchRecords.length);
+                return batchRecords;
+            } catch (err) {
+                logDebug("BGG thing batch failed", batchIndex + 1, err.message || err);
+                return [];
+            }
         }
 
         async function fetchWithRetry(url, maxRetries) {
