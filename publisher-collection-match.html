@@ -109,6 +109,9 @@
     details.publisher-details summary::-webkit-details-marker { display: none; }
     .publisher-list { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; max-width: 320px; }
     .publisher-chip { border: 1px solid var(--border2); background: rgba(255,255,255,0.05); color: var(--muted); border-radius: 999px; padding: 4px 7px; font-size: 10px; font-weight: 800; }
+    .debug-panel { margin-top: 18px; }
+    .debug-panel summary { cursor: pointer; color: #c7d2fe; font-size: 11px; font-weight: 900; letter-spacing: 0.1em; text-transform: uppercase; padding: 14px 16px; border-bottom: 1px solid var(--border); }
+    .debug-log { background: #020617; color: #cbd5e1; white-space: pre-wrap; font-family: Consolas, "Courier New", monospace; font-size: 11px; line-height: 1.45; max-height: 300px; overflow: auto; padding: 15px; }
   </style>
 </head>
 <body>
@@ -156,10 +159,9 @@
           <div class="field">
             <label for="defaultTab">Start View</label>
             <select id="defaultTab">
-              <option value="all">All Matches</option>
-              <option value="owned">Owned Matches</option>
-              <option value="interest">Wishlist / Want</option>
-              <option value="missing">In Collection</option>
+              <option value="both">In Both</option>
+              <option value="collection">All Collection Games</option>
+              <option value="publisher">Target Publisher</option>
             </select>
           </div>
         </div>
@@ -177,24 +179,23 @@
           <button class="ghost" onclick="downloadCsv()">Export CSV</button>
         </div>
         <div class="status" id="status">Ready. Add a publisher ID and hit Run Match.</div>
-        <div class="small">Uses your existing Vercel helper: <code>/api/bgg-helper</code>. Publisher matches are detected from <code>boardgamepublisher</code> links in BGG thing details.</div>
+        <div class="small">Uses your existing Vercel helper: <code>/api/bgg-helper</code>. Publisher matches are detected from <code>boardgamepublisher</code> links in BGG thing details for the selected collection scope.</div>
       </div>
     </section>
 
     <section class="stats">
-      <div class="stat"><div class="num" id="statPublisher">0</div><div class="lab">Publisher Matches</div></div>
-      <div class="stat"><div class="num" id="statOwned">0</div><div class="lab">Owned Matches</div></div>
-      <div class="stat"><div class="num" id="statInterest">0</div><div class="lab">Wishlist / Want</div></div>
-      <div class="stat"><div class="num" id="statMissing">0</div><div class="lab">In Collection</div></div>
+      <div class="stat"><div class="num" id="statPublisher">0</div><div class="lab">In Both</div></div>
+      <div class="stat"><div class="num" id="statOwned">0</div><div class="lab">Collection Games</div></div>
+      <div class="stat"><div class="num" id="statInterest">0</div><div class="lab">Owned In Both</div></div>
+      <div class="stat"><div class="num" id="statMissing">0</div><div class="lab">Batches Checked</div></div>
     </section>
 
     <section class="panel">
       <div class="toolbar">
         <div class="tabs">
-          <button class="tab active" data-tab="all" onclick="setTab('all')">All</button>
-          <button class="tab" data-tab="owned" onclick="setTab('owned')">Owned</button>
-          <button class="tab" data-tab="interest" onclick="setTab('interest')">Wishlist / Want</button>
-          <button class="tab" data-tab="missing" onclick="setTab('missing')">In Collection</button>
+          <button class="tab active" data-tab="collection" onclick="setTab('collection')">All Collection</button>
+          <button class="tab" data-tab="publisher" onclick="setTab('publisher')">Target Publisher</button>
+          <button class="tab" data-tab="both" onclick="setTab('both')">In Both</button>
         </div>
         <input class="searchbox" id="filter" oninput="renderTable()" placeholder="Filter games, IDs, statuses...">
       </div>
@@ -206,22 +207,30 @@
               <th onclick="sortBy('id')">BGG ID</th>
               <th onclick="sortBy('status')">Match Status</th>
               <th onclick="sortBy('collectionFlags')">Collection Flags</th>
+              <th onclick="sortBy('publisher')">Matched Publisher</th>
               <th onclick="sortBy('publisherCount')">Publishers</th>
               <th onclick="sortBy('year')">Year</th>
               <th>BGG Link</th>
             </tr>
           </thead>
           <tbody id="tbody">
-            <tr><td colspan="6" class="empty">No results yet. The table is waiting politely. Very board-game-like.</td></tr>
+            <tr><td colspan="8" class="empty">No results yet. Run a publisher match to fill this table.</td></tr>
           </tbody>
         </table>
       </div>
     </section>
+
+    <details class="panel debug-panel">
+      <summary>Debug Log</summary>
+      <div class="debug-log" id="debugLog">Debug output will show here after a run.</div>
+    </details>
   </main>
 
   <script>
     let rows = [];
-    let currentTab = 'all';
+    let debugLines = [];
+    let checkedBatchCount = 0;
+    let currentTab = 'collection';
     let sortKey = 'name';
     let sortDir = 1;
 
@@ -229,6 +238,17 @@
 
     function setStatus(message, isError = false) {
       document.getElementById('status').innerHTML = isError ? `<span class="error">${escapeHtml(message)}</span>` : message;
+    }
+
+    function logDebug(message) {
+      const line = `[${new Date().toLocaleTimeString()}] ${message}`;
+      debugLines.push(line);
+      const log = document.getElementById('debugLog');
+      if (log) {
+        log.textContent = debugLines.join('\n');
+        log.scrollTop = log.scrollHeight;
+      }
+      console.log(line);
     }
 
     function escapeHtml(value) {
@@ -240,8 +260,11 @@
     }
 
     async function fetchText(url, label) {
+      logDebug(`URL ${label}: ${url}`);
       const response = await fetch(url);
       const text = await response.text();
+      logDebug(`${label} HTTP ${response.status} chars=${text.length}`);
+      logDebug(`Preview ${label}: ${text.slice(0, 220).replace(/\s+/g, ' ')}`);
       if (!response.ok) throw new Error(`${label} failed (${response.status}): ${text.slice(0, 220)}`);
       if (text.trim().startsWith('{')) throw new Error(`${label} returned JSON instead of XML: ${text.slice(0, 220)}`);
       return text;
@@ -368,8 +391,10 @@
     async function fetchPublisherDetails(collectionItems) {
       const details = new Map();
       const idBatches = chunk(collectionItems.map(item => item.id), 20);
+      checkedBatchCount = idBatches.length;
       for (let i = 0; i < idBatches.length; i++) {
         const ids = idBatches[i];
+        logDebug(`Thing batch ${i + 1}/${idBatches.length} ids=${ids.join(',')}`);
         setStatus(`<span class="spinner"></span>Checking publisher links ${Math.min((i + 1) * 20, collectionItems.length)}/${collectionItems.length}...`);
         const xml = await fetchText(`${helper}?endpoint=thing&id=${encodeURIComponent(ids.join(','))}&stats=1`, 'Thing API');
         parseThingPublishers(xml).forEach((publishers, id) => details.set(id, publishers));
@@ -390,6 +415,9 @@
       btn.disabled = true;
       btn.innerHTML = '<span class="spinner"></span>Running';
       rows = [];
+      debugLines = [];
+      checkedBatchCount = 0;
+      logDebug(`Starting match publisherId=${publisherId} username=${username}`);
       renderTable();
 
       try {
@@ -402,12 +430,12 @@
         setStatus('<span class="spinner"></span>Parsing collection and preparing detail batches...');
         const collectionMap = parseCollection(collectionXml);
         const collectionItems = Array.from(collectionMap.values()).filter(item => selectedFlagMatch(item.flags));
+        logDebug(`Parsed collection items=${collectionMap.size}; selected for checking=${collectionItems.length}`);
         const publisherDetails = await fetchPublisherDetails(collectionItems);
 
-        rows = collectionItems.flatMap(collection => {
+        rows = collectionItems.map(collection => {
           const publishers = publisherDetails.get(collection.id) || [];
           const match = publishers.find(pub => pub.id === publisherId);
-          if (!match) return [];
           const flags = collection.flags || null;
           return {
             id: collection.id,
@@ -415,7 +443,8 @@
             year: collection.year || '',
             status: classify(flags),
             collectionFlags: flagText(flags),
-            publisher: match.name,
+            publisher: match?.name || '',
+            isPublisherMatch: Boolean(match),
             publisherCount: publishers.length,
             publisherNames: publishers.map(pub => pub.name),
             flags
@@ -427,7 +456,9 @@
         updateStats();
         renderTable();
         const publisherLabel = document.getElementById('publisherName').value.trim() || `Publisher ${publisherId}`;
-        setStatus(`Done. ${publisherLabel}: ${rows.length} matching collection items found across ${collectionItems.length} checked games.`);
+        const matchCount = rows.filter(row => row.isPublisherMatch).length;
+        logDebug(`Join complete. Collection=${rows.length} InBoth=${matchCount} Batches=${checkedBatchCount}`);
+        setStatus(`Done. ${publisherLabel}: ${matchCount} games in both across ${collectionItems.length} checked collection games.`);
       } catch (err) {
         console.error(err);
         setStatus(err.message || 'Unknown error while running match.', true);
@@ -452,10 +483,9 @@
     function filteredRows() {
       const term = document.getElementById('filter').value.trim().toLowerCase();
       return rows.filter(r => {
-        const tabOk = currentTab === 'all'
-          || (currentTab === 'owned' && r.status === 'Owned')
-          || (currentTab === 'interest' && r.status === 'Wishlist / Want')
-          || (currentTab === 'missing' && r.status === 'In Collection');
+        const tabOk = currentTab === 'collection'
+          || (currentTab === 'publisher' && r.isPublisherMatch)
+          || (currentTab === 'both' && r.isPublisherMatch);
         if (!tabOk) return false;
         if (!term) return true;
         return [r.name, r.id, r.status, r.collectionFlags, r.publisher, r.publisherCount, ...(r.publisherNames || []), r.year].join(' ').toLowerCase().includes(term);
@@ -480,12 +510,12 @@
       const body = document.getElementById('tbody');
       const data = filteredRows();
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="7" class="empty">No results yet. Run a publisher match to fill this table.</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="empty">No results yet. Run a publisher match to fill this table.</td></tr>';
         updateStats();
         return;
       }
       if (!data.length) {
-        body.innerHTML = '<tr><td colspan="7" class="empty">No rows match this view/filter.</td></tr>';
+        body.innerHTML = '<tr><td colspan="8" class="empty">No rows match this view/filter.</td></tr>';
         return;
       }
 
@@ -495,6 +525,7 @@
           <td>${escapeHtml(r.id)}</td>
           <td>${statusPill(r.status)}</td>
           <td>${escapeHtml(r.collectionFlags || '—')}</td>
+          <td>${escapeHtml(r.publisher || '—')}</td>
           <td>${publisherDetails(r)}</td>
           <td>${escapeHtml(r.year || '—')}</td>
           <td><a href="https://boardgamegeek.com/boardgame/${encodeURIComponent(r.id)}" target="_blank" rel="noopener">Open BGG</a></td>
@@ -503,10 +534,11 @@
     }
 
     function updateStats() {
-      document.getElementById('statPublisher').textContent = rows.length;
-      document.getElementById('statOwned').textContent = rows.filter(r => r.status === 'Owned').length;
-      document.getElementById('statInterest').textContent = rows.filter(r => r.status === 'Wishlist / Want').length;
-      document.getElementById('statMissing').textContent = rows.filter(r => r.status === 'In Collection').length;
+      const matches = rows.filter(r => r.isPublisherMatch);
+      document.getElementById('statPublisher').textContent = matches.length;
+      document.getElementById('statOwned').textContent = rows.length;
+      document.getElementById('statInterest').textContent = matches.filter(r => r.status === 'Owned').length;
+      document.getElementById('statMissing').textContent = checkedBatchCount;
     }
 
     function downloadCsv() {
@@ -514,10 +546,11 @@
         setStatus('Nothing to export yet. Run the match first.', true);
         return;
       }
-      const header = ['BGG ID', 'Game', 'Status', 'Collection Flags', 'Publisher Count', 'Publishers', 'Matched Publisher', 'Year', 'BGG URL'];
+      const header = ['BGG ID', 'Game', 'In Both', 'Status', 'Collection Flags', 'Publisher Count', 'Publishers', 'Matched Publisher', 'Year', 'BGG URL'];
       const csvRows = [header, ...filteredRows().map(r => [
         r.id,
         r.name,
+        r.isPublisherMatch ? 'Yes' : 'No',
         r.status,
         r.collectionFlags,
         r.publisherCount,
