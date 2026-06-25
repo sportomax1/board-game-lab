@@ -105,6 +105,10 @@
     @keyframes spin { to { transform: rotate(360deg); } }
     .error { color: #fecaca; }
     .small { font-size: 11px; color: var(--dim); margin-top: 8px; line-height: 1.5; }
+    details.publisher-details summary { cursor: pointer; color: #c7d2fe; font-weight: 900; list-style: none; }
+    details.publisher-details summary::-webkit-details-marker { display: none; }
+    .publisher-list { margin-top: 7px; display: flex; flex-wrap: wrap; gap: 5px; max-width: 320px; }
+    .publisher-chip { border: 1px solid var(--border2); background: rgba(255,255,255,0.05); color: var(--muted); border-radius: 999px; padding: 4px 7px; font-size: 10px; font-weight: 800; }
   </style>
 </head>
 <body>
@@ -202,6 +206,7 @@
               <th onclick="sortBy('id')">BGG ID</th>
               <th onclick="sortBy('status')">Match Status</th>
               <th onclick="sortBy('collectionFlags')">Collection Flags</th>
+              <th onclick="sortBy('publisherCount')">Publishers</th>
               <th onclick="sortBy('year')">Year</th>
               <th>BGG Link</th>
             </tr>
@@ -345,10 +350,16 @@
       xml.querySelectorAll('item').forEach(item => {
         const id = getAttr(item, 'id');
         if (!id) return;
+        const seen = new Set();
         const publishers = Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(link => ({
           id: getAttr(link, 'id'),
           name: getAttr(link, 'value')
-        }));
+        })).filter(pub => {
+          const key = `${pub.id}:${pub.name}`;
+          if (!pub.id || seen.has(key)) return false;
+          seen.add(key);
+          return true;
+        });
         map.set(id, publishers);
       });
       return map;
@@ -405,6 +416,8 @@
             status: classify(flags),
             collectionFlags: flagText(flags),
             publisher: match.name,
+            publisherCount: publishers.length,
+            publisherNames: publishers.map(pub => pub.name),
             flags
           };
         });
@@ -445,7 +458,7 @@
           || (currentTab === 'missing' && r.status === 'In Collection');
         if (!tabOk) return false;
         if (!term) return true;
-        return [r.name, r.id, r.status, r.collectionFlags, r.year].join(' ').toLowerCase().includes(term);
+        return [r.name, r.id, r.status, r.collectionFlags, r.publisher, r.publisherCount, ...(r.publisherNames || []), r.year].join(' ').toLowerCase().includes(term);
       }).sort((a, b) => String(a[sortKey] || '').localeCompare(String(b[sortKey] || ''), undefined, { numeric: true }) * sortDir);
     }
 
@@ -456,16 +469,23 @@
       return '<span class="pill neutral">In Collection</span>';
     }
 
+    function publisherDetails(row) {
+      const names = row.publisherNames || [];
+      const label = `${row.publisherCount || names.length || 0} publisher${(row.publisherCount || names.length) === 1 ? '' : 's'}`;
+      const chips = names.map(name => `<span class="publisher-chip">${escapeHtml(name)}</span>`).join('');
+      return `<details class="publisher-details"><summary>${escapeHtml(label)}</summary><div class="publisher-list">${chips}</div></details>`;
+    }
+
     function renderTable() {
       const body = document.getElementById('tbody');
       const data = filteredRows();
       if (!rows.length) {
-        body.innerHTML = '<tr><td colspan="6" class="empty">No results yet. Run a publisher match to fill this table.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="empty">No results yet. Run a publisher match to fill this table.</td></tr>';
         updateStats();
         return;
       }
       if (!data.length) {
-        body.innerHTML = '<tr><td colspan="6" class="empty">No rows match this view/filter.</td></tr>';
+        body.innerHTML = '<tr><td colspan="7" class="empty">No rows match this view/filter.</td></tr>';
         return;
       }
 
@@ -475,6 +495,7 @@
           <td>${escapeHtml(r.id)}</td>
           <td>${statusPill(r.status)}</td>
           <td>${escapeHtml(r.collectionFlags || '—')}</td>
+          <td>${publisherDetails(r)}</td>
           <td>${escapeHtml(r.year || '—')}</td>
           <td><a href="https://boardgamegeek.com/boardgame/${encodeURIComponent(r.id)}" target="_blank" rel="noopener">Open BGG</a></td>
         </tr>
@@ -493,12 +514,15 @@
         setStatus('Nothing to export yet. Run the match first.', true);
         return;
       }
-      const header = ['BGG ID', 'Game', 'Status', 'Collection Flags', 'Year', 'BGG URL'];
+      const header = ['BGG ID', 'Game', 'Status', 'Collection Flags', 'Publisher Count', 'Publishers', 'Matched Publisher', 'Year', 'BGG URL'];
       const csvRows = [header, ...filteredRows().map(r => [
         r.id,
         r.name,
         r.status,
         r.collectionFlags,
+        r.publisherCount,
+        (r.publisherNames || []).join('; '),
+        r.publisher,
         r.year,
         `https://boardgamegeek.com/boardgame/${r.id}`
       ])];
