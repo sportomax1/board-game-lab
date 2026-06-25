@@ -67,7 +67,8 @@
     input:focus, select:focus { border-color: rgba(99,102,241,0.55); box-shadow: 0 0 0 3px rgba(99,102,241,0.11); }
     .row { display: grid; grid-template-columns: repeat(2, 1fr); gap: 12px; }
     @media (max-width: 640px) { .row { grid-template-columns: 1fr; } }
-    .checks { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 10px 0 16px; }
+    .checks { display: grid; grid-template-columns: repeat(4, 1fr); gap: 8px; margin: 10px 0 16px; }
+    @media (max-width: 760px) { .checks { grid-template-columns: repeat(2, 1fr); } }
     .check { display: flex; align-items: center; justify-content: space-between; background: var(--surface2); border: 1px solid var(--border); border-radius: 13px; padding: 10px 12px; color: var(--muted); font-size: 12px; font-weight: 750; }
     .check input { width: 16px; height: 16px; accent-color: var(--accent); }
     .actions { display: flex; gap: 10px; flex-wrap: wrap; }
@@ -169,9 +170,13 @@
         <label>Collection Flags</label>
         <div class="checks">
           <div class="check"><span>Owned</span><input id="flagOwn" type="checkbox" checked></div>
-          <div class="check"><span>Wishlist</span><input id="flagWishlist" type="checkbox"></div>
-          <div class="check"><span>Want to Buy</span><input id="flagWantBuy" type="checkbox"></div>
-          <div class="check"><span>Want to Play</span><input id="flagWantPlay" type="checkbox"></div>
+          <div class="check"><span>Prev Owned</span><input id="flagPrevOwned" type="checkbox" checked></div>
+          <div class="check"><span>Wishlist</span><input id="flagWishlist" type="checkbox" checked></div>
+          <div class="check"><span>Want</span><input id="flagWant" type="checkbox" checked></div>
+          <div class="check"><span>Want to Buy</span><input id="flagWantBuy" type="checkbox" checked></div>
+          <div class="check"><span>Want to Play</span><input id="flagWantPlay" type="checkbox" checked></div>
+          <div class="check"><span>Preordered</span><input id="flagPreordered" type="checkbox" checked></div>
+          <div class="check"><span>For Trade</span><input id="flagForTrade" type="checkbox" checked></div>
         </div>
 
         <div class="actions">
@@ -235,6 +240,13 @@
     let sortDir = 1;
 
     const helper = '/api/bgg-helper';
+    const THING_BATCH_SIZE = 20;
+    const PARALLEL_THING_BATCHES = 100;
+    const RECOVERY_PARALLEL_THING_BATCHES = 20;
+    const FINAL_PARALLEL_THING_BATCHES = 5;
+    const PRIMARY_BATCH_ATTEMPTS = 1;
+    const RECOVERY_BATCH_ATTEMPTS = 2;
+    const FINAL_BATCH_ATTEMPTS = 3;
 
     function setStatus(message, isError = false) {
       document.getElementById('status').innerHTML = isError ? `<span class="error">${escapeHtml(message)}</span>` : message;
@@ -313,6 +325,8 @@
         const status = item.querySelector('status');
         const flags = {
           own: getAttr(status, 'own') === '1',
+          prevowned: getAttr(status, 'prevowned') === '1',
+          want: getAttr(status, 'want') === '1',
           wishlist: getAttr(status, 'wishlist') === '1',
           wanttobuy: getAttr(status, 'wanttobuy') === '1',
           wanttoplay: getAttr(status, 'wanttoplay') === '1',
@@ -334,6 +348,8 @@
       if (!flags) return '';
       const list = [];
       if (flags.own) list.push('Owned');
+      if (flags.prevowned) list.push('Prev Owned');
+      if (flags.want) list.push('Want');
       if (flags.wishlist) list.push('Wishlist');
       if (flags.wanttobuy) list.push('Want Buy');
       if (flags.wanttoplay) list.push('Want Play');
@@ -345,18 +361,26 @@
     function classify(flags) {
       if (!flags) return 'Missing';
       if (flags.own) return 'Owned';
-      if (flags.wishlist || flags.wanttobuy || flags.wanttoplay || flags.preordered) return 'Wishlist / Want';
+      if (flags.wishlist || flags.want || flags.wanttobuy || flags.wanttoplay || flags.preordered) return 'Wishlist / Want';
+      if (flags.prevowned) return 'Prev Owned';
+      if (flags.fortrade) return 'For Trade';
       return 'In Collection';
     }
 
     function selectedFlagMatch(flags) {
       const checks = [
         ['flagOwn', 'own'],
+        ['flagPrevOwned', 'prevowned'],
         ['flagWishlist', 'wishlist'],
+        ['flagWant', 'want'],
         ['flagWantBuy', 'wanttobuy'],
-        ['flagWantPlay', 'wanttoplay']
+        ['flagWantPlay', 'wanttoplay'],
+        ['flagPreordered', 'preordered'],
+        ['flagForTrade', 'fortrade']
       ];
       const anyChecked = checks.some(([id]) => document.getElementById(id).checked);
+      const allChecked = checks.every(([id]) => document.getElementById(id).checked);
+      if (allChecked) return true;
       if (!anyChecked) return true;
       return checks.some(([id, key]) => document.getElementById(id).checked && flags?.[key]);
     }
@@ -390,16 +414,64 @@
 
     async function fetchPublisherDetails(collectionItems) {
       const details = new Map();
-      const idBatches = chunk(collectionItems.map(item => item.id), 20);
+      const idBatches = chunk(collectionItems.map(item => item.id), THING_BATCH_SIZE)
+        .map((ids, index) => ({ ids, batchNumber: index + 1 }));
       checkedBatchCount = idBatches.length;
-      for (let i = 0; i < idBatches.length; i++) {
-        const ids = idBatches[i];
-        logDebug(`Thing batch ${i + 1}/${idBatches.length} ids=${ids.join(',')}`);
-        setStatus(`<span class="spinner"></span>Checking publisher links ${Math.min((i + 1) * 20, collectionItems.length)}/${collectionItems.length}...`);
-        const xml = await fetchText(`${helper}?endpoint=thing&id=${encodeURIComponent(ids.join(','))}&stats=1`, 'Thing API');
-        parseThingPublishers(xml).forEach((publishers, id) => details.set(id, publishers));
-        await new Promise(resolve => setTimeout(resolve, 150));
+      logDebug(`Thing batch plan: ${idBatches.length} batches, ${THING_BATCH_SIZE} IDs/batch, ${PARALLEL_THING_BATCHES} parallel batches`);
+      const resolvedBatches = new Set();
+
+      async function fetchThingBatch(batch, maxAttempts) {
+        let lastError = null;
+        for (let attempt = 1; attempt <= maxAttempts; attempt++) {
+          try {
+            const xml = await fetchText(`${helper}?endpoint=thing&id=${encodeURIComponent(batch.ids.join(','))}&stats=1`, `Thing API batch ${batch.batchNumber} attempt ${attempt}`);
+            parseThingPublishers(xml).forEach((publishers, id) => details.set(id, publishers));
+            return true;
+          } catch (err) {
+            lastError = err;
+            logDebug(`Thing batch ${batch.batchNumber} attempt ${attempt} failed: ${err.message || err}`);
+            if (attempt < maxAttempts) {
+              await new Promise(resolve => setTimeout(resolve, 900 * attempt + Math.random() * 600));
+            }
+          }
+        }
+        logDebug(`Thing batch ${batch.batchNumber} failed after ${maxAttempts} attempts: ${lastError?.message || lastError}`);
+        return false;
       }
+
+      async function runBatchPass(queue, parallelLimit, maxAttempts, label) {
+        const failedBatches = [];
+        const groups = chunk(queue, parallelLimit);
+        for (let groupIndex = 0; groupIndex < groups.length; groupIndex++) {
+          const group = groups[groupIndex];
+          logDebug(`${label} group ${groupIndex + 1}/${groups.length}: ${group.length} parallel batches`);
+          setStatus(`<span class="spinner"></span>Checking publisher links ${Math.min(resolvedBatches.size * THING_BATCH_SIZE, collectionItems.length)}/${collectionItems.length} (${label}, ${group.length} parallel batches)...`);
+
+          await Promise.all(group.map(async batch => {
+            logDebug(`Thing batch ${batch.batchNumber}/${idBatches.length} ids=${batch.ids.join(',')}`);
+            const ok = await fetchThingBatch(batch, maxAttempts);
+            if (ok) resolvedBatches.add(batch.batchNumber);
+            else failedBatches.push(batch);
+          }));
+
+          setStatus(`<span class="spinner"></span>Checking publisher links ${Math.min(resolvedBatches.size * THING_BATCH_SIZE, collectionItems.length)}/${collectionItems.length}${failedBatches.length ? ` (${failedBatches.length} failed batches)` : ''}...`);
+        }
+        return failedBatches;
+      }
+
+      let failedBatches = await runBatchPass(idBatches, PARALLEL_THING_BATCHES, PRIMARY_BATCH_ATTEMPTS, 'Primary 100x pass');
+      if (failedBatches.length) {
+        logDebug(`Primary pass left ${failedBatches.length} failed batches. Retrying with ${RECOVERY_PARALLEL_THING_BATCHES} parallel batches.`);
+        failedBatches = await runBatchPass(failedBatches, RECOVERY_PARALLEL_THING_BATCHES, RECOVERY_BATCH_ATTEMPTS, 'Recovery pass');
+      }
+      if (failedBatches.length) {
+        logDebug(`Recovery pass left ${failedBatches.length} failed batches. Retrying with ${FINAL_PARALLEL_THING_BATCHES} parallel batches.`);
+        failedBatches = await runBatchPass(failedBatches, FINAL_PARALLEL_THING_BATCHES, FINAL_BATCH_ATTEMPTS, 'Final pass');
+      }
+      if (failedBatches.length) {
+        logDebug(`Publisher detail fetch finished with ${failedBatches.length} failed batches.`);
+      }
+
       return details;
     }
 
