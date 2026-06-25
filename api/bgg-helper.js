@@ -42,7 +42,7 @@ module.exports = async (req, res) => {
     delete params.endpoint; // Remove endpoint from params
 
     if (!endpoint) {
-        const errorMsg = 'E-400: Missing endpoint parameter. Supported: collection, thing, search, user, hot, geeklist, plays, family';
+        const errorMsg = 'E-400: Missing endpoint parameter. Supported: collection, thing, search, user, hot, geeklist, plays, family, forumlist, thread, browse, page, boardgame_v1, collection_v1, boardgamefamily_v1, boardgamepublisher_v1';
         console.error(errorMsg);
         console.log('--- END: BGG Helper Failed (400) ---');
         return res.status(400).json({ 
@@ -56,14 +56,47 @@ module.exports = async (req, res) => {
     // 3. Build the BGG URL based on endpoint
     let bggUrl;
     const paramString = new URLSearchParams(params).toString();
+
+    const requireLegacyId = (label) => {
+        const id = params.id;
+        if (!id) {
+            const errorMsg = `E-400: Missing id parameter for ${label}.`;
+            console.error(errorMsg);
+            console.log('--- END: BGG Helper Failed (400) ---');
+            res.status(400).json({
+                status: 400,
+                step: 'Parameter Check',
+                error: 'Bad Request',
+                message: errorMsg
+            });
+            return null;
+        }
+        return String(id);
+    };
+
+    const queryWithout = (...keys) => {
+        const next = { ...params };
+        keys.forEach(key => delete next[key]);
+        return new URLSearchParams(next).toString();
+    };
     
     switch (endpoint.toLowerCase()) {
         case 'collection':
             bggUrl = `https://boardgamegeek.com/xmlapi2/collection?${paramString}&wait=1`;
             break;
+        case 'collection_v1':
+            bggUrl = `https://boardgamegeek.com/xmlapi/collection?${paramString}`;
+            break;
         case 'thing':
             bggUrl = `https://boardgamegeek.com/xmlapi2/thing?${paramString}&wait=1`;
             break;
+        case 'boardgame_v1': {
+            const id = requireLegacyId('boardgame_v1');
+            if (!id) return;
+            const qs = queryWithout('id');
+            bggUrl = `https://boardgamegeek.com/xmlapi/boardgame/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`;
+            break;
+        }
         case 'search':
             bggUrl = `https://boardgamegeek.com/xmlapi2/search?${paramString}`;
             break;
@@ -88,6 +121,20 @@ module.exports = async (req, res) => {
         case 'family':
             bggUrl = `https://boardgamegeek.com/xmlapi2/family?${paramString}`;
             break;
+        case 'boardgamefamily_v1': {
+            const id = requireLegacyId('boardgamefamily_v1');
+            if (!id) return;
+            const qs = queryWithout('id');
+            bggUrl = `https://boardgamegeek.com/xmlapi/boardgamefamily/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`;
+            break;
+        }
+        case 'boardgamepublisher_v1': {
+            const id = requireLegacyId('boardgamepublisher_v1');
+            if (!id) return;
+            const qs = queryWithout('id');
+            bggUrl = `https://boardgamegeek.com/xmlapi/boardgamepublisher/${encodeURIComponent(id)}${qs ? `?${qs}` : ''}`;
+            break;
+        }
         case 'forumlist':
             bggUrl = `https://boardgamegeek.com/xmlapi2/forumlist?${paramString}`;
             break;
@@ -118,7 +165,7 @@ module.exports = async (req, res) => {
             bggUrl = pageUrl;
             break;
         default:
-            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, thing, search, user, hot, geeklist, plays, family, forumlist, thread, browse, page`;
+            const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, collection_v1, thing, boardgame_v1, search, user, hot, geeklist, plays, family, boardgamefamily_v1, boardgamepublisher_v1, forumlist, thread, browse, page`;
             console.error(errorMsg);
             console.log('--- END: BGG Helper Failed (400) ---');
             return res.status(400).json({ 
@@ -131,7 +178,7 @@ module.exports = async (req, res) => {
 
     console.log(`Endpoint: ${endpoint}, URL: ${bggUrl}`);
     
-    const MAX_BGG_RETRIES = 3;
+    const MAX_BGG_RETRIES = 5;
 
     for (let attempt = 0; attempt < MAX_BGG_RETRIES; attempt++) {
         try {

@@ -123,12 +123,12 @@
     <section class="hero">
       <div class="panel intro">
         <div class="eyebrow">Find overlap fast</div>
-        <h1>Which publisher games are already in a BGG collection?</h1>
-        <p class="lead">Enter a BoardGameGeek publisher ID and collection username. This app pulls publisher games, pulls the user collection, joins on BGG ID, then splits results into owned, wishlist/want, and missing.</p>
+        <h1>Which collection games match a BGG publisher?</h1>
+        <p class="lead">Enter a BoardGameGeek publisher ID and collection username. This app pulls the user collection, checks publisher links from BGG thing details, then splits matching results into owned, wishlist/want, and other collection statuses.</p>
         <div class="flow">
-          <span class="chip">1. Publisher API</span>
-          <span class="chip">2. Collection API</span>
-          <span class="chip">3. Join by objectid</span>
+          <span class="chip">1. Collection API</span>
+          <span class="chip">2. Thing API batches</span>
+          <span class="chip">3. Match publisher links</span>
           <span class="chip">4. Sort + export</span>
         </div>
       </div>
@@ -152,10 +152,10 @@
           <div class="field">
             <label for="defaultTab">Start View</label>
             <select id="defaultTab">
-              <option value="all">All Publisher Games</option>
+              <option value="all">All Matches</option>
               <option value="owned">Owned Matches</option>
               <option value="interest">Wishlist / Want</option>
-              <option value="missing">Missing</option>
+              <option value="missing">In Collection</option>
             </select>
           </div>
         </div>
@@ -163,9 +163,9 @@
         <label>Collection Flags</label>
         <div class="checks">
           <div class="check"><span>Owned</span><input id="flagOwn" type="checkbox" checked></div>
-          <div class="check"><span>Wishlist</span><input id="flagWishlist" type="checkbox" checked></div>
-          <div class="check"><span>Want to Buy</span><input id="flagWantBuy" type="checkbox" checked></div>
-          <div class="check"><span>Want to Play</span><input id="flagWantPlay" type="checkbox" checked></div>
+          <div class="check"><span>Wishlist</span><input id="flagWishlist" type="checkbox"></div>
+          <div class="check"><span>Want to Buy</span><input id="flagWantBuy" type="checkbox"></div>
+          <div class="check"><span>Want to Play</span><input id="flagWantPlay" type="checkbox"></div>
         </div>
 
         <div class="actions">
@@ -173,15 +173,15 @@
           <button class="ghost" onclick="downloadCsv()">Export CSV</button>
         </div>
         <div class="status" id="status">Ready. Add a publisher ID and hit Run Match.</div>
-        <div class="small">Uses your existing Vercel helper: <code>/api/bgg-helper</code>. Publisher uses the helper's page proxy so it works even without a dedicated legacy endpoint.</div>
+        <div class="small">Uses your existing Vercel helper: <code>/api/bgg-helper</code>. Publisher matches are detected from <code>boardgamepublisher</code> links in BGG thing details.</div>
       </div>
     </section>
 
     <section class="stats">
-      <div class="stat"><div class="num" id="statPublisher">0</div><div class="lab">Publisher Games</div></div>
+      <div class="stat"><div class="num" id="statPublisher">0</div><div class="lab">Publisher Matches</div></div>
       <div class="stat"><div class="num" id="statOwned">0</div><div class="lab">Owned Matches</div></div>
       <div class="stat"><div class="num" id="statInterest">0</div><div class="lab">Wishlist / Want</div></div>
-      <div class="stat"><div class="num" id="statMissing">0</div><div class="lab">Missing</div></div>
+      <div class="stat"><div class="num" id="statMissing">0</div><div class="lab">In Collection</div></div>
     </section>
 
     <section class="panel">
@@ -190,7 +190,7 @@
           <button class="tab active" data-tab="all" onclick="setTab('all')">All</button>
           <button class="tab" data-tab="owned" onclick="setTab('owned')">Owned</button>
           <button class="tab" data-tab="interest" onclick="setTab('interest')">Wishlist / Want</button>
-          <button class="tab" data-tab="missing" onclick="setTab('missing')">Missing</button>
+          <button class="tab" data-tab="missing" onclick="setTab('missing')">In Collection</button>
         </div>
         <input class="searchbox" id="filter" oninput="renderTable()" placeholder="Filter games, IDs, statuses...">
       </div>
@@ -321,11 +321,57 @@
       return 'In Collection';
     }
 
+    function selectedFlagMatch(flags) {
+      const checks = [
+        ['flagOwn', 'own'],
+        ['flagWishlist', 'wishlist'],
+        ['flagWantBuy', 'wanttobuy'],
+        ['flagWantPlay', 'wanttoplay']
+      ];
+      const anyChecked = checks.some(([id]) => document.getElementById(id).checked);
+      if (!anyChecked) return true;
+      return checks.some(([id, key]) => document.getElementById(id).checked && flags?.[key]);
+    }
+
+    function chunk(array, size) {
+      const chunks = [];
+      for (let i = 0; i < array.length; i += size) chunks.push(array.slice(i, i + size));
+      return chunks;
+    }
+
+    function parseThingPublishers(xmlText) {
+      const xml = parseXml(xmlText);
+      const map = new Map();
+      xml.querySelectorAll('item').forEach(item => {
+        const id = getAttr(item, 'id');
+        if (!id) return;
+        const publishers = Array.from(item.querySelectorAll('link[type="boardgamepublisher"]')).map(link => ({
+          id: getAttr(link, 'id'),
+          name: getAttr(link, 'value')
+        }));
+        map.set(id, publishers);
+      });
+      return map;
+    }
+
+    async function fetchPublisherDetails(collectionItems) {
+      const details = new Map();
+      const idBatches = chunk(collectionItems.map(item => item.id), 20);
+      for (let i = 0; i < idBatches.length; i++) {
+        const ids = idBatches[i];
+        setStatus(`<span class="spinner"></span>Checking publisher links ${Math.min((i + 1) * 20, collectionItems.length)}/${collectionItems.length}...`);
+        const xml = await fetchText(`${helper}?endpoint=thing&id=${encodeURIComponent(ids.join(','))}&stats=1`, 'Thing API');
+        parseThingPublishers(xml).forEach((publishers, id) => details.set(id, publishers));
+        await new Promise(resolve => setTimeout(resolve, 150));
+      }
+      return details;
+    }
+
     async function runMatch() {
       const publisherId = document.getElementById('publisherId').value.trim();
       const username = document.getElementById('username').value.trim();
       if (!publisherId || !username) {
-        setStatus('Publisher ID and collection username are required. Tiny input goblin says no.', true);
+        setStatus('Publisher ID and collection username are required.', true);
         return;
       }
 
@@ -336,35 +382,29 @@
       renderTable();
 
       try {
-        const collectionParams = new URLSearchParams({ endpoint: 'collection', username, stats: '1' });
-        if (document.getElementById('flagOwn').checked) collectionParams.set('own', '1');
-        if (document.getElementById('flagWishlist').checked) collectionParams.set('wishlist', '1');
-        if (document.getElementById('flagWantBuy').checked) collectionParams.set('wanttobuy', '1');
-        if (document.getElementById('flagWantPlay').checked) collectionParams.set('wanttoplay', '1');
-
-        const publisherUrl = `https://boardgamegeek.com/xmlapi/boardgamepublisher/${encodeURIComponent(publisherId)}`;
-        const publisherProxy = `${helper}?endpoint=page&url=${encodeURIComponent(publisherUrl)}`;
+        const collectionParams = new URLSearchParams({ endpoint: 'collection', username, stats: '1', subtype: 'boardgame' });
         const collectionProxy = `${helper}?${collectionParams.toString()}`;
 
-        setStatus('<span class="spinner"></span>Fetching publisher games and collection XML...');
-        const [publisherXml, collectionXml] = await Promise.all([
-          fetchText(publisherProxy, 'Publisher API'),
-          fetchText(collectionProxy, 'Collection API')
-        ]);
+        setStatus('<span class="spinner"></span>Fetching collection XML...');
+        const collectionXml = await fetchText(collectionProxy, 'Collection API');
 
-        setStatus('<span class="spinner"></span>Parsing XML and joining by BGG ID...');
-        const publisherGames = parsePublisherGames(publisherXml);
+        setStatus('<span class="spinner"></span>Parsing collection and preparing detail batches...');
         const collectionMap = parseCollection(collectionXml);
+        const collectionItems = Array.from(collectionMap.values()).filter(item => selectedFlagMatch(item.flags));
+        const publisherDetails = await fetchPublisherDetails(collectionItems);
 
-        rows = publisherGames.map(game => {
-          const collection = collectionMap.get(game.id);
-          const flags = collection?.flags || null;
+        rows = collectionItems.flatMap(collection => {
+          const publishers = publisherDetails.get(collection.id) || [];
+          const match = publishers.find(pub => pub.id === publisherId);
+          if (!match) return [];
+          const flags = collection.flags || null;
           return {
-            id: game.id,
-            name: game.name,
-            year: game.year || collection?.year || '',
+            id: collection.id,
+            name: collection.name || `BGG ${collection.id}`,
+            year: collection.year || '',
             status: classify(flags),
             collectionFlags: flagText(flags),
+            publisher: match.name,
             flags
           };
         });
@@ -374,7 +414,7 @@
         updateStats();
         renderTable();
         const publisherLabel = document.getElementById('publisherName').value.trim() || `Publisher ${publisherId}`;
-        setStatus(`Done. ${publisherLabel}: ${publisherGames.length} publisher games joined against ${collectionMap.size} collection items.`);
+        setStatus(`Done. ${publisherLabel}: ${rows.length} matching collection items found across ${collectionItems.length} checked games.`);
       } catch (err) {
         console.error(err);
         setStatus(err.message || 'Unknown error while running match.', true);
@@ -402,7 +442,7 @@
         const tabOk = currentTab === 'all'
           || (currentTab === 'owned' && r.status === 'Owned')
           || (currentTab === 'interest' && r.status === 'Wishlist / Want')
-          || (currentTab === 'missing' && r.status === 'Missing');
+          || (currentTab === 'missing' && r.status === 'In Collection');
         if (!tabOk) return false;
         if (!term) return true;
         return [r.name, r.id, r.status, r.collectionFlags, r.year].join(' ').toLowerCase().includes(term);
@@ -445,7 +485,7 @@
       document.getElementById('statPublisher').textContent = rows.length;
       document.getElementById('statOwned').textContent = rows.filter(r => r.status === 'Owned').length;
       document.getElementById('statInterest').textContent = rows.filter(r => r.status === 'Wishlist / Want').length;
-      document.getElementById('statMissing').textContent = rows.filter(r => r.status === 'Missing').length;
+      document.getElementById('statMissing').textContent = rows.filter(r => r.status === 'In Collection').length;
     }
 
     function downloadCsv() {
