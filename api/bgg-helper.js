@@ -3,7 +3,8 @@
 // Load environment variables from .env file for local development
 if (process.env.NODE_ENV !== 'production') {
     try {
-        require('dotenv').config();
+        require('dotenv').config({ path: '.env.local', quiet: true });
+        require('dotenv').config({ quiet: true });
     } catch (e) {
         console.warn('dotenv not available, using system environment variables');
     }
