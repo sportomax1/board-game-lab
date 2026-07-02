@@ -1,0 +1,407 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Game Versions</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #f8fafc;
+    }
+
+    .game-card {
+      transition: all 0.2s ease;
+    }
+
+    .game-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+    }
+
+    .skeleton {
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
+    }
+  </style>
+</head>
+<body class="pb-20">
+
+  <header class="sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-4 shadow-sm">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-emerald-600 text-white p-2 rounded-lg">
+          <i class="fa-solid fa-boxes-stacked"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Game Versions</h1>
+          <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Editions & Languages</p>
+        </div>
+      </div>
+      <div id="statsBox" class="text-right hidden">
+        <div class="text-2xl font-bold text-emerald-600" id="gameCount">0</div>
+        <div class="text-[10px] text-slate-500 uppercase font-bold">Versions</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto p-4 space-y-6">
+    
+    <!-- Fetch Section -->
+    <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+      <h2 class="text-xl font-bold mb-4">Load Collection</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">BGG Username</label>
+          <input 
+            id="username" 
+            type="text" 
+            value="sportomax" 
+            class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+          >
+        </div>
+        <button 
+          onclick="fetchCollection()" 
+          id="fetchBtn"
+          class="w-full bg-emerald-600 text-white py-4 rounded-xl font-bold hover:bg-emerald-700 shadow-lg shadow-emerald-100 flex items-center justify-center gap-2"
+        >
+          <i class="fa-solid fa-download"></i> Load Games
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading Section -->
+    <div id="loadingSection" class="hidden">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <i class="fa-solid fa-circle-notch fa-spin text-emerald-600 text-2xl"></i>
+          <span class="font-bold text-slate-700">Loading collection...</span>
+        </div>
+        <div class="text-sm text-slate-500 text-center" id="loadingStatus">Fetching games...</div>
+        <div class="mt-4 bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div id="progressBar" class="bg-emerald-600 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Filters and Sort -->
+    <div id="controlsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+      <div class="flex flex-col sm:flex-row gap-3">
+        <input 
+          type="text" 
+          id="searchInput" 
+          placeholder="Search games or versions..." 
+          oninput="filterGames()"
+          class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all"
+        >
+        <select 
+          id="sortSelect" 
+          onchange="sortGames()" 
+          class="px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-emerald-500 outline-none transition-all bg-white font-medium text-sm"
+        >
+          <option value="name">Name: A-Z</option>
+          <option value="versions-desc">Versions: Most First</option>
+          <option value="year-desc">Year: Newest First</option>
+          <option value="year-asc">Year: Oldest First</option>
+        </select>
+      </div>
+    </div>
+
+    <!-- Games List -->
+    <div id="gamesSection" class="hidden space-y-3">
+      <!-- Games will be populated here -->
+    </div>
+
+  </main>
+
+<script>
+let allGames = [];
+let displayedGames = [];
+let isLoading = false;
+
+async function fetchCollection() {
+  const username = document.getElementById('username').value.trim() || 'sportomax';
+  const fetchBtn = document.getElementById('fetchBtn');
+  const fetchSection = document.getElementById('fetchSection');
+  const loadingSection = document.getElementById('loadingSection');
+  const controlsSection = document.getElementById('controlsSection');
+  const gamesSection = document.getElementById('gamesSection');
+  const statsBox = document.getElementById('statsBox');
+  
+  fetchBtn.disabled = true;
+  loadingSection.classList.remove('hidden');
+  
+  try {
+    isLoading = true;
+    
+    // Fetch collection
+    updateLoadingStatus('Fetching collection...');
+    const collXml = await fetchAPI('collection', username, '&stats=1&own=1');
+    const doc = new DOMParser().parseFromString(collXml, 'text/xml');
+    const items = Array.from(doc.querySelectorAll('item'));
+    
+    const gameIds = items.map(item => item.getAttribute('objectid'));
+    
+    updateLoadingStatus(`Found ${gameIds.length} games. Loading versions...`);
+    
+    // Show UI
+    fetchSection.classList.add('hidden');
+    controlsSection.classList.remove('hidden');
+    gamesSection.classList.remove('hidden');
+    statsBox.classList.remove('hidden');
+    
+    allGames = [];
+    displayedGames = [];
+    
+    // Fetch thing API with versions in batches with 10x parallel processing
+    const batchSize = 20;
+    const parallelBatches = 10;
+    const batches = [];
+    for (let i = 0; i < gameIds.length; i += batchSize) {
+      batches.push(gameIds.slice(i, i + batchSize));
+    }
+    
+    const gamesMap = {};
+    
+    // Process batches in parallel groups
+    for (let i = 0; i < batches.length; i += parallelBatches) {
+      const batchGroup = batches.slice(i, i + parallelBatches);
+      updateLoadingStatus(`Loading versions ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`);
+      updateProgress((Math.min(i + parallelBatches, batches.length) / batches.length) * 100);
+      
+      await Promise.all(batchGroup.map(async (batch) => {
+        const ids = batch.join(',');
+        
+        try {
+          const thingXml = await fetchAPI('thing', ids, '&type=boardgame&versions=1');
+          const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+          
+          // Process boardgames and their versions
+          Array.from(thingDoc.querySelectorAll('item[type="boardgame"]')).forEach(item => {
+            const gameId = item.getAttribute('id');
+            const nameElem = item.querySelector('name[type="primary"]');
+            const gameName = nameElem ? nameElem.getAttribute('value') : 'Unknown';
+            const gameThumb = item.querySelector('thumbnail')?.textContent || '';
+            
+            if (!gamesMap[gameId]) {
+              gamesMap[gameId] = {
+                gameId,
+                gameName,
+                thumb: gameThumb,
+                versions: []
+              };
+            }
+          });
+          
+          // Get all version items
+          const versionItems = thingDoc.querySelectorAll('item[type="boardgameversion"]');
+          
+          Array.from(versionItems).forEach(version => {
+            const gameLink = version.querySelector('link[type="boardgameversion"][inbound="true"]');
+            if (!gameLink) return;
+            
+            const gameId = gameLink.getAttribute('id');
+            if (!gamesMap[gameId]) return;
+            
+            const versionId = version.getAttribute('id');
+            const versionName = version.querySelector('name[type="primary"]')?.getAttribute('value') || 'Standard';
+            const versionThumb = version.querySelector('thumbnail')?.textContent || gamesMap[gameId].thumb;
+            const yearPublished = version.querySelector('yearpublished')?.getAttribute('value') || '';
+            
+            const languages = Array.from(version.querySelectorAll('link[type="language"]'))
+              .map(l => l.getAttribute('value'));
+            
+            const publishers = Array.from(version.querySelectorAll('link[type="boardgamepublisher"]'))
+              .map(p => p.getAttribute('value'));
+            
+            gamesMap[gameId].versions.push({
+              versionId,
+              versionName,
+              thumb: versionThumb,
+              year: yearPublished,
+              languages: languages.join(', '),
+              publishers: publishers.join(', ')
+            });
+          });
+          
+        } catch (e) {
+          console.error('Batch error:', e);
+        }
+      }));
+      
+      // Update display after each parallel group
+      allGames = Object.values(gamesMap);
+      document.getElementById('gameCount').textContent = allGames.reduce((sum, g) => sum + g.versions.length, 0);
+      displayedGames = [...allGames];
+      sortGames();
+      
+      await wait(500);
+    }
+    
+    updateLoadingStatus('Complete!');
+    updateProgress(100);
+    isLoading = false;
+    
+    // Hide loading indicator
+    setTimeout(() => {
+      loadingSection.classList.add('hidden');
+    }, 500);
+    
+  } catch (e) {
+    console.error(e);
+    alert('Failed to fetch collection. Please try again.');
+    fetchBtn.disabled = false;
+    loadingSection.classList.add('hidden');
+  }
+}
+
+function updateLoadingStatus(msg) {
+  document.getElementById('loadingStatus').textContent = msg;
+}
+
+function updateProgress(percent) {
+  document.getElementById('progressBar').style.width = percent + '%';
+}
+
+function filterGames() {
+  const search = document.getElementById('searchInput').value.toLowerCase();
+  displayedGames = allGames.filter(g => 
+    g.gameName.toLowerCase().includes(search) ||
+    g.versions.some(v => v.versionName.toLowerCase().includes(search) || v.languages.toLowerCase().includes(search))
+  );
+  sortGames();
+}
+
+function sortGames() {
+  const sortBy = document.getElementById('sortSelect').value;
+  
+  if (sortBy === 'name') {
+    displayedGames.sort((a, b) => a.gameName.localeCompare(b.gameName));
+  } else if (sortBy === 'versions-desc') {
+    displayedGames.sort((a, b) => b.versions.length - a.versions.length);
+  } else if (sortBy === 'year-desc') {
+    displayedGames.sort((a, b) => {
+      const yearA = Math.max(...a.versions.map(v => parseInt(v.year) || 0));
+      const yearB = Math.max(...b.versions.map(v => parseInt(v.year) || 0));
+      return yearB - yearA;
+    });
+  } else if (sortBy === 'year-asc') {
+    displayedGames.sort((a, b) => {
+      const yearA = Math.min(...a.versions.map(v => parseInt(v.year) || 9999));
+      const yearB = Math.min(...b.versions.map(v => parseInt(v.year) || 9999));
+      return yearA - yearB;
+    });
+  }
+  
+  renderGames();
+}
+
+function renderGames() {
+  const container = document.getElementById('gamesSection');
+  container.innerHTML = '';
+  
+  if (displayedGames.length === 0) {
+    container.innerHTML = '<div class="text-center text-slate-400 py-8">No games found</div>';
+    return;
+  }
+  
+  displayedGames.forEach(game => {
+    const card = document.createElement('div');
+    card.className = 'game-card bg-white rounded-xl shadow-sm border border-slate-100 p-4';
+    
+    card.innerHTML = `
+      <div class="flex gap-4 mb-3 cursor-pointer" onclick="window.open('https://boardgamegeek.com/boardgame/${game.gameId}', '_blank')">
+        <img 
+          src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" 
+          alt="${game.gameName}"
+          class="w-16 h-16 rounded-lg object-cover bg-slate-200 flex-shrink-0"
+          onerror="this.style.display='none'"
+        >
+        <div class="flex-1 min-w-0">
+          <h3 class="font-bold text-slate-900 mb-1">${game.gameName}</h3>
+          <div class="text-xs text-slate-500">
+            <span class="bg-emerald-100 text-emerald-700 px-2 py-1 rounded font-bold">${game.versions.length} version${game.versions.length !== 1 ? 's' : ''}</span>
+          </div>
+        </div>
+      </div>
+      
+      ${game.versions.length > 0 ? `
+        <div class="space-y-2 pl-4 border-l-2 border-slate-200">
+          ${game.versions.slice(0, 5).map(v => `
+            <div class="text-sm bg-slate-50 rounded-lg p-2 border border-slate-100">
+              <div class="font-semibold text-slate-700">${v.versionName}</div>
+              ${v.year ? `<div class="text-xs text-slate-500">📅 ${v.year}</div>` : ''}
+              ${v.languages ? `<div class="text-xs text-slate-500">🌐 ${v.languages}</div>` : ''}
+              ${v.publishers ? `<div class="text-xs text-slate-400">🏢 ${v.publishers}</div>` : ''}
+            </div>
+          `).join('')}
+          ${game.versions.length > 5 ? `
+            <div class="text-xs text-slate-400 italic pl-2">+ ${game.versions.length - 5} more versions</div>
+          ` : ''}
+        </div>
+      ` : ''}
+    `;
+    
+    container.appendChild(card);
+  });
+}
+
+async function fetchAPI(endpoint, user, queryParams = '') {
+  if (endpoint === 'thing') {
+    let url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(user)}${queryParams}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        await wait(1500 * Math.pow(2, attempt));
+        continue;
+      }
+      if (res.status === 202) {
+        await wait(3000);
+        continue;
+      }
+      if (res.ok) {
+        return await res.text();
+      }
+      await wait(2000);
+    }
+    throw new Error('Failed to fetch from BGG API');
+  } else {
+    if (!user || user.trim() === '') {
+      throw new Error('Username is required');
+    }
+    let url = `/api/bgg-helper?endpoint=${endpoint}&username=${encodeURIComponent(user)}${queryParams}`;
+    for (let attempt = 0; attempt < 5; attempt++) {
+      let res;
+      try {
+        res = await fetch(url);
+      } catch (e) {
+        await wait(1000 * Math.pow(2, attempt));
+        continue;
+      }
+      if (res.status === 202) {
+        await wait(2000);
+        continue;
+      }
+      if (res.ok) return await res.text();
+      await wait(1500);
+    }
+    throw new Error('Failed to fetch from BGG API');
+  }
+}
+
+function wait(ms) {
+  return new Promise(r => setTimeout(r, ms));
+}
+</script>
+</body>
+</html>

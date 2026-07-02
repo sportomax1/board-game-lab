@@ -1,0 +1,557 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Dice Tower Ranked Lists</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background-color: #f8fafc; }
+    .game-card { transition: all 0.2s ease; }
+    .game-card:hover { transform: translateY(-2px); box-shadow: 0 8px 16px rgba(0,0,0,0.08); }
+    .skeleton { animation: pulse 2s cubic-bezier(0.4,0,0.6,1) infinite; }
+    @keyframes pulse { 0%,100%{opacity:1} 50%{opacity:.5} }
+    .modal { display:none; position:fixed; inset:0; background:rgba(0,0,0,0.7); z-index:1000; align-items:center; justify-content:center; }
+    .modal.active { display:flex; }
+    .modal-content { background:white; border-radius:16px; width:95%; max-width:900px; max-height:90vh; overflow-y:auto; animation:fadeIn 0.3s ease; box-shadow:0 20px 60px rgba(0,0,0,0.3); }
+    @keyframes fadeIn { from{opacity:0; transform:scale(0.95)} to{opacity:1; transform:scale(1)} }
+  </style>
+</head>
+<body class="pb-20">
+
+  <!-- Sticky Header -->
+  <header class="sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-3 shadow-sm">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-purple-600 text-white p-2 rounded-lg"><i class="fa-solid fa-ranking-star"></i></div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Dice Tower Lists</h1>
+          <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Top 100 Ranked Games</p>
+        </div>
+      </div>
+      <div class="flex items-center gap-2">
+        <button onclick="loadCSV()" class="bg-purple-600 hover:bg-purple-700 text-white px-3 py-2 rounded-lg text-sm font-bold transition">
+          <i class="fa-solid fa-rotate"></i>
+        </button>
+        <button onclick="openCompareModal()" class="bg-blue-600 hover:bg-blue-700 text-white px-3 py-2 rounded-lg text-sm font-bold transition">
+          <i class="fa-solid fa-scale-balanced"></i> Compare
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto p-4 space-y-4">
+
+    <!-- Person Filter + Stats -->
+    <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-4">
+      <div class="flex flex-col sm:flex-row gap-3 items-center">
+        <select id="personSelect" onchange="renderList()" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-purple-500 outline-none bg-white font-medium text-sm w-full">
+          <option value="__all__">All Lists</option>
+        </select>
+        <div id="statsBox" class="text-right hidden">
+          <span class="text-sm font-bold text-purple-600" id="gameCount">0</span>
+          <span class="text-[10px] text-slate-500 uppercase font-bold ml-1">entries</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Loading -->
+    <div id="loadingSection" class="hidden">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+        <div class="flex items-center justify-center gap-3 mb-3">
+          <i class="fa-solid fa-circle-notch fa-spin text-purple-600 text-2xl"></i>
+          <span class="font-bold text-slate-700" id="loadingStatus">Loading...</span>
+        </div>
+        <div class="bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div id="progressBar" class="bg-purple-600 h-full transition-all duration-300" style="width:0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Games List -->
+    <div id="gamesSection" class="space-y-3"></div>
+
+  </main>
+
+  <!-- Compare Modal -->
+  <div id="compareModal" class="modal">
+    <div class="modal-content p-0">
+      <div class="sticky top-0 bg-gradient-to-r from-blue-600 to-purple-600 text-white p-4 flex justify-between items-center shadow-lg rounded-t-[16px]">
+        <h2 class="text-lg font-bold"><i class="fa-solid fa-scale-balanced mr-2"></i>Compare with Collection</h2>
+        <button onclick="closeCompareModal()" class="text-2xl hover:opacity-80">✕</button>
+      </div>
+      <div class="p-4 sm:p-6">
+        <div class="flex gap-2 mb-4">
+          <input id="compareUsername" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-blue-500 outline-none text-sm">
+          <button onclick="runCompare()" class="bg-blue-600 hover:bg-blue-700 text-white px-4 py-2 rounded-lg text-sm font-bold transition">
+            <i class="fa-solid fa-magnifying-glass"></i> Go
+          </button>
+        </div>
+        <p class="text-[10px] text-slate-500 mb-4 italic">Full points: owned | Half points: played or previously owned</p>
+        <div id="compareContent" class="text-sm text-slate-700">
+          <div class="text-slate-400 text-center py-8">Enter a BGG username and tap Go</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+const CSV_PATH = './dicetower.csv';
+const API_BASE = '/api/bgg-helper';
+
+let allEntries = [];
+let people = [];
+let gameCache = {};
+let isLoading = false;
+
+/* ────────── CSV Loading ────────── */
+async function loadCSV() {
+  const text = await fetch(CSV_PATH).then(r => r.text());
+  const lines = text.split(/\r?\n/).map(l => l.trim()).filter(l => l.length > 0);
+  allEntries = [];
+  for (const line of lines) {
+    const cols = line.split(',');
+    if (cols.length < 4) continue;
+    const name = cols[0].trim();
+    const year = cols[1].trim();
+    const rank = cols[2].trim();
+    const game = cols.slice(3).join(',').trim();
+    if (/^(person|name)$/i.test(name) && /^year$/i.test(year)) continue;
+    allEntries.push({ name, year, rank: parseInt(rank) || 0, game, bggId: '', thumb: '', bggName: '' });
+  }
+
+  const pSet = new Set();
+  allEntries.forEach(e => pSet.add(`${e.name} • ${e.year}`));
+  people = Array.from(pSet);
+
+  const sel = document.getElementById('personSelect');
+  sel.innerHTML = '<option value="__all__">All Lists</option>';
+  people.forEach(p => {
+    const opt = document.createElement('option');
+    opt.value = p; opt.textContent = p;
+    sel.appendChild(opt);
+  });
+
+  document.getElementById('statsBox').classList.remove('hidden');
+  renderList();
+  await resolveAllBGG();
+}
+
+/* ────────── Render List ────────── */
+function renderList() {
+  const sel = document.getElementById('personSelect').value;
+  let entries = allEntries;
+  if (sel !== '__all__') {
+    const [pName, pYear] = sel.split(' • ');
+    entries = allEntries.filter(e => e.name === pName && e.year === pYear);
+  }
+  entries = entries.slice().sort((a, b) => a.rank - b.rank);
+  document.getElementById('gameCount').textContent = entries.length;
+
+  const container = document.getElementById('gamesSection');
+  container.innerHTML = '';
+
+  entries.forEach(entry => {
+    const card = document.createElement('div');
+    card.className = 'game-card bg-white rounded-xl shadow-sm border border-slate-100 p-4';
+    if (entry.bggId) card.style.cursor = 'pointer';
+    card.onclick = () => { if (entry.bggId) window.open(`https://boardgamegeek.com/boardgame/${entry.bggId}`, '_blank'); };
+
+    const thumbSrc = entry.thumb || placeholderSVG();
+    const rc = entry.rank <= 10 ? 'bg-amber-100 text-amber-800 border-amber-300' :
+               entry.rank <= 25 ? 'bg-purple-50 text-purple-700 border-purple-200' :
+               'bg-slate-100 text-slate-600 border-slate-200';
+
+    card.innerHTML = `
+      <div class="flex gap-4">
+        <div class="relative flex-shrink-0">
+          <img src="${thumbSrc}" alt="${entry.game}" class="w-16 h-16 rounded-lg object-cover bg-slate-200" onerror="this.style.display='none'">
+          <div class="absolute -top-2 -left-2 ${rc} border text-[11px] font-bold px-1.5 py-0.5 rounded-md shadow-sm">#${entry.rank}</div>
+        </div>
+        <div class="flex-1 min-w-0">
+          <h3 class="font-bold text-slate-900 text-sm truncate">${entry.bggName || entry.game}</h3>
+          <div class="text-xs text-slate-500 mt-0.5">${entry.name} • ${entry.year}</div>
+          ${entry.bggId ? `<div class="text-[10px] text-slate-400 mt-1">BGG: ${entry.bggId}</div>` : ''}
+        </div>
+      </div>
+    `;
+    container.appendChild(card);
+  });
+}
+
+/* ────────── BGG Resolution (efficient batched) ────────── */
+/* ────────── Concurrent Execution Helper ────────── */
+async function runConcurrent(tasks, maxConcurrent = 100) {
+  const results = [];
+  let index = 0;
+
+  async function worker() {
+    while (index < tasks.length) {
+      const taskIdx = index++;
+      try {
+        results[taskIdx] = await tasks[taskIdx]();
+      } catch (e) {
+        results[taskIdx] = undefined;
+      }
+    }
+  }
+
+  const workers = Array(Math.min(maxConcurrent, tasks.length)).fill(null).map(() => worker());
+  await Promise.all(workers);
+  return results;
+}
+
+async function resolveAllBGG() {
+  isLoading = true;
+  document.getElementById('loadingSection').classList.remove('hidden');
+
+  const uniqueGames = {};
+  allEntries.forEach(e => {
+    const key = normalize(e.game);
+    if (!uniqueGames[key]) uniqueGames[key] = e.game;
+  });
+  const gameNames = Object.values(uniqueGames);
+  updateStatus(`Searching BGG for ${gameNames.length} unique games…`);
+
+  // Search games with 100x concurrency
+  let searchedCount = 0;
+  let lastProgressUpdate = 0;
+  const searchTasks = gameNames.map(g => () => 
+    searchBGG(g).finally(() => {
+      searchedCount++;
+      // Batch progress updates: only update every 250ms to avoid UI thrashing
+      const now = Date.now();
+      if (now - lastProgressUpdate > 250 || searchedCount === gameNames.length) {
+        lastProgressUpdate = now;
+        updateProgress((searchedCount / gameNames.length) * 50);
+        updateStatus(`Searched ${searchedCount}/${gameNames.length} games…`);
+      }
+    })
+  );
+  await runConcurrent(searchTasks, 100);
+
+  allEntries.forEach(e => {
+    const cached = gameCache[normalize(e.game)];
+    if (cached) { e.bggId = cached.bggId; e.bggName = cached.bggName; }
+  });
+  renderList();
+
+  // Batch fetch thumbnails: 20 IDs per batch, 100x concurrent batches
+  const uniqueIds = [...new Set(allEntries.filter(e => e.bggId).map(e => e.bggId))];
+  updateStatus(`Fetching thumbnails for ${uniqueIds.length} games…`);
+  const BATCH_SIZE = 20;
+  const batches = [];
+  for (let i = 0; i < uniqueIds.length; i += BATCH_SIZE) {
+    batches.push(uniqueIds.slice(i, i + BATCH_SIZE));
+  }
+
+  // Fetch thumbnails with 100x concurrent batches
+  const thumbTasks = batches.map((batch, batchIndex) => async () => {
+    try {
+      const ids = batch.join(',');
+      const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}`);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      Array.from(doc.querySelectorAll('item')).forEach(item => {
+        const id = item.getAttribute('id');
+        const thumb = item.querySelector('thumbnail')?.textContent || '';
+        for (const key of Object.keys(gameCache)) {
+          if (gameCache[key].bggId === id) { gameCache[key].thumb = thumb; break; }
+        }
+      });
+    } catch (e) { console.error('Batch thumb error', e); }
+  });
+
+  let thumbsCompleted = 0;
+  let lastThumbUpdate = 0;
+  const thumbTasksWithProgress = batches.map((batch, batchIndex) => async () => {
+    try {
+      const ids = batch.join(',');
+      const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(ids)}`);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      Array.from(doc.querySelectorAll('item')).forEach(item => {
+        const id = item.getAttribute('id');
+        const thumb = item.querySelector('thumbnail')?.textContent || '';
+        for (const key of Object.keys(gameCache)) {
+          if (gameCache[key].bggId === id) { gameCache[key].thumb = thumb; break; }
+        }
+      });
+    } catch (e) { console.error('Batch thumb error', e); }
+    finally {
+      thumbsCompleted++;
+      // Batch progress updates: only update every 250ms
+      const now = Date.now();
+      if (now - lastThumbUpdate > 250 || thumbsCompleted === batches.length) {
+        lastThumbUpdate = now;
+        updateProgress(50 + ((thumbsCompleted / batches.length) * 50));
+        updateStatus(`Thumbnails ${thumbsCompleted}/${batches.length} batches…`);
+      }
+    }
+  });
+
+  await runConcurrent(thumbTasksWithProgress, 100);
+
+  allEntries.forEach(e => {
+    const cached = gameCache[normalize(e.game)];
+    if (cached) { e.thumb = cached.thumb; }
+  });
+  renderList();
+
+  isLoading = false;
+  updateStatus('Complete!');
+  updateProgress(100);
+  setTimeout(() => { document.getElementById('loadingSection').classList.add('hidden'); }, 600);
+}
+
+async function searchBGG(gameName) {
+  const key = normalize(gameName);
+  if (gameCache[key]) return;
+  try {
+    const xml = await fetchWithRetry(`${API_BASE}?endpoint=search&query=${encodeURIComponent(gameName)}`);
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    const items = Array.from(doc.querySelectorAll('item'));
+    let chosen = null;
+    for (const it of items) {
+      const n = it.querySelector('name');
+      const val = n ? (n.getAttribute('value') || n.textContent || '') : '';
+      if (normalize(val) === key) { chosen = it; break; }
+    }
+    if (!chosen && items.length > 0) chosen = items[0];
+    if (chosen) {
+      const id = chosen.getAttribute('id') || '';
+      const n = chosen.querySelector('name');
+      const bggName = n ? (n.getAttribute('value') || n.textContent || gameName) : gameName;
+      gameCache[key] = { bggId: id, bggName, thumb: '' };
+    } else {
+      gameCache[key] = { bggId: '', bggName: gameName, thumb: '' };
+    }
+  } catch (e) {
+    gameCache[key] = { bggId: '', bggName: gameName, thumb: '' };
+  }
+}
+
+/* ────────── Compare Modal ────────── */
+function openCompareModal() {
+  document.getElementById('compareModal').classList.add('active');
+}
+function closeCompareModal() {
+  document.getElementById('compareModal').classList.remove('active');
+}
+
+async function runCompare() {
+  const username = document.getElementById('compareUsername').value.trim() || 'sportomax';
+  const content = document.getElementById('compareContent');
+  content.innerHTML = '<div class="text-center py-8 text-slate-500"><i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Fetching collection…</div>';
+
+  try {
+    // Fetch full collection (NO own=1 filter) to get all metadata
+    const xml = await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}`);
+    const doc = new DOMParser().parseFromString(xml, 'text/xml');
+    const ownedMap = {};
+    Array.from(doc.querySelectorAll('item')).forEach(item => {
+      const id = item.getAttribute('objectid');
+      const status = item.querySelector('status');
+      const own = status ? status.getAttribute('own') : '0';
+      const prevowned = status ? status.getAttribute('prevowned') : '0';
+      const numplaysNode = item.querySelector('numplays');
+      const numplays = numplaysNode ? parseInt(numplaysNode.textContent) || 0 : 0;
+      ownedMap[id] = { own, prevowned, numplays };
+    });
+
+    if (isLoading) {
+      content.innerHTML = '<div class="text-center py-4 text-slate-500">Still resolving BGG IDs… try again shortly.</div>';
+      return;
+    }
+
+    const groups = {};
+    allEntries.forEach(e => {
+      const key = `${e.name}||${e.year}`;
+      if (!groups[key]) groups[key] = { name: e.name, year: e.year, items: [] };
+      groups[key].items.push(e);
+    });
+
+    const results = [];
+    for (const g of Object.values(groups)) {
+      const maxRank = Math.max(...g.items.map(i => i.rank || 0), 100);
+      let ownCount = 0, prevownedCount = 0, playedCount = 0, totalPlays = 0;
+      let ownScore = 0, playScore = 0, dynamicScore = 0;
+      const matchedGames = [];
+      
+      g.items.forEach(item => {
+        if (item.bggId && ownedMap[item.bggId]) {
+          const info = ownedMap[item.bggId];
+          const pts = maxRank + 1 - item.rank;
+          
+          if (info.own === '1') {
+            ownCount++;
+            ownScore += pts;
+            dynamicScore += pts;
+            matchedGames.push({ 
+              game: item.bggName || item.game, 
+              rank: item.rank, 
+              thumb: item.thumb,
+              own: true,
+              prevowned: false,
+              plays: 0
+            });
+          } else if (info.numplays > 0) {
+            playedCount++;
+            totalPlays += info.numplays;
+            playScore += pts;
+            dynamicScore += pts * 0.5;
+            matchedGames.push({ 
+              game: item.bggName || item.game, 
+              rank: item.rank, 
+              thumb: item.thumb,
+              own: false,
+              prevowned: false,
+              plays: info.numplays
+            });
+          } else if (info.prevowned === '1') {
+            prevownedCount++;
+            dynamicScore += pts * 0.5;
+            matchedGames.push({ 
+              game: item.bggName || item.game, 
+              rank: item.rank, 
+              thumb: item.thumb,
+              own: false,
+              prevowned: true,
+              plays: 0
+            });
+          }
+        }
+      });
+      
+      matchedGames.sort((a, b) => a.rank - b.rank);
+      results.push({ 
+        name: g.name, 
+        year: g.year, 
+        total: g.items.length, 
+        ownCount, 
+        prevownedCount, 
+        playedCount, 
+        totalPlays,
+        ownScore: ownScore.toFixed(1), 
+        playScore: playScore.toFixed(1), 
+        dynamicScore: dynamicScore.toFixed(1),
+        matchedGames 
+      });
+    }
+
+    // Default sort by dynamicScore
+    results.sort((a, b) => parseFloat(b.dynamicScore) - parseFloat(a.dynamicScore));
+
+    // Render sortable leaderboard
+    let html = `
+      <div class="mb-4 flex gap-2 flex-wrap text-xs">
+        <button onclick="sortCompareResults('dynamicScore')" class="px-2 py-1 rounded bg-purple-100 text-purple-700 font-bold hover:bg-purple-200">↓ Dynamic</button>
+        <button onclick="sortCompareResults('ownScore')" class="px-2 py-1 rounded bg-blue-100 text-blue-700 font-bold hover:bg-blue-200">↓ Own Score</button>
+        <button onclick="sortCompareResults('playScore')" class="px-2 py-1 rounded bg-green-100 text-green-700 font-bold hover:bg-green-200">↓ Play Score</button>
+        <button onclick="sortCompareResults('ownCount')" class="px-2 py-1 rounded bg-amber-100 text-amber-700 font-bold hover:bg-amber-200">↓ Owned #</button>
+        <button onclick="sortCompareResults('playedCount')" class="px-2 py-1 rounded bg-indigo-100 text-indigo-700 font-bold hover:bg-indigo-200">↓ Played #</button>
+        <button onclick="sortCompareResults('totalPlays')" class="px-2 py-1 rounded bg-rose-100 text-rose-700 font-bold hover:bg-rose-200">↓ Total Plays</button>
+      </div>
+      <div id="compareResultsTable" class="space-y-2"></div>
+    `;
+    content.innerHTML = html;
+    window.compareResults = results; // Store for sorting
+    renderCompareResults(results);
+  } catch (e) {
+    content.innerHTML = `<div class="text-center py-8 text-red-600">Error: ${e.message}</div>`;
+  }
+}
+
+function renderCompareResults(results) {
+  const container = document.getElementById('compareResultsTable');
+  container.innerHTML = '';
+  
+  results.forEach((r, idx) => {
+    const medal = idx === 0 ? '🥇' : idx === 1 ? '🥈' : idx === 2 ? '🥉' : `#${idx + 1}`;
+    const html = `
+      <div class="bg-white rounded-lg border border-slate-200 shadow-sm overflow-hidden">
+        <div class="p-3 cursor-pointer hover:bg-slate-50" onclick="this.nextElementSibling.classList.toggle('hidden')">
+          <div class="flex items-center justify-between">
+            <div class="flex items-center gap-3 flex-1 min-w-0">
+              <div class="text-lg font-bold">${medal}</div>
+              <div class="min-w-0">
+                <div class="font-bold text-sm">${r.name} <span class="text-slate-400 font-normal text-xs">${r.year}</span></div>
+                <div class="text-xs text-slate-600">Owned: ${r.ownCount} | Played: ${r.playedCount} | Prev: ${r.prevownedCount}</div>
+              </div>
+            </div>
+            <div class="flex gap-3 text-right text-xs">
+              <div><div class="font-bold text-purple-600">${r.dynamicScore}</div><div class="text-slate-500">dyn</div></div>
+              <div><div class="font-bold text-blue-600">${r.ownScore}</div><div class="text-slate-500">own</div></div>
+              <div><div class="font-bold text-green-600">${r.playScore}</div><div class="text-slate-500">play</div></div>
+              <div><div class="font-bold text-rose-600">${r.totalPlays}</div><div class="text-slate-500">plays</div></div>
+            </div>
+          </div>
+        </div>
+        <div class="hidden border-t border-slate-100 bg-slate-50 p-3 space-y-1 max-h-72 overflow-y-auto">
+          ${r.matchedGames.map(mg => `
+            <div class="flex items-center gap-2 text-xs pb-1 border-b border-slate-200 last:border-0">
+              ${mg.thumb ? `<img src="${mg.thumb}" class="w-6 h-6 rounded object-cover bg-slate-200 flex-shrink-0">` : '<div class="w-6 h-6 bg-slate-200 rounded flex-shrink-0"></div>'}
+              <div class="flex-1 truncate">${mg.game}</div>
+              <div class="text-slate-500 text-[10px] font-bold w-8 text-right">#${mg.rank}</div>
+              ${mg.own ? '<div class="text-blue-600 text-[10px] font-bold">OWN</div>' : ''}
+              ${mg.plays > 0 ? `<div class="text-green-600 text-[10px] font-bold">${mg.plays}x</div>` : ''}
+              ${mg.prevowned ? '<div class="text-amber-600 text-[10px] font-bold">PREV</div>' : ''}
+            </div>
+          `).join('')}
+        </div>
+      </div>
+    `;
+    container.innerHTML += html;
+  });
+}
+
+function sortCompareResults(sortBy) {
+  const results = window.compareResults || [];
+  let sortFn;
+  
+  if (sortBy === 'dynamicScore') {
+    sortFn = (a, b) => parseFloat(b.dynamicScore) - parseFloat(a.dynamicScore);
+  } else if (sortBy === 'ownScore') {
+    sortFn = (a, b) => parseFloat(b.ownScore) - parseFloat(a.ownScore);
+  } else if (sortBy === 'playScore') {
+    sortFn = (a, b) => parseFloat(b.playScore) - parseFloat(a.playScore);
+  } else if (sortBy === 'ownCount') {
+    sortFn = (a, b) => b.ownCount - a.ownCount;
+  } else if (sortBy === 'playedCount') {
+    sortFn = (a, b) => b.playedCount - a.playedCount;
+  } else if (sortBy === 'totalPlays') {
+    sortFn = (a, b) => b.totalPlays - a.totalPlays;
+  }
+  
+  results.sort(sortFn);
+  renderCompareResults(results);
+}
+
+/* ────────── Utilities ────────── */
+async function fetchWithRetry(url, maxRetries = 5) {
+  for (let attempt = 0; attempt < maxRetries; attempt++) {
+    try {
+      const res = await fetch(url);
+      if (res.status === 202) { await wait(3000); continue; }
+      if (res.ok) return await res.text();
+      await wait(2000);
+    } catch (e) { await wait(1500 * Math.pow(2, attempt)); }
+  }
+  throw new Error('Failed to fetch from BGG API');
+}
+
+function wait(ms) { return new Promise(r => setTimeout(r, ms)); }
+function normalize(s) { return (s || '').toLowerCase().replace(/[^a-z0-9 ]+/g, '').replace(/\s+/g, ' ').trim(); }
+function updateStatus(msg) { document.getElementById('loadingStatus').textContent = msg; }
+function updateProgress(pct) { document.getElementById('progressBar').style.width = pct + '%'; }
+function placeholderSVG() {
+  return 'data:image/svg+xml;utf8,' + encodeURIComponent(`<svg xmlns="http://www.w3.org/2000/svg" width="64" height="64"><rect width="100%" height="100%" fill="#f1f5f9"/><text x="50%" y="50%" dominant-baseline="middle" text-anchor="middle" fill="#94a3b8" font-size="20">🎲</text></svg>`);
+}
+
+// Auto-load
+loadCSV();
+</script>
+<!-- Vercel Web Analytics -->
+<script type="module" src="analytics-init.js"></script>
+</body>
+</html>

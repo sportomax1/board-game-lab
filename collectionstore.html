@@ -1,0 +1,788 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Data Vault</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns=%22http://www.w3.org/2000/svg%22 viewBox=%220 0 100 100%22><text y=%22.9em%22 font-size=%2290%22>🏛️</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script src="https://cdn.jsdelivr.net/npm/@supabase/supabase-js@2"></script>
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@300;400;500;600;700;800&display=swap');
+    
+    :root {
+      --slate-950: #020617;
+      --indigo-500: #6366f1;
+      --indigo-600: #4f46e5;
+    }
+
+    body { 
+      font-family: 'Plus Jakarta Sans', sans-serif; 
+      background-color: var(--slate-950); 
+      color: #f1f5f9;
+      -webkit-font-smoothing: antialiased;
+      overflow: hidden;
+    }
+
+    .glass { 
+      background: rgba(15, 23, 42, 0.65); 
+      backdrop-filter: blur(12px); 
+      -webkit-backdrop-filter: blur(12px);
+      border: 1px solid rgba(255, 255, 255, 0.1); 
+    }
+
+    .log-box { 
+      font-family: 'JetBrains Mono', ui-monospace, monospace; 
+      scrollbar-width: thin;
+      scrollbar-color: rgba(255,255,255,0.1) transparent;
+    }
+
+    .log-box::-webkit-scrollbar { width: 4px; }
+    .log-box::-webkit-scrollbar-track { background: transparent; }
+    .log-box::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 10px; }
+
+    .data-table th {
+      background: rgba(15, 23, 42, 0.95);
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      border-bottom: 1px solid rgba(255, 255, 255, 0.1);
+    }
+    
+    .data-table tr:hover td {
+      background: rgba(99, 102, 241, 0.1) !important;
+    }
+
+    .thumb-cell img {
+      transition: transform 0.2s ease, box-shadow 0.2s ease;
+      cursor: zoom-in;
+    }
+    .thumb-cell img:hover {
+      transform: scale(3);
+      z-index: 50;
+      position: relative;
+      box-shadow: 0 0 20px rgba(0,0,0,0.8);
+      border-radius: 4px;
+    }
+
+    /* Custom Scrollbar for the table wrap */
+    #mainTableWrap::-webkit-scrollbar { width: 8px; height: 8px; }
+    #mainTableWrap::-webkit-scrollbar-track { background: rgba(15, 23, 42, 0.5); }
+    #mainTableWrap::-webkit-scrollbar-thumb { background: rgba(255,255,255,0.1); border-radius: 4px; }
+    #mainTableWrap::-webkit-scrollbar-thumb:hover { background: rgba(255,255,255,0.2); }
+
+    .btn-action {
+      transition: all 0.2s ease;
+    }
+    .btn-action:hover {
+      transform: translateY(-1px);
+    }
+
+    .sidebar-collapsed {
+      width: 0;
+      padding: 0;
+      overflow: hidden;
+      opacity: 0;
+    }
+  </style>
+</head>
+<body class="h-screen flex flex-col">
+
+  <!-- Header -->
+  <header class="h-16 border-b border-white/5 bg-slate-950/80 backdrop-blur-xl flex items-center justify-between px-6 shrink-0 z-30">
+    <div class="flex items-center gap-4">
+      <div class="w-10 h-10 rounded-xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-xl shadow-inner">🏛️</div>
+      <div>
+        <h1 class="text-lg font-bold tracking-tight text-white leading-tight">Data Vault</h1>
+        <div class="flex items-center gap-2">
+          <span id="recordCount" class="text-[10px] font-bold tracking-widest uppercase text-indigo-400">Loading collection...</span>
+        </div>
+      </div>
+    </div>
+
+    <div class="flex items-center gap-4">
+      <div class="relative group w-64 md:w-96">
+        <input id="globalSearch" type="text" placeholder="Search across all fields..." 
+          class="w-full pl-10 pr-4 py-2 rounded-xl bg-white/5 border border-white/10 text-xs text-white placeholder:text-slate-500 focus:outline-none focus:border-indigo-500/50 transition-all" />
+        <svg class="absolute left-3.5 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"></path></svg>
+      </div>
+
+      <div class="h-8 w-px bg-white/10 mx-2"></div>
+
+      <div class="flex items-center gap-2">
+        <button id="toggleSidebar" class="p-2.5 rounded-xl bg-white/5 border border-white/10 hover:bg-white/10 text-slate-400 transition-all" title="Toggle Sync Controls">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h7"></path></svg>
+        </button>
+        <div class="flex items-center gap-2 px-3 py-1.5 rounded-full bg-white/5 border border-white/10">
+          <span class="w-2 h-2 rounded-full bg-slate-600" id="statusDot"></span>
+          <span class="text-[10px] font-bold text-slate-300 uppercase tracking-tighter" id="statusLabel">OFFLINE</span>
+        </div>
+      </div>
+    </div>
+  </header>
+
+  <div class="flex flex-1 overflow-hidden">
+    <!-- Main Content Area -->
+    <main class="flex-1 flex flex-col bg-slate-950 relative overflow-hidden">
+      <!-- Toolbar -->
+      <div class="p-4 border-b border-white/5 flex items-center justify-between gap-4 bg-slate-900/40">
+        <div class="flex items-center gap-3">
+          <select id="columnFilter" class="px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 text-[10px] font-bold uppercase tracking-widest text-slate-400 focus:outline-none cursor-pointer hover:bg-white/10 transition-colors">
+            <option value="__all">ALL ATTRIBUTES</option>
+          </select>
+          <button id="refreshData" class="p-2 rounded-lg bg-indigo-600/20 text-indigo-400 border border-indigo-500/20 hover:bg-indigo-600 hover:text-white transition-all">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"></path></svg>
+          </button>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <div class="flex items-center gap-1 bg-white/5 p-1 rounded-xl border border-white/5">
+            <button id="viewTable" class="px-3 py-1.5 rounded-lg bg-indigo-600 text-white text-[10px] font-bold uppercase tracking-widest transition-all">Table</button>
+            <button id="viewGrid" class="px-3 py-1.5 rounded-lg text-slate-500 hover:text-slate-300 text-[10px] font-bold uppercase tracking-widest transition-all">Grid</button>
+          </div>
+          <button id="bulkDelete" class="px-4 py-2 bg-red-950/30 border border-red-500/20 text-red-400 text-[10px] font-bold uppercase tracking-widest rounded-xl hover:bg-red-500 hover:text-white transition-all">Purge Vault</button>
+        </div>
+      </div>
+
+      <!-- Table Container -->
+      <div id="mainTableWrap" class="flex-1 overflow-auto">
+        <table id="dataTable" class="w-full text-left border-separate border-spacing-0 data-table">
+          <thead id="tableHead"></thead>
+          <tbody id="tableBody" class="text-xs text-slate-300"></tbody>
+        </table>
+        
+        <!-- Grid Container (hidden by default) -->
+        <div id="mainGridWrap" class="hidden p-6 grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-8 gap-4"></div>
+      </div>
+    </main>
+
+    <!-- Sidebar (Sync & CRUD) -->
+    <aside id="sidebar" class="w-80 border-l border-white/5 bg-slate-900/50 backdrop-blur-md flex flex-col transition-all duration-300">
+      <div class="p-6 space-y-8 flex-1 overflow-y-auto">
+        
+        <!-- Quick Add Section -->
+        <section class="space-y-4">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-indigo-400">Direct Entry</h3>
+          <div class="space-y-3">
+            <div class="relative">
+              <input id="addIdInput" type="number" placeholder="BGG Item ID..." 
+                class="w-full px-4 py-3 rounded-xl bg-slate-950/50 border border-white/10 text-xs text-white placeholder:text-slate-600 focus:outline-none focus:border-indigo-500/50 transition-all" />
+            </div>
+            <button id="addIdBtn" class="w-full py-3 bg-emerald-600/20 border border-emerald-500/30 text-emerald-400 text-[10px] font-black uppercase tracking-[0.2em] rounded-xl hover:bg-emerald-600 hover:text-white transition-all flex items-center justify-center gap-2">
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"></path></svg>
+              Insert Record
+            </button>
+          </div>
+        </section>
+
+        <!-- Sync Engine Section -->
+        <section class="space-y-4 pt-8 border-t border-white/5">
+          <h3 class="text-[10px] font-black uppercase tracking-[0.2em] text-sky-400">Sync Engine</h3>
+          <div class="space-y-4">
+            <div class="space-y-2">
+              <label class="text-[9px] font-bold uppercase tracking-widest text-slate-500 ml-1">BGG Target User</label>
+              <input id="username" type="text" value="sportomax" 
+                class="w-full px-4 py-2.5 rounded-xl bg-slate-950/50 border border-white/10 text-xs text-white focus:outline-none transition-all" />
+            </div>
+            
+            <div class="flex items-center gap-3 px-3 py-2 rounded-xl bg-white/5 border border-white/5 group cursor-pointer">
+              <input id="replaceTable" type="checkbox" class="w-3.5 h-3.5 rounded border-slate-700 bg-slate-800 text-indigo-600 focus:ring-indigo-500 cursor-pointer">
+              <label for="replaceTable" class="text-[9px] font-bold text-slate-500 uppercase tracking-tighter cursor-pointer group-hover:text-slate-300 transition-colors">Overwrite Vault</label>
+            </div>
+
+            <button id="runSync" class="w-full py-4 bg-indigo-600 text-white text-[10px] font-black uppercase tracking-[0.2em] rounded-xl shadow-lg shadow-indigo-600/20 hover:scale-[1.02] active:scale-100 transition-all flex items-center justify-center gap-2 disabled:opacity-50 disabled:cursor-not-allowed">
+              <span>Execute Sync</span>
+              <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"></path></svg>
+            </button>
+          </div>
+        </section>
+
+        <!-- Statistics Section -->
+        <section class="space-y-4 pt-8 border-t border-white/5">
+          <div id="syncProgress" class="hidden space-y-3">
+             <div class="flex items-center justify-between px-1">
+                <span id="syncStatus" class="text-[10px] font-bold text-slate-400 uppercase">Synchronising...</span>
+                <span id="syncPct" class="text-[10px] font-mono text-indigo-400">0%</span>
+             </div>
+             <div class="w-full h-1.5 rounded-full bg-slate-950 overflow-hidden border border-white/5">
+                <div id="syncBar" class="h-full w-0 bg-indigo-500 shadow-[0_0_10px_rgba(99,102,241,0.5)] transition-all duration-300"></div>
+             </div>
+          </div>
+          
+          <div class="grid grid-cols-2 gap-3">
+            <div class="p-3 rounded-2xl bg-white/5 border border-white/5">
+              <div class="text-[8px] font-bold text-slate-500 uppercase tracking-widest mb-1">Found</div>
+              <div id="statFound" class="text-xl font-black text-white">0</div>
+            </div>
+            <div class="p-3 rounded-2xl bg-white/5 border border-white/5">
+              <div class="text-[8px] font-bold text-slate-500 uppercase tracking-widest mb-1">Stored</div>
+              <div id="statStored" class="text-xl font-black text-emerald-400">0</div>
+            </div>
+          </div>
+        </section>
+
+      </div>
+
+      <!-- Activity Log (mini) -->
+      <div class="h-48 border-t border-white/5 flex flex-col shrink-0">
+        <div class="px-4 py-2 flex items-center justify-between border-b border-white/5 bg-slate-950/50">
+          <span class="text-[9px] font-black uppercase tracking-widest text-slate-500">Live Console</span>
+          <button id="clearLog" class="text-[8px] font-bold uppercase text-slate-600 hover:text-white">Flush</button>
+        </div>
+        <div id="log" class="flex-1 p-3 overflow-y-auto log-box text-[9px] leading-relaxed text-indigo-300/60 bg-slate-950"></div>
+      </div>
+    </aside>
+  </div>
+
+  <!-- Detail Modal -->
+  <div id="detailModal" class="fixed inset-0 z-50 hidden flex items-center justify-center bg-slate-950/90 backdrop-blur-xl p-4 sm:p-8">
+    <div class="w-full max-w-5xl bg-slate-900 border border-white/10 rounded-[2.5rem] shadow-2xl flex flex-col max-h-[90vh] overflow-hidden">
+      <header class="p-6 border-b border-white/5 flex items-center justify-between">
+        <div class="flex items-center gap-4">
+          <div id="detailIcon" class="w-12 h-12 rounded-2xl bg-indigo-600/20 border border-indigo-500/30 flex items-center justify-center text-2xl">🔍</div>
+          <div>
+            <h2 id="detailName" class="text-xl font-black text-white">Item Details</h2>
+            <p id="detailMeta" class="text-[10px] font-bold text-slate-500 uppercase tracking-widest mt-1">BGG Record Data</p>
+          </div>
+        </div>
+        <button id="detailClose" class="p-3 rounded-2xl bg-white/5 border border-white/10 hover:bg-red-500/20 hover:text-red-400 transition-all">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"></path></svg>
+        </button>
+      </header>
+      <div class="flex-1 overflow-auto p-8 grid grid-cols-1 md:grid-cols-2 gap-8">
+        <div class="space-y-6">
+          <div id="detailImageWrap" class="aspect-square rounded-3xl overflow-hidden bg-slate-950 border border-white/5 shadow-2xl">
+            <img id="detailImage" class="w-full h-full object-contain" src="" alt="">
+          </div>
+          <div id="detailQuickStats" class="grid grid-cols-3 gap-3"></div>
+        </div>
+        <div class="space-y-6">
+          <div class="space-y-2">
+            <h4 class="text-[10px] font-black uppercase tracking-widest text-slate-500">Description</h4>
+            <div id="detailDesc" class="text-sm text-slate-300 leading-relaxed bg-white/5 p-4 rounded-2xl border border-white/5 max-h-48 overflow-y-auto"></div>
+          </div>
+          <div class="space-y-2">
+            <h4 class="text-[10px] font-black uppercase tracking-widest text-slate-500">Raw Attributes</h4>
+            <pre id="detailPre" class="text-[10px] font-mono text-indigo-300/80 bg-slate-950 p-4 rounded-2xl border border-white/5 overflow-x-auto"></pre>
+          </div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+<script>
+  const API_BASE = '/api/bgg-helper';
+  const TABLE_NAME = 'bgg_collection';
+  const state = {
+    db: null,
+    data: [],
+    viewMode: 'table', 
+    isSyncing: false,
+    columns: [] // Will be dynamically populated
+  };
+
+  function log(msg, type = 'info') {
+    const el = document.getElementById('log');
+    const line = document.createElement('div');
+    line.className = `mb-1 ${type === 'error' ? 'text-red-400' : ''}`;
+    const time = new Date().toLocaleTimeString('en-GB', { hour12: false, hour: '2-digit', minute: '2-digit', second: '2-digit' });
+    line.innerHTML = `<span class="opacity-30 mr-2">[${time}]</span> ${msg}`;
+    el.appendChild(line);
+    el.scrollTop = el.scrollHeight;
+  }
+
+  async function init() {
+    try {
+      const res = await fetch('/api/supabase-config');
+      const cfg = await res.json();
+      state.db = supabase.createClient(cfg.url, cfg.anonKey);
+      
+      const dot = document.getElementById('statusDot');
+      const label = document.getElementById('statusLabel');
+      dot.className = 'w-2 h-2 rounded-full bg-emerald-500 shadow-[0_0_8px_rgba(16,185,129,0.8)]';
+      label.textContent = 'OPERATIONAL';
+      label.className = 'text-[10px] font-bold text-emerald-400 uppercase tracking-tighter';
+      
+      log('System connected to Supabase.');
+      await loadData();
+    } catch (err) {
+      log('Handshake failed.', 'error');
+    }
+  }
+
+  async function loadData() {
+    log('Fetching vault contents...');
+    document.getElementById('recordCount').textContent = 'READING VAULT...';
+    
+    const { data, error, count } = await state.db
+      .from(TABLE_NAME)
+      .select('*', { count: 'exact' })
+      .order('name', { ascending: true });
+
+    if (error) {
+      log(`Load failed: ${error.message}`, 'error');
+      return;
+    }
+
+    state.data = data || [];
+    
+    // Dynamically determine columns from data
+    if (state.data.length > 0) {
+      const allKeys = Object.keys(state.data[0]);
+      // Filter out large/internal blobs, put name and thumb first
+      state.columns = allKeys.filter(k => !['xml', 'description'].includes(k));
+      
+      // Sorting: thumb first, then name, then everything else
+      state.columns.sort((a, b) => {
+        if (a === 'thumb') return -1;
+        if (b === 'thumb') return 1;
+        if (a === 'name') return -1;
+        if (b === 'name') return 1;
+        return a.localeCompare(b);
+      });
+    }
+
+    document.getElementById('recordCount').textContent = `${state.data.length.toLocaleString()} RECORDS STORED`;
+    document.getElementById('statStored').textContent = state.data.length;
+    
+    populateColumnFilter();
+    render();
+  }
+
+  function populateColumnFilter() {
+    const sel = document.getElementById('columnFilter');
+    const current = sel.value;
+    sel.innerHTML = '<option value="__all">ALL ATTRIBUTES</option>';
+    if (state.data.length > 0) {
+      Object.keys(state.data[0]).sort().forEach(k => {
+        if (['xml', 'description'].includes(k)) return;
+        const opt = document.createElement('option');
+        opt.value = k;
+        opt.textContent = k.toUpperCase().replace('_', ' ');
+        sel.appendChild(opt);
+      });
+    }
+    sel.value = current;
+  }
+
+  function render() {
+    const q = document.getElementById('globalSearch').value.toLowerCase().trim();
+    const col = document.getElementById('columnFilter').value;
+    
+    const filtered = state.data.filter(r => {
+      if (!q) return true;
+      if (col !== '__all') return String(r[col] || '').toLowerCase().includes(q);
+      return Object.entries(r).some(([k, v]) => {
+        if (k === 'xml') return false;
+        return String(v || '').toLowerCase().includes(q);
+      });
+    });
+
+    if (state.viewMode === 'table') {
+      renderTable(filtered);
+    } else {
+      renderGrid(filtered);
+    }
+  }
+
+  function renderTable(rows) {
+    document.getElementById('mainTableWrap').classList.remove('hidden');
+    document.getElementById('mainGridWrap').classList.add('hidden');
+    
+    const head = document.getElementById('tableHead');
+    const body = document.getElementById('tableBody');
+    
+    if (!state.columns.length && rows.length) {
+      state.columns = Object.keys(rows[0]).filter(k => !['xml', 'description'].includes(k));
+    }
+
+    head.innerHTML = `<tr>
+      ${state.columns.map(k => `<th class="px-6 py-4 font-black text-[9px] uppercase tracking-[0.2em] text-slate-500 border-b border-white/5 whitespace-nowrap">${k.replace(/_/g, ' ')}</th>`).join('')}
+      <th class="px-6 py-4 border-b border-white/5 text-right sticky right-0 bg-slate-950/95 z-30">Actions</th>
+    </tr>`;
+
+    body.innerHTML = rows.map(r => {
+      const cells = state.columns.map(k => {
+        const v = r[k];
+        
+        // Thumbnail special handling
+        if (k === 'thumb' || k === 'image') {
+          return `<td class="px-6 py-2 border-b border-white/5 thumb-cell min-w-[60px]"><img src="${v}" class="w-10 h-10 object-cover rounded-lg bg-slate-900 border border-white/10" loading="lazy" onclick="viewRecord(${r.bgg_id})"></td>`;
+        }
+        
+        // Name special handling
+        if (k === 'name') {
+          return `<td class="px-6 py-2 border-b border-white/5 font-bold text-white whitespace-nowrap sticky left-0 bg-slate-950/50 backdrop-blur-sm z-10">${v}</td>`;
+        }
+
+        // Array handling (categories, mechanics, etc.)
+        if (Array.isArray(v)) {
+          return `<td class="px-6 py-2 border-b border-white/5 text-[10px] text-slate-500 max-w-[200px] truncate" title="${v.join(', ')}">${v.join(', ')}</td>`;
+        }
+
+        // Numeric handling
+        if (typeof v === 'number') {
+           const isDecimal = !Number.isInteger(v);
+           const color = (k.includes('rating') || k.includes('average')) ? 'text-indigo-400 font-bold' : 'text-slate-400';
+           return `<td class="px-6 py-2 border-b border-white/5 font-mono ${color}">${isDecimal ? v.toFixed(2) : v}</td>`;
+        }
+
+        // Default handling
+        const str = String(v ?? '');
+        const isLong = str.length > 30;
+        return `<td class="px-6 py-2 border-b border-white/5 text-slate-400 ${isLong ? 'max-w-[250px] truncate' : 'whitespace-nowrap'}" title="${isLong ? str : ''}">${str}</td>`;
+      }).join('');
+
+      return `<tr class="transition-colors group">
+        ${cells}
+        <td class="px-6 py-2 border-b border-white/5 text-right sticky right-0 bg-slate-950/90 group-hover:bg-indigo-950/30 transition-colors z-10">
+          <div class="flex items-center justify-end gap-1.5">
+            <button onclick="viewRecord(${r.bgg_id})" class="p-2 bg-indigo-500/10 text-indigo-400 hover:bg-indigo-500 hover:text-white rounded-lg transition-all" title="Inspect">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"></path><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"></path></svg>
+            </button>
+            <button onclick="deleteRecord(${r.bgg_id})" class="p-2 bg-red-500/10 text-red-400 hover:bg-red-500 hover:text-white rounded-lg transition-all" title="Delete">
+              <svg class="w-3.5 h-3.5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"></path></svg>
+            </button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  }
+
+  function renderGrid(rows) {
+    document.getElementById('mainTableWrap').classList.add('hidden');
+    document.getElementById('mainGridWrap').classList.remove('hidden');
+    
+    const grid = document.getElementById('mainGridWrap');
+    grid.innerHTML = rows.map(r => `
+      <div class="group relative aspect-square rounded-2xl overflow-hidden bg-slate-900 border border-white/5 cursor-pointer hover:border-indigo-500/50 transition-all shadow-lg" onclick="viewRecord(${r.bgg_id})">
+        <img src="${r.thumb || r.image}" class="w-full h-full object-cover group-hover:scale-110 transition-transform duration-500" loading="lazy">
+        <div class="absolute inset-0 bg-gradient-to-t from-slate-950 via-transparent to-transparent opacity-0 group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3">
+          <div class="text-[10px] font-bold text-white truncate">${r.name}</div>
+          <div class="text-[8px] font-bold text-indigo-400 uppercase tracking-widest mt-0.5">${r.bgg_rating?.toFixed(1) || '0.0'} • ${r.year || '----'}</div>
+        </div>
+      </div>
+    `).join('');
+  }
+
+  window.viewRecord = async function(id) {
+    const record = state.data.find(r => r.bgg_id === id);
+    if (!record) return;
+
+    document.getElementById('detailName').textContent = record.name;
+    document.getElementById('detailImage').src = record.image || record.thumb || '';
+    document.getElementById('detailDesc').innerHTML = record.description || 'No description available.';
+    
+    const stats = [
+      { l: 'Rating', v: record.bgg_rating?.toFixed(2) },
+      { l: 'Weight', v: record.avgweight?.toFixed(2) },
+      { l: 'Year', v: record.year },
+      { l: 'Players', v: `${record.minplayers}-${record.maxplayers}` },
+      { l: 'Rank', v: record.primary_rank || 'N/A' },
+      { l: 'Status', v: record.own ? 'OWNED' : 'WANTED' }
+    ];
+    
+    document.getElementById('detailQuickStats').innerHTML = stats.map(s => `
+      <div class="p-3 rounded-2xl bg-white/5 border border-white/5 text-center">
+        <div class="text-[8px] font-bold text-slate-500 uppercase tracking-widest mb-1">${s.l}</div>
+        <div class="text-xs font-black text-white">${s.v}</div>
+      </div>
+    `).join('');
+
+    const clean = { ...record };
+    delete clean.xml;
+    delete clean.description;
+    document.getElementById('detailPre').textContent = JSON.stringify(clean, null, 2);
+    
+    document.getElementById('detailModal').classList.remove('hidden');
+  };
+
+  window.deleteRecord = async function(id) {
+    if (!confirm(`Permanently remove ID ${id} from the vault?`)) return;
+    const { error } = await state.db.from(TABLE_NAME).delete().eq('bgg_id', id);
+    if (error) {
+      log(`Delete failed: ${error.message}`, 'error');
+    } else {
+      log(`ID ${id} evicted.`);
+      await loadData();
+    }
+  };
+
+  async function fetchWithRetry(url, maxRetries = 5) {
+    for (let attempt = 0; attempt < maxRetries; attempt++) {
+      try {
+        const res = await fetch(url);
+        if (res.status === 202) {
+          log(`BGG request queued. Retrying in 3s...`);
+          await new Promise(r => setTimeout(r, 3000));
+          continue;
+        }
+        if (res.ok) return await res.text();
+        log(`BGG error ${res.status}. Backing off...`);
+        await new Promise(r => setTimeout(r, 2000));
+      } catch (e) {
+        await new Promise(r => setTimeout(r, 1500 * Math.pow(2, attempt)));
+      }
+    }
+    throw new Error('Upstream failed');
+  }
+
+  async function sync() {
+    if (state.isSyncing) return;
+    const user = document.getElementById('username').value.trim();
+    if (!user) return alert('Username required');
+
+    state.isSyncing = true;
+    const btn = document.getElementById('runSync');
+    const prog = document.getElementById('syncProgress');
+    btn.disabled = true;
+    prog.classList.remove('hidden');
+    
+    log(`Sync started for @${user} [Parallel Mode]`);
+    try {
+      const collUrl = `${API_BASE}?endpoint=collection&username=${encodeURIComponent(user)}&stats=1&own=1`;
+      const collXml = await fetchWithRetry(collUrl);
+      const collDoc = new DOMParser().parseFromString(collXml, 'text/xml');
+      const items = Array.from(collDoc.querySelectorAll('item'));
+      
+      if (!items.length) throw new Error('No items found in collection');
+      
+      // Build a map of collection-specific data
+      const collectionMap = {};
+      items.forEach(it => {
+        const oid = it.getAttribute('objectid');
+        const status = it.querySelector('status');
+        collectionMap[oid] = {
+          numplays: parseInt(it.querySelector('numplays')?.textContent || '0', 10),
+          user_rating: parseFloat(it.querySelector('stats > rating')?.getAttribute('value') || '0'),
+          own: status?.getAttribute('own') === '1' ? 1 : 0,
+          prevowned: status?.getAttribute('prevowned') === '1' ? 1 : 0,
+          fortrade: status?.getAttribute('fortrade') === '1' ? 1 : 0,
+          want: status?.getAttribute('want') === '1' ? 1 : 0,
+          wanttoplay: status?.getAttribute('wanttoplay') === '1' ? 1 : 0,
+          wanttobuy: status?.getAttribute('wanttobuy') === '1' ? 1 : 0,
+          wishlist: status?.getAttribute('wishlist') === '1' ? 1 : 0,
+          preordered: status?.getAttribute('preordered') === '1' ? 1 : 0,
+          lastmodified: status?.getAttribute('lastmodified') || null
+        };
+      });
+
+      const ids = Object.keys(collectionMap);
+      document.getElementById('statFound').textContent = ids.length;
+      log(`Index built: ${ids.length} records found. Injecting user stats...`);
+
+      if (document.getElementById('replaceTable').checked) {
+        log('Wiping vault for fresh sync...');
+        await state.db.from(TABLE_NAME).delete().neq('bgg_id', 0);
+      }
+
+      const BATCH_SIZE = 20;
+      const MAX_CONCURRENCY = 100; // 100x Parallelism
+      const batches = [];
+      for (let i = 0; i < ids.length; i += BATCH_SIZE) {
+        batches.push(ids.slice(i, i + BATCH_SIZE));
+      }
+
+      let savedCount = 0;
+      let activeWorkers = 0;
+      const totalBatches = batches.length;
+      
+      log(`Starting Worker Pool: ${MAX_CONCURRENCY} concurrent threads, 20 IDs per call.`);
+
+      async function worker() {
+        while (batches.length > 0) {
+          const slice = batches.shift();
+          if (!slice) break;
+          
+          activeWorkers++;
+          try {
+            const thingXml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${slice.join(',')}&stats=1`);
+            const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+            const rows = Array.from(thingDoc.querySelectorAll('item')).map(item => {
+               const id = item.getAttribute('id');
+               const ratings = item.querySelector('statistics ratings');
+               
+               const getVal = (sel) => {
+                 const el = ratings?.querySelector(sel);
+                 return el ? parseFloat(el.getAttribute('value')) : 0;
+               };
+               const getInt = (sel) => {
+                 const el = ratings?.querySelector(sel);
+                 return el ? parseInt(el.getAttribute('value'), 10) : 0;
+               };
+               const getLink = (type) => Array.from(item.querySelectorAll(`link[type="${type}"]`)).map(l => l.getAttribute('value')).join(', ');
+               
+               const ranks = Array.from(ratings?.querySelectorAll('rank') || []);
+               const primary = ranks.find(r => r.getAttribute('type') === 'subtype');
+               const family = ranks.find(r => r.getAttribute('type') === 'family');
+               const allRanksStr = ranks.map(r => `${r.getAttribute('friendlyname')}: ${r.getAttribute('value')}`).join(' | ');
+
+               let bestwith = '';
+               let recommendedwith = '';
+               try {
+                 const ps = item.querySelector('poll-summary[name="suggested_numplayers"]');
+                 bestwith = ps?.querySelector('result[name="bestwith"]')?.getAttribute('value') || '';
+                 recommendedwith = ps?.querySelector('result[name="recommendedwith"]')?.getAttribute('value') || '';
+               } catch(e) {}
+
+               const userStats = collectionMap[id] || {};
+               
+               return {
+                 bgg_id: parseInt(id, 10),
+                 name: item.querySelector('name[type="primary"]')?.getAttribute('value') || '',
+                 year: parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0', 10),
+                 minplayers: parseInt(item.querySelector('minplayers')?.getAttribute('value') || '0', 10),
+                 maxplayers: parseInt(item.querySelector('maxplayers')?.getAttribute('value') || '0', 10),
+                 minplaytime: parseInt(item.querySelector('minplaytime')?.getAttribute('value') || '0', 10),
+                 maxplaytime: parseInt(item.querySelector('maxplaytime')?.getAttribute('value') || '0', 10),
+                 minage: parseInt(item.querySelector('minage')?.getAttribute('value') || '0', 10),
+                 thumb: item.querySelector('thumbnail')?.textContent || '',
+                 image: item.querySelector('image')?.textContent || '',
+                 description: item.querySelector('description')?.textContent || '',
+                 bgg_rating: getVal('average'),
+                 bayesaverage: getVal('bayesaverage'),
+                 user_rated: getInt('usersrated'),
+                 stddev: getVal('stddev'),
+                 median: getVal('median'),
+                 owned: getInt('owned'),
+                 trading: getInt('trading'),
+                 wanting: getInt('wanting'),
+                 wishing: getInt('wishing'),
+                 numcomments: getInt('numcomments'),
+                 numweights: getInt('numweights'),
+                 avgweight: getVal('averageweight'),
+                 primary_rank: primary ? parseInt(primary.getAttribute('value'), 10) || null : null,
+                 family_rank: family ? parseInt(family.getAttribute('value'), 10) || null : null,
+                 all_ranks: allRanksStr,
+                 numplays: userStats.numplays || 0,
+                 user_rating: userStats.user_rating || 0,
+                 own: userStats.own || 0,
+                 prevowned: userStats.prevowned || 0,
+                 fortrade: userStats.fortrade || 0,
+                 want: userStats.want || 0,
+                 wanttoplay: userStats.wanttoplay || 0,
+                 wanttobuy: userStats.wanttobuy || 0,
+                 wishlist: userStats.wishlist || 0,
+                 preordered: userStats.preordered || 0,
+                 lastmodified: userStats.lastmodified,
+                 categories: getLink('boardgamecategory'),
+                 mechanics: getLink('boardgamemechanic'),
+                 designers: getLink('boardgamedesigner'),
+                 bestwith: bestwith,
+                 recommendedwith: recommendedwith,
+                 xml: new XMLSerializer().serializeToString(item)
+               };
+            });
+
+            const { error } = await state.db.from(TABLE_NAME).upsert(rows, { onConflict: 'bgg_id' });
+            if (error) throw error;
+            
+            savedCount += rows.length;
+            const pct = Math.round((savedCount / ids.length) * 100);
+            document.getElementById('syncBar').style.width = `${pct}%`;
+            document.getElementById('syncPct').textContent = `${pct}%`;
+            document.getElementById('statStored').textContent = savedCount;
+            
+            if (savedCount % 100 === 0) log(`Progress: ${savedCount}/${ids.length} committed...`);
+          } catch (err) {
+            log(`Worker Error: ${err.message}`, 'error');
+          } finally {
+            activeWorkers--;
+          }
+        }
+      }
+
+      // Launch 100 sustained workers
+      const pool = Array.from({ length: MAX_CONCURRENCY }, () => worker());
+      await Promise.all(pool);
+
+      log(`Sync complete ✔ ${savedCount} records committed.`);
+      await loadData();
+    } catch (err) {
+      log(`Sync aborted: ${err.message}`, 'error');
+    } finally {
+      state.isSyncing = false;
+      btn.disabled = false;
+      setTimeout(() => prog.classList.add('hidden'), 3000);
+    }
+  }
+
+  async function addById() {
+    const id = parseInt(document.getElementById('addIdInput').value, 10);
+    if (!id) return;
+    
+    log(`Manually fetching ID ${id}...`);
+    try {
+      const xml = await fetchWithRetry(`${API_BASE}?endpoint=thing&id=${id}&stats=1`);
+      const doc = new DOMParser().parseFromString(xml, 'text/xml');
+      const item = doc.querySelector('item');
+      if (!item) throw new Error('Item not found');
+
+      const name = item.querySelector('name[type="primary"]')?.getAttribute('value') || '';
+      const stats = item.querySelector('statistics ratings');
+      
+      const record = {
+        bgg_id: id,
+        name,
+        year: parseInt(item.querySelector('yearpublished')?.getAttribute('value') || '0', 10),
+        thumb: item.querySelector('thumbnail')?.textContent || '',
+        image: item.querySelector('image')?.textContent || '',
+        description: item.querySelector('description')?.textContent || '',
+        bgg_rating: parseFloat(stats?.querySelector('average')?.getAttribute('value') || '0'),
+        bayesaverage: parseFloat(stats?.querySelector('bayesaverage')?.getAttribute('value') || '0'),
+        avgweight: parseFloat(stats?.querySelector('averageweight')?.getAttribute('value') || '0'),
+        owned: parseInt(stats?.querySelector('owned')?.getAttribute('value') || '0', 10),
+        xml: new XMLSerializer().serializeToString(item)
+      };
+
+      await state.db.from(TABLE_NAME).upsert([record], { onConflict: 'bgg_id' });
+      log(`Added: ${name}`);
+      await loadData();
+      document.getElementById('addIdInput').value = '';
+    } catch (err) {
+      log(`Failed to add ID ${id}: ${err.message}`, 'error');
+    }
+  }
+
+  document.getElementById('globalSearch').addEventListener('input', render);
+  document.getElementById('columnFilter').addEventListener('change', render);
+  document.getElementById('refreshData').addEventListener('click', loadData);
+  document.getElementById('toggleSidebar').addEventListener('click', () => {
+    document.getElementById('sidebar').classList.toggle('sidebar-collapsed');
+  });
+  
+  document.getElementById('viewTable').addEventListener('click', () => {
+    state.viewMode = 'table';
+    document.getElementById('viewTable').classList.add('bg-indigo-600', 'text-white');
+    document.getElementById('viewTable').classList.remove('text-slate-500');
+    document.getElementById('viewGrid').classList.remove('bg-indigo-600', 'text-white');
+    document.getElementById('viewGrid').classList.add('text-slate-500');
+    render();
+  });
+
+  document.getElementById('viewGrid').addEventListener('click', () => {
+    state.viewMode = 'grid';
+    document.getElementById('viewGrid').classList.add('bg-indigo-600', 'text-white');
+    document.getElementById('viewGrid').classList.remove('text-slate-500');
+    document.getElementById('viewTable').classList.remove('bg-indigo-600', 'text-white');
+    document.getElementById('viewTable').classList.add('text-slate-500');
+    render();
+  });
+
+  document.getElementById('bulkDelete').addEventListener('click', async () => {
+    if (!confirm('EXTERMINATE ALL RECORDS IN VAULT?')) return;
+    await state.db.from(TABLE_NAME).delete().neq('bgg_id', 0);
+    log('Vault purged.');
+    await loadData();
+  });
+
+  document.getElementById('runSync').addEventListener('click', sync);
+  document.getElementById('addIdBtn').addEventListener('click', addById);
+  document.getElementById('clearLog').addEventListener('click', () => document.getElementById('log').innerHTML = '');
+  document.getElementById('detailClose').addEventListener('click', () => document.getElementById('detailModal').classList.add('hidden'));
+
+  document.addEventListener('DOMContentLoaded', init);
+</script>
+
+</body>
+</html>
