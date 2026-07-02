@@ -77,22 +77,21 @@ export default async function handler(req) {
     pushDebug({ step: 'api_key_check', ok: true, masked: maskedKey, len: apiKey.length });
 
     // ── Model cascade ──────────────────────────────────────────
-    // Models from Google's 2026 quickstart + stable fallbacks.
     // Each entry: [model_name, api_version].
     // We try newest first, skip instantly on 404/429, move to next.
-    // TOTAL budget must stay under Vercel's 25s edge timeout!
+    // TOTAL budget must stay under Vercel's 25s edge timeout.
     const modelEntries = [
-      ['gemini-3-flash-preview',         'v1beta'],   // newest (from quickstart)
-      ['gemini-3.1-flash-lite-preview',  'v1beta'],   // lite variant
-      ['gemini-2.0-flash',               'v1beta'],   // stable 2.0
-      ['gemini-2.0-flash',               'v1'    ],   // stable 2.0, older endpoint
-      ['gemini-1.5-flash',               'v1'    ],   // legacy fallback
+      ['gemini-3-flash-preview',         'v1beta'],
+      ['gemini-3.1-flash-lite-preview',  'v1beta'],
+      ['gemini-2.0-flash',               'v1beta'],
+      ['gemini-2.0-flash',               'v1'],
+      ['gemini-1.5-flash',               'v1'],
     ];
     log.info(`[${requestId}] Will try ${modelEntries.length} model+version combos (no retry waits to beat 25s timeout)`);
     modelEntries.forEach(([m, v]) => log.info(`[${requestId}]   → ${m} (${v})`));
 
     let lastError = '';
-    const PER_CALL_TIMEOUT_MS = 8000;    // abort any single API call after 8s
+    const PER_CALL_TIMEOUT_MS = 8000;
 
     const supabaseUrl = process.env.SUPABASE_URL;
     const supabaseServiceKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY;
@@ -108,44 +107,53 @@ export default async function handler(req) {
           const rows = await res.json();
           tablesEnv = rows.map(r => r.tablename).join(',');
         }
-      } catch (e) { log.warn("Auto-discovery failed"); }
+      } catch (e) { log.warn('Auto-discovery failed'); }
     }
 
-    let dbContext = "No database context available.";
+    let dbContext = 'No database context available.';
     if (supabaseUrl && supabaseServiceKey && tablesEnv) {
       log.info(`[${requestId}] Building schema map for: ${tablesEnv}`);
       try {
         const tables = tablesEnv.split(',').map(t => t.trim()).filter(Boolean);
         const contextParts = [];
-        
+
         for (const table of tables) {
-          // Fetch a sample AND the column structure (via a limit 0 call if possible, or just limit 10)
           const res = await fetch(`${supabaseUrl}/rest/v1/${table}?select=*&limit=15`, {
             headers: { 'Authorization': `Bearer ${supabaseServiceKey}`, 'apikey': supabaseServiceKey }
           });
           if (res.ok) {
             const data = await res.json();
-            const columns = data.length > 0 ? Object.keys(data[0]) : ["unknown"];
+            const columns = data.length > 0 ? Object.keys(data[0]) : ['unknown'];
             contextParts.push(`TABLE: ${table}\nCOLUMNS: ${columns.join(', ')}\nDATA SAMPLE (up to 15 rows):\n${JSON.stringify(data, null, 2)}`);
           }
         }
         dbContext = contextParts.join('\n\n---\n\n');
-      } catch (err) { log.warn("DB Context fetch failed"); }
+      } catch (err) { log.warn('DB Context fetch failed'); }
     }
 
-    // ── System instruction: DATABASE EXPERT + VISUALIZER ──
-    const systemInstruction = {
-      parts: [{ text:
-        `You are a strict Database Content Expert and Data Visualizer.
+    // ── App instruction: database-aware, but still general-purpose ──
+    const systemPrompt =
+`You are a helpful Gemini chat assistant for a Vercel app.
 
-YOUR DATA SOURCE:
-You MUST ONLY use the data provided in the "CURRENT DATABASE CONTEXT" section below.
+CORE BEHAVIOR:
+- Use the CURRENT DATABASE CONTEXT when it contains relevant information.
+- If the database does NOT contain the answer, answer from your general knowledge instead.
+- Be clear about the source: say "From your database:" or "General answer:" when useful.
+- WARNING: For current, fast-changing facts such as today's sports rosters, injuries, scores, trades, news, prices, laws, or schedules, your answer may be stale because this app has no live web lookup. Give the best answer you can and recommend verifying current facts.
+- Stay in bounds: do not invent database facts. If something is not in the database, say so and then answer generally if possible.
 
-RULES:
-1) ONLY answer based on the provided context. 
-2) IMAGES/THUMBNAILS: If a record contains a URL for an image, thumbnail, or picture (e.g., ends in .jpg, .png, .webp, or is in a column named 'image', 'thumbnail', 'photo'), you MUST display it using Markdown: ![Image](url).
-3) CLEAN OUTPUT: Do not include unnecessary blank lines or empty lines between paragraphs or table rows. Keep the response compact.
-4) If the user asks for a chart, graph, or visualization, include a JSON block for Chart.js:
+DATABASE / IMAGE RULES:
+1) Database facts must come only from the CURRENT DATABASE CONTEXT below.
+2) For images/thumbnails/cover photos: if the database context contains a URL for an image, thumbnail, cover, photo, or picture, display it using Markdown image syntax: ![Name](url).
+3) If a user asks to "show" a cover/photo and the URL is available, put the image near the top of the answer.
+4) If the requested image is not in the database context, say you do not see it in the provided database context. Do not pretend to generate or fetch an image.
+5) This app can display image URLs, but it cannot generate new AI images unless a separate image API is added.
+
+FORMAT RULES:
+- Keep output compact.
+- Use Markdown tables for data.
+- If a table has an image column, put the image Markdown in the cell.
+- If the user asks for a chart, graph, or visualization, include a JSON block for Chart.js exactly like this:
 
 \`\`\`json
 {
@@ -156,26 +164,27 @@ RULES:
 }
 \`\`\`
 
-5) Use Markdown tables for data. If a table has an image column, put the image Markdown in the cell.
-
 CURRENT DATABASE CONTEXT:
 ${dbContext}
 
 SUPABASE CRUD OPERATIONS:
-For data changes or specific searches, use:
+For data changes or specific searches, you may include this JSON block when appropriate:
+
 \`\`\`json
 {
   "action": "READ|CREATE|UPDATE|DELETE",
   "table": "table_name",
   "query": {"field": "search_value"},
   "data": {"field": "new_value"},
-  "id": record_id
+  "id": "record_id"
 }
-\`\`\`
+\`\`\``;
 
-Strictly adhere to the provided schema. No hallucinations.`
-      }]
-    };
+    const fullPrompt =
+`${systemPrompt}
+
+USER QUESTION:
+${message}`;
 
     // ── Try each model+version combo ──
     for (let i = 0; i < modelEntries.length; i++) {
@@ -188,12 +197,15 @@ Strictly adhere to the provided schema. No hallucinations.`
         const apiUrl = `https://generativelanguage.googleapis.com/${apiVersion}/models/${model}:generateContent?key=${apiKey}`;
         log.debug(`[${requestId}] POST …/${apiVersion}/models/${model}:generateContent?key=***`);
 
+        // Keep instructions inside contents instead of system_instruction.
+        // This avoids "Unknown name system_instruction" errors on models/API versions that reject that field.
         const payload = {
-          system_instruction: systemInstruction,
-          contents: [{ parts: [{ text: message }] }],
+          contents: [{
+            role: 'user',
+            parts: [{ text: fullPrompt }]
+          }],
         };
 
-        // AbortController to enforce per-call timeout
         const controller = new AbortController();
         const timer = setTimeout(() => controller.abort(), PER_CALL_TIMEOUT_MS);
 
