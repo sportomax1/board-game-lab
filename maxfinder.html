@@ -1,0 +1,319 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Max Finder</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+    body { font-family: 'Plus Jakarta Sans', sans-serif; background:#f8fafc; }
+    .mono { font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, monospace; }
+  </style>
+</head>
+<body class="min-h-screen pb-20 text-slate-900">
+  <header class="sticky top-0 z-20 bg-white/90 backdrop-blur border-b border-slate-200">
+    <div class="max-w-5xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="w-10 h-10 rounded-xl bg-emerald-600 text-white flex items-center justify-center"><i class="fa-solid fa-bullseye"></i></div>
+      <div class="flex-1">
+        <h1 class="font-extrabold text-xl">BGG Max Finder</h1>
+        <p class="text-[11px] uppercase tracking-wider text-slate-400 font-bold">Adaptive 20-ID frontier search</p>
+      </div>
+      <div id="headerMax" class="hidden text-right">
+        <div id="headerMaxValue" class="text-xl font-extrabold text-emerald-600 mono">—</div>
+        <div class="text-[10px] uppercase text-slate-400 font-bold">Best ID</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-5xl mx-auto p-4 space-y-4">
+    <section class="bg-white border border-slate-200 rounded-2xl shadow-sm p-4">
+      <div class="grid md:grid-cols-4 gap-3 items-end">
+        <div>
+          <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Batch size</label>
+          <input id="batchSize" type="number" min="1" max="20" value="20" class="w-full border border-slate-200 rounded-xl px-3 py-2.5 mono" />
+        </div>
+        <div>
+          <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Refinement probes</label>
+          <input id="probeCount" type="number" min="3" max="25" value="10" class="w-full border border-slate-200 rounded-xl px-3 py-2.5 mono" />
+        </div>
+        <div>
+          <label class="block text-xs font-bold uppercase text-slate-500 mb-1">Dense concurrency</label>
+          <input id="concurrency" type="number" min="1" max="100" value="100" class="w-full border border-slate-200 rounded-xl px-3 py-2.5 mono" />
+        </div>
+        <div class="flex gap-2">
+          <button id="startBtn" class="flex-1 bg-emerald-600 hover:bg-emerald-700 text-white rounded-xl px-4 py-2.5 font-bold"><i class="fa-solid fa-play mr-2"></i>Find Max</button>
+          <button id="stopBtn" disabled class="px-4 py-2.5 rounded-xl bg-slate-200 text-slate-500 font-bold disabled:opacity-50"><i class="fa-solid fa-stop"></i></button>
+        </div>
+      </div>
+      <p class="text-xs text-slate-400 mt-3">Uses 20-ID neighborhood probes to locate the frontier, then contiguous scanning until 100 confirmed misses after the highest valid ID, followed by distant verification probes.</p>
+    </section>
+
+    <section id="metrics" class="grid grid-cols-2 md:grid-cols-5 gap-3">
+      <div class="bg-white border border-slate-200 rounded-2xl p-4"><div id="mCalls" class="text-2xl font-extrabold mono">0</div><div class="text-[10px] uppercase font-bold text-slate-400">API calls</div></div>
+      <div class="bg-white border border-slate-200 rounded-2xl p-4"><div id="mChecked" class="text-2xl font-extrabold mono">0</div><div class="text-[10px] uppercase font-bold text-slate-400">IDs checked</div></div>
+      <div class="bg-white border border-slate-200 rounded-2xl p-4"><div id="mFound" class="text-2xl font-extrabold text-emerald-600 mono">0</div><div class="text-[10px] uppercase font-bold text-slate-400">Items found</div></div>
+      <div class="bg-white border border-slate-200 rounded-2xl p-4"><div id="mMax" class="text-2xl font-extrabold text-indigo-600 mono">—</div><div class="text-[10px] uppercase font-bold text-slate-400">Highest ID</div></div>
+      <div class="bg-white border border-slate-200 rounded-2xl p-4"><div id="mMisses" class="text-2xl font-extrabold text-amber-600 mono">0</div><div class="text-[10px] uppercase font-bold text-slate-400">Misses after max</div></div>
+    </section>
+
+    <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between gap-3">
+        <div>
+          <h2 class="font-extrabold">Search Status</h2>
+          <p id="statusText" class="text-xs text-slate-400">Ready</p>
+        </div>
+        <span id="phaseBadge" class="text-xs font-bold bg-slate-100 text-slate-600 rounded-full px-3 py-1">Idle</span>
+      </div>
+      <div class="p-4">
+        <div class="w-full h-2 rounded-full bg-slate-100 overflow-hidden"><div id="progress" class="h-full bg-emerald-500 transition-all" style="width:0%"></div></div>
+      </div>
+    </section>
+
+    <section class="bg-white border border-slate-200 rounded-2xl shadow-sm overflow-hidden">
+      <div class="px-4 py-3 border-b border-slate-100 flex items-center justify-between">
+        <h2 class="font-extrabold">Search Log</h2>
+        <button id="clearBtn" class="text-xs font-bold text-slate-500 hover:text-slate-900">Clear</button>
+      </div>
+      <div id="log" class="max-h-[420px] overflow-y-auto p-3 space-y-1 bg-slate-50 mono text-xs"></div>
+    </section>
+  </main>
+
+<script>
+const API = '/api/bgg-helper';
+const MISS_TARGET = 100;
+const INITIAL_ANCHORS = [1, 100, 1000, 10000, 100000, 200000, 300000, 400000, 500000, 1000000, 10000000];
+const VERIFY_OFFSETS = [500, 1000, 5000, 10000, 50000, 100000];
+let running = false;
+let calls = 0, checked = 0, found = 0, highest = 0, missesAfterMax = 0;
+
+const $ = id => document.getElementById(id);
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+
+function log(msg, type='info') {
+  const el = document.createElement('div');
+  const cls = type === 'hit' ? 'text-emerald-700' : type === 'warn' ? 'text-amber-700' : type === 'error' ? 'text-red-600' : 'text-slate-600';
+  el.className = cls;
+  el.textContent = `[${new Date().toLocaleTimeString()}] ${msg}`;
+  $('log').appendChild(el);
+  $('log').scrollTop = $('log').scrollHeight;
+}
+
+function setPhase(name, status, pct=0) {
+  $('phaseBadge').textContent = name;
+  $('statusText').textContent = status;
+  $('progress').style.width = `${Math.max(0, Math.min(100, pct))}%`;
+}
+
+function refresh() {
+  $('mCalls').textContent = calls.toLocaleString();
+  $('mChecked').textContent = checked.toLocaleString();
+  $('mFound').textContent = found.toLocaleString();
+  $('mMax').textContent = highest ? highest.toLocaleString() : '—';
+  $('mMisses').textContent = missesAfterMax.toLocaleString();
+  if (highest) {
+    $('headerMax').classList.remove('hidden');
+    $('headerMaxValue').textContent = highest.toLocaleString();
+  }
+}
+
+function resetMetrics() {
+  calls = checked = found = highest = missesAfterMax = 0;
+  refresh();
+  $('headerMax').classList.add('hidden');
+}
+
+function idsFrom(start, size) {
+  return Array.from({length:size}, (_,i) => start + i).filter(id => id > 0);
+}
+
+async function fetchBatch(start, size) {
+  if (!running) throw new Error('Stopped');
+  const ids = idsFrom(start, size);
+  const qs = new URLSearchParams({endpoint:'thing', id:ids.join(',')});
+  calls++;
+  refresh();
+  const res = await fetch(`${API}?${qs.toString()}`, {cache:'no-store'});
+  if (!res.ok) throw new Error(`HTTP ${res.status}`);
+  const xml = await res.text();
+  const doc = new DOMParser().parseFromString(xml, 'text/xml');
+  if (doc.querySelector('parsererror')) throw new Error('Invalid XML');
+  const returned = [...doc.querySelectorAll('item[id]')].map(n => Number(n.getAttribute('id'))).filter(Number.isFinite);
+  checked += ids.length;
+  found += returned.length;
+  if (returned.length) highest = Math.max(highest, ...returned);
+  refresh();
+  return {start, ids, returned, hit:returned.length > 0};
+}
+
+async function mapLimit(items, limit, fn) {
+  const results = new Array(items.length);
+  let next = 0;
+  async function worker() {
+    while (running) {
+      const i = next++;
+      if (i >= items.length) return;
+      let attempt = 0;
+      while (running) {
+        try {
+          results[i] = await fn(items[i], i);
+          break;
+        } catch (e) {
+          attempt++;
+          if (e.message === 'Stopped') throw e;
+          if (attempt >= 3) throw e;
+          log(`Retry ${attempt}/2 for ${items[i].toLocaleString()}: ${e.message}`, 'warn');
+          await sleep(750 * attempt);
+        }
+      }
+    }
+  }
+  await Promise.all(Array.from({length:Math.min(limit, items.length)}, worker));
+  return results;
+}
+
+function chooseBracket(results) {
+  const hits = results.filter(r => r?.hit).sort((a,b)=>a.start-b.start);
+  if (!hits.length) return null;
+  const low = hits[hits.length-1].start;
+  const higherMiss = results.filter(r => r && !r.hit && r.start > low).sort((a,b)=>a.start-b.start)[0];
+  return {low, high:higherMiss ? higherMiss.start : low * 10};
+}
+
+async function magnitudePhase(batchSize) {
+  setPhase('1 · Magnitude', 'Probing broad 20-ID neighborhoods', 10);
+  log(`Magnitude probes: ${INITIAL_ANCHORS.map(x=>x.toLocaleString()).join(', ')}`);
+  const results = await mapLimit(INITIAL_ANCHORS, INITIAL_ANCHORS.length, a => fetchBatch(a, batchSize));
+  results.forEach(r => log(`${r.start.toLocaleString()}–${(r.start+r.ids.length-1).toLocaleString()} ${r.hit ? `HIT (${Math.max(...r.returned).toLocaleString()})` : 'empty'}`, r.hit?'hit':'info'));
+  const bracket = chooseBracket(results);
+  if (!bracket) throw new Error('No valid BGG items found in initial probes.');
+  log(`Initial bracket: ${bracket.low.toLocaleString()} → ${bracket.high.toLocaleString()}`, 'hit');
+  return bracket;
+}
+
+async function refinePhase(low, high, batchSize, probeCount) {
+  let round = 0;
+  while (running && high - low > 500) {
+    round++;
+    const span = high - low;
+    const step = Math.max(batchSize, Math.floor(span / (probeCount + 1)));
+    const starts = [];
+    for (let i=1;i<=probeCount;i++) {
+      const s = low + step*i;
+      if (s >= high) break;
+      starts.push(s);
+    }
+    setPhase('2 · Refine', `Round ${round}: narrowing ${low.toLocaleString()}–${high.toLocaleString()}`, 25 + Math.min(30, round*7));
+    const results = await mapLimit(starts, Math.min(probeCount, starts.length), s => fetchBatch(s, batchSize));
+    const hitStarts = results.filter(r=>r?.hit).map(r=>r.start);
+    if (hitStarts.length) low = Math.max(low, ...hitStarts);
+    const missAbove = results.filter(r=>r && !r.hit && r.start > low).map(r=>r.start).sort((a,b)=>a-b)[0];
+    if (missAbove) high = Math.min(high, missAbove);
+    else if (hitStarts.length) high = Math.max(high, low + step);
+    else high = low + step;
+    log(`Refine ${round}: bracket ${low.toLocaleString()} → ${high.toLocaleString()}`);
+    if (round > 12) break;
+  }
+  return {low, high};
+}
+
+async function densePhase(low, high, batchSize, concurrency) {
+  setPhase('3 · Dense Frontier', 'Scanning contiguous 20-ID batches', 65);
+  const scanStart = Math.max(1, low - batchSize);
+  const scanEnd = Math.max(high + MISS_TARGET + batchSize, low + 1000);
+  const starts = [];
+  for (let s=scanStart; s<=scanEnd; s+=batchSize) starts.push(s);
+  log(`Dense scan ${scanStart.toLocaleString()}–${scanEnd.toLocaleString()} (${starts.length} calls max)`);
+  const results = await mapLimit(starts, concurrency, s => fetchBatch(s, batchSize));
+  const validIds = results.flatMap(r=>r?.returned||[]).sort((a,b)=>a-b);
+  if (validIds.length) highest = Math.max(highest, validIds[validIds.length-1]);
+  missesAfterMax = 0;
+  const returnedSet = new Set(validIds);
+  for (let id=highest+1; id<=scanEnd; id++) {
+    if (returnedSet.has(id)) missesAfterMax = 0;
+    else missesAfterMax++;
+    if (missesAfterMax >= MISS_TARGET) break;
+  }
+  refresh();
+  if (missesAfterMax < MISS_TARGET) {
+    log(`Only ${missesAfterMax} consecutive misses after ${highest.toLocaleString()}; extending dense scan.`, 'warn');
+    let start = scanEnd + 1;
+    while (running && missesAfterMax < MISS_TARGET) {
+      const wave = Array.from({length:Math.min(concurrency,10)}, (_,i)=>start+i*batchSize);
+      const more = await mapLimit(wave, concurrency, s=>fetchBatch(s,batchSize));
+      const ids = more.flatMap(r=>r?.returned||[]).sort((a,b)=>a-b);
+      if (ids.length) {
+        highest = Math.max(highest, ids[ids.length-1]);
+        missesAfterMax = 0;
+      }
+      const set = new Set(ids);
+      const end = wave[wave.length-1] + batchSize - 1;
+      for (let id=Math.max(highest+1,start); id<=end; id++) {
+        if (set.has(id)) missesAfterMax = 0; else missesAfterMax++;
+        if (missesAfterMax >= MISS_TARGET) break;
+      }
+      start = end + 1;
+      refresh();
+    }
+  }
+  log(`Candidate max ${highest.toLocaleString()} with ${missesAfterMax} consecutive misses`, 'hit');
+}
+
+async function verifyPhase(batchSize) {
+  setPhase('4 · Verify', 'Running distant sanity probes', 90);
+  const base = highest;
+  const starts = VERIFY_OFFSETS.map(o => base + o);
+  const results = await mapLimit(starts, starts.length, s=>fetchBatch(s,batchSize));
+  const hits = results.filter(r=>r?.hit);
+  if (!hits.length) {
+    setPhase('Complete', `Max found: ${highest.toLocaleString()}`, 100);
+    log(`VERIFIED MAX: ${highest.toLocaleString()}`, 'hit');
+    return true;
+  }
+  const newHigh = Math.max(...hits.flatMap(r=>r.returned));
+  log(`Verification found higher ID ${newHigh.toLocaleString()}; resuming from there.`, 'warn');
+  highest = newHigh;
+  missesAfterMax = 0;
+  refresh();
+  return false;
+}
+
+async function startSearch() {
+  if (running) return;
+  running = true;
+  $('startBtn').disabled = true;
+  $('stopBtn').disabled = false;
+  resetMetrics();
+  $('log').innerHTML = '';
+  try {
+    const batchSize = Math.min(20, Math.max(1, Number($('batchSize').value)||20));
+    const probeCount = Math.min(25, Math.max(3, Number($('probeCount').value)||10));
+    const concurrency = Math.min(100, Math.max(1, Number($('concurrency').value)||100));
+    let bracket = await magnitudePhase(batchSize);
+    bracket = await refinePhase(bracket.low, bracket.high, batchSize, probeCount);
+    await densePhase(bracket.low, bracket.high, batchSize, concurrency);
+    let verified = await verifyPhase(batchSize);
+    if (!verified && running) {
+      await densePhase(highest, highest + 1000, batchSize, concurrency);
+      verified = await verifyPhase(batchSize);
+    }
+    if (!verified && running) setPhase('Review', `Higher IDs kept appearing; current best ${highest.toLocaleString()}`, 100);
+  } catch (e) {
+    if (e.message !== 'Stopped') {
+      setPhase('Error', e.message, 100);
+      log(e.message, 'error');
+    }
+  } finally {
+    running = false;
+    $('startBtn').disabled = false;
+    $('stopBtn').disabled = true;
+  }
+}
+
+$('startBtn').addEventListener('click', startSearch);
+$('stopBtn').addEventListener('click', () => { running = false; setPhase('Stopped', 'Search stopped by user', 0); log('Search stopped.', 'warn'); });
+$('clearBtn').addEventListener('click', () => $('log').innerHTML = '');
+</script>
+</body>
+</html>
