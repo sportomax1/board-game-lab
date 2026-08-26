@@ -10,7 +10,14 @@ inline_scripts=re.findall(r'<script(?![^>]*\b(?:src|type)\s*=)[^>]*>(.*?)</scrip
 bga_ui=re.sub(r'<script\b[^>]*>.*?</script>','',body,flags=re.S|re.I); bga_ui=re.sub(r'<header\b.*?</header>','',bga_ui,count=1,flags=re.S|re.I)
 id_map={old:'bga_'+old for old in set(re.findall(r'id="([^"]+)"',bga_ui))}
 for old,new in sorted(id_map.items(),key=lambda x:-len(x[0])):
-    bga_ui=bga_ui.replace(f'id="{old}"',f'id="{new}"'); bga_js=bga_js.replace(f"'{old}'",f"'{new}'").replace(f'"{old}"',f'"{new}"')
+    bga_ui=bga_ui.replace(f'id="{old}"',f'id="{new}"')
+# Namespace every quoted DOM id token in JS in one regex pass. Doing sequential string replacement
+# caused prefix collisions (gameCount -> bga_gameCount -> bga_bga_gameCount when bga_gameCount was also an id).
+def ns_id(m):
+    q,val=m.group(1),m.group(2)
+    return q+id_map.get(val,val)+q
+bga_js=re.sub(r"(['\"])([A-Za-z][A-Za-z0-9_-]*)(?:\1)",ns_id,bga_js)
+# Never auto-run BGA API work.
 bga_js=re.sub(r'// Auto-start loading\s*window\.addEventListener\([\s\S]*?fetchCollection\(\);\s*\}\);','',bga_js)
 cache_js=r'''
 const BGA_CACHE_DB='bggContactsBgaCache',BGA_CACHE_STORE='cache',BGA_CACHE_KEY='bga-family-v1';
@@ -20,8 +27,6 @@ async function bgaCacheSet(value){try{const db=await bgaOpenDb();await new Promi
 function bgaApplyCached(data){if(!data||!Array.isArray(data.games))return false;allGames=data.games;displayedGames=[...allGames];bgaGeeklistMap=new Map(data.geeklist||[]);const count=document.getElementById('bga_gameCount');if(count)count.textContent=allGames.length;document.getElementById('bga_loadingSection')?.classList.add('hidden');document.getElementById('bga_controlsSection')?.classList.remove('hidden');document.getElementById('bga_gamesSection')?.classList.remove('hidden');document.getElementById('bga_statsSection')?.classList.remove('hidden');updateStats();sortGames();return true}
 async function bgaLoadSaved(){const st=document.getElementById('bga_manualStatus'),data=await bgaCacheGet();if(bgaApplyCached(data)){if(st)st.textContent=`Loaded ${data.games.length} cached BGA games${data.savedAt?' • '+new Date(data.savedAt).toLocaleString():''}`;return}if(st)st.textContent='No saved BGA data yet. Click Refresh BGA Data.'}
 async function bgaGenerate(){const btn=document.getElementById('bga_generateBtn'),st=document.getElementById('bga_manualStatus');if(btn){btn.disabled=true;btn.textContent='Loading…'}if(st)st.textContent='Running BGA/BGG API calls…';try{await fetchCollection();await bgaCacheSet({games:allGames,geeklist:[...bgaGeeklistMap.entries()],savedAt:Date.now()});if(st)st.textContent=`Saved ${allGames.length} BGA games to this device`}catch(e){console.error('BGA refresh failed',e);if(st)st.textContent='BGA refresh failed: '+(e?.message||e)}finally{if(btn){btn.disabled=false;btn.textContent='Refresh BGA Data'}}}
-// Parent SPA originally only knew its first three sections. This handler deliberately runs
-// after the original tab handler and guarantees the fourth BGA section is actually shown.
 document.addEventListener('click',ev=>{const btn=ev.target.closest('.tabs [data-tab]');if(!btn)return;const tab=btn.dataset.tab;['collection','contacts','pipeline','bga'].forEach(id=>document.getElementById(id)?.classList.toggle('hidden',id!==tab));document.querySelectorAll('.tabs [data-tab]').forEach(x=>x.classList.toggle('active',x===btn));});
 '''
 bga_js=cache_js+'\n'+bga_js
