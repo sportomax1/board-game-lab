@@ -1,8 +1,6 @@
 export const config = { runtime: 'edge' };
 
 // Generic Supabase CRUD proxy used by Board Game Lab apps.
-const BGA_URL = 'https://jadyqyrpgcmaixroizov.supabase.co';
-const BGA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJIUzI1NiIsInJlZiI6ImphZHlxeXJwZ2NtYWl4cm9pem92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzOTQyNjUsImV4cCI6MjA4NTk3MDI2NX0.lSlILPzOhJTqKuLjHKmmLyjLXjEHS3erQJhASO1rMmc';
 const BGA_TABLES = new Set(['bga_entities','bga_projects','bga_project_entities','bga_interactions','bg_contact']);
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':'*'}});
 const validTable=t=>typeof t==='string'&&/^[a-zA-Z0-9_-]+$/.test(t);
@@ -20,9 +18,8 @@ export default async function handler(req){
    return json({ok:true,tables});
   }
   if(!validTable(table)) return json({ok:false,error:'Invalid table'},400);
-  const isBga=BGA_TABLES.has(table);
-  const url=isBga?BGA_URL:process.env.SUPABASE_URL;
-  const key=isBga?BGA_KEY:(process.env.SUPABASE_SERVICE_ROLE_KEY||process.env.SUPABASE_ANON_KEY);
+  const url=process.env.SUPABASE_URL;
+  const key=process.env.SUPABASE_SERVICE_ROLE_KEY||process.env.SUPABASE_ANON_KEY;
   if(!url||!key) return json({ok:false,error:'Supabase credentials not configured'},500);
   const headers={Authorization:`Bearer ${key}`,apikey:key,Accept:'application/json'};
   let target=`${url}/rest/v1/${table}`;
