@@ -1,25 +1,21 @@
 from pathlib import Path
 p=Path('bgg-contacts.html')
 s=p.read_text()
+changed=False
 
-# Repair previously-applied UX CSS when needed.
-if '/* 2026 UX refinement */' in s:
-    fixed=s.replace('.contactTable th,.pipelineTable th{top:49px;z-index:5}', '.contactTable th,.pipelineTable th{top:0;z-index:5}')
-    if fixed != s:
-        p.write_text(fixed)
-    raise SystemExit(0)
+# Keep sticky table headers inside their scroll containers.
+fixed=s.replace('.contactTable th,.pipelineTable th{top:49px;z-index:5}', '.contactTable th,.pipelineTable th{top:0;z-index:5}')
+if fixed != s:
+    s=fixed; changed=True
 
-css='''
-/* 2026 UX refinement */
-:root{--stage1:#0b2747;--stage2:#0c315a;--stage3:#0d3b6d;--stage4:#0e4680;--stage5:#105193;--stage6:#125ca6}
-body{padding-bottom:0}.app>h1{margin:8px 0 4px;font-size:22px;letter-spacing:-.02em}.tabs{position:sticky;top:0;z-index:15;margin:0 -14px 12px;padding:9px 14px;background:rgba(7,17,31,.94);backdrop-filter:blur(12px);border-bottom:1px solid #203149;box-shadow:0 8px 20px #02081455}.tabs .btn{border-color:transparent;background:transparent;color:#aebdd0}.tabs .btn.active{background:#1677ff;color:#fff}.tabCount{display:inline-flex;min-width:20px;height:20px;align-items:center;justify-content:center;margin-left:5px;padding:0 6px;border-radius:999px;background:#17283d;border:1px solid #30445f;font-size:10px}.tabs .active .tabCount{background:#0b5fc9;border-color:#63a8ff}.contactTable th,.contactTable td,.pipelineTable th,.pipelineTable td{padding:6px 8px}.contactTable input,.pipelineTable input,.pipelineTable select{padding:5px 7px;min-height:30px}.contactTable tbody tr,.pipelineTable tbody tr{height:42px}.contactTable tbody tr:hover,.pipelineTable tbody tr:hover{background:#11243a}.contactTable th,.pipelineTable th{top:0;z-index:5}.kanbanCol:nth-child(1){background:var(--stage1)}.kanbanCol:nth-child(2){background:var(--stage2)}.kanbanCol:nth-child(3){background:var(--stage3)}.kanbanCol:nth-child(4){background:var(--stage4)}.kanbanCol:nth-child(5){background:var(--stage5)}.kanbanCol:nth-child(6){background:var(--stage6)}.kanbanCol{border-color:#315276}.kanbanCard{background:#081524e8}.statusSelect,[data-pstatus]{border-left:4px solid #1677ff}.modal{justify-content:flex-end;padding:0;background:#020814aa}.modal .box{width:min(520px,92vw);height:100vh;max-height:100vh;border-radius:16px 0 0 16px;border-right:0;padding:20px;box-shadow:-18px 0 50px #0008;animation:drawerIn .16s ease-out}.gate{justify-content:center;padding:14px}.gate .box{width:min(650px,100%);height:auto;max-height:85vh;border-radius:15px;border:1px solid #30445f;box-shadow:none;animation:none}@keyframes drawerIn{from{transform:translateX(24px);opacity:.5}to{transform:none;opacity:1}}
-@media(max-width:800px){body{padding-bottom:72px}.app{padding:10px}.app>h1{font-size:19px}.tabs{position:fixed;left:0;right:0;top:auto;bottom:0;z-index:30;margin:0;padding:8px max(10px,env(safe-area-inset-right)) calc(8px + env(safe-area-inset-bottom)) max(10px,env(safe-area-inset-left));display:grid;grid-template-columns:repeat(3,1fr);background:#07111ff5;border-top:1px solid #30445f;border-bottom:0;box-shadow:0 -8px 24px #02081488}.tabs .btn{min-height:46px;padding:7px 4px;font-size:12px}.tabCount{display:flex;margin:2px auto 0;width:max-content}.modal{align-items:flex-end}.modal .box{width:100%;height:min(92vh,900px);max-height:92vh;border-radius:18px 18px 0 0;border:1px solid #30445f;border-bottom:0;animation:sheetIn .16s ease-out}.gate{align-items:center}.gate .box{height:auto;max-height:85vh;border-radius:15px;border:1px solid #30445f}@keyframes sheetIn{from{transform:translateY(24px);opacity:.5}to{transform:none;opacity:1}}}
-'''
-s=s.replace('</style>',css+'</style>',1)
-s=s.replace('data-tab="collection">Collection</button>','data-tab="collection">Collection <span id="collectionTabCount" class="tabCount">—</span></button>',1)
-s=s.replace('data-tab="contacts">Contacts</button>','data-tab="contacts">Contacts <span id="contactsTabCount" class="tabCount">—</span></button>',1)
-s=s.replace('data-tab="pipeline">Games</button>','data-tab="pipeline">Games <span id="gamesTabCount" class="tabCount">—</span></button>',1)
-s=s.replace("function render(){let q=", "function render(){if($('collectionTabCount'))$('collectionTabCount').textContent=games.length;let q=",1)
-s=s.replace("function renderContacts(){let a=", "function renderContacts(){if($('contactsTabCount'))$('contactsTabCount').textContent=contacts.length;let a=",1)
-s=s.replace("function renderPipeline(){let a=", "function renderPipeline(){if($('gamesTabCount'))$('gamesTabCount').textContent=pipelineGames.length;let a=",1)
-p.write_text(s)
+# Add integrated BGA tab. The existing bga.html app is embedded so its full BGA
+# family/geeklist/collection functionality stays in one maintained implementation.
+if 'data-tab="bga"' not in s:
+    s=s.replace('data-tab="pipeline">Games <span id="gamesTabCount" class="tabCount">—</span></button>', 'data-tab="pipeline">Games <span id="gamesTabCount" class="tabCount">—</span></button><button class="btn" data-tab="bga">BGA</button>', 1)
+    s=s.replace('</section></main><div id="gameModal"', '</section><section id="bga" class="hidden"><div class="bgaShell"><div class="bgaShellHead"><div><b>Board Game Arena</b><span>BGA collection browser</span></div><a class="btn bgaOpen" href="bga.html" target="_blank">Open Full Page ↗</a></div><iframe id="bgaFrame" class="bgaFrame" src="bga.html" title="Board Game Arena browser"></iframe></div></section></main><div id="gameModal"', 1)
+    # Existing tab handler already handles arbitrary section IDs from data-tab.
+    s=s.replace('</style>', '.bgaShell{margin-top:10px;background:#081524;border:1px solid #203149;border-radius:14px;overflow:hidden}.bgaShellHead{display:flex;align-items:center;justify-content:space-between;gap:10px;padding:10px 12px;background:#0d1929;border-bottom:1px solid #203149}.bgaShellHead b{display:block;font-size:15px}.bgaShellHead span{display:block;margin-top:2px;color:#91a0b5;font-size:10px}.bgaOpen{font-size:10px;padding:6px 8px;text-decoration:none}.bgaFrame{display:block;width:100%;height:calc(100vh - 150px);min-height:650px;border:0;background:#07111f;color-scheme:dark}@media(max-width:800px){.tabs{grid-template-columns:repeat(4,1fr)!important}.bgaShell{margin:0 -10px;border-left:0;border-right:0;border-radius:0}.bgaShellHead{padding:8px 10px}.bgaFrame{height:calc(100vh - 125px);min-height:600px}}\n</style>',1)
+    changed=True
+
+if changed:
+    p.write_text(s)
