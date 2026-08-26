@@ -1,11 +1,9 @@
 export const config = { runtime: 'edge' };
 
 // Generic Supabase CRUD proxy used by Board Game Lab apps.
-// BGA tracker tables are intentionally pinned to the myapi project so they
-// cannot silently follow unrelated SUPABASE_* deployment environment vars.
 const BGA_URL = 'https://jadyqyrpgcmaixroizov.supabase.co';
-const BGA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJzdXBhYmFzZSIsInJlZiI6ImphZHlxeXJwZ2NtYWl4cm9pem92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzOTQyNjUsImV4cCI6MjA4NTk3MDI2NX0.lSlILPzOhJTqKuLjHKmmLyjLXjEHS3erQJhASO1rMmc';
-const BGA_TABLES = new Set(['bga_entities','bga_projects','bga_project_entities','bga_interactions']);
+const BGA_KEY = 'eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJpc3MiOiJIUzI1NiIsInJlZiI6ImphZHlxeXJwZ2NtYWl4cm9pem92Iiwicm9sZSI6ImFub24iLCJpYXQiOjE3NzAzOTQyNjUsImV4cCI6MjA4NTk3MDI2NX0.lSlILPzOhJTqKuLjHKmmLyjLXjEHS3erQJhASO1rMmc';
+const BGA_TABLES = new Set(['bga_entities','bga_projects','bga_project_entities','bga_interactions','bg_contact']);
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':'*'}});
 const validTable=t=>typeof t==='string'&&/^[a-zA-Z0-9_-]+$/.test(t);
 
@@ -14,7 +12,9 @@ export default async function handler(req){
  if(req.method!=='POST') return json({ok:false,error:'POST required'},405);
  try{
   const body=await req.json();
-  const {action,table,query,data,id,limit=50,offset=0}=body;
+  const {action,table,data,limit=50,offset=0}=body;
+  const query=body.query||body.filters||null;
+  const id=body.id??body.filters?.id??null;
   if(action==='LIST_TABLES'){
    const tables=(process.env.SUPABASE_TABLES||'').split(',').map(x=>x.trim()).filter(Boolean);
    return json({ok:true,tables});
@@ -37,17 +37,13 @@ export default async function handler(req){
    if(!r.ok) return json({ok:false,error:text},r.status);
    const rows=JSON.parse(text); return json({ok:true,rows,count:rows.length});
   }
-  // BGA writes require service-role credentials to remain server-side. If the
-  // deployment is not configured for myapi service writes, fail explicitly
-  // rather than writing to the wrong database.
-  if(isBga) return json({ok:false,error:'BGA write endpoint is read-only until myapi service credentials are configured on this deployment.'},503);
   if(action==='CREATE'){
    if(!data) return json({ok:false,error:'data required'},400);
    const r=await fetch(target,{method:'POST',headers:{...headers,'Content-Type':'application/json',Prefer:'return=representation'},body:JSON.stringify(data)});const text=await r.text();
    if(!r.ok)return json({ok:false,error:text},r.status);return json({ok:true,rows:JSON.parse(text)});
   }
   if(action==='UPDATE'||action==='DELETE'){
-   if(!id)return json({ok:false,error:'id required'},400); target+=`?id=eq.${encodeURIComponent(id)}`;
+   if(id===null||id===undefined||id==='')return json({ok:false,error:'id required'},400); target+=`?id=eq.${encodeURIComponent(id)}`;
    const r=await fetch(target,{method:action==='UPDATE'?'PATCH':'DELETE',headers:{...headers,'Content-Type':'application/json',Prefer:'return=representation'},body:action==='UPDATE'?JSON.stringify(data):undefined});const text=await r.text();
    if(!r.ok)return json({ok:false,error:text},r.status);return json({ok:true,rows:text?JSON.parse(text):[]});
   }
