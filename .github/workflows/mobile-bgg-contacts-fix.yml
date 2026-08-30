@@ -1,4 +1,4 @@
-name: One-time BGG contacts desktop access gate fix
+name: One-time BGG contacts normal access form fix
 on:
   push:
     paths:
@@ -10,30 +10,43 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - uses: actions/checkout@v4
-      - name: Patch desktop access gate
+      - name: Replace overlay gate with normal form
         run: |
           python3 - <<'PY'
           from pathlib import Path
           p = Path('bgg-contacts.html')
           s = p.read_text()
 
-          old_css = '.modal,.gate{position:fixed;inset:0;background:#020814dd;display:none;align-items:center;justify-content:center;padding:14px;z-index:20}'
-          new_css = '.modal,.gate{position:fixed;inset:0;background:#020814dd;display:none;align-items:center;justify-content:center;padding:14px;z-index:20}.gate{z-index:2147483647!important;pointer-events:auto!important;isolation:isolate}.gate .box{position:relative;z-index:1;pointer-events:auto!important}.gate input,.gate button{position:relative;z-index:2;pointer-events:auto!important;user-select:text}.gate input{touch-action:manipulation}'
-          if old_css not in s:
-              raise SystemExit('Expected gate CSS not found')
-          s = s.replace(old_css, new_css, 1)
+          # Make the gate a normal document element instead of a fixed overlay.
+          css_anchor = '.modal.open,.gate{display:flex}'
+          css_extra = '.modal.open{display:flex}#gate{position:relative!important;inset:auto!important;display:block!important;background:transparent!important;padding:14px!important;z-index:auto!important;pointer-events:auto!important;isolation:auto!important;max-width:520px;margin:48px auto 0}#gate.hidden{display:none!important}#gate .box{position:relative!important;width:100%!important;max-height:none!important;overflow:visible!important;pointer-events:auto!important}#gate input,#gate button{position:static!important;z-index:auto!important;pointer-events:auto!important;user-select:auto!important}#dashboardApp.hidden{display:none!important}'
+          if css_anchor in s:
+              s = s.replace(css_anchor, css_extra, 1)
+          elif '#dashboardApp.hidden{display:none!important}' not in s:
+              raise SystemExit('Expected gate display CSS not found')
 
-          old_js = "window.addEventListener('DOMContentLoaded',()=>{let h=localStorage.getItem('app_password_hint');if(h)$('pw').value=h;loadCache()});"
-          new_js = "window.addEventListener('DOMContentLoaded',()=>{let h=localStorage.getItem('app_password_hint');if(h)$('pw').value=h;const gate=$('gate'),pw=$('pw');if(gate&&!gate.classList.contains('hidden')){document.querySelector('main.app')?.setAttribute('inert','');requestAnimationFrame(()=>{pw?.focus({preventScroll:true})})}loadCache()});"
-          if old_js not in s:
+          # Give the dashboard a stable id and keep it fully hidden until unlock.
+          old_main = '<main class="app">'
+          new_main = '<main id="dashboardApp" class="app hidden">'
+          if old_main in s:
+              s = s.replace(old_main, new_main, 1)
+          elif new_main not in s:
+              raise SystemExit('Expected main app markup not found')
+
+          # Remove inert-based gate logic; just focus the normal input.
+          old_dom = "window.addEventListener('DOMContentLoaded',()=>{let h=localStorage.getItem('app_password_hint');if(h)$('pw').value=h;const gate=$('gate'),pw=$('pw');if(gate&&!gate.classList.contains('hidden')){document.querySelector('main.app')?.setAttribute('inert','');requestAnimationFrame(()=>{pw?.focus({preventScroll:true})})}loadCache()});"
+          new_dom = "window.addEventListener('DOMContentLoaded',()=>{let h=localStorage.getItem('app_password_hint');if(h)$('pw').value=h;requestAnimationFrame(()=>$('pw')?.focus());loadCache()});"
+          if old_dom in s:
+              s = s.replace(old_dom, new_dom, 1)
+          elif new_dom not in s:
               raise SystemExit('Expected DOMContentLoaded code not found')
-          s = s.replace(old_js, new_js, 1)
 
-          old_unlock = "localStorage.setItem('app_password_hint',p);$('gate').classList.add('hidden');await Promise.all([loadCache(),loadContacts(),loadPipeline()])"
-          new_unlock = "localStorage.setItem('app_password_hint',p);$('gate').classList.add('hidden');document.querySelector('main.app')?.removeAttribute('inert');await Promise.all([loadCache(),loadContacts(),loadPipeline()])"
-          if old_unlock not in s:
+          old_unlock = "localStorage.setItem('app_password_hint',p);$('gate').classList.add('hidden');document.querySelector('main.app')?.removeAttribute('inert');await Promise.all([loadCache(),loadContacts(),loadPipeline()])"
+          new_unlock = "localStorage.setItem('app_password_hint',p);$('gate').classList.add('hidden');$('dashboardApp').classList.remove('hidden');await Promise.all([loadCache(),loadContacts(),loadPipeline()])"
+          if old_unlock in s:
+              s = s.replace(old_unlock, new_unlock, 1)
+          elif new_unlock not in s:
               raise SystemExit('Expected unlock code not found')
-          s = s.replace(old_unlock, new_unlock, 1)
 
           p.write_text(s)
           PY
@@ -42,5 +55,5 @@ jobs:
           git config user.name 'github-actions[bot]'
           git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
           git add bgg-contacts.html
-          git commit -m 'Fix desktop BGG contacts access key interaction'
+          git commit -m 'Replace BGG contacts overlay gate with normal access form'
           git push
