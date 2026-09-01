@@ -1,37 +1,46 @@
-/* Mobile navigation scroll-state QA fix — 2026-09-01
-   The app's tabs share the document scroller. If a user opens a fixed contact detail
-   while the underlying page is deeply scrolled, then changes tabs, Safari preserves
-   that old document offset and shows a large blank area. Reset only on mobile tab
-   navigation / detail close; desktop scroll behavior remains untouched. */
+/* Mobile navigation + unlock scroll-state QA fix — 2026-09-01 */
 (() => {
   'use strict';
+  if ('scrollRestoration' in history) history.scrollRestoration = 'manual';
+
   const isMobile = () => window.matchMedia('(max-width: 900px)').matches;
   const reset = () => {
     if (!isMobile()) return;
-    requestAnimationFrame(() => {
-      window.scrollTo(0, 0);
+    const doReset = () => {
+      window.scrollTo({left:0, top:0, behavior:'instant'});
       document.documentElement.scrollTop = 0;
       document.body.scrollTop = 0;
+      document.scrollingElement && (document.scrollingElement.scrollTop = 0);
       const scroller = document.querySelector('.modernScroll');
       if (scroller) scroller.scrollTop = 0;
-    });
+    };
+    doReset();
+    requestAnimationFrame(doReset);
   };
+  const resetBurst = () => [0,16,80,180,350,700].forEach(ms => setTimeout(reset, ms));
 
   document.addEventListener('click', (event) => {
     if (!isMobile()) return;
-    if (event.target.closest('.tabs [data-tab]')) {
-      // Run after the legacy tab handler has hidden/shown sections.
-      setTimeout(reset, 0);
-      setTimeout(reset, 80);
+    if (event.target.closest('.tabs [data-tab]') || event.target.closest('#mobileDetailClose')) {
+      resetBurst();
       return;
     }
-    if (event.target.closest('#mobileDetailClose')) {
-      setTimeout(reset, 0);
+    /* The recording showed the real failure occurs after Unlock Dashboard: Safari
+       retains the gate/form scroll offset while the much taller dashboard is revealed. */
+    if (event.target.closest('#unlock') || event.target.closest('#promptUnlock')) {
+      resetBurst();
     }
   }, true);
 
-  // iOS can restore an obsolete scroll offset after history/page restoration.
-  window.addEventListener('pageshow', (event) => {
-    if (event.persisted && isMobile()) reset();
-  });
+  /* Observe the actual gate -> dashboard visibility transition too, so this works
+     whether unlock came from the button, Enter key, prompt, or restored credentials. */
+  const dashboard = document.getElementById('dashboardApp');
+  if (dashboard) {
+    new MutationObserver(() => {
+      if (isMobile() && !dashboard.classList.contains('hidden')) resetBurst();
+    }).observe(dashboard, {attributes:true, attributeFilter:['class']});
+  }
+
+  window.addEventListener('pageshow', () => { if (isMobile()) resetBurst(); });
+  window.addEventListener('load', () => { if (isMobile()) resetBurst(); });
 })();
