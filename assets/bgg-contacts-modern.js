@@ -16,7 +16,7 @@
   const legacyOpenContact = openContact;
   const legacyLoad = load;
 
-  function icon(name) { return `<i class="fa-solid ${name}" aria-hidden="true"></i>`; }
+  function icon(name) { const family = name === 'fa-discord' ? 'fa-brands' : 'fa-solid'; return `<i class="${family} ${name}" aria-hidden="true"></i>`; }
   function initials(name) {
     return String(name || '?').trim().split(/\s+/).slice(0,2).map(x => x[0] || '').join('').toUpperCase() || '?';
   }
@@ -269,7 +269,7 @@
     });
   };
 
-  openContact = function(id) { renderContactDetail(id); };
+  openContact = function(id) { const section=document.getElementById('contacts'); if(section?.classList.contains('hidden')) return legacyOpenContact(id); renderContactDetail(id); };
 
   render = function() {
     if(document.getElementById('collectionTabCount')) document.getElementById('collectionTabCount').textContent=games.length;
@@ -357,6 +357,7 @@
   }
 
   function boot() {
+    if(!localStorage.getItem('contact_view')) { contactView='cards'; localStorage.setItem('contact_view','cards'); }
     buildShell();
     buildContactsWorkspace();
     enhanceContactPanel();
