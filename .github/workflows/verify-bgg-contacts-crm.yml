@@ -1,0 +1,72 @@
+name: Verify BGG Contacts CRM
+
+on:
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/verify-bgg-contacts-crm.yml'
+
+permissions:
+  contents: write
+
+jobs:
+  verify:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: main
+
+      - name: Validate HTML markers and inline JavaScript syntax
+        shell: bash
+        run: |
+          set +e
+          python - <<'PY' > /tmp/verify.log 2>&1
+          from pathlib import Path
+          import re, subprocess, sys, tempfile
+
+          text = Path('bgg-contacts.html').read_text(encoding='utf-8')
+          required = [
+              'contacts-crm-v2-2026-09-01',
+              'Discord Username',
+              'discord_username',
+              'preferred_contact_method',
+              'function openNewContact',
+              "data-missing=\"discord\"",
+          ]
+          missing = [item for item in required if item not in text]
+          if missing:
+              print('MISSING MARKERS:', missing)
+              sys.exit(2)
+
+          scripts = re.findall(r'<script(?:\\s[^>]*)?>(.*?)</script>', text, flags=re.I | re.S)
+          checked = 0
+          for index, code in enumerate(scripts):
+              if not code.strip():
+                  continue
+              path = Path(tempfile.gettempdir()) / f'bgg-inline-{index}.js'
+              path.write_text(code, encoding='utf-8')
+              result = subprocess.run(['node', '--check', str(path)], text=True, capture_output=True)
+              if result.returncode:
+                  print(f'INLINE SCRIPT {index} FAILED')
+                  print(result.stdout)
+                  print(result.stderr)
+                  sys.exit(result.returncode)
+              checked += 1
+          print(f'PASS: required markers present; {checked} inline scripts passed node --check')
+          PY
+          status=$?
+          cat /tmp/verify.log
+          if [ "$status" -eq 0 ]; then
+            printf 'PASS\n' > scripts/bgg-contacts-crm-verification.txt
+          else
+            printf 'FAIL\n' > scripts/bgg-contacts-crm-verification.txt
+          fi
+          cat /tmp/verify.log >> scripts/bgg-contacts-crm-verification.txt
+          git config user.name 'github-actions[bot]'
+          git config user.email '41898282+github-actions[bot]@users.noreply.github.com'
+          git add scripts/bgg-contacts-crm-verification.txt
+          git commit -m 'Record BGG contacts CRM verification'
+          git push origin main
+          exit "$status"
