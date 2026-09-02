@@ -92,7 +92,11 @@ while marker in s:
 s=re.sub(r'/\* BGA tab: complete isolated bga\.html embedded directly in this file \*/.*?(?=</style>)','',s,flags=re.S)
 host='''/* BGA tab: complete isolated bga.html embedded directly in this file */.bgaHost{margin-top:10px;border:1px solid #203149;border-radius:14px;overflow:hidden;background:#07111f}.bgaEmbeddedApp{display:block;width:100%;height:calc(100vh - 130px);min-height:720px;border:0;background:#07111f}@media(max-width:800px){.tabs{grid-template-columns:repeat(4,1fr)!important}.bgaHost{margin:0 -10px;border-left:0;border-right:0;border-radius:0}.bgaEmbeddedApp{height:calc(100vh - 92px)}}'''
 s=s.replace('</style>',host+'</style>',1)
-nav="""document.addEventListener('click',ev=>{const b=ev.target.closest('.tabs [data-tab]');if(!b)return;const t=b.dataset.tab;['collection','contacts','pipeline','bga'].forEach(id=>document.getElementById(id)?.classList.toggle('hidden',id!==t));document.querySelectorAll('.tabs [data-tab]').forEach(x=>x.classList.toggle('active',x===b));});"""
+# Include the dynamically-added Email workspace in the tab visibility set so
+# choosing Games (pipeline) always hides Email and restores the real Games UI.
+nav="""document.addEventListener('click',ev=>{const b=ev.target.closest('.tabs [data-tab]');if(!b)return;const t=b.dataset.tab;['collection','contacts','pipeline','bga','email'].forEach(id=>document.getElementById(id)?.classList.toggle('hidden',id!==t));document.querySelectorAll('.tabs [data-tab]').forEach(x=>x.classList.toggle('active',x===b));});"""
+# Replace the old four-tab handler if present, otherwise inject the corrected handler.
+s=re.sub(r"document\.addEventListener\('click',ev=>\{const b=ev\.target\.closest\('\.tabs \[data-tab\]'\);if\(!b\)return;const t=b\.dataset\.tab;\['collection','contacts','pipeline','bga'\]\.forEach\(id=>document\.getElementById\(id\)\?\.classList\.toggle\('hidden',id!==t\)\);document\.querySelectorAll\('\.tabs \[data-tab\]'\)\.forEach\(x=>x\.classList\.toggle\('active',x===b\)\);\}\);", nav, s)
 if nav not in s:
     body_end=s.lower().rfind('</body>')
     script_end=s.rfind('</script>',0,body_end)
