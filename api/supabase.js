@@ -1,7 +1,7 @@
 export const config = { runtime: 'edge' };
 
 // Generic Supabase CRUD proxy used by Board Game Lab apps.
-const BGA_TABLES = new Set(['bga_entities','bga_projects','bga_project_entities','bga_interactions','bg_contact','bga_emails']);
+const BGA_TABLES = new Set(['bga_entities','bga_projects','bga_project_entities','bga_interactions','bg_contact','bg_game','bga_emails']);
 const json=(body,status=200)=>new Response(JSON.stringify(body),{status,headers:{'Content-Type':'application/json','Cache-Control':'no-store','Access-Control-Allow-Origin':'*'}});
 const validTable=t=>typeof t==='string'&&/^[a-zA-Z0-9_-]+$/.test(t)&&BGA_TABLES.has(t);
 
