@@ -10,3 +10,4 @@ if js not in s:
     s = s.replace('</body>', js + '</body>', 1)
 p.write_text(s, encoding='utf-8')
 print('Installed BGA email dashboard assets')
+# 2026-09-01: trigger workflow to install Email navigation/dashboard assets into the live Contacts page.
