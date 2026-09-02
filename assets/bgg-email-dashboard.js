@@ -18,13 +18,16 @@
     const b=document.createElement('button');b.className='btn';b.dataset.tab='email';b.innerHTML=`<span class="navIcon">${icon('fa-envelope')}</span><span class="navText">Email</span><span id="emailTabCount" class="tabCount">—</span>`;tabs.appendChild(b);
     const s=document.createElement('section');s.id='email';s.className='hidden emailWorkspace';s.innerHTML=`<div id="emailDashboard"><div class="emailLoading">${icon('fa-spinner fa-spin')} Loading email archive…</div></div>`;
     const scroll=document.querySelector('.modernScroll');(scroll||app).appendChild(s);
-    b.addEventListener('click',()=>activate());
   }
   function activate(){
     ['collection','contacts','pipeline','bga','email'].forEach(id=>document.getElementById(id)?.classList.toggle('hidden',id!=='email'));
     document.querySelectorAll('.tabs [data-tab]').forEach(x=>x.classList.toggle('active',x.dataset.tab==='email'));
     const t=document.getElementById('modernPageTitle'),sub=document.getElementById('modernPageSubtitle');if(t)t.textContent='Email';if(sub)sub.textContent='Review BGA correspondence, communication volume, contacts and follow-up timing.';
     document.body.dataset.activeTab='email'; if(!loaded)load();
+  }
+  function deactivate(){
+    const s=document.getElementById('email');
+    if(s)s.classList.add('hidden');
   }
   async function load(){const host=document.getElementById('emailDashboard');try{emails=await api();emails.sort((a,b)=>new Date(when(b)||0)-new Date(when(a)||0));loaded=true;document.getElementById('emailTabCount').textContent=emails.length;render();}catch(e){host.innerHTML=`<div class="emailError"><strong>Email data unavailable</strong><span>${esc(e.message)}</span><button class="modernButton secondary" id="emailRetry">Retry</button></div>`;document.getElementById('emailRetry').onclick=load;}}
   function filtered(){const q=query.trim().toLowerCase();return emails.filter(r=>(direction==='all'||dir(r)===direction)&&(!q||[r.subject,sender(r),recipients(r),body(r)].some(v=>String(v||'').toLowerCase().includes(q))));}
@@ -53,6 +56,14 @@
   function emptyDetail(){return `<div class="emailDetailEmpty">${icon('fa-envelope-open-text')}<h3>Select a message</h3><p>Open an email to inspect its sender, recipients, timestamp and full archived body.</p></div>`;}
   function detail(r){const d=dir(r);return `<div class="emailDetailHead"><span class="emailDirection ${d}">${icon(d==='sent'?'fa-arrow-up-right-from-square':'fa-arrow-down')}</span><div><span>${d==='sent'?'Sent':'Received'} · ${fmt(when(r))}</span><h2>${esc(r.subject||'(No subject)')}</h2></div></div><dl class="emailMeta"><div><dt>From</dt><dd>${esc(sender(r)||'—')}</dd></div><div><dt>To</dt><dd>${esc(recipients(r)||'—')}</dd></div>${r.cc_emails||r.cc_recipients?`<div><dt>CC</dt><dd>${esc(addr(r.cc_emails||r.cc_recipients))}</dd></div>`:''}<div><dt>Activity</dt><dd>${age(when(r))}</dd></div></dl><div class="emailBody">${renderBody(r)}</div>`;}
   function renderBody(r){const raw=String(body(r)||'');if(!raw)return '<span class="muted">No archived body available.</span>';return `<pre>${esc(raw.replace(/<br\s*\/?>/gi,'\n').replace(/<\/p>/gi,'\n\n').replace(/<[^>]+>/g,'').replace(/&nbsp;/g,' '))}</pre>`;}
-  function boot(){inject();document.addEventListener('click',e=>{const b=e.target.closest('.tabs [data-tab="email"]');if(b)activate();});}
+  function boot(){
+    inject();
+    document.addEventListener('click',e=>{
+      const b=e.target.closest('.tabs [data-tab]');
+      if(!b)return;
+      if(b.dataset.tab==='email') activate();
+      else deactivate();
+    });
+  }
   if(document.readyState==='loading')document.addEventListener('DOMContentLoaded',()=>setTimeout(boot,0));else setTimeout(boot,0);
 })();
