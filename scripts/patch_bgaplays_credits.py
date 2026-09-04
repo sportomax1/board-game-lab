@@ -18,7 +18,7 @@ def exact(old, new, label):
 
 def regex(pattern, repl, label, flags=re.S):
     global text
-    text2, count = re.subn(pattern, lambda m: repl, text, count=1, flags=flags)
+    text2, count = re.subn(pattern, repl, text, count=1, flags=flags)
     if count != 1:
         raise SystemExit(f'Expected one match for {label}, got {count}')
     text = text2
