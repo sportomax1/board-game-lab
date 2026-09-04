@@ -3,8 +3,7 @@ name: Deploy BGG Fetcher
 on:
   push:
     branches:
-      - main  # Set this to your primary branch (e.g., main or master)
-  # Allows you to manually trigger the workflow from the Actions tab
+      - main
   workflow_dispatch:
 
 jobs:
@@ -14,27 +13,54 @@ jobs:
       - name: Checkout code
         uses: actions/checkout@v4
 
-      # --- Token Injection Step ---
       - name: Inject BGG API Token into index.html
-        # IMPORTANT: The secret named 'BGG_API_TOKEN' is now referenced here.
         env:
           BGG_SECRET: ${{ secrets.BGG_API_TOKEN }}
         run: |
           if [ -z "$BGG_SECRET" ]; then
-            # Changed error message to reflect the new secret name
             echo "::warning::GitHub Secret 'BGG_API_TOKEN' is not set. Placeholder will remain in index.html."
-            # The code handles this case by failing the 'injected' test.
           else
-            # Replaces the placeholder string with the actual quoted secret value.
             sed -i "s|GITHUB_SECRET_PLACEHOLDER_TOKEN|\'$BGG_SECRET\'|g" index.html
             echo "Token successfully injected into index.html."
           fi
-          
-      # --- Deployment Step ---
+
+      - name: Refresh sportomax BGG collection snapshot
+        env:
+          BGG_SECRET: ${{ secrets.BGG_API_TOKEN }}
+        run: |
+          if [ -z "$BGG_SECRET" ]; then
+            echo "::warning::BGG_API_TOKEN unavailable; skipping collection snapshot."
+            exit 0
+          fi
+
+          URL="https://boardgamegeek.com/xmlapi2/collection?username=sportomax&own=1&stats=1&excludesubtype=boardgameaccessory"
+          SUCCESS=0
+          for ATTEMPT in 1 2 3 4 5; do
+            HTTP_CODE=$(curl --silent --show-error --location \
+              --output /tmp/bgg-collection.xml \
+              --write-out "%{http_code}" \
+              --header "Authorization: Bearer $BGG_SECRET" \
+              --header "Accept: text/xml" \
+              --header "User-Agent: BoardGameLab-GitHubPages/1.0" \
+              "$URL" || true)
+
+            if [ "$HTTP_CODE" = "200" ] && grep -q '<items' /tmp/bgg-collection.xml; then
+              mv /tmp/bgg-collection.xml bgg-collection-sportomax.xml
+              echo "BGG collection snapshot refreshed."
+              SUCCESS=1
+              break
+            fi
+
+            echo "BGG collection attempt $ATTEMPT returned HTTP $HTTP_CODE; retrying..."
+            sleep $((ATTEMPT * 3))
+          done
+
+          if [ "$SUCCESS" != "1" ]; then
+            echo "::warning::Could not refresh BGG collection snapshot. Thumbnail enrichment will fall back to the live Vercel helper/cache."
+          fi
+
       - name: Deploy to GitHub Pages
         uses: peaceiris/actions-gh-pages@v4
         with:
-          # Use the default GitHub token for deployment permissions
           github_token: ${{ secrets.GITHUB_TOKEN }}
-          # Deploy the root directory (where index.html now lives with the injected secret)
           publish_dir: ./
