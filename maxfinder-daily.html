@@ -1,0 +1,163 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover">
+  <title>BGG Max Finder · Daily History</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.5.2/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700;800&display=swap');
+    body{font-family:'Plus Jakarta Sans',sans-serif;background:#f8fafc}.mono{font-family:ui-monospace,SFMono-Regular,Menlo,Monaco,Consolas,monospace}.thumb{width:82px;height:82px;object-fit:cover;border-radius:12px;background:#e2e8f0}.day.active{border-color:#059669;background:#ecfdf5}.metric{border:1px solid #e2e8f0;background:#fff;border-radius:14px;padding:12px}.skeleton{animation:pulse 1.4s ease-in-out infinite;background:#e2e8f0}@keyframes pulse{50%{opacity:.45}}
+  </style>
+</head>
+<body class="min-h-screen text-slate-900">
+  <header class="sticky top-0 z-20 border-b bg-white/90 backdrop-blur">
+    <div class="mx-auto flex max-w-7xl items-center gap-3 px-3 py-3">
+      <a href="maxfinder.html" class="flex h-10 w-10 items-center justify-center rounded-xl bg-emerald-600 text-white" title="Back to Max Finder"><i class="fa-solid fa-bullseye"></i></a>
+      <div class="min-w-0 flex-1">
+        <h1 class="truncate text-lg font-extrabold">BGG Max Daily</h1>
+        <p class="text-[10px] font-semibold text-slate-400">Automated max-ID history · Mountain Time</p>
+      </div>
+      <button id="refreshBtn" class="rounded-xl border bg-white px-3 py-2 text-xs font-extrabold hover:bg-slate-50"><i class="fa-solid fa-rotate-right mr-1"></i>Refresh</button>
+    </div>
+  </header>
+
+  <main class="mx-auto max-w-7xl space-y-3 p-3">
+    <section class="grid grid-cols-2 gap-2 md:grid-cols-4">
+      <div class="metric"><div id="latestMax" class="mono text-xl font-extrabold text-emerald-600">—</div><div class="text-[9px] font-bold uppercase tracking-wide text-slate-400">Latest max</div></div>
+      <div class="metric"><div id="latestDelta" class="mono text-xl font-extrabold">—</div><div class="text-[9px] font-bold uppercase tracking-wide text-slate-400">ID movement</div></div>
+      <div class="metric"><div id="latestNew" class="mono text-xl font-extrabold text-indigo-600">—</div><div class="text-[9px] font-bold uppercase tracking-wide text-slate-400">New games</div></div>
+      <div class="metric"><div id="latestDate" class="text-sm font-extrabold">—</div><div class="text-[9px] font-bold uppercase tracking-wide text-slate-400">Last scan</div></div>
+    </section>
+
+    <section class="grid gap-3 lg:grid-cols-[320px_1fr]">
+      <aside class="overflow-hidden rounded-2xl border bg-white">
+        <div class="flex items-center justify-between border-b px-3 py-2.5">
+          <div>
+            <h2 class="text-sm font-extrabold">Daily scans</h2>
+            <p class="text-[10px] text-slate-400">Tap a day to see first-seen games</p>
+          </div>
+          <span id="runCount" class="rounded-full bg-slate-100 px-2 py-1 text-[10px] font-extrabold">0</span>
+        </div>
+        <div id="days" class="max-h-[72vh] space-y-1.5 overflow-y-auto p-2"></div>
+      </aside>
+
+      <section class="overflow-hidden rounded-2xl border bg-white">
+        <div class="border-b p-3">
+          <div class="flex flex-wrap items-center justify-between gap-2">
+            <div>
+              <div id="detailEyebrow" class="text-[9px] font-extrabold uppercase tracking-wide text-slate-400">Select a day</div>
+              <h2 id="detailTitle" class="text-lg font-extrabold">Daily additions</h2>
+            </div>
+            <div id="detailBadges" class="flex flex-wrap gap-1"></div>
+          </div>
+        </div>
+        <div id="items" class="grid gap-2 p-2 sm:grid-cols-2 xl:grid-cols-3">
+          <div class="col-span-full p-8 text-center text-sm font-semibold text-slate-400">Loading history…</div>
+        </div>
+      </section>
+    </section>
+
+    <section class="rounded-2xl border bg-white p-3 text-xs text-slate-500">
+      <b class="text-slate-700">How dates work:</b> a game is shown on the day the automated scanner first discovered it. This is a first-seen date, not a guaranteed BGG creation timestamp. The first automated run is a baseline and intentionally does not classify the historical backlog as newly added that day.
+    </section>
+  </main>
+
+<script>
+const API='/api/bgg-max-scan';
+const $=id=>document.getElementById(id);
+const esc=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
+let runs=[];
+let selectedDate='';
+
+function fmtDate(v){if(!v)return'—';const [y,m,d]=String(v).split('-').map(Number);return new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',year:'numeric'}).format(new Date(y,m-1,d))}
+function fmtTime(v){if(!v)return'—';return new Intl.DateTimeFormat(undefined,{month:'short',day:'numeric',hour:'numeric',minute:'2-digit'}).format(new Date(v))}
+function num(v){return Number(v||0).toLocaleString()}
+function delta(v){const n=Number(v||0);return`${n>=0?'+':''}${n.toLocaleString()}`}
+function badge(text,cls='bg-slate-100 text-slate-700'){return`<span class="rounded-full px-2 py-1 text-[9px] font-extrabold ${cls}">${esc(text)}</span>`}
+
+function renderSummary(){const r=runs.find(x=>x.status==='completed')||runs[0];if(!r)return;$('latestMax').textContent=r.max_id?num(r.max_id):'—';$('latestDelta').textContent=r.id_delta===null||r.id_delta===undefined?'—':delta(r.id_delta);$('latestNew').textContent=num(r.new_items_inserted);$('latestDate').textContent=fmtDate(r.scan_date)}
+
+function renderDays(){
+  $('runCount').textContent=runs.length;
+  if(!runs.length){$('days').innerHTML='<div class="p-5 text-center text-xs font-semibold text-slate-400">No automated runs yet.</div>';return}
+  $('days').innerHTML=runs.map(r=>{
+    const active=r.scan_date===selectedDate?'active':'';
+    const status=r.status==='completed'?'bg-emerald-50 text-emerald-700':r.status==='error'?'bg-red-50 text-red-700':'bg-amber-50 text-amber-700';
+    return`<button class="day ${active} w-full rounded-xl border p-2.5 text-left transition hover:bg-slate-50" data-date="${esc(r.scan_date)}">
+      <div class="flex items-center justify-between gap-2"><b class="text-xs">${fmtDate(r.scan_date)}</b><span class="rounded-full px-1.5 py-0.5 text-[8px] font-extrabold ${status}">${esc(r.status)}</span></div>
+      <div class="mt-1 grid grid-cols-3 gap-1 text-[9px]">
+        <span><b class="mono block text-slate-800">${r.max_id?num(r.max_id):'—'}</b><span class="text-slate-400">max</span></span>
+        <span><b class="mono block text-slate-800">${r.id_delta===null||r.id_delta===undefined?'—':delta(r.id_delta)}</b><span class="text-slate-400">delta</span></span>
+        <span><b class="mono block text-indigo-600">${num(r.new_items_inserted)}</b><span class="text-slate-400">new</span></span>
+      </div>
+      ${r.is_baseline?'<div class="mt-1 text-[9px] font-bold text-amber-600">Baseline run</div>':''}
+    </button>`
+  }).join('');
+}
+
+function itemCard(x){
+  const designers=Array.isArray(x.designers)?x.designers:[];
+  const pubs=Array.isArray(x.publishers)?x.publishers:[];
+  return`<a target="_blank" rel="noopener" href="https://boardgamegeek.com/boardgame/${x.bgg_id}" class="flex min-w-0 gap-2 rounded-xl border p-2 transition hover:border-emerald-300 hover:bg-emerald-50/30">
+    ${x.thumbnail?`<img class="thumb" src="${esc(x.thumbnail)}" alt="">`:'<div class="thumb"></div>'}
+    <div class="min-w-0 flex-1">
+      <div class="truncate text-sm font-extrabold">${esc(x.name)}</div>
+      <div class="mono text-[9px] text-slate-400">#${num(x.bgg_id)}${x.year?` · ${x.year}`:''}</div>
+      <div class="mt-1 truncate text-[9px] text-slate-500">${designers.length?`Designer: ${esc(designers.join(', '))}`:'Designer: —'}</div>
+      <div class="truncate text-[9px] text-slate-500">${pubs.length?`Publisher: ${esc(pubs.join(', '))}`:'Publisher: —'}</div>
+      <div class="mt-1 flex flex-wrap gap-1">${x.item_type?badge(x.item_type):''}${Number(x.usersrated)>0?badge(`${num(x.usersrated)} ratings`,'bg-blue-50 text-blue-700'):''}${Number(x.rank)>0?badge(`#${num(x.rank)} rank`,'bg-violet-50 text-violet-700'):''}</div>
+    </div>
+  </a>`
+}
+
+async function loadDate(date){
+  selectedDate=date;renderDays();
+  const run=runs.find(r=>r.scan_date===date);
+  $('detailEyebrow').textContent=fmtDate(date);
+  $('detailTitle').textContent='Loading additions…';
+  $('detailBadges').innerHTML='';
+  $('items').innerHTML='<div class="col-span-full p-8 text-center text-sm font-semibold text-slate-400">Loading games…</div>';
+  try{
+    const res=await fetch(`${API}?mode=history&date=${encodeURIComponent(date)}`,{cache:'no-store'});
+    const data=await res.json();
+    if(!res.ok||!data.success)throw new Error(data.error||`HTTP ${res.status}`);
+    const items=Array.isArray(data.items)?data.items:[];
+    const r=data.run||run||{};
+    $('detailTitle').textContent=r.is_baseline?'Baseline established':`${items.length.toLocaleString()} game${items.length===1?'':'s'} first seen`;
+    $('detailBadges').innerHTML=[
+      r.max_id?badge(`Max ${num(r.max_id)}`,'bg-emerald-50 text-emerald-700'):'',
+      r.id_delta!==null&&r.id_delta!==undefined?badge(`Δ ${delta(r.id_delta)}`):'',
+      r.is_baseline?badge('Baseline','bg-amber-50 text-amber-700'):'',
+      r.completed_at?badge(fmtTime(r.completed_at)):'',
+    ].join('');
+    if(r.status==='error'){
+      $('items').innerHTML=`<div class="col-span-full rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700">${esc(r.error||'Scan failed')}</div>`;
+    }else if(!items.length){
+      $('items').innerHTML=`<div class="col-span-full p-8 text-center"><div class="text-sm font-extrabold text-slate-600">${r.is_baseline?'Baseline only — no historical backlog assigned to this day.':'No newly discovered games on this scan.'}</div><div class="mt-1 text-xs text-slate-400">Max ID: ${r.max_id?num(r.max_id):'—'}</div></div>`;
+    }else $('items').innerHTML=items.map(itemCard).join('');
+  }catch(e){$('detailTitle').textContent='Could not load day';$('items').innerHTML=`<div class="col-span-full rounded-xl bg-red-50 p-4 text-sm font-semibold text-red-700">${esc(e.message)}</div>`}
+}
+
+async function loadHistory(){
+  $('refreshBtn').disabled=true;
+  try{
+    const res=await fetch(`${API}?mode=history&days=45`,{cache:'no-store'});
+    const data=await res.json();
+    if(!res.ok||!data.success)throw new Error(data.error||`HTTP ${res.status}`);
+    runs=Array.isArray(data.runs)?data.runs:[];
+    renderSummary();
+    if(!selectedDate&&runs.length)selectedDate=runs[0].scan_date;
+    renderDays();
+    if(selectedDate)await loadDate(selectedDate);else $('items').innerHTML='<div class="col-span-full p-8 text-center text-sm font-semibold text-slate-400">No automated scans have run yet.</div>';
+  }catch(e){$('days').innerHTML=`<div class="rounded-xl bg-red-50 p-3 text-xs font-semibold text-red-700">${esc(e.message)}</div>`;$('items').innerHTML='<div class="col-span-full p-8 text-center text-sm font-semibold text-slate-400">History unavailable.</div>'}
+  finally{$('refreshBtn').disabled=false}
+}
+
+$('days').addEventListener('click',e=>{const b=e.target.closest('[data-date]');if(b)loadDate(b.dataset.date)});
+$('refreshBtn').onclick=loadHistory;
+loadHistory();
+</script>
+</body>
+</html>
