@@ -1,0 +1,208 @@
+<script>
+(() => {
+  const API_FALLBACK = 'https://board-game-lab-one-phi-42.vercel.app/api/bgg-helper';
+  let collection = [];
+  let loadedUser = '';
+  let observer = null;
+  let scanTimer = null;
+
+  const css = `
+  .bgg-enrich{margin:0 0 10px;background:#111a2e;border:1px solid #28344f;border-radius:14px;padding:10px 12px}
+  .bgg-enrich-top{display:flex;gap:10px;align-items:end;flex-wrap:wrap}
+  .bgg-enrich-title{font-weight:800;font-size:13px;margin-right:auto;align-self:center}
+  .bgg-enrich-field{display:flex;flex-direction:column;gap:4px;min-width:180px}
+  .bgg-enrich-field label{font-size:10px;color:#9fb0cc}
+  .bgg-enrich input{background:#0d1424;color:#edf2ff;border:1px solid #28344f;border-radius:9px;padding:8px 9px}
+  .bgg-enrich button{border:1px solid #4c7ce7;background:#305ec8;color:white;padding:8px 11px;border-radius:9px;cursor:pointer}
+  .bgg-enrich button:disabled{opacity:.5;cursor:wait}
+  .bgg-progress{height:6px;background:#0a1020;border:1px solid #28344f;border-radius:999px;overflow:hidden;margin-top:9px}
+  .bgg-progress>div{height:100%;width:0;background:linear-gradient(90deg,#547fe4,#53d3a3);transition:width .25s}
+  .bgg-enrich-bottom{display:flex;gap:8px;align-items:center;justify-content:space-between;margin-top:7px;flex-wrap:wrap}
+  .bgg-status{font-size:11px;color:#9fb0cc}
+  .bgg-mini-stats{display:flex;gap:6px;flex-wrap:wrap}
+  .bgg-mini-stat{font-size:10px;color:#cbd8ef;background:#10192c;border:1px solid #28344f;border-radius:999px;padding:3px 7px}
+  .collection-match{display:flex;align-items:center;gap:8px;margin:7px 0;padding:6px 7px;border:1px solid #41608e;background:#101d34;border-radius:9px;text-decoration:none;color:#edf2ff}
+  .collection-match img{width:42px;height:42px;border-radius:6px;object-fit:cover;background:#0b1020;flex:0 0 auto}
+  .collection-match strong{font-size:11px;display:block}
+  .collection-match small{font-size:9px;color:#9fb0cc;display:block}
+  `;
+  const style=document.createElement('style'); style.textContent=css; document.head.appendChild(style);
+
+  const topbar=document.querySelector('.topbar');
+  if(!topbar) return;
+  const panel=document.createElement('div');
+  panel.className='bgg-enrich';
+  panel.innerHTML=`
+    <div class="bgg-enrich-top">
+      <div class="bgg-enrich-title">🎲 BGG Collection Enrichment</div>
+      <div class="bgg-enrich-field">
+        <label>BGG username</label>
+        <input id="bggCollectionUser" value="${document.querySelector('#myUser')?.value || 'sportomax'}">
+      </div>
+      <button id="bggLoadCollection">Load / Refresh Collection</button>
+    </div>
+    <div class="bgg-progress"><div id="bggProgressFill"></div></div>
+    <div class="bgg-enrich-bottom">
+      <div id="bggCollectionStatus" class="bgg-status">Not loaded yet.</div>
+      <div class="bgg-mini-stats">
+        <span class="bgg-mini-stat">Games <b id="bggStatGames">0</b></span>
+        <span class="bgg-mini-stat">Thumbnails <b id="bggStatThumbs">0</b></span>
+        <span class="bgg-mini-stat">Cards scanned <b id="bggStatScanned">0</b></span>
+        <span class="bgg-mini-stat">Matched <b id="bggStatMatched">0</b></span>
+      </div>
+    </div>`;
+  topbar.insertAdjacentElement('afterend',panel);
+
+  const user=panel.querySelector('#bggCollectionUser');
+  const button=panel.querySelector('#bggLoadCollection');
+  const status=panel.querySelector('#bggCollectionStatus');
+  const fill=panel.querySelector('#bggProgressFill');
+  const statGames=panel.querySelector('#bggStatGames');
+  const statThumbs=panel.querySelector('#bggStatThumbs');
+  const statScanned=panel.querySelector('#bggStatScanned');
+  const statMatched=panel.querySelector('#bggStatMatched');
+
+  function setProgress(n,text){
+    fill.style.width=Math.max(0,Math.min(100,n))+'%';
+    if(text) status.textContent=text;
+  }
+  function normalize(s){
+    return String(s||'').toLowerCase()
+      .normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
+      .replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+  }
+  function parseCollection(xmlText){
+    const doc=new DOMParser().parseFromString(xmlText,'text/xml');
+    if(doc.querySelector('parsererror')) throw new Error('BGG returned invalid XML');
+    return [...doc.querySelectorAll('item')].map(item=>{
+      const id=item.getAttribute('objectid')||'';
+      const name=item.querySelector('name')?.textContent?.trim()||'';
+      const thumbnail=item.querySelector('thumbnail')?.textContent?.trim()||'';
+      const image=item.querySelector('image')?.textContent?.trim()||'';
+      return {id,name,thumbnail,image,norm:normalize(name)};
+    }).filter(g=>g.id&&g.name);
+  }
+  async function fetchXml(username,subtype){
+    const qs=new URLSearchParams({endpoint:'collection',username,subtype,stats:'1'});
+    const candidates=[];
+    if(location.protocol.startsWith('http')) candidates.push(`${location.origin}/api/bgg-helper?${qs}`);
+    candidates.push(`${API_FALLBACK}?${qs}`);
+    let lastErr;
+    for(const url of [...new Set(candidates)]){
+      try{
+        const r=await fetch(url,{cache:'no-store'});
+        if(!r.ok) throw new Error(`${r.status} ${r.statusText}`);
+        const text=await r.text();
+        if(!text.trim().startsWith('<')) throw new Error('Non-XML response');
+        return text;
+      }catch(e){ lastErr=e; }
+    }
+    throw lastErr||new Error('Collection request failed');
+  }
+  function bestMatch(subject,body){
+    const s=normalize(subject), b=normalize(body);
+    if(!s&&!b) return null;
+    let best=null, bestScore=0;
+    for(const g of collection){
+      const n=g.norm;
+      if(!n || n.length<3) continue;
+      let score=0;
+      if(s===n) score=1000+n.length;
+      else if(s.includes(n) && n.length>=4) score=850+n.length;
+      else if(n.includes(s) && s.length>=5) score=720+s.length;
+      else if(b.includes(n) && n.length>=5) score=500+n.length;
+      else {
+        const toks=n.split(' ').filter(t=>t.length>=3);
+        if(toks.length>=2){
+          const subjectHits=toks.filter(t=>s.includes(t)).length;
+          const bodyHits=toks.filter(t=>b.includes(t)).length;
+          if(subjectHits===toks.length) score=650+toks.length*10;
+          else if(bodyHits===toks.length) score=360+toks.length*10;
+        }
+      }
+      if(score>bestScore){bestScore=score;best=g;}
+    }
+    return bestScore>=360?best:null;
+  }
+  function scanCards(){
+    if(!collection.length) return;
+    const cards=[...document.querySelectorAll('.message-card')];
+    let matched=0;
+    for(const card of cards){
+      card.querySelector('.collection-match')?.remove();
+      const subject=card.querySelector('.message-subject')?.textContent||'';
+      const body=card.querySelector('.body-content')?.textContent||'';
+      const m=bestMatch(subject,body);
+      if(!m) continue;
+      matched++;
+      const a=document.createElement('a');
+      a.className='collection-match';
+      a.href=`https://boardgamegeek.com/boardgame/${encodeURIComponent(m.id)}`;
+      a.target='_blank'; a.rel='noopener';
+      a.innerHTML=`${m.thumbnail?`<img src="${m.thumbnail.replace(/"/g,'&quot;')}" alt="">`:''}<span><strong>${m.name}</strong><small>Collection match · BGG #${m.id}${m.thumbnail?' · thumbnail loaded':' · no thumbnail'}</small></span>`;
+      const route=card.querySelector('.message-route');
+      (route||card.querySelector('.message-subject'))?.insertAdjacentElement('afterend',a);
+    }
+    statScanned.textContent=cards.length.toLocaleString();
+    statMatched.textContent=matched.toLocaleString();
+    status.textContent=`Ready · ${matched}/${cards.length} visible message cards matched`;
+  }
+  function queueScan(){
+    clearTimeout(scanTimer);
+    scanTimer=setTimeout(scanCards,120);
+  }
+
+  async function load(){
+    const username=user.value.trim()||'sportomax';
+    user.value=username;
+    const my=document.querySelector('#myUser');
+    if(my) my.value=username;
+    button.disabled=true;
+    collection=[]; loadedUser=username;
+    statGames.textContent='0'; statThumbs.textContent='0'; statScanned.textContent='0'; statMatched.textContent='0';
+    try{
+      setProgress(8,`Connecting to BGG for ${username}…`);
+      const base=await fetchXml(username,'boardgame');
+      setProgress(43,'Board games loaded · parsing names and thumbnails…');
+      const boardgames=parseCollection(base);
+      setProgress(55,'Loading expansions…');
+      let expansions=[];
+      try{
+        const exp=await fetchXml(username,'boardgameexpansion');
+        expansions=parseCollection(exp);
+      }catch(e){
+        console.warn('Expansion collection failed; continuing:',e);
+      }
+      setProgress(78,'Combining collection and thumbnail index…');
+      const map=new Map();
+      [...boardgames,...expansions].forEach(g=>{
+        const old=map.get(g.id);
+        if(!old || (!old.thumbnail&&g.thumbnail)) map.set(g.id,g);
+      });
+      collection=[...map.values()];
+      const thumbs=collection.filter(g=>g.thumbnail||g.image).length;
+      statGames.textContent=collection.length.toLocaleString();
+      statThumbs.textContent=thumbs.toLocaleString();
+      setProgress(90,`Matching visible GeekMail cards against ${collection.length.toLocaleString()} games…`);
+      scanCards();
+      setProgress(100,`Ready · ${collection.length.toLocaleString()} games · ${thumbs.toLocaleString()} with artwork`);
+      localStorage.setItem('geekmailCollectionUser',username);
+      if(observer) observer.disconnect();
+      observer=new MutationObserver(queueScan);
+      const target=document.querySelector('#contactsView')||document.body;
+      observer.observe(target,{childList:true,subtree:true});
+    }catch(e){
+      console.error(e);
+      setProgress(0,`Collection load failed: ${e.message}`);
+    }finally{
+      button.disabled=false;
+    }
+  }
+
+  const saved=localStorage.getItem('geekmailCollectionUser');
+  if(saved) user.value=saved;
+  user.addEventListener('input',()=>{const my=document.querySelector('#myUser'); if(my) my.value=user.value;});
+  button.addEventListener('click',load);
+  status.textContent=`Enter a BGG username and click Load / Refresh Collection. Default: ${user.value||'sportomax'}.`;
+})();
+</script>
