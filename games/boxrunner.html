@@ -1,0 +1,222 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="utf-8" />
+    <meta name="viewport" content="width=device-width,initial-scale=1">
+    <title>BoxRunner — Arcade</title>
+    <style>
+        html,body{height:100%;margin:0;font-family:system-ui,-apple-system,Segoe UI,Roboto}
+        body{background:linear-gradient(#4e54c8,#8f94fb);display:flex;align-items:center;justify-content:center}
+        #gameWrap{width:100%;max-width:900px;height:520px;background:#1b1b2f;border-radius:12px;overflow:hidden;position:relative;box-shadow:0 10px 40px rgba(0,0,0,0.4)}
+        canvas{display:block;width:100%;height:100%}
+        .hud{position:absolute;left:12px;top:12px;color:#fff;font-weight:700}
+        .hud .score{font-size:20px}
+        .controls{position:absolute;right:12px;top:12px;color:#fff}
+        .tip{position:absolute;left:12px;bottom:12px;color:#fff;font-size:13px}
+        a.home{position:absolute;right:12px;bottom:12px;color:#fff;text-decoration:none;background:rgba(255,255,255,0.08);padding:6px 10px;border-radius:8px}
+    </style>
+</head>
+<body>
+    <div id="gameWrap">
+        <canvas id="canvas" width="900" height="520"></canvas>
+        <div class="hud"><div class="score" id="score">Score: 0</div></div>
+        <div class="controls">Arrows/JUMP/Touch</div>
+        <div class="tip">Hit boxes (📦) to collect coins, avoid enemies (👾)</div>
+        <a class="home" href="../home.html">← Home</a>
+    </div>
+    <script>
+        const canvas = document.getElementById('canvas');
+        const ctx = canvas.getContext('2d');
+        let width = canvas.width, height = canvas.height;
+        let score = 0;
+        const player = { x: 120, y: height - 90, w: 48, h: 56, vy:0, onGround:true };
+        const gravity = 0.8;
+        const enemies = [];
+        const boxes = [];
+        const thumbs = []; // preloaded thumbnails
+        async function loadCollection(username='sportomax'){
+            try {
+                const res = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                if (!res.ok) throw new Error('collection fetch failed');
+                const text = await res.text();
+                const xml = new DOMParser().parseFromString(text, 'text/xml');
+                const items = Array.from(xml.querySelectorAll('item')).map(it=>({
+                    id: it.getAttribute('objectid'),
+                    name: (it.querySelector('name')||{textContent:''}).textContent,
+                    thumbnail: (it.querySelector('thumbnail')||{textContent:''}).textContent
+                })).filter(g=>g.thumbnail).slice(0,60);
+                for (const g of items){
+                    const img = new Image(); img.crossOrigin='anonymous'; img.src = 'https://images.weserv.nl/?url=' + encodeURIComponent(g.thumbnail);
+                    thumbs.push(img);
+                }
+            } catch(e){ console.warn('collection load failed', e); }
+        }
+        let scroll = 0;
+
+        function rand(min,max){return Math.random()*(max-min)+min}
+
+        function spawnEnemy(){
+            const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
+            enemies.push({ x: scroll + width + rand(0,200), y: height - 80, w:40, h:40, vx: -3 - Math.random()*2, thumb });
+        }
+
+        function spawnBox(){
+            const thumb = thumbs.length ? thumbs[Math.floor(Math.random()*thumbs.length)] : null;
+            const above = Math.random() < 0.33;
+            const y = above ? (player.y - 120) : (height - 100);
+            boxes.push({ x: scroll + width + rand(50,500), y: y, w:56, h:56, vx:-2 - Math.random()*1.5, thumb, hit:false, above });
+        }
+
+        // ground coins and blocks
+        const coins = [];
+        const blocks = [];
+        function spawnCoin(){ coins.push({ x: scroll + width + rand(30,500), y: height - 90, w:20, h:20, vx: -2, collected:false }); }
+        function spawnBlock(){ blocks.push({ x: scroll + width + rand(80,600), y: height - 100, w:48, h:48, vx: -2.2, hit:false }); }
+
+        let keys = {};
+        window.addEventListener('keydown', e=>keys[e.key]=true);
+        window.addEventListener('keyup', e=>keys[e.key]=false);
+
+        canvas.addEventListener('touchstart', e=>{
+            e.preventDefault(); player.vy = -12; player.onGround = false;
+        }, {passive:false});
+
+        function update(){
+            // spawn
+                if (Math.random() < 0.02) spawnBox();
+                if (Math.random() < 0.01) spawnEnemy();
+                if (Math.random() < 0.015) spawnCoin();
+                if (Math.random() < 0.008) spawnBlock();
+
+            // input
+            if (keys[' '] || keys['ArrowUp']){
+                if (player.onGround){ player.vy = -12; player.onGround = false; }
+            }
+            // horizontal movement now scrolls the world (Mario-like)
+            const moveSpeed = 3.6;
+            if (keys['ArrowLeft']) scroll = Math.max(0, scroll - moveSpeed);
+            if (keys['ArrowRight']) scroll += moveSpeed;
+
+            // physics
+            player.vy += gravity; player.y += player.vy;
+            if (player.y + player.h >= height - 20){ player.y = height - 20 - player.h; player.vy = 0; player.onGround = true; }
+
+            // ambient forward scroll (world movement)
+            scroll += 1.2;
+
+            // update boxes/enemies
+            for (const b of boxes){ b.x += b.vx; }
+            for (const en of enemies){ en.x += en.vx; }
+            for (const c of coins){ c.x += c.vx; }
+            for (const bl of blocks){ bl.x += bl.vx; }
+
+            // collisions
+            // collisions: use screen coordinates (object.x - scroll)
+            for (const b of boxes){
+                const bx = b.x - scroll;
+                if (!b.hit && rectIntersect(player, { x: bx, y: b.y, w: b.w, h: b.h })){
+                    b.hit = true; score += 10; document.getElementById('score').textContent = 'Score: ' + score;
+                    spawnCoinBurst(b.x - scroll + b.w/2, b.y);
+                    // powerup chance when hitting a thumbnail above head
+                    if (b.above && Math.random() < 0.25) { score += 20; document.getElementById('score').textContent = 'Score: ' + score; }
+                }
+            }
+            for (const en of enemies){
+                const ex = en.x - scroll;
+                if (rectIntersect(player, { x: ex, y: en.y, w: en.w, h: en.h })){
+                    score = Math.max(0, score - 20); document.getElementById('score').textContent = 'Score: ' + score;
+                    en.x -= 200; // knockback enemy
+                }
+            }
+            for (const c of coins){
+                const cx = c.x - scroll;
+                if (!c.collected && rectIntersect(player, { x: cx, y: c.y, w: c.w, h: c.h })){
+                    c.collected = true; score += 15; document.getElementById('score').textContent = 'Score: ' + score; spawnCoinBurst(cx + 8, c.y);
+                }
+            }
+            for (const bl of blocks){
+                const bx = bl.x - scroll;
+                if (!bl.hit && rectIntersect(player, { x: bx, y: bl.y, w: bl.w, h: bl.h })){
+                    // collision with block: only if player is low (not jumping over)
+                    if (player.y + player.h > bl.y + 8){ score = Math.max(0, score - 15); bl.hit = true; document.getElementById('score').textContent = 'Score: ' + score; }
+                }
+            }
+
+            // cull
+            while (boxes.length && boxes[0].x - scroll < -300) boxes.shift();
+            while (enemies.length && enemies[0].x - scroll < -300) enemies.shift();
+            while (coins.length && coins[0].x - scroll < -200) coins.shift();
+            while (blocks.length && blocks[0].x - scroll < -300) blocks.shift();
+        }
+
+        function rectIntersect(a,b){ return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y; }
+
+        function draw(){
+            ctx.clearRect(0,0,width,height);
+            // ground
+            ctx.fillStyle = '#2b2b3f'; ctx.fillRect(0,height-60,width,60);
+
+            // boxes
+            for (const b of boxes){
+                const sx = b.x - scroll;
+                if (sx < -100 || sx > width + 200) continue;
+                if (b.thumb && b.thumb.complete) {
+                    ctx.drawImage(b.thumb, sx, b.y, b.w, b.h);
+                } else {
+                    ctx.fillStyle = b.hit ? '#444' : '#f39c12';
+                    ctx.fillRect(sx, b.y, b.w, b.h);
+                    ctx.fillStyle = '#fff'; ctx.font = '28px serif'; ctx.fillText('📦', sx + 10, b.y + 38);
+                }
+            }
+
+            // enemies
+            for (const en of enemies){
+                const sx = en.x - scroll;
+                if (sx < -100 || sx > width + 200) continue;
+                if (en.thumb && en.thumb.complete) {
+                    ctx.drawImage(en.thumb, sx, en.y, en.w, en.h);
+                } else {
+                    ctx.fillStyle = '#c0392b'; ctx.fillRect(sx, en.y, en.w, en.h);
+                    ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText('👾', sx + 6, en.y + 30);
+                }
+            }
+
+            // ground coins
+            for (const c of coins){
+                const sx = c.x - scroll;
+                if (sx < -50 || sx > width + 200) continue;
+                if (!c.collected){ ctx.fillStyle = '#ffd700'; ctx.beginPath(); ctx.arc(sx + 10, c.y + 10, 8,0,Math.PI*2); ctx.fill(); ctx.fillStyle='#333'; ctx.font='12px sans-serif'; ctx.fillText('¢', sx+5, c.y+14); }
+            }
+
+            // blocks
+            for (const bl of blocks){
+                const sx = bl.x - scroll;
+                if (sx < -100 || sx > width + 200) continue;
+                ctx.fillStyle = bl.hit? '#666' : '#7f8c8d'; ctx.fillRect(sx, bl.y, bl.w, bl.h);
+            }
+
+            // player
+            ctx.fillStyle = '#27ae60'; ctx.fillRect(player.x, player.y, player.w, player.h);
+            ctx.fillStyle = '#fff'; ctx.font = '26px serif'; ctx.fillText('🕹️', player.x+8, player.y+36);
+
+            // coin particles
+            updateAndDrawParticles();
+        }
+
+        // simple coin particle system
+        const particles = [];
+        function spawnCoinBurst(x,y){
+            for(let i=0;i<10;i++){
+                particles.push({ x: x + rand(-12,12), y: y + rand(-8,8), vx: rand(-2,2), vy: rand(-4,-1), life: 40, alpha:1 });
+            }
+        }
+        function updateAndDrawParticles(){
+            for(let i=particles.length-1;i>=0;i--){ const p=particles[i]; p.x += p.vx; p.y += p.vy; p.vy += 0.12; p.life--; p.alpha = p.life/40; if(p.life<=0) particles.splice(i,1); else { ctx.globalAlpha = p.alpha; ctx.fillStyle='#ffd700'; ctx.beginPath(); ctx.arc(p.x, p.y, 5,0,Math.PI*2); ctx.fill(); ctx.globalAlpha =1; } }
+        }
+
+        function loop(){ update(); draw(); requestAnimationFrame(loop); }
+        // start after loading collection (default sportomax)
+        loadCollection('sportomax').then(()=> loop());
+    </script>
+</body>
+</html>

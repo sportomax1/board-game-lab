@@ -1,0 +1,160 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,maximum-scale=1.0,user-scalable=no,viewport-fit=cover" />
+  <meta name="theme-color" content="#6d28d9">
+  <title>📋 Geeklist Viewer</title>
+  <link rel="icon" href="data:image/svg+xml,<svg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 100 100'><text y='75' font-size='70'>📋</text></svg>">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    :root{--bg:#f8fafc;--muted:#6b7280;--accent:#7c3aed}
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    html,body{height:100%}
+    body{font-family:'Plus Jakarta Sans',sans-serif;background:var(--bg);-webkit-font-smoothing:antialiased;margin:0}
+    .skeleton{animation:pulse 1.6s ease-in-out infinite;background:linear-gradient(90deg,#eef2ff,#f8fafc,#eef2ff)}
+    @keyframes pulse{0%,100%{opacity:1}50%{opacity:.5}}
+    .visually-hidden{position:absolute!important;height:1px;width:1px;overflow:hidden;clip:rect(1px,1px,1px,1px);white-space:nowrap}
+    .card-hover{transition:transform .18s ease,box-shadow .18s ease}
+    @media (hover:hover){.card-hover:hover{transform:translateY(-6px);box-shadow:0 10px 30px rgba(0,0,0,0.08)}}
+  </style>
+</head>
+<body class="min-h-screen pb-8">
+  <header class="sticky top-0 z-40 bg-white/80 backdrop-blur-md border-b shadow-sm">
+    <div class="max-w-3xl mx-auto px-4 py-3 flex items-center gap-3">
+      <div class="rounded-lg bg-gradient-to-br from-purple-600 to-indigo-600 p-2 text-white">
+        <i class="fa-solid fa-list"></i>
+      </div>
+      <div class="flex-1">
+        <div class="flex items-baseline justify-between gap-3">
+          <h1 class="text-lg font-bold">📋 Geeklist Viewer</h1>
+          <div id="statsBox" class="text-right text-sm text-purple-600 hidden">
+            <div id="gameCount" class="font-bold text-xl">0</div>
+            <div class="text-[10px] text-gray-500 uppercase">Items</div>
+          </div>
+        </div>
+        <p class="text-xs text-gray-600 mt-0.5">Load a BoardGameGeek geeklist and preview games.</p>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-3xl mx-auto p-4 space-y-4">
+    <section class="bg-white rounded-2xl shadow p-4">
+      <label class="text-xs font-semibold text-gray-600">Geeklist ID</label>
+      <div class="mt-2 flex gap-2">
+        <input id="geeklistInput" type="text" inputmode="numeric" pattern="\d*" placeholder="e.g. 140673" class="flex-1 px-4 py-3 rounded-xl border border-gray-200 focus:outline-none focus:ring-2 focus:ring-purple-500">
+        <button id="loadBtn" class="bg-purple-600 text-white px-4 py-3 rounded-xl font-semibold shadow">Load</button>
+      </div>
+      <div class="mt-3 flex gap-2">
+        <button id="clearBtn" class="flex-1 border border-gray-200 rounded-xl px-3 py-2 text-sm">Clear</button>
+        <select id="sortSelect" class="rounded-xl border border-gray-200 px-3 py-2 text-sm">
+          <option value="original">Original order</option>
+          <option value="postdate-desc">Newest</option>
+          <option value="postdate-asc">Oldest</option>
+          <option value="name-asc">Name A→Z</option>
+          <option value="name-desc">Name Z→A</option>
+        </select>
+      </div>
+    </section>
+
+    <section id="loadingWrap" class="hidden bg-white rounded-2xl shadow p-4">
+      <div class="flex items-center gap-3">
+        <div class="fa-solid fa-circle-notch fa-spin text-purple-600 text-xl"></div>
+        <div class="flex-1">
+          <div id="loadingStatus" class="text-sm text-gray-700 font-semibold">Fetching geeklist…</div>
+          <div class="mt-2 bg-gray-100 rounded-full h-2 overflow-hidden"><div id="progressBar" class="h-full bg-purple-600 w-0 transition-all"></div></div>
+        </div>
+      </div>
+    </section>
+
+    <section id="controls" class="hidden bg-white rounded-2xl shadow p-4">
+      <input id="searchInput" type="search" placeholder="Search items..." class="w-full px-4 py-2 rounded-lg border border-gray-200" />
+    </section>
+
+    <section id="gridWrap">
+      <div id="placeholder" class="text-center py-12 text-gray-500">Enter a Geeklist ID and tap Load</div>
+      <div id="cards" class="grid grid-cols-1 sm:grid-cols-2 gap-4"></div>
+    </section>
+  </main>
+
+  <div id="modal" class="fixed inset-0 hidden z-50 bg-black/50 items-end sm:items-center">
+    <div class="bg-white w-full sm:max-w-3xl sm:mx-auto rounded-t-2xl sm:rounded-2xl max-h-[85vh] overflow-auto p-4">
+      <div class="flex items-center justify-between mb-2">
+        <h2 class="font-bold">Details</h2>
+        <button id="closeModal" class="text-xl">✕</button>
+      </div>
+      <pre id="modalContent" class="text-xs bg-gray-50 p-3 rounded"></pre>
+    </div>
+  </div>
+
+  <script>
+    const $ = id => document.getElementById(id);
+    let items = [], displayed = [];
+    function show(el){el.classList.remove('hidden')}
+    function hide(el){el.classList.add('hidden')}
+
+    async function fetchWithRetry(url, attempts = 4){
+      for (let i=0;i<attempts;i++){
+        try{ const r = await fetch(url); if (r.status===202){ await new Promise(r=>setTimeout(r,1500)); continue } if(!r.ok) throw new Error(`HTTP ${r.status}`); return await r.text(); }catch(e){ if (i===attempts-1) throw e; await new Promise(r=>setTimeout(r,1200*(i+1))) }
+      }
+    }
+
+    async function loadGeeklist(){
+      const id = $('geeklistInput').value.trim(); if(!id) return alert('Enter a Geeklist ID');
+      items=[]; displayed=[]; $('cards').innerHTML=''; $('placeholder').textContent='Loading…'; show($('loadingWrap')); hide($('controls')); hide($('statsBox')); $('progressBar').style.width='0%';
+      try{
+        $('loadingStatus').textContent='Fetching geeklist XML...';
+        const xmlText = await fetchWithRetry(`/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(id)}`);
+        const doc = new DOMParser().parseFromString(xmlText,'text/xml');
+        const nodes = Array.from(doc.querySelectorAll('item'));
+        if(!nodes.length) throw new Error('No items found');
+        items = nodes.map((n,i)=>({ index:i, name:n.getAttribute('objectname')||'Unknown', objectId:n.getAttribute('objectid')||'', objectType:n.getAttribute('objecttype')||'', username:n.getAttribute('username')||'', postdate:n.getAttribute('postdate')||'', xml:n.outerHTML, thumb:'', loaded:false }));
+        displayed=[...items]; $('gameCount').textContent=items.length; show($('statsBox')); show($('controls')); renderSkeleton(items.length);
+
+        const batchSize=10; const batches=[]; for(let i=0;i<items.length;i+=batchSize) batches.push(items.slice(i,i+batchSize));
+        let loadedCount=0;
+        for(let b=0;b<batches.length;b++){
+          const ids = batches[b].map(x=>x.objectId).filter(Boolean).join(',');
+          if(!ids){ loadedCount += batches[b].length; $('progressBar').style.width = `${Math.round(loadedCount/items.length*100)}%`; continue }
+          $('loadingStatus').textContent = `Loading details (${Math.min(loadedCount+1,items.length)} / ${items.length})`;
+          try{ const thingXml = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${encodeURIComponent(ids)}&stats=1`); const tdoc = new DOMParser().parseFromString(thingXml,'text/xml'); const titems = Array.from(tdoc.querySelectorAll('item')); titems.forEach(ti=>{ const tid=ti.getAttribute('id'); const match=items.find(it=>it.objectId===tid); if(match){ match.thumb = ti.querySelector('thumbnail')?.textContent||''; const avg = ti.querySelector('statistics ratings average'); match.rating = avg?parseFloat(avg.getAttribute('value')||0):0; match.year = ti.querySelector('yearpublished')?.textContent||''; match.loaded=true; } }); }catch(e){ console.warn('batch error',e) }
+          loadedCount += batches[b].length; $('progressBar').style.width = `${Math.round(loadedCount/items.length*100)}%`; await new Promise(r=>setTimeout(r,120));
+        }
+        $('loadingStatus').textContent='Complete'; setTimeout(()=>hide($('loadingWrap')),400); renderCards(displayed);
+      }catch(e){ hide($('loadingWrap')); $('placeholder').textContent = `Error: ${e.message}`; console.error(e) }
+    }
+
+    function renderSkeleton(count){ const out=[]; for(let i=0;i<count;i++) out.push(`<div class="bg-white rounded-xl p-4 card-hover"><div class=\"skeleton w-full h-36 rounded\"></div><div class=\"mt-3\"><div class=\"skeleton h-4 w-2/3 rounded\"></div></div></div>`); $('cards').innerHTML = out.join(''); $('placeholder').textContent = '' }
+
+    function renderCards(list){ if(!list || !list.length){ $('cards').innerHTML=''; $('placeholder').textContent='No items to display'; return } const html = list.map((it,idx)=>{ const thumb = it.thumb?`/api/image-proxy?url=${encodeURIComponent(it.thumb)}`:''; const date = it.postdate?new Date(it.postdate).toLocaleDateString():''; const rating = it.rating?`<div class="text-xs bg-amber-50 border border-amber-200 text-amber-700 px-2 py-1 rounded text-xs font-bold">⭐ ${it.rating.toFixed(1)}</div>`:''; return `
+      <div class="bg-white rounded-xl overflow-hidden shadow-sm card-hover">
+        <div class="relative">
+          <div class="aspect-[3/2] bg-gradient-to-br from-purple-200 to-indigo-200 flex items-center justify-center overflow-hidden">
+            ${thumb?`<img src="${thumb}" alt="${escapeHtml(it.name)}" class="w-full h-full object-cover">`:`<div class=\"text-5xl text-white opacity-60\">🎲</div>`}
+            ${it.objectId?`<div class=\"absolute top-3 right-3 bg-white/90 rounded-full p-2\">${getStatusEmoji(it.objectId)}</div>`:''}
+          </div>
+        </div>
+        <div class="p-3">
+          <h3 class="font-semibold text-sm mb-1 line-clamp-2">${escapeHtml(it.name)}</h3>
+          <div class="text-xs text-gray-500 mb-2">${escapeHtml(it.objectType)} · ${escapeHtml(it.username)} ${date? '· '+date : ''}</div>
+          <div class="flex gap-2">${rating}<button class="flex-1 text-xs px-2 py-1 rounded bg-gray-100" data-xml-index=${idx}>XML</button><a class="flex-1 text-xs px-2 py-1 rounded bg-purple-600 text-white text-center" href="https://boardgamegeek.com/boardgame/${it.objectId}" target="_blank">BGG</a></div>
+        </div>
+      </div>` }).join(''); $('cards').innerHTML = html; document.querySelectorAll('[data-xml-index]').forEach(btn=>btn.addEventListener('click', ()=>{ const idx=parseInt(btn.getAttribute('data-xml-index')); $('modalContent').textContent = items[idx]?.xml||''; $('modal').classList.remove('hidden') })); document.querySelectorAll('.card-hover').forEach((el,i)=>el.addEventListener('click',(e)=>{ if(e.target.tagName==='BUTTON' || e.target.tagName==='A') return; const it=items[i]; if(it&&it.objectId) window.open(`https://boardgamegeek.com/boardgame/${it.objectId}`,'_blank'); })); }
+
+    function escapeHtml(s){return String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;')}
+    function getStatusEmoji(objectId){return ''}
+
+    $('searchInput').addEventListener('input',(e)=>{ const q=e.target.value.trim().toLowerCase(); displayed = items.filter(it=>it.name.toLowerCase().includes(q) || (it.username||'').toLowerCase().includes(q)); renderCards(displayed) });
+    $('sortSelect').addEventListener('change',(e)=>{ const v=e.target.value; if(v==='postdate-desc') items.sort((a,b)=>new Date(b.postdate||0)-new Date(a.postdate||0)); else if(v==='postdate-asc') items.sort((a,b)=>new Date(a.postdate||0)-new Date(b.postdate||0)); else if(v==='name-asc') items.sort((a,b)=> (a.name||'').localeCompare(b.name||'')); else if(v==='name-desc') items.sort((a,b)=> (b.name||'').localeCompare(a.name||'')); renderCards(items) });
+
+    $('loadBtn').addEventListener('click', ()=>loadGeeklist());
+    $('clearBtn').addEventListener('click', ()=>{ items=[]; displayed=[]; $('cards').innerHTML=''; $('placeholder').textContent='Enter a Geeklist ID and tap Load'; hide($('controls')); hide($('statsBox')) });
+    $('closeModal').addEventListener('click', ()=>$('modal').classList.add('hidden'));
+    $('modal').addEventListener('click',(e)=>{ if(e.target===$('modal')) $('modal').classList.add('hidden') });
+
+    async function fetchAPI(endpoint,id,query=''){ if(endpoint==='geeklist') return await fetchWithRetry(`/api/bgg-helper?endpoint=geeklist&id=${encodeURIComponent(id)}${query}`); return await fetchWithRetry(`/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(id)}${query}`) }
+  </script>
+  <script type="module" src="analytics-init.js"></script>
+</body>
+</html>

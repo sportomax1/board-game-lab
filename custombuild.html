@@ -1,0 +1,733 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>Custom BGG Card Builder</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+    <style id="dynamic-styles">
+        :root {
+            --card-width: 2.5in;
+            --card-height: 3.5in;
+            --grid-cols: 3;
+            --grid-gap: 0.1in;
+            --page-margin-x: 0.4in;
+            --page-margin-y: 0.15in;
+            --font-scale: 1;
+        }
+
+        /* Printing Specific Styles */
+        @media print {
+            @page {
+                margin: 0;
+                size: letter;
+            }
+            body {
+                margin: 0 !important;
+                padding: 0 !important;
+                background: white;
+            }
+            .no-print {
+                display: none !important;
+            }
+            .page-break {
+                page-break-after: always;
+                margin: 0;
+                padding-top: var(--page-margin-y);
+                padding-bottom: var(--page-margin-y);
+                padding-left: var(--page-margin-x);
+                padding-right: var(--page-margin-x);
+                display: flex;
+                justify-content: center;
+                box-sizing: border-box;
+                width: 100%;
+                height: 100vh;
+            }
+            * {
+                -webkit-print-color-adjust: exact !important;
+                print-color-adjust: exact !important;
+            }
+        }
+
+        .card-grid {
+            display: grid;
+            grid-template-columns: repeat(var(--grid-cols), var(--card-width));
+            grid-gap: var(--grid-gap);
+            justify-content: center;
+            align-content: start;
+        }
+
+        .game-card {
+            width: var(--card-width);
+            height: var(--card-height);
+            border: 2px solid #000;
+            border-radius: 0.2in;
+            background: white;
+            position: relative;
+            box-sizing: border-box;
+            display: flex;
+            flex-direction: column;
+            overflow: hidden;
+            page-break-inside: avoid;
+            box-shadow: 0 4px 8px rgba(0, 0, 0, 0.15), 0 2px 4px rgba(0, 0, 0, 0.1);
+            transition: transform 0.2s ease, box-shadow 0.2s ease;
+        }
+        
+        .game-card:hover {
+            transform: translateY(-2px);
+            box-shadow: 0 8px 16px rgba(0, 0, 0, 0.2), 0 4px 8px rgba(0, 0, 0, 0.15);
+        }
+
+        .card-thumbnail {
+            width: 100%;
+            height: 50%;
+            object-fit: contain;
+            background: #f0f0f0;
+        }
+
+        .card-info {
+            flex: 1;
+            display: flex;
+            flex-direction: column;
+            padding: 5px 5px;
+            font-size: calc(0.65rem * var(--font-scale));
+            line-height: 1.15;
+            overflow: hidden;
+            justify-content: flex-start;
+            gap: 4px;
+        }
+
+        .card-name {
+            font-weight: 900;
+            font-size: calc(0.95rem * var(--font-scale));
+            margin: 0;
+            margin-bottom: 4px;
+            line-height: 1.05;
+            overflow: hidden;
+            display: -webkit-box;
+            -webkit-line-clamp: 2;
+            -webkit-box-orient: vertical;
+            word-break: break-word;
+            flex-shrink: 0;
+        }
+
+        .card-stat {
+            font-size: calc(0.8rem * var(--font-scale));
+            color: #333;
+            margin: 0;
+            line-height: 1.2;
+            flex-shrink: 0;
+        }
+
+        .stat-label {
+            font-weight: 600;
+            display: inline;
+        }
+
+        body {
+            background-color: #f4f4f5;
+        }
+    </style>
+</head>
+<body class="p-4 md:p-8">
+
+    <div class="no-print max-w-4xl mx-auto mb-8 bg-white p-6 rounded-xl shadow-sm border border-slate-200">
+        <h1 class="text-3xl font-bold text-slate-800 mb-2">Custom BGG Card Builder</h1>
+        <p class="text-slate-600 mb-6">
+            Generate custom playing cards from your BoardGameGeek collection. 
+            Each card displays a game thumbnail, name, player counts, play time, rating and ranking.
+        </p>
+        <div class="flex flex-wrap gap-4 items-end">
+            <div>
+                <label class="block text-sm font-bold text-slate-700 mb-1">BGG Username</label>
+                <input type="text" id="username" value="sportomax" class="px-4 py-3 rounded-lg border border-slate-300 bg-white text-slate-700 font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+            </div>
+            <div>
+                <label class="block text-sm font-bold text-slate-700 mb-1">Layout Options</label>
+                <select id="layoutSelect" onchange="updateLayout()" class="px-4 py-3 rounded-lg border border-slate-300 bg-white text-slate-700 font-medium focus:ring-2 focus:ring-blue-500 outline-none">
+                    <option value="standard">Standard (9/sheet) - 2.5" x 3.5"</option>
+                    <option value="compact">Compact (10/sheet) - 2" x 3"</option>
+                    <option value="yolo">YOLO (12/sheet) - 2" x 3"</option>
+                    <option value="mini">Mini (20/sheet) - 1.5" x 2.5"</option>
+                </select>
+            </div>
+            <button onclick="loadCollection()" class="bg-blue-600 hover:bg-blue-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15" />
+                </svg>
+                Load Collection
+            </button>
+            <button onclick="window.print()" class="bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 17h2a2 2 0 002-2v-4a2 2 0 00-2-2H5a2 2 0 00-2 2v4a2 2 0 002 2h2m2 4h6a2 2 0 002-2v-4a2 2 0 012-2H5a2 2 0 012 2v4a2 2 0 002 2zm8-12V5a2 2 0 00-2-2H9a2 2 0 00-2 2v4h10z" />
+                </svg>
+                Print / PDF
+            </button>
+            <button onclick="exportAsSVG()" class="bg-purple-600 hover:bg-purple-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 10v6m4-3H8m7-9H5a2 2 0 00-2 2v14a2 2 0 002 2h14a2 2 0 002-2V5a2 2 0 00-2-2z" />
+                </svg>
+                Export SVG
+            </button>
+            <button onclick="showExportMenu()" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-3 rounded-lg font-semibold flex items-center transition-colors relative group">
+                <svg xmlns="http://www.w3.org/2000/svg" class="h-5 w-5 mr-2" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                    <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16l4.586-4.586a2 2 0 012.828 0L16 16m-2-2l1.586-1.586a2 2 0 012.828 0L20 14m-6-6h.01M6 20h12a2 2 0 002-2V6a2 2 0 00-2-2H6a2 2 0 00-2 2v12a2 2 0 002 2z" />
+                </svg>
+                Export Cards ▼
+                <div id="exportMenu" class="hidden absolute top-full left-0 mt-2 bg-white text-slate-800 rounded-lg shadow-lg z-50 min-w-48">
+                    <button onclick="openExportModal('png')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 first:rounded-t-lg">📷 PNG (High Quality)</button>
+                    <button onclick="openExportModal('jpg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100">🖼️ JPG (Compressed)</button>
+                    <button onclick="openExportModal('svg')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 border-t">✏️ SVG (Vector)</button>
+                    <button onclick="openExportModal('pdf')" class="block w-full text-left px-4 py-2 hover:bg-slate-100 last:rounded-b-lg">📄 PDF</button>
+                </div>
+            </button>
+            <div id="status" class="text-sm text-slate-500"></div>
+        </div>
+    </div>
+
+    <!-- Export Modal -->
+    <div id="exportModal" class="fixed inset-0 z-60 hidden items-center justify-center bg-black bg-opacity-40">
+        <div class="bg-white rounded-lg p-6 w-96 shadow-lg">
+            <h3 class="text-lg font-bold mb-3">Export Cards</h3>
+            <div class="mb-3">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Format</label>
+                <div id="exportFormatGroup" class="flex gap-2">
+                    <button type="button" class="format-btn px-3 py-2 rounded border" data-format="png" onclick="selectExportFormat('png')">📷 PNG</button>
+                    <button type="button" class="format-btn px-3 py-2 rounded border" data-format="jpg" onclick="selectExportFormat('jpg')">🖼️ JPG</button>
+                    <button type="button" class="format-btn px-3 py-2 rounded border" data-format="svg" onclick="selectExportFormat('svg')">✏️ SVG</button>
+                    <button type="button" class="format-btn px-3 py-2 rounded border" data-format="pdf" onclick="selectExportFormat('pdf')">📄 PDF</button>
+                </div>
+                <input type="hidden" id="exportFormat" value="png">
+            </div>
+            <div class="mb-4">
+                <label class="block text-sm font-medium text-slate-700 mb-1">Number of cards</label>
+                <input id="exportCount" type="text" class="w-full rounded border px-3 py-2" placeholder="Enter number or type 'all'" value="5">
+                <div class="text-xs text-slate-500 mt-1">Type <strong>all</strong> to export all cards.</div>
+            </div>
+            <div class="flex justify-end gap-2">
+                <button onclick="closeExportModal()" class="px-4 py-2 rounded bg-gray-200">Cancel</button>
+                <button onclick="exportFromModal()" class="px-4 py-2 rounded bg-indigo-600 text-white">Export</button>
+            </div>
+        </div>
+    </div>
+
+    <div id="printContainer" class="mx-auto" style="width: 8.5in; background: white; padding: 0.4in;">
+    </div>
+
+    <script>
+        let games = [];
+        const layouts = {
+            standard: { width: 2.5, height: 3.5, cols: 3, gap: 0.1, marginX: 0.4, marginY: 0.15 },
+            compact: { width: 2, height: 3, cols: 4, gap: 0.1, marginX: 0.3, marginY: 0.15 },
+            yolo: { width: 2, height: 3, cols: 4, gap: 0.1, marginX: 0.3, marginY: 0.15 },
+            mini: { width: 1.5, height: 2.5, cols: 5, gap: 0.1, marginX: 0.3, marginY: 0.15 }
+        };
+
+        function updateLayout() {
+            const selected = document.getElementById('layoutSelect').value;
+            const layout = layouts[selected];
+            document.documentElement.style.setProperty('--card-width', layout.width + 'in');
+            document.documentElement.style.setProperty('--card-height', layout.height + 'in');
+            document.documentElement.style.setProperty('--grid-cols', layout.cols);
+            document.documentElement.style.setProperty('--grid-gap', layout.gap + 'in');
+            document.documentElement.style.setProperty('--page-margin-x', layout.marginX + 'in');
+            document.documentElement.style.setProperty('--page-margin-y', layout.marginY + 'in');
+        }
+
+        async function fetchWithRetry(url, maxRetries = 5) {
+            for (let i = 0; i < maxRetries; i++) {
+                try {
+                    const res = await fetch(url);
+                    if (res.ok) return res;
+                    if ((res.status === 429 || res.status >= 500) && i < maxRetries - 1) {
+                        const delay = Math.pow(2, i) * 1000;
+                        document.getElementById('status').textContent = `API busy, retrying in ${(delay/1000).toFixed(0)}s... (attempt ${i+1}/${maxRetries})`;
+                        await new Promise(r => setTimeout(r, delay));
+                        continue;
+                    }
+                    throw new Error(`HTTP ${res.status}`);
+                } catch (err) {
+                    if (i === maxRetries - 1) throw err;
+                    const delay = Math.pow(2, i) * 1000;
+                    document.getElementById('status').textContent = `Error, retrying in ${(delay/1000).toFixed(0)}s... (attempt ${i+1}/${maxRetries})`;
+                    await new Promise(r => setTimeout(r, delay));
+                }
+            }
+        }
+
+        async function loadCollection() {
+            const username = document.getElementById('username').value || 'sportomax';
+            const status = document.getElementById('status');
+            status.textContent = 'Loading collection...';
+
+            try {
+                const res = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&own=1&stats=1`);
+                const xml = await res.text();
+                const parser = new DOMParser();
+                const xmlDoc = parser.parseFromString(xml, 'text/xml');
+                
+                games = Array.from(xmlDoc.querySelectorAll('item')).map(item => {
+                    const stats = item.querySelector('stats');
+                    return {
+                        name: item.querySelector('name')?.textContent || 'Unknown',
+                        thumbnail: item.querySelector('thumbnail')?.textContent || '',
+                        minplayers: stats ? stats.getAttribute('minplayers') : 'N/A',
+                        maxplayers: stats ? stats.getAttribute('maxplayers') : 'N/A',
+                        playingtime: stats ? stats.getAttribute('playingtime') : 'N/A',
+                        rating: stats && stats.querySelector('rating average') ? parseFloat(stats.querySelector('rating average').getAttribute('value')).toFixed(1) : 'N/A',
+                        rank: stats && stats.querySelector('rank[name="boardgame"]') ? stats.querySelector('rank[name="boardgame"]').getAttribute('value') : 'N/A'
+                    };
+                }).filter(g => g.thumbnail);
+
+                status.textContent = `✓ Loaded ${games.length} games with thumbnails`;
+                renderCards();
+            } catch (err) {
+                status.textContent = `✗ Error: ${err.message}`;
+                console.error(err);
+            }
+        }
+
+        function renderCards() {
+            const container = document.getElementById('printContainer');
+            const selected = document.getElementById('layoutSelect').value;
+            const layout = layouts[selected];
+            
+            const cardsPerPageMap = { standard: 9, compact: 12, yolo: 12, mini: 20 };
+            const cardsPerPageCount = cardsPerPageMap[selected];
+
+            container.innerHTML = '';
+            
+            for (let pageIdx = 0; pageIdx < Math.ceil(games.length / cardsPerPageCount); pageIdx++) {
+                const page = document.createElement('div');
+                page.className = 'page-break';
+                
+                const grid = document.createElement('div');
+                grid.className = 'card-grid';
+                grid.style.gridTemplateColumns = `repeat(${layout.cols}, ${layout.width}in)`;
+                grid.style.gap = layout.gap + 'in';
+                
+                const start = pageIdx * cardsPerPageCount;
+                const end = Math.min(start + cardsPerPageCount, games.length);
+                
+                for (let i = start; i < end; i++) {
+                    const game = games[i];
+                    const card = document.createElement('div');
+                    card.className = 'game-card';
+                    
+                    card.innerHTML = `
+                        <img src="${game.thumbnail}" class="card-thumbnail" onerror="this.src='data:image/svg+xml,%3Csvg xmlns=%22http://www.w3.org/2000/svg%22 width=%22100%22 height=%22100%22%3E%3Crect fill=%22%23f0f0f0%22 width=%22100%22 height=%22100%22/%3E%3C/svg%3E'">
+                        <div class="card-info">
+                            <div class="card-name">${escapeHtml(game.name)}</div>
+                            <div class="card-stat">👥 ${game.minplayers}-${game.maxplayers}</div>
+                            <div class="card-stat">⏱️ ${game.playingtime}m</div>
+                            <div class="card-stat">⭐ ${game.rating}</div>
+                            <div class="card-stat">🏆 ${game.rank}</div>
+                        </div>
+                    `;
+                    
+                    grid.appendChild(card);
+                }
+                
+                page.appendChild(grid);
+                container.appendChild(page);
+            }
+        }
+
+        function escapeHtml(text) {
+            const div = document.createElement('div');
+            div.textContent = text;
+            return div.innerHTML;
+        }
+
+        async function exportAsSVG(limit) {
+            if (games.length === 0) {
+                alert('Please load a collection first');
+                return;
+            }
+
+            const status = document.getElementById('status');
+            status.textContent = 'Generating SVG with thumbnails...';
+
+            const selected = document.getElementById('layoutSelect').value;
+            const layout = layouts[selected];
+
+            // Determine set of games to export
+            const exportGames = typeof limit === 'number' ? games.slice(0, limit) : (limit === 'all' ? games : games.slice(0));
+
+            // Pre-fetch thumbnails as data URLs to ensure consistent rendering (matches preview)
+            const thumbData = await Promise.all(exportGames.map(async g => {
+                if (!g.thumbnail) return null;
+                const data = await fetchImageAsDataURL(g.thumbnail).catch(() => null);
+                return data || g.thumbnail;
+            }));
+
+            // Create SVG root with proper dimensions
+            const pxPerInch = 96;
+            const cardWidthPx = layout.width * pxPerInch;
+            const cardHeightPx = layout.height * pxPerInch;
+            const gapPx = layout.gap * pxPerInch;
+            const marginXPx = layout.marginX * pxPerInch;
+            const marginYPx = layout.marginY * pxPerInch;
+            const thumbHeightPx = cardHeightPx * 0.5;
+
+            const totalRowsNeeded = Math.ceil(exportGames.length / layout.cols);
+            const svgWidth = 8.5 * pxPerInch;
+            const svgHeight = (totalRowsNeeded * cardHeightPx) + ((totalRowsNeeded - 1) * gapPx) + (marginYPx * 2);
+
+            let svg = `<svg width="${svgWidth}" height="${svgHeight}" xmlns="http://www.w3.org/2000/svg" xmlns:xlink="http://www.w3.org/1999/xlink">`;
+            svg += `<defs><style>.card-name { font-family: Arial, sans-serif; font-weight: bold; font-size: 16px; fill: #333; } .card-stat { font-family: Arial, sans-serif; font-size: 12px; fill: #333; }</style></defs>`;
+
+            let x = marginXPx;
+            let y = marginYPx;
+            let col = 0;
+
+            for (let i = 0; i < exportGames.length; i++) {
+                const game = exportGames[i];
+
+                // Card background with darker border
+                svg += `<rect x="${x}" y="${y}" width="${cardWidthPx}" height="${cardHeightPx}" fill="white" stroke="#000" stroke-width="2" rx="14" ry="14"/>`;
+
+                // Add thumbnail image (top 50% of card) using data URL if available
+                const href = thumbData[i] || game.thumbnail;
+                if (href) {
+                    svg += `<defs><clipPath id="clip-thumb-${i}"><rect x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" rx="14" ry="14"/></clipPath></defs>`;
+                    svg += `<image x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" xlink:href="${href}" preserveAspectRatio="xMidYMid meet" clip-path="url(#clip-thumb-${i})"/>`;
+                } else {
+                    // Gray placeholder if no image
+                    svg += `<rect x="${x}" y="${y}" width="${cardWidthPx}" height="${thumbHeightPx}" fill="#f0f0f0"/>`;
+                }
+
+                // Separator line between thumbnail and info
+                svg += `<line x1="${x}" y1="${y + thumbHeightPx}" x2="${x + cardWidthPx}" y2="${y + thumbHeightPx}" stroke="#000" stroke-width="1"/>`;
+
+                // Game name (2 lines max)
+                const nameLines = escapeHtml(game.name).split(' ');
+                let line1 = '', line2 = '';
+                for (let j = 0; j < nameLines.length; j++) {
+                    if ((line1 + nameLines[j]).length <= 20) {
+                        line1 += (line1 ? ' ' : '') + nameLines[j];
+                    } else if (!line2) {
+                        line2 = nameLines[j];
+                    } else {
+                        line2 += ' ' + nameLines[j];
+                    }
+                }
+                if (line1) svg += `<text x="${x + 6}" y="${y + thumbHeightPx + 20}" class="card-name">${line1.substring(0, 36)}</text>`;
+                if (line2) svg += `<text x="${x + 6}" y="${y + thumbHeightPx + 38}" class="card-name">${line2.substring(0, 36)}</text>`;
+
+                // Stats with emojis
+                svg += `<text x="${x + 6}" y="${y + cardHeightPx - 28}" class="card-stat">👥 ${game.minplayers}-${game.maxplayers}</text>`;
+                svg += `<text x="${x + 6}" y="${y + cardHeightPx - 12}" class="card-stat">⏱️ ${game.playingtime}m</text>`;
+                svg += `<text x="${x + 6}" y="${y + cardHeightPx + 6}" class="card-stat">⭐ ${game.rating} | 🏆 #${game.rank}</text>`;
+
+                col++;
+                if (col >= layout.cols) {
+                    col = 0;
+                    x = marginXPx;
+                    y += cardHeightPx + gapPx;
+                } else {
+                    x += cardWidthPx + gapPx;
+                }
+            }
+
+            svg += `</svg>`;
+
+            // Download SVG
+            const blob = new Blob([svg], { type: 'image/svg+xml' });
+            const url = URL.createObjectURL(blob);
+            const a = document.createElement('a');
+            a.href = url;
+            a.download = `bgg-cards-${new Date().getTime()}.svg`;
+            document.body.appendChild(a);
+            a.click();
+            document.body.removeChild(a);
+            URL.revokeObjectURL(url);
+
+            status.textContent = `✓ SVG exported with thumbnails!`;
+        }
+
+        function showExportMenu() {
+            const menu = document.getElementById('exportMenu');
+            menu.classList.toggle('hidden');
+            document.addEventListener('click', (e) => {
+                if (!e.target.closest('button') && !e.target.closest('#exportMenu')) {
+                    menu.classList.add('hidden');
+                }
+            });
+        }
+
+        function openExportModal(format) {
+            const modal = document.getElementById('exportModal');
+            document.getElementById('exportFormat').value = format;
+            // mark format button active
+            const btns = document.querySelectorAll('#exportFormatGroup .format-btn');
+            btns.forEach(b => b.classList.remove('bg-indigo-600','text-white'));
+            const active = document.querySelector(`#exportFormatGroup .format-btn[data-format="${format}"]`);
+            if (active) active.classList.add('bg-indigo-600','text-white');
+            document.getElementById('exportCount').value = '5';
+            modal.classList.remove('hidden');
+            modal.classList.add('flex');
+        }
+
+        function closeExportModal() {
+            const modal = document.getElementById('exportModal');
+            modal.classList.add('hidden');
+            modal.classList.remove('flex');
+        }
+
+        async function exportFromModal() {
+            const format = document.getElementById('exportFormat').value;
+            const countInput = document.getElementById('exportCount').value.trim();
+            let count = 5;
+            if (countInput.toLowerCase() === 'all') count = games.length;
+            else if (!isNaN(parseInt(countInput))) count = Math.min(parseInt(countInput), games.length);
+
+            closeExportModal();
+
+            if (format === 'svg') {
+                await exportAsSVG(count === games.length ? 'all' : count);
+            } else if (format === 'pdf') {
+                await exportToPDF(count === games.length ? 'all' : count);
+            } else {
+                await exportCards(format, count);
+            }
+        }
+
+        async function fetchImageAsDataURL(url) {
+            try {
+                // Try direct fetch first
+                const response = await fetch(url, { mode: 'cors' });
+                const blob = await response.blob();
+                return new Promise((resolve) => {
+                    const reader = new FileReader();
+                    reader.onloadend = () => resolve(reader.result);
+                    reader.readAsDataURL(blob);
+                });
+            } catch (err) {
+                try {
+                    // Fallback: use CORS proxy
+                    const proxyUrl = `https://cors-anywhere.herokuapp.com/${url}`;
+                    const response = await fetch(proxyUrl);
+                    const blob = await response.blob();
+                    return new Promise((resolve) => {
+                        const reader = new FileReader();
+                        reader.onloadend = () => resolve(reader.result);
+                        reader.readAsDataURL(blob);
+                    });
+                } catch (proxyErr) {
+                    console.warn(`Could not fetch image via proxy: ${url}`);
+                    return null;
+                }
+            }
+        }
+
+        async function exportCards(format, cardsToExportParam) {
+            document.getElementById('exportMenu').classList.add('hidden');
+
+            if (games.length === 0) {
+                alert('Please load a collection first');
+                return;
+            }
+
+            let cardsToExport = typeof cardsToExportParam === 'number' ? cardsToExportParam : null;
+            if (cardsToExport === null) {
+                const choice = prompt(`Export cards as ${format.toUpperCase()}:\\n\\nEnter number of cards:\\n- Type "5" for first 5\\n- Type "all" for all ${games.length}\\n\\n(Default: first 5)`, '5');
+                if (choice === null) return;
+                if (choice.toLowerCase() === 'all') {
+                    cardsToExport = games.length;
+                } else if (!isNaN(parseInt(choice))) {
+                    cardsToExport = Math.min(parseInt(choice), games.length);
+                } else {
+                    cardsToExport = 5;
+                }
+            } else {
+                cardsToExport = Math.min(cardsToExport, games.length);
+            }
+
+            const status = document.getElementById('status');
+            status.textContent = `Exporting ${cardsToExport} cards as ${format.toUpperCase()}...`;
+            
+            for (let i = 0; i < cardsToExport; i++) {
+                const game = games[i];
+                const card = document.querySelectorAll('.game-card')[i];
+                
+                if (!card) continue;
+                
+                try {
+                    // Clone the card and convert all images to data URLs
+                    const cardClone = card.cloneNode(true);
+                    const images = cardClone.querySelectorAll('img');
+                    
+                    // Convert each image to data URL using image-proxy endpoint
+                    for (let img of images) {
+                        if (img.src) {
+                            try {
+                                // Try to fetch as data URL (handles CORS with fallback proxy inside fetchImageAsDataURL)
+                                const dataUrl = await fetchImageAsDataURL(img.src);
+                                if (dataUrl) {
+                                    img.src = dataUrl;
+                                    // ensure image is loaded in the cloned node before rendering
+                                    await new Promise(res => {
+                                        const checker = new Image();
+                                        checker.onload = () => res();
+                                        checker.onerror = () => res();
+                                        checker.src = img.src;
+                                    });
+                                }
+                            } catch (imgErr) {
+                                console.warn(`Could not convert image to data URL:`, img.src, imgErr);
+                                // Leave original src if conversion fails
+                            }
+                        }
+                    }
+                    
+                    // Size the clone to match the original to keep layout identical
+                    const rect = card.getBoundingClientRect();
+                    cardClone.style.width = Math.round(rect.width) + 'px';
+                    cardClone.style.height = Math.round(rect.height) + 'px';
+                    cardClone.style.boxSizing = 'border-box';
+
+                    // Create temp container for clone
+                    const tempDiv = document.createElement('div');
+                    tempDiv.style.position = 'absolute';
+                    tempDiv.style.left = '-9999px';
+                    tempDiv.style.width = cardClone.style.width;
+                    tempDiv.style.height = cardClone.style.height;
+                    tempDiv.appendChild(cardClone);
+                    document.body.appendChild(tempDiv);
+                    
+                    await new Promise(r => setTimeout(r, 200));
+                    
+                    // Render the cloned card with data URL images
+                    const canvas = await html2canvas(cardClone, {
+                        backgroundColor: '#ffffff',
+                        scale: 2,
+                        logging: false,
+                        allowTaint: true,
+                        useCORS: false,
+                        imageTimeout: 15000
+                    });
+                    
+                    document.body.removeChild(tempDiv);
+                    
+                    let dataUrl, ext;
+                    if (format === 'png') {
+                        dataUrl = canvas.toDataURL('image/png');
+                        ext = 'png';
+                    } else if (format === 'jpg') {
+                        dataUrl = canvas.toDataURL('image/jpeg', 0.95);
+                        ext = 'jpg';
+                    } else if (format === 'gif') {
+                        dataUrl = canvas.toDataURL('image/png');
+                        ext = 'png';
+                    }
+                    
+                    const link = document.createElement('a');
+                    link.href = dataUrl;
+                    link.download = `${escapeHtml(game.name.replace(/[^a-z0-9]/gi, '_')).toLowerCase()}.${ext}`;
+                    document.body.appendChild(link);
+                    link.click();
+                    document.body.removeChild(link);
+                    
+                    status.textContent = `Exported ${i + 1}/${cardsToExport} cards...`;
+                    await new Promise(r => setTimeout(r, 300));
+                } catch (err) {
+                    console.error(`Failed to export card ${i}:`, err);
+                    status.textContent = `Error exporting card ${i + 1}, retrying...`;
+                    await new Promise(r => setTimeout(r, 500));
+                }
+            }
+            
+            status.textContent = `✓ ${cardsToExport} ${format.toUpperCase()} cards exported!`;
+        }
+
+        async function exportToPDF(count) {
+            if (games.length === 0) {
+                alert('Please load a collection first');
+                return;
+            }
+
+            const { jsPDF } = window.jspdf || {};
+            if (!jsPDF) {
+                alert('PDF library not loaded');
+                return;
+            }
+
+            const selected = document.getElementById('layoutSelect').value;
+            const layout = layouts[selected];
+            const cardsPerPageMap = { standard: 9, compact: 12, yolo: 12, mini: 20 };
+            const perPage = cardsPerPageMap[selected] || 9;
+            const total = count === 'all' ? games.length : Math.min(count, games.length);
+
+            const status = document.getElementById('status');
+            status.textContent = `Building PDF (${total} cards)...`;
+
+            // PDF in points (72 per inch) for letter size
+            const ptsPerInch = 72;
+            const pdfW = 8.5 * ptsPerInch;
+            const pdfH = 11 * ptsPerInch;
+
+            const pdf = new jsPDF({ unit: 'pt', format: [pdfW, pdfH] });
+
+            let pageIdx = 0;
+            for (let start = 0; start < total; start += perPage) {
+                const end = Math.min(start + perPage, total);
+
+                // build page canvas by drawing each card image and adding to pdf
+                // render each card to canvas first
+                const cardImages = [];
+                for (let i = start; i < end; i++) {
+                    const card = document.querySelectorAll('.game-card')[i];
+                    if (!card) continue;
+                    const clone = card.cloneNode(true);
+                    const imgs = clone.querySelectorAll('img');
+                    for (let img of imgs) {
+                        try {
+                            const data = await fetchImageAsDataURL(img.src);
+                            if (data) img.src = data;
+                        } catch (e) {
+                            console.warn('image fetch for pdf failed', e);
+                        }
+                    }
+                    const temp = document.createElement('div');
+                    temp.style.position = 'absolute';
+                    temp.style.left = '-9999px';
+                    temp.appendChild(clone);
+                    document.body.appendChild(temp);
+                    await new Promise(r => setTimeout(r, 120));
+                    const canvas = await html2canvas(clone, { backgroundColor: '#ffffff', scale: 2, logging: false, imageTimeout: 15000 });
+                    document.body.removeChild(temp);
+                    cardImages.push(canvas.toDataURL('image/jpeg', 0.95));
+                }
+
+                // place images on PDF page according to layout
+                const cols = layout.cols;
+                const cardWpt = layout.width * ptsPerInch;
+                const cardHpt = layout.height * ptsPerInch;
+                const gapPt = layout.gap * ptsPerInch;
+                const marginXpt = layout.marginX * ptsPerInch;
+                const marginYpt = layout.marginY * ptsPerInch;
+
+                for (let idx = 0; idx < cardImages.length; idx++) {
+                    const col = idx % cols;
+                    const row = Math.floor(idx / cols);
+                    const x = marginXpt + col * (cardWpt + gapPt);
+                    const y = marginYpt + row * (cardHpt + gapPt);
+                    pdf.addImage(cardImages[idx], 'JPEG', x, y, cardWpt, cardHpt);
+                }
+
+                pageIdx++;
+                if (start + perPage < total) pdf.addPage();
+            }
+
+            pdf.save(`bgg-cards-${Date.now()}.pdf`);
+            status.textContent = `✓ PDF saved (${total} cards)`;
+        }
+
+        // Initialize layout
+        updateLayout();
+    </script>
+</body>
+</html>

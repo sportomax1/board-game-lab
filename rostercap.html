@@ -1,0 +1,378 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+    <title>Game Scout Pro</title>
+    <script src="https://cdn.tailwindcss.com"></script>
+    <script src="https://cdnjs.cloudflare.com/ajax/libs/html2canvas/1.4.1/html2canvas.min.js"></script>
+    <style>
+        @import url('https://fonts.googleapis.com/css2?family=Inter:wght@400;600;800;900&display=swap');
+        body { font-family: 'Inter', sans-serif; -webkit-tap-highlight-color: transparent; }
+        .no-scrollbar::-webkit-scrollbar { display: none; }
+        .no-scrollbar { -ms-overflow-style: none; scrollbar-width: none; }
+        .game-card { transition: all 0.2s cubic-bezier(0.4, 0, 0.2, 1); cursor: pointer; }
+        .game-card.selected { border-color: #2563eb; background-color: #eff6ff; box-shadow: 0 0 0 2px #2563eb inset; }
+        @keyframes slideUp { from { transform: translateY(10px); opacity: 0; } to { transform: translateY(0); opacity: 1; } }
+        .row-animate { animation: slideUp 0.3s ease-out forwards; }
+        #capture-area { position: absolute; left: -9999px; top: 0; width: 400px; }
+    </style>
+</head>
+<body class="bg-[#F3F4F6] min-h-screen pb-32 text-slate-900">
+
+    <!-- Capture Area (Hidden from view, used for image generation) -->
+    <div id="capture-area" class="bg-white p-6 rounded-3xl">
+        <div class="mb-4 text-center">
+            <h1 class="text-2xl font-black text-slate-900">Scout Pro Draft</h1>
+            <p id="capture-meta" class="text-xs font-bold text-blue-600 uppercase mt-1"></p>
+        </div>
+        <div id="capture-list" class="space-y-3"></div>
+        <div class="mt-6 pt-4 border-t border-gray-100 text-[10px] text-gray-400 font-bold text-center italic uppercase tracking-widest">
+            Scouted via Game Scout Pro
+        </div>
+    </div>
+
+    <!-- Sticky Header -->
+    <header class="px-5 pt-6 pb-3 bg-white border-b border-gray-200 sticky top-0 z-50 shadow-sm">
+        <div class="flex justify-between items-center mb-3">
+            <div>
+                <h1 class="text-xl font-black tracking-tighter text-slate-900 leading-none">Scout Pro</h1>
+                <p id="selection-tracker" class="text-[9px] font-black text-blue-600 uppercase tracking-widest mt-1">0/0 Picked</p>
+            </div>
+            <div id="budget-pill" class="bg-slate-900 text-white px-3 py-1.5 rounded-xl text-right min-w-[60px]">
+                <span id="budget-amount" class="text-lg font-black leading-none">$15</span>
+                <span class="block text-[7px] uppercase opacity-60 font-bold tracking-tighter">Left</span>
+            </div>
+        </div>
+        
+        <div class="flex gap-2 mb-3">
+            <input type="text" id="username-input" value="sportomax" 
+                class="flex-1 bg-gray-100 rounded-lg px-3 py-2 text-sm font-bold outline-none focus:ring-2 focus:ring-blue-500">
+            <button onclick="fetchCollection()" 
+                class="bg-blue-600 text-white px-5 py-2 rounded-lg font-bold text-sm active:scale-95 transition-transform">
+                Go
+            </button>
+        </div>
+
+        <div id="toggle-bar" class="flex gap-1.5 overflow-x-auto no-scrollbar">
+            <!-- Toggles populate here -->
+        </div>
+    </header>
+
+    <!-- Content -->
+    <main id="main-feed" class="p-4 space-y-4">
+        <div id="welcome-msg" class="text-center py-10 opacity-40">
+            <div class="text-4xl mb-2">🔭</div>
+            <p class="text-sm font-bold">Sync your BGG library</p>
+        </div>
+
+        <div id="status-area" class="text-center py-10 hidden">
+            <div class="animate-spin rounded-full h-6 w-6 border-t-2 border-blue-600 mx-auto mb-2"></div>
+            <p id="status-text" class="text-[10px] font-bold text-slate-400 uppercase tracking-widest">CONNECTING...</p>
+        </div>
+
+        <div id="category-sections" class="space-y-4">
+            <!-- Rows populate here -->
+        </div>
+    </main>
+
+    <!-- Fixed Sharing Bar -->
+    <div id="footer-actions" class="fixed bottom-0 left-0 right-0 p-4 bg-white/90 backdrop-blur-md border-t border-gray-200 flex gap-2 hidden z-40">
+        <button onclick="shareReport()" title="Copy Text" class="bg-gray-100 text-slate-900 px-4 py-3.5 rounded-xl font-black text-xs active:scale-95 transition-transform flex items-center justify-center gap-2">
+            <span>📋</span>
+        </button>
+        <button onclick="generateImageReport()" class="flex-1 bg-slate-900 text-white py-3.5 rounded-xl font-black text-xs shadow-lg active:scale-95 flex items-center justify-center gap-2">
+            <span>🖼️</span> SHARE IMAGE
+        </button>
+        <button onclick="resetDraft()" class="px-4 bg-gray-100 text-slate-400 rounded-xl font-bold text-[10px]">
+            RESET
+        </button>
+    </div>
+
+    <!-- Toast -->
+    <div id="toast" class="fixed top-24 left-1/2 -translate-x-1/2 z-[100] px-6 py-2 rounded-full font-bold text-xs shadow-xl hidden text-white"></div>
+
+    <script>
+        const FALLBACK_IMG = "data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 24 24' fill='%23cbd5e1'%3E%3Cpath d='M12 2L4.5 20.29L5.21 21L12 18L18.79 21L19.5 20.29L12 2Z'/%3E%3C/svg%3E";
+        
+        let allGames = [];
+        let selectedGames = {}; 
+        let renderedRows = {}; 
+        const BUDGET_MAX = 15;
+        
+        const CATEGORIES = [
+            { id: 'overall', label: 'Overall', bggKey: 'boardgame', active: true },
+            { id: 'strategy', label: 'Strategy', bggKey: 'strategygames', active: true },
+            { id: 'family', label: 'Family', bggKey: 'familygames', active: true },
+            { id: 'party', label: 'Party', bggKey: 'partygames', active: true },
+            { id: 'thematic', label: 'Thematic', bggKey: 'thematic', active: false },
+            { id: 'war', label: 'War', bggKey: 'wargames', active: false },
+            { id: 'abstract', label: 'Abstract', bggKey: 'abstracts', active: true }
+        ];
+
+        function handleImgError(img) {
+            img.onerror = null;
+            img.src = FALLBACK_IMG;
+        }
+
+        function initToggles() {
+            const bar = document.getElementById('toggle-bar');
+            bar.innerHTML = CATEGORIES.map((cat, idx) => `
+                <button onclick="toggleCat(${idx})" 
+                     class="px-3 py-1.5 rounded-md text-[9px] font-black transition-all flex-shrink-0 border ${cat.active ? 'bg-slate-900 text-white border-slate-900' : 'bg-white text-slate-400 border-gray-200'}">
+                    ${cat.label.toUpperCase()}
+                </button>
+            `).join('');
+        }
+
+        function toggleCat(idx) {
+            CATEGORIES[idx].active = !CATEGORIES[idx].active;
+            initToggles();
+            if (allGames.length > 0) renderAllRows();
+        }
+
+        async function fetchCollection() {
+            const user = document.getElementById('username-input').value.trim();
+            if (!user) return;
+
+            document.getElementById('welcome-msg').classList.add('hidden');
+            const statusArea = document.getElementById('status-area');
+            const statusText = document.getElementById('status-text');
+            const sections = document.getElementById('category-sections');
+            
+            statusArea.classList.remove('hidden');
+            sections.innerHTML = '';
+            selectedGames = {};
+            renderedRows = {};
+            updateBudget();
+
+            try {
+                const response = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(user)}&own=1&stats=1`);
+                
+                if (response.status === 202) {
+                    statusText.innerText = "BGG RETRIEVING...";
+                    setTimeout(fetchCollection, 3000);
+                    return;
+                }
+
+                const text = await response.text();
+                const xml = new DOMParser().parseFromString(text, "text/xml");
+                const items = xml.querySelectorAll('item');
+
+                if (items.length === 0) {
+                    statusArea.innerHTML = `<p class="text-red-500 font-bold text-xs uppercase">Collection Not Found</p>`;
+                    return;
+                }
+
+                allGames = Array.from(items).map(item => {
+                    const rankNodes = item.querySelectorAll('rank');
+                    let ranks = {};
+                    rankNodes.forEach(r => {
+                        const val = parseInt(r.getAttribute('value'));
+                        if (!isNaN(val)) ranks[r.getAttribute('name')] = val;
+                    });
+                    return {
+                        id: item.getAttribute('objectid'),
+                        name: item.querySelector('name').textContent,
+                        thumb: item.querySelector('thumbnail')?.textContent || FALLBACK_IMG,
+                        ranks: ranks
+                    };
+                });
+
+                statusArea.classList.add('hidden');
+                document.getElementById('footer-actions').classList.remove('hidden');
+                renderAllRows();
+
+            } catch (err) {
+                statusArea.innerHTML = `<p class="text-red-500 font-bold text-xs">SYNC ERROR</p>`;
+            }
+        }
+
+        function rerollCategory(catId) {
+            delete selectedGames[catId];
+            delete renderedRows[catId];
+            updateBudget();
+            renderAllRows();
+        }
+
+        function renderAllRows() {
+            const container = document.getElementById('category-sections');
+            container.innerHTML = '';
+            
+            const activeCats = CATEGORIES.filter(c => c.active);
+            
+            activeCats.forEach(cat => {
+                const catGames = allGames
+                    .filter(g => g.ranks[cat.bggKey])
+                    .sort((a, b) => a.ranks[cat.bggKey] - b.ranks[cat.bggKey]);
+
+                if (catGames.length > 0) {
+                    if (!renderedRows[cat.id]) {
+                        const shuffled = [...catGames].sort(() => 0.5 - Math.random()).slice(0, 5);
+                        renderedRows[cat.id] = shuffled.sort((a, b) => a.ranks[cat.bggKey] - b.ranks[cat.bggKey]);
+                    }
+
+                    const displayList = renderedRows[cat.id];
+                    const section = document.createElement('section');
+                    section.className = "row-animate mb-4";
+                    section.innerHTML = `
+                        <div class="flex justify-between items-center mb-1.5 px-1">
+                            <div class="flex items-center gap-2">
+                                <h2 class="text-[10px] font-black text-slate-800 uppercase tracking-tighter">${cat.label}</h2>
+                                <button onclick="rerollCategory('${cat.id}')" class="text-[10px] bg-white border border-gray-200 w-5 h-5 flex items-center justify-center rounded shadow-sm active:bg-gray-100">🔄</button>
+                            </div>
+                            <span class="text-[8px] font-black text-slate-400 uppercase">Pool: ${catGames.length}</span>
+                        </div>
+                        <div class="flex gap-2 overflow-x-auto no-scrollbar pb-1 px-1">
+                            ${displayList.map((game, i) => {
+                                const price = 5 - i;
+                                const isSelected = selectedGames[cat.id]?.id === game.id;
+                                return `
+                                    <div onclick="selectGame('${cat.id}', '${game.id}', ${price})" 
+                                         class="game-card flex-shrink-0 w-32 bg-white border-2 rounded-xl p-2 shadow-sm ${isSelected ? 'selected' : 'border-transparent'}">
+                                        <div class="h-16 w-full flex items-center justify-center mb-1.5 bg-gray-50 rounded overflow-hidden">
+                                            <img src="/api/image-proxy?url=${encodeURIComponent(game.thumb)}" 
+                                                 onerror="handleImgError(this)" 
+                                                 class="max-h-full max-w-full object-contain">
+                                        </div>
+                                        <h3 class="text-[9px] font-bold text-slate-800 leading-none truncate mb-1">${game.name}</h3>
+                                        <div class="flex justify-between items-center">
+                                            <span class="text-[10px] font-black text-emerald-600">$${price}</span>
+                                            <span class="text-[8px] font-bold text-slate-400 italic">#${game.ranks[cat.bggKey]}</span>
+                                        </div>
+                                    </div>
+                                `;
+                            }).join('')}
+                        </div>
+                    `;
+                    container.appendChild(section);
+                }
+            });
+            updateTracker();
+        }
+
+        function selectGame(catId, gameId, price) {
+            const currentSelection = selectedGames[catId];
+            const game = allGames.find(g => g.id === gameId);
+
+            if (currentSelection && currentSelection.id === gameId) {
+                delete selectedGames[catId];
+            } else {
+                const currentCost = Object.values(selectedGames).reduce((sum, item) => sum + item.price, 0);
+                const potentialCost = currentCost - (currentSelection ? currentSelection.price : 0) + price;
+
+                if (potentialCost > BUDGET_MAX) {
+                    showToast("OVER BUDGET!", true);
+                    return;
+                }
+                selectedGames[catId] = { id: gameId, name: game.name, price: price, thumb: game.thumb };
+            }
+
+            updateBudget();
+            renderAllRows();
+        }
+
+        function updateBudget() {
+            const spent = Object.values(selectedGames).reduce((sum, item) => sum + item.price, 0);
+            const remaining = BUDGET_MAX - spent;
+            const display = document.getElementById('budget-amount');
+            display.innerText = `$${remaining}`;
+            
+            if (remaining < 2) display.classList.add('text-red-500');
+            else display.classList.remove('text-red-500');
+        }
+
+        function updateTracker() {
+            const activeCount = CATEGORIES.filter(c => c.active).length;
+            const selectedCount = Object.keys(selectedGames).length;
+            document.getElementById('selection-tracker').innerText = `${selectedCount}/${activeCount} Picked`;
+        }
+
+        function shareReport() {
+            const selections = Object.entries(selectedGames);
+            if (selections.length === 0) { showToast("DRAFT SOMETHING!", true); return; }
+
+            const spent = selections.reduce((sum, [_, item]) => sum + item.price, 0);
+            let text = `🎯 SCOUT PRO DRAFT ($${spent}/$15)\n`;
+            selections.forEach(([catId, item]) => {
+                const catLabel = CATEGORIES.find(c => c.id === catId).label;
+                text += `• [${catLabel}] ${item.name} ($${item.price})\n`;
+            });
+
+            const el = document.createElement('textarea');
+            el.value = text;
+            document.body.appendChild(el);
+            el.select();
+            document.execCommand('copy');
+            document.body.removeChild(el);
+            showToast("TEXT COPIED!");
+        }
+
+        async function generateImageReport() {
+            const selections = Object.entries(selectedGames);
+            if (selections.length === 0) { showToast("DRAFT SOMETHING!", true); return; }
+
+            const spent = selections.reduce((sum, [_, item]) => sum + item.price, 0);
+            const captureArea = document.getElementById('capture-area');
+            const captureList = document.getElementById('capture-list');
+            const captureMeta = document.getElementById('capture-meta');
+            
+            captureMeta.innerText = `$${spent}/$15 Budget Spent`;
+            captureList.innerHTML = selections.map(([catId, item]) => {
+                const catLabel = CATEGORIES.find(c => c.id === catId).label;
+                return `
+                    <div class="flex items-center gap-3 bg-gray-50 p-3 rounded-2xl">
+                        <img src="/api/image-proxy?url=${encodeURIComponent(item.thumb)}" 
+                             onerror="handleImgError(this)" 
+                             class="w-12 h-12 rounded-lg object-cover bg-white shadow-sm border border-gray-100">
+                        <div class="flex-1 min-w-0">
+                            <p class="text-[8px] font-black text-blue-600 uppercase tracking-widest">${catLabel}</p>
+                            <p class="text-xs font-bold text-slate-800 truncate leading-tight">${item.name}</p>
+                        </div>
+                        <div class="text-slate-900 font-black text-sm">$${item.price}</div>
+                    </div>
+                `;
+            }).join('');
+
+            try {
+                showToast("Generating Image...");
+                await new Promise(r => setTimeout(r, 600)); // Time for images to render
+                
+                const canvas = await html2canvas(captureArea, { 
+                    useCORS: true, 
+                    allowTaint: true,
+                    backgroundColor: '#ffffff', 
+                    scale: 3,
+                    logging: false
+                });
+                
+                const link = document.createElement('a');
+                link.download = `Scout-Draft-${Date.now()}.png`;
+                link.href = canvas.toDataURL("image/png");
+                link.click();
+                showToast("Image Downloaded!");
+            } catch (err) {
+                console.error(err);
+                showToast("Image Failed", true);
+            }
+        }
+
+        function resetDraft() {
+            selectedGames = {};
+            renderedRows = {};
+            updateBudget();
+            renderAllRows();
+        }
+
+        function showToast(msg, isError = false) {
+            const toast = document.getElementById('toast');
+            toast.innerText = msg;
+            toast.className = `fixed top-24 left-1/2 -translate-x-1/2 z-[100] px-6 py-2 rounded-full font-bold text-xs shadow-xl ${isError ? 'bg-red-600' : 'bg-emerald-600'} text-white transition-all`;
+            toast.classList.remove('hidden');
+            setTimeout(() => toast.classList.add('hidden'), 2000);
+        }
+
+        window.onload = initToggles;
+    </script>
+</body>
+</html>

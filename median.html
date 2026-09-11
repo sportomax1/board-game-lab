@@ -1,0 +1,415 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>Game Median Explorer</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <style>
+    @import url('https://fonts.googleapis.com/css2?family=Plus+Jakarta+Sans:wght@400;500;600;700&display=swap');
+    
+    body {
+      font-family: 'Plus Jakarta Sans', sans-serif;
+      background-color: #f8fafc;
+    }
+
+    .game-card {
+      transition: all 0.2s ease;
+    }
+
+    .game-card:hover {
+      transform: translateY(-2px);
+      box-shadow: 0 8px 16px rgba(0,0,0,0.1);
+    }
+
+    .skeleton {
+      animation: pulse 2s cubic-bezier(0.4, 0, 0.6, 1) infinite;
+    }
+
+    @keyframes pulse {
+      0%, 100% { opacity: 1; }
+      50% { opacity: .5; }
+    }
+
+    .quartile-badge {
+      transition: all 0.2s ease;
+    }
+
+    .quartile-badge:hover {
+      transform: scale(1.05);
+    }
+  </style>
+</head>
+<body class="pb-20">
+
+  <header class="sticky top-0 z-30 w-full bg-white/80 backdrop-blur-md border-b px-4 py-4 shadow-sm">
+    <div class="max-w-4xl mx-auto flex items-center justify-between">
+      <div class="flex items-center gap-3">
+        <div class="bg-indigo-600 text-white p-2 rounded-lg">
+          <i class="fa-solid fa-chart-line"></i>
+        </div>
+        <div>
+          <h1 class="text-xl font-bold tracking-tight">Game Median</h1>
+          <p class="text-[10px] text-slate-500 font-bold uppercase tracking-wider">Quartile Analysis</p>
+        </div>
+      </div>
+      <div id="statsBox" class="text-right hidden">
+        <div class="text-2xl font-bold text-indigo-600" id="gameCount">0</div>
+        <div class="text-[10px] text-slate-500 uppercase font-bold">Games</div>
+      </div>
+    </div>
+  </header>
+
+  <main class="max-w-4xl mx-auto p-4 space-y-6">
+    
+    <!-- Fetch Section -->
+    <div id="fetchSection" class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+      <h2 class="text-xl font-bold mb-4">Load Collection</h2>
+      <div class="space-y-4">
+        <div>
+          <label class="text-xs font-bold text-slate-500 uppercase mb-2 block">BGG Username</label>
+          <input 
+            id="username" 
+            type="text" 
+            value="sportomax" 
+            class="w-full px-4 py-3 rounded-xl border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none transition-all"
+          >
+        </div>
+        <button 
+          onclick="fetchCollection()" 
+          id="fetchBtn"
+          class="w-full bg-indigo-600 text-white py-4 rounded-xl font-bold hover:bg-indigo-700 shadow-lg shadow-indigo-100 flex items-center justify-center gap-2"
+        >
+          <i class="fa-solid fa-download"></i> Load Collection
+        </button>
+      </div>
+    </div>
+
+    <!-- Loading Section -->
+    <div id="loadingSection" class="hidden">
+      <div class="bg-white rounded-2xl shadow-sm border border-slate-100 p-6">
+        <div class="flex items-center justify-center gap-3 mb-4">
+          <i class="fa-solid fa-circle-notch fa-spin text-indigo-600 text-2xl"></i>
+          <span class="font-bold text-slate-700">Loading collection...</span>
+        </div>
+        <div class="text-sm text-slate-500 text-center" id="loadingStatus">Fetching games...</div>
+        <div class="mt-4 bg-slate-100 rounded-full h-2 overflow-hidden">
+          <div id="progressBar" class="bg-indigo-600 h-full transition-all duration-300" style="width: 0%"></div>
+        </div>
+      </div>
+    </div>
+
+    <!-- Tabs -->
+    <div id="tabsSection" class="hidden bg-white rounded-2xl shadow-sm border border-slate-100">
+      <div class="flex flex-col sm:flex-row sm:items-center sm:justify-between gap-4 px-6 py-4 border-b">
+        <div class="flex gap-4 overflow-x-auto">
+          <button onclick="showMetric('playingtime')" class="tab-btn active px-4 py-2 font-bold text-sm whitespace-nowrap" data-metric="playingtime">
+            <i class="fa-regular fa-clock"></i> Playing Time
+          </button>
+          <button onclick="showMetric('bayesAverage')" class="tab-btn px-4 py-2 font-bold text-sm whitespace-nowrap" data-metric="bayesAverage">
+            <i class="fa-solid fa-star"></i> Rating
+          </button>
+          <button onclick="showMetric('averageWeight')" class="tab-btn px-4 py-2 font-bold text-sm whitespace-nowrap" data-metric="averageWeight">
+            <i class="fa-solid fa-sliders"></i> Weight
+          </button>
+          <button onclick="showMetric('yearpublished')" class="tab-btn px-4 py-2 font-bold text-sm whitespace-nowrap" data-metric="yearpublished">
+            <i class="fa-solid fa-calendar"></i> Year
+          </button>
+        </div>
+        <label class="flex items-center gap-2 cursor-pointer whitespace-nowrap">
+          <input type="checkbox" id="ignoreZeros" onchange="handleIgnoreZeros()" class="form-checkbox text-indigo-600 rounded">
+          <span class="text-sm font-semibold text-slate-700">Ignore Zero Values</span>
+        </label>
+      </div>
+    </div>
+
+    <!-- Games Section -->
+    <div id="gamesSection" class="hidden space-y-3">
+      <!-- Games will be populated here -->
+    </div>
+
+  </main>
+
+  <script>
+    let allGames = [];
+    let metrics = {};
+    let currentMetric = 'playingtime';
+    let ignoreZeros = false;
+
+    async function fetchCollection() {
+      const username = document.getElementById('username').value.trim() || 'sportomax';
+      document.getElementById('loadingSection').classList.remove('hidden');
+      document.getElementById('fetchSection').classList.add('hidden');
+      document.getElementById('tabsSection').classList.add('hidden');
+      document.getElementById('gamesSection').classList.add('hidden');
+      
+      try {
+        updateProgress('Fetching collection...', 5);
+        const collectionXml = await fetchAPI('collection', username, '&stats=1&own=1');
+        const collectionDoc = new DOMParser().parseFromString(collectionXml, 'text/xml');
+        
+        allGames = [];
+        const items = collectionDoc.querySelectorAll('item');
+        items.forEach(item => {
+          const stats = item.querySelector('stats');
+          allGames.push({
+            objectid: item.getAttribute('objectid'),
+            name: item.querySelector('name')?.textContent || 'Unknown',
+            image: item.querySelector('image')?.textContent || '',
+            thumbnail: item.querySelector('thumbnail')?.textContent || '',
+            yearpublished: parseInt(item.querySelector('yearpublished')?.textContent || 0),
+            playingtime: parseInt(stats?.getAttribute('playingtime') || 0),
+            rating: parseFloat(item.querySelector('rating')?.textContent || 0),
+            loaded: false
+          });
+        });
+
+        updateProgress(`Fetched ${allGames.length} games`, 10);
+        document.getElementById('gameCount').textContent = allGames.length;
+        document.getElementById('statsBox').classList.remove('hidden');
+
+        // Batch fetch Thing data with 100x parallel processing
+        const batchSize = 20;
+        const parallelBatches = 100; // Process 100 batches in parallel
+        const batches = [];
+        for (let i = 0; i < allGames.length; i += batchSize) {
+          batches.push(allGames.slice(i, i + batchSize));
+        }
+        
+        // Process batches in parallel groups
+        for (let i = 0; i < batches.length; i += parallelBatches) {
+          const batchGroup = batches.slice(i, i + parallelBatches);
+          updateProgress(`Loading metrics ${Math.min(i + parallelBatches, batches.length)}/${batches.length}...`, 10 + ((Math.min(i + parallelBatches, batches.length) / batches.length) * 80));
+          
+          await Promise.all(batchGroup.map(async (batch, batchIndex) => {
+            const ids = batch.map(g => g.objectid).join(',');
+            
+            try {
+              const thingXml = await fetchAPI('thing', ids, '&stats=1');
+              const thingDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+              
+              thingDoc.querySelectorAll('item').forEach(item => {
+                const objId = item.getAttribute('id');
+                const statsEl = item.querySelector('statistics ratings');
+                if (statsEl) {
+                  const game = allGames.find(g => g.objectid === objId);
+                  if (game) {
+                    game.bayesAverage = parseFloat(statsEl.querySelector('bayesaverage')?.getAttribute('value') || 0);
+                    game.averageWeight = parseFloat(statsEl.querySelector('averageweight')?.getAttribute('value') || 0);
+                    game.loaded = true;
+                  }
+                }
+              });
+            } catch (e) {
+              console.error('Batch error:', e);
+            }
+          }));
+          
+          await wait(500); // Throttle between parallel groups
+        }
+
+        updateProgress('Processing data...', 95);
+
+        // Filter loaded games
+        const loadedGames = allGames.filter(g => g.loaded);
+        
+        if (loadedGames.length === 0) {
+          alert('No games loaded. Please check your username.');
+          document.getElementById('loadingSection').classList.add('hidden');
+          document.getElementById('fetchSection').classList.remove('hidden');
+          return;
+        }
+
+        // Calculate quartiles for each metric
+        await calculateMetrics();
+
+        updateProgress('Complete!', 100);
+        setTimeout(() => {
+          document.getElementById('loadingSection').classList.add('hidden');
+          document.getElementById('tabsSection').classList.remove('hidden');
+          document.getElementById('gamesSection').classList.remove('hidden');
+          renderMetric('playingtime');
+        }, 500);
+
+      } catch (error) {
+        console.error('Error:', error);
+        alert('Error loading games: ' + error.message);
+        document.getElementById('loadingSection').classList.add('hidden');
+        document.getElementById('fetchSection').classList.remove('hidden');
+      }
+    }
+
+    async function calculateMetrics() {
+      let loadedGames = allGames.filter(g => g.loaded);
+      
+      // Define metrics to calculate
+      const metricKeys = ['playingtime', 'bayesAverage', 'averageWeight', 'yearpublished'];
+      
+      metricKeys.forEach(metric => {
+        // Filter out zeros if toggle is enabled
+        let gamesForMetric = loadedGames;
+        if (ignoreZeros) {
+          gamesForMetric = loadedGames.filter(g => {
+            const val = g[metric] || 0;
+            return val !== 0;
+          });
+        }
+
+        let sorted = [...gamesForMetric].sort((a, b) => {
+          const aVal = a[metric] || 0;
+          const bVal = b[metric] || 0;
+          return aVal - bVal;
+        });
+
+        // Tie-break with random
+        let i = 0;
+        while (i < sorted.length) {
+          let j = i;
+          while (j < sorted.length && sorted[j][metric] === sorted[i][metric]) {
+            j++;
+          }
+          if (j - i > 1) {
+            const slice = sorted.slice(i, j);
+            slice.sort(() => Math.random() - 0.5);
+            for (let k = 0; k < slice.length; k++) {
+              sorted[i + k] = slice[k];
+            }
+          }
+          i = j;
+        }
+
+        const n = sorted.length;
+        if (n === 0) {
+          metrics[metric] = [];
+          return;
+        }
+
+        const q1Index = Math.floor(n * 0.25);
+        const medianIndex = Math.floor(n * 0.5);
+        const q3Index = Math.floor(n * 0.75);
+
+        metrics[metric] = [
+          { label: 'Minimum', game: sorted[0] },
+          { label: 'Q1 (25%)', game: sorted[q1Index] },
+          { label: 'Median (50%)', game: sorted[medianIndex] },
+          { label: 'Q3 (75%)', game: sorted[q3Index] },
+          { label: 'Maximum', game: sorted[n - 1] }
+        ];
+      });
+    }
+
+    function showMetric(metric) {
+      currentMetric = metric;
+      document.querySelectorAll('.tab-btn').forEach(btn => btn.classList.remove('active', 'text-indigo-600', 'border-b-2', 'border-indigo-600'));
+      document.querySelector(`[data-metric="${metric}"]`).classList.add('active', 'text-indigo-600', 'border-b-2', 'border-indigo-600');
+      renderMetric(metric);
+    }
+
+    function handleIgnoreZeros() {
+      ignoreZeros = document.getElementById('ignoreZeros').checked;
+      calculateMetrics();
+      renderMetric(currentMetric);
+    }
+
+    function renderMetric(metric) {
+      const games = metrics[metric] || [];
+      const container = document.getElementById('gamesSection');
+      
+      let metricLabel = 'Value';
+      let metricKey = metric;
+      if (metric === 'playingtime') metricLabel = 'Time (min)';
+      if (metric === 'bayesAverage') { metricLabel = 'Rating'; metricKey = 'bayesAverage'; }
+      if (metric === 'averageWeight') { metricLabel = 'Weight (1-5)'; metricKey = 'averageWeight'; }
+      if (metric === 'yearpublished') { metricLabel = 'Year'; metricKey = 'yearpublished'; }
+
+      container.innerHTML = games.map(item => `
+        <div class="game-card bg-white rounded-xl shadow-sm border border-slate-100 p-4">
+          <div class="flex gap-4 cursor-pointer" onclick="window.open('https://boardgamegeek.com/boardgame/${item.game.objectid}', '_blank')">
+            <img 
+              src="/api/image-proxy?url=${encodeURIComponent(item.game.thumbnail)}" 
+              alt="${item.game.name}"
+              class="w-20 h-20 rounded-lg object-cover bg-slate-200 flex-shrink-0"
+              onerror="this.style.display='none'"
+            >
+            <div class="flex-1 min-w-0">
+              <div class="text-[10px] font-bold text-indigo-600 uppercase tracking-wider mb-1">${item.label}</div>
+              <h3 class="font-bold text-slate-900 mb-1 line-clamp-2">${item.game.name}</h3>
+              <div class="text-xs text-slate-500 mb-2">
+                ${item.game.year ? item.game.year + ' • ' : ''}
+                ID: ${item.game.objectid}
+              </div>
+              <div class="inline-block bg-indigo-100 text-indigo-700 px-2 py-1 rounded font-bold text-sm">
+                ${metricLabel}: ${
+                  metric === 'bayesAverage' ? item.game.bayesAverage?.toFixed(2) :
+                  metric === 'averageWeight' ? item.game.averageWeight?.toFixed(2) :
+                  item.game[metricKey]
+                }
+              </div>
+            </div>
+          </div>
+        </div>
+      `).join('');
+    }
+
+    function updateProgress(message, percent) {
+      document.getElementById('loadingStatus').textContent = message;
+      document.getElementById('progressBar').style.width = percent + '%';
+    }
+
+    async function fetchAPI(endpoint, user, queryParams = '') {
+      if (endpoint === 'thing') {
+        // For thing endpoint, user is actually the IDs
+        let url = `/api/bgg-helper?endpoint=${endpoint}&id=${encodeURIComponent(user)}${queryParams}`;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          let res;
+          try {
+            res = await fetch(url);
+          } catch (e) {
+            await wait(1500 * Math.pow(2, attempt));
+            continue;
+          }
+          if (res.status === 202) {
+            await wait(3000);
+            continue;
+          }
+          if (res.ok) {
+            return await res.text();
+          }
+          await wait(2000);
+        }
+        throw new Error('Failed to fetch Thing data from BGG API');
+      } else if (endpoint === 'collection') {
+        // For collection endpoint, use username parameter
+        if (!user || user.trim() === '') {
+          throw new Error('Username is required');
+        }
+        let url = `/api/bgg-helper?endpoint=${endpoint}&username=${encodeURIComponent(user)}${queryParams}`;
+        for (let attempt = 0; attempt < 5; attempt++) {
+          let res;
+          try {
+            res = await fetch(url);
+          } catch (e) {
+            await wait(1000 * Math.pow(2, attempt));
+            continue;
+          }
+          if (res.status === 202) {
+            await wait(2000);
+            continue;
+          }
+          if (res.ok) return await res.text();
+          await wait(1500);
+        }
+        throw new Error('Failed to fetch collection from BGG API');
+      }
+    }
+
+    function wait(ms) {
+      return new Promise(r => setTimeout(r, ms));
+    }
+  </script>
+
+  <!-- Vercel Web Analytics -->
+  <script type="module" src="analytics-init.js"></script>
+</body>
+</html>

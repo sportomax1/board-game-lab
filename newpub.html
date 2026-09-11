@@ -1,0 +1,961 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>BGG Collection Matcher</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <style>
+    body { background: radial-gradient(1200px 700px at 20% -10%, #1e293b, #020617 65%); }
+    .card  { background:rgba(15,23,42,.82); backdrop-filter:blur(10px); border:1px solid rgba(148,163,184,.18); }
+    .mono  { font-variant-numeric:tabular-nums; }
+    .thumb    { width:52px;height:52px;object-fit:cover;border-radius:8px;border:1px solid rgba(148,163,184,.25);flex-shrink:0; }
+    .thumb-xs { width:40px;height:40px;object-fit:cover;border-radius:6px;border:1px solid rgba(148,163,184,.2);flex-shrink:0; }
+    .pill { border:1px solid rgba(148,163,184,.28);border-radius:9999px;padding:2px 9px;font-size:11px;display:inline-block;line-height:1.6; }
+    .step { width:28px;height:28px;border-radius:50%;display:flex;align-items:center;justify-content:center;font-weight:800;font-size:13px;flex-shrink:0; }
+    canvas { width:100%;height:160px;background:rgba(2,6,23,.35);border-radius:10px;border:1px solid rgba(148,163,184,.1); }
+    /* result row source colours */
+    .row-ce { background:rgba(16,185,129,.07); border-left:3px solid #10b981; }
+    .row-cp { background:rgba(245,158,11,.08);  border-left:3px solid #f59e0b; }
+    .row-bs { background:rgba(129,140,248,.07); border-left:3px solid #818cf8; }
+    .row-no { background:rgba(239,68,68,.05);   border-left:3px solid #f87171; }
+    /* multi-year rank cell colours */
+    .rk-1  { color:#6ee7b7;font-weight:700; }
+    .rk-2  { color:#67e8f9; }
+    .rk-3  { color:#fde047; }
+    .rk-4  { color:#fca5a5; }
+    /* progress bar */
+    #progressBar { transition:width .2s; }
+  </style>
+</head>
+<body class="text-slate-100 min-h-screen">
+<main class="max-w-6xl mx-auto p-4 md:p-6 space-y-4">
+
+  <!-- Header -->
+  <div class="pt-1">
+    <h1 class="text-2xl md:text-3xl font-black tracking-tight">BGG Collection Matcher</h1>
+    <p class="text-slate-400 text-sm mt-1">
+      Paste / upload a ranked list → load a BGG collection → match in parallel batches.
+      Collection is always checked first (exact then partial ≥ 65 %). BGG search fires only for unconfident rows.
+    </p>
+  </div>
+
+  <!-- 3-step row -->
+  <div class="grid md:grid-cols-3 gap-4">
+
+    <!-- Step 1 — data input -->
+    <div class="card rounded-2xl p-4 flex flex-col gap-3">
+      <div class="flex items-center gap-2">
+        <span class="step bg-indigo-600">1</span>
+        <span class="font-bold text-sm">Your Ranked List</span>
+      </div>
+      <textarea id="rawInput" rows="9"
+        class="flex-1 w-full bg-slate-950/60 border border-slate-700 rounded-xl p-3 text-xs mono resize-none"
+        spellcheck="false">Year,Rank,Item
+2026,1,Forest Shuffle
+2026,2,In the Footsteps of Darwin
+2026,3,Paladins of the West Kingdom
+2026,4,Everdell Farshore
+2026,5,Sushi Go Party!
+2025,1,Forest Shuffle
+2025,2,Sushi Go Party!
+2025,3,Caesar's Empire</textarea>
+      <div class="flex items-center gap-2 text-xs text-slate-400">
+        <span class="whitespace-nowrap">or upload:</span>
+        <input id="fileInput" type="file" class="flex-1 min-w-0 text-xs" accept=".csv,.tsv,.txt" />
+      </div>
+      <button id="parseBtn" class="w-full py-2 rounded-xl bg-slate-700 hover:bg-slate-600 text-sm font-semibold transition-colors">
+        Parse List
+      </button>
+      <div id="parseMsg" class="text-xs text-slate-400 min-h-[14px]"></div>
+    </div>
+
+    <!-- Step 2 — collection -->
+    <div class="card rounded-2xl p-4 flex flex-col gap-3">
+      <div class="flex items-center gap-2">
+        <span class="step bg-emerald-700">2</span>
+        <span class="font-bold text-sm">BGG Collection</span>
+      </div>
+      <div>
+        <label class="text-xs text-slate-400 block mb-1">BGG Username</label>
+        <input id="collUser" type="text" value="sportomax1"
+          class="w-full bg-slate-950/60 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+      </div>
+      <button id="loadCollBtn" class="w-full py-2 rounded-xl bg-emerald-700 hover:bg-emerald-600 text-sm font-semibold transition-colors">
+        Load Collection
+      </button>
+      <div id="collStatus" class="text-sm font-medium text-slate-400 min-h-[20px]">Not loaded</div>
+      <div class="border-t border-slate-700/50 pt-3 space-y-2">
+        <div class="text-[11px] text-slate-500 font-semibold uppercase tracking-wide">Match priority</div>
+        <label class="flex items-center gap-2 text-xs cursor-pointer select-none text-slate-300">
+          <input id="chkExact"   type="checkbox" checked class="accent-emerald-400"> Exact name (always first)
+        </label>
+        <label class="flex items-center gap-2 text-xs cursor-pointer select-none text-slate-300">
+          <input id="chkPartial" type="checkbox" checked class="accent-amber-400"> Partial collection (≥ 65 %)
+        </label>
+        <label class="flex items-center gap-2 text-xs cursor-pointer select-none text-slate-300">
+          <input id="chkBgg"     type="checkbox" checked class="accent-indigo-400"> BGG search (last resort)
+        </label>
+        <div class="text-[11px] text-slate-500 font-semibold uppercase tracking-wide pt-1">BGG batch size</div>
+        <div class="flex items-center gap-2">
+          <input id="batchSize" type="range" min="1" max="10" value="5" class="flex-1 accent-violet-500">
+          <span id="batchSizeVal" class="text-xs mono text-slate-300 w-4">5</span>
+        </div>
+      </div>
+    </div>
+
+    <!-- Step 3 — run + stats -->
+    <div class="card rounded-2xl p-4 flex flex-col gap-3">
+      <div class="flex items-center gap-2">
+        <span class="step bg-violet-700">3</span>
+        <span class="font-bold text-sm">Run Match</span>
+      </div>
+      <button id="matchBtn" class="w-full py-3 rounded-xl bg-violet-600 hover:bg-violet-500 font-bold text-sm transition-colors">
+        Match List → Collection
+      </button>
+      <!-- progress -->
+      <div class="w-full bg-slate-800 rounded-full h-1.5">
+        <div id="progressBar" class="bg-violet-500 h-1.5 rounded-full w-0"></div>
+      </div>
+      <div id="status" class="text-xs text-slate-300 min-h-[28px] leading-snug"></div>
+      <div class="grid grid-cols-2 gap-2 mt-auto">
+        <div class="bg-slate-900/50 rounded-xl p-2.5 text-center">
+          <div class="text-[10px] text-slate-500">Rows</div>
+          <div id="sRows" class="text-xl font-black mono">0</div>
+        </div>
+        <div class="bg-slate-900/50 rounded-xl p-2.5 text-center">
+          <div class="text-[10px] text-slate-500">Matched</div>
+          <div id="sMatched" class="text-xl font-black mono">0</div>
+        </div>
+        <div class="bg-slate-900/50 rounded-xl p-2.5 text-center">
+          <div class="text-[10px] text-slate-500">Coll hits</div>
+          <div id="sColl" class="text-xl font-black mono text-emerald-400">0</div>
+        </div>
+        <div class="bg-slate-900/50 rounded-xl p-2.5 text-center">
+          <div class="text-[10px] text-slate-500">BGG hits</div>
+          <div id="sBgg" class="text-xl font-black mono text-indigo-400">0</div>
+        </div>
+        <div class="col-span-2 bg-slate-900/50 rounded-xl p-2.5 text-center">
+          <div class="text-[10px] text-slate-500">Avg Confidence</div>
+          <div id="sConf" class="text-xl font-black mono">—</div>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Charts -->
+  <div class="grid md:grid-cols-2 gap-4">
+    <div class="card rounded-2xl p-3">
+      <div class="font-bold text-xs text-slate-400 mb-1.5">Source Breakdown</div>
+      <canvas id="chartSource" width="800" height="160"></canvas>
+    </div>
+    <div class="card rounded-2xl p-3">
+      <div class="font-bold text-xs text-slate-400 mb-1.5">Confidence Breakdown</div>
+      <canvas id="chartConf" width="800" height="160"></canvas>
+    </div>
+  </div>
+
+  <!-- Results -->
+  <div class="card rounded-2xl p-4">
+    <!-- Top bar -->
+    <div class="flex flex-wrap items-center gap-2 mb-3">
+      <div class="font-bold text-base flex-1">Match Results</div>
+      <button id="genTableBtn" class="py-1.5 px-3 rounded-lg bg-violet-700 hover:bg-violet-600 text-xs font-semibold">Multi-Year Table ↗</button>
+      <button id="copyCSV"     class="py-1.5 px-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Copy CSV</button>
+      <button id="dlCSV"       class="py-1.5 px-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Download CSV</button>
+    </div>
+    <!-- Filter / sort bar -->
+    <div class="flex flex-wrap gap-2 mb-3 items-center">
+      <input id="filterText" type="text" placeholder="Filter by name…"
+        class="bg-slate-950/60 border border-slate-700 rounded-lg px-3 py-1.5 text-xs flex-1 min-w-[130px]">
+      <select id="filterYear"   class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200"><option value="all">All years</option></select>
+      <select id="filterSource" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200">
+        <option value="all">All sources</option>
+        <option value="coll_exact">Coll Exact</option>
+        <option value="coll_partial">Coll Partial</option>
+        <option value="bgg_search">BGG Search</option>
+        <option value="none">No Match</option>
+      </select>
+      <select id="filterConf"   class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200">
+        <option value="all">All confidence</option>
+        <option value="high">High ≥ 85%</option>
+        <option value="med">Med ≥ 65%</option>
+        <option value="low">Low &lt; 65%</option>
+        <option value="nomatch">No match</option>
+      </select>
+      <button id="clearFilters" class="py-1.5 px-2 rounded-lg bg-slate-800 hover:bg-slate-700 text-xs text-slate-400 hover:text-slate-200 transition-colors">✕ Clear</button>
+      <span id="filterCount" class="text-xs text-slate-500 whitespace-nowrap ml-auto"></span>
+    </div>
+    <!-- Legend -->
+    <div class="flex flex-wrap gap-3 mb-2 text-[11px] text-slate-500">
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-emerald-500 inline-block"></span>Coll exact</span>
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-amber-500 inline-block"></span>Coll partial</span>
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-indigo-400 inline-block"></span>BGG search</span>
+      <span class="flex items-center gap-1.5"><span class="w-2 h-2 rounded-sm bg-red-500 inline-block"></span>No match</span>
+      <span class="ml-auto text-slate-600">Click column header to sort · ✏ to edit match</span>
+    </div>
+    <div id="results" class="overflow-x-auto"></div>
+  </div>
+
+</main>
+
+<!-- Multi-Year Modal -->
+<div id="multiyearModal" class="fixed inset-0 bg-black/80 z-50 flex items-center justify-center p-3 hidden">
+  <div class="card rounded-2xl flex flex-col w-full max-w-5xl" style="max-height:92vh">
+    <div class="flex flex-wrap items-center gap-2 p-4 border-b border-slate-700/60 flex-shrink-0">
+      <div class="font-bold text-base flex-1">Multi-Year Comparison</div>
+      <!-- sort inside modal -->
+      <select id="mytSortCol" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200">
+        <option value="avg">Sort: Average</option>
+        <option value="spread">Sort: Spread</option>
+        <option value="name">Sort: Name</option>
+      </select>
+      <select id="mytSortDir" class="bg-slate-900 border border-slate-700 rounded-lg px-2 py-1.5 text-xs text-slate-200">
+        <option value="asc">↑ Asc</option>
+        <option value="desc">↓ Desc</option>
+      </select>
+      <button id="copyTableBtn" class="py-1.5 px-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Copy HTML</button>
+      <button id="dlTableBtn"   class="py-1.5 px-3 rounded-lg bg-slate-700 hover:bg-slate-600 text-xs font-semibold">Download HTML</button>
+      <button id="shareLinkBtn" class="py-1.5 px-3 rounded-lg bg-indigo-700 hover:bg-indigo-600 text-xs font-semibold">Share Link</button>
+      <button id="closeMultiyear" class="text-slate-400 hover:text-slate-100 text-xl leading-none ml-1">✕</button>
+    </div>
+    <div id="multiyearTable" class="overflow-auto flex-1 p-4"></div>
+  </div>
+</div>
+
+<!-- Edit Modal -->
+<div id="editModal" class="fixed inset-0 bg-black/70 z-50 flex items-center justify-center p-4 hidden">
+  <div class="card rounded-2xl p-5 w-full max-w-lg space-y-3 shadow-2xl">
+    <div class="flex items-center justify-between">
+      <div class="font-bold">Review / Change Match</div>
+      <button id="closeModal" class="text-slate-400 hover:text-slate-100 text-lg leading-none">✕</button>
+    </div>
+    <div id="modalCurrentMatch" class="bg-slate-900/60 rounded-xl p-3 text-sm"></div>
+    <div class="border-t border-slate-700/50"></div>
+    <div class="text-xs text-slate-400 font-semibold">Search for a different game</div>
+    <div class="flex gap-2">
+      <input id="modalSearch" type="text" placeholder="Search BGG…"
+        class="flex-1 bg-slate-950/60 border border-slate-700 rounded-lg px-3 py-2 text-sm" />
+      <button id="modalSearchBtn" class="px-4 py-2 rounded-lg bg-indigo-600 hover:bg-indigo-500 text-sm font-semibold">Search</button>
+    </div>
+    <div id="modalResults" class="space-y-1.5 max-h-60 overflow-y-auto"></div>
+    <div class="flex gap-2 pt-1">
+      <button id="modalClearBtn" class="flex-1 py-2 rounded-lg bg-rose-900/60 hover:bg-rose-800 text-xs font-semibold">Clear Match</button>
+      <button id="modalLockBtn"  class="flex-1 py-2 rounded-lg bg-emerald-900/60 hover:bg-emerald-800 text-xs font-semibold">Lock This Match ✓</button>
+    </div>
+  </div>
+</div>
+
+<script>
+// ═══════════════════════════════════════════════════════════ CONSTANTS & STATE
+const CONF_SKIP_BGG = 0.65;
+const CONF_MIN      = 0.48;
+const PLACEHOLDER   = 'data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 52 52"><rect width="52" height="52" fill="%230f172a"/><text x="26" y="31" text-anchor="middle" fill="%2394a3b8" font-size="10">?</text></svg>';
+
+const state = {
+  rows: [], results: [],
+  collection: [], collectionUser: '', collNormMap: new Map(),
+  busy: false, editIdx: -1,
+  filter: { text:'', source:'all', conf:'all', year:'all' },
+  sort:   { col:'rank', dir:'asc' },
+};
+
+// ═══════════════════════════════════════════════════════════ UTILS
+const qs    = id => document.getElementById(id);
+const norm  = s  => String(s||'').toLowerCase().replace(/[^a-z0-9]+/g,' ').replace(/\s+/g,' ').trim();
+const escH  = s  => String(s||'').replace(/&/g,'&amp;').replace(/</g,'&lt;').replace(/>/g,'&gt;').replace(/"/g,'&quot;');
+const sleep = ms => new Promise(r => setTimeout(r, ms));
+const msg   = (id,t) => { qs(id).textContent = t; };
+
+function yearBonus(gy, ry) { return gy && ry && Math.abs(gy-ry) <= 1 ? 0.05 : 0; }
+
+// ═══════════════════════════════════════════════════════════ SIMILARITY
+function levenshtein(a, b) {
+  if (a===b) return 0; if (!a.length) return b.length; if (!b.length) return a.length;
+  const dp = Array.from({length:a.length+1}, (_,i)=>Array.from({length:b.length+1},(_,j)=>j?i?0:j:i));
+  for (let i=1;i<=a.length;i++) for (let j=1;j<=b.length;j++)
+    dp[i][j]=a[i-1]===b[j-1]?dp[i-1][j-1]:1+Math.min(dp[i-1][j],dp[i][j-1],dp[i-1][j-1]);
+  return dp[a.length][b.length];
+}
+function similarity(a, b) {
+  return simNorm(norm(a), norm(b));
+}
+// Fast path: accepts already-normalised strings (avoids re-normalising collection on every call)
+function simNorm(na, nb) {
+  if (!na||!nb) return 0; if (na===nb) return 1;
+  const lev  = 1 - levenshtein(na,nb)/Math.max(na.length,nb.length);
+  const sa=new Set(na.split(' ')), sb=new Set(nb.split(' '));
+  const inter=[...sa].filter(t=>sb.has(t)).length;
+  const jacc = inter/new Set([...sa,...sb]).size;
+  return Math.max(0, Math.min(1, lev*0.7+jacc*0.3));
+}
+
+// ═══════════════════════════════════════════════════════════ CSV PARSER
+function parseDelimited(raw) {
+  const lines = raw.split(/\r?\n/).map(s=>s.trim()).filter(Boolean);
+  if (!lines.length) return [];
+  const delim   = lines[0].includes('\t') ? '\t' : ',';
+  const headers = lines[0].split(delim).map(h=>h.trim().toLowerCase().replace(/^"|"$/g,''));
+  const yi = headers.findIndex(h=>h==='year');
+  const ri = headers.findIndex(h=>h==='rank');
+  const ni = headers.findIndex(h=>['item','name','title'].includes(h));
+  if (yi<0||ri<0||ni<0) throw new Error('Need columns: Year, Rank, and Item/Name/Title.');
+  return lines.slice(1).map(line=>{
+    const c=line.split(delim).map(s=>s.trim().replace(/^"|"$/g,''));
+    return {year:Number(c[yi]),rank:Number(c[ri]),item:c[ni]||''};
+  }).filter(r=>r.year&&r.rank&&r.item);
+}
+
+// ═══════════════════════════════════════════════════════════ COLLECTION
+async function loadCollection(username) {
+  const el=qs('collStatus'); el.textContent='Loading…'; el.className='text-sm font-medium text-slate-400';
+  msg('status',`Fetching collection for "${username}"…`);
+  try {
+    const res=await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&subtype=boardgame&excludesubtype=boardgameexpansion`);
+    if (!res.ok) throw new Error(`HTTP ${res.status}`);
+    const xml=new DOMParser().parseFromString(await res.text(),'application/xml');
+    const err=xml.querySelector('message');
+    if (err) throw new Error(err.textContent.trim());
+    state.collection=[...xml.querySelectorAll('item')].map(it=>({
+      id:   it.getAttribute('objectid'),
+      name: it.querySelector('name')?.textContent?.trim()||'',
+      thumb:it.querySelector('thumbnail')?.textContent?.trim()||'',
+      year: Number(it.querySelector('yearpublished')?.textContent||0),
+    })).filter(g=>g.name);
+    // Pre-normalise every name once so matching never re-computes it
+    state.collNormMap = new Map();
+    for (const g of state.collection) {
+      g._norm = norm(g.name);
+      if (!state.collNormMap.has(g._norm)) state.collNormMap.set(g._norm, g);
+    }
+    state.collectionUser=username;
+    el.textContent=`✅ ${state.collection.length} games (${username})`;
+    el.className='text-sm font-medium text-emerald-400';
+    msg('status',`Collection ready — ${state.collection.length} games.`);
+  } catch(e) {
+    el.textContent=`❌ ${e.message}`; el.className='text-sm font-medium text-rose-400';
+    msg('status',`Collection error: ${e.message}`);
+  }
+}
+
+function findInCollection(item, year) {
+  if (!state.collection.length) return null;
+  const na = norm(item);
+  // O(1) exact lookup via pre-built Map
+  if (qs('chkExact').checked) {
+    const exact = state.collNormMap.get(na);
+    if (exact) return {game:exact, type:'exact', conf:1.0};
+  }
+  // Partial — iterate once using pre-normalised _norm, no repeated norm() calls
+  if (qs('chkPartial').checked) {
+    let bestConf=0, bestGame=null;
+    for (const c of state.collection) {
+      const conf = Math.min(1, simNorm(na, c._norm||norm(c.name)) + yearBonus(c.year, year));
+      if (conf > bestConf) { bestConf=conf; bestGame=c; }
+    }
+    if (bestConf>=CONF_MIN) return {game:bestGame, type:'partial', conf:bestConf};
+  }
+  return null;
+}
+
+function collectionCandidates(item, year, n=5) {
+  const na = norm(item);
+  return state.collection
+    .map(c=>({...c, conf:Math.min(1, simNorm(na, c._norm||norm(c.name))+yearBonus(c.year,year))}))
+    .filter(c=>c.conf>=CONF_MIN).sort((a,b)=>b.conf-a.conf).slice(0,n);
+}
+
+// ═══════════════════════════════════════════════════════════ BGG API
+async function bggSearch(query) {
+  const res=await fetch(`/api/bgg-helper?endpoint=search&query=${encodeURIComponent(query)}&type=boardgame`);
+  if (!res.ok) throw new Error(`BGG search ${res.status}`);
+  const xml=new DOMParser().parseFromString(await res.text(),'application/xml');
+  return [...xml.querySelectorAll('item')].slice(0,8).map(it=>({
+    id:  it.getAttribute('id'),
+    name:it.querySelector('name')?.getAttribute('value')||'',
+    year:Number(it.querySelector('yearpublished')?.getAttribute('value')||0),
+  }));
+}
+
+async function bggThing(ids) {
+  if (!ids.length) return [];
+  const res=await fetch(`/api/bgg-helper?endpoint=thing&id=${encodeURIComponent(ids.join(','))}`);
+  if (!res.ok) throw new Error(`BGG thing ${res.status}`);
+  const xml=new DOMParser().parseFromString(await res.text(),'application/xml');
+  return [...xml.querySelectorAll('item')].map(it=>({
+    id:   it.getAttribute('id'),
+    name: it.querySelector('name[type="primary"]')?.getAttribute('value')||it.querySelector('name')?.getAttribute('value')||'',
+    thumb:it.querySelector('thumbnail')?.textContent?.trim()||it.querySelector('image')?.textContent?.trim()||'',
+    year: Number(it.querySelector('yearpublished')?.getAttribute('value')||0),
+  }));
+}
+
+function scoreBGG(search, details, item, year) {
+  return search.map(s=>{
+    const d=details.find(x=>x.id===s.id)||{};
+    const name=d.name||s.name;
+    return {...s,...d,name,conf:Math.min(1,similarity(item,name)+yearBonus(d.year||s.year,year))};
+  }).sort((a,b)=>b.conf-a.conf);
+}
+
+// ═══════════════════════════════════════════════════════════ PARALLEL MATCH LOOP
+async function runMatch() {
+  if (state.busy) return;
+  if (!state.rows.length) { msg('status','Parse your list first.'); return; }
+  state.busy=true; qs('matchBtn').disabled=true;
+  qs('progressBar').style.width='0%';
+
+  // Phase 1 — async collection check, yielding to the browser every 8 rows
+  // (avoids freezing the UI thread on large collections)
+  const pending=[];
+  state.results = new Array(state.rows.length);
+  for (let origIdx=0; origIdx<state.rows.length; origIdx++) {
+    const row=state.rows[origIdx];
+    const cHit=findInCollection(row.item,row.year);
+    if (cHit&&cHit.conf>=CONF_SKIP_BGG) {
+      state.results[origIdx]={...row,source:cHit.type==='exact'?'coll_exact':'coll_partial',
+        match:cHit.game,conf:cHit.conf,
+        candidates:collectionCandidates(row.item,row.year,5),locked:false};
+    } else {
+      pending.push({origIdx,row,collHit:cHit});
+      state.results[origIdx]={...row,source:'_pending',match:null,conf:0,candidates:[],locked:false};
+    }
+    // Yield every 8 rows so the browser can repaint and stay responsive
+    if (origIdx % 8 === 7) {
+      setProgress(origIdx+1, state.rows.length);
+      msg('status',`Collection scan ${origIdx+1}/${state.rows.length}…`);
+      await sleep(0);
+    }
+  }
+
+  const collHits=state.results.filter(r=>r.source!=='_pending').length;
+  msg('status',`${collHits} collection hits. ${pending.length} queued for BGG search…`);
+  setProgress(collHits, state.rows.length);
+  renderResults(); updateSummary(); drawCharts();
+
+  // Fill no-matches if BGG disabled
+  if (!qs('chkBgg').checked) {
+    pending.forEach(({origIdx,row,collHit})=>{
+      state.results[origIdx]={...row,source:'none',match:null,conf:0,
+        candidates:collHit?collectionCandidates(row.item,row.year,4):[],locked:false};
+    });
+  } else {
+    // Phase 2 — parallel batches for BGG rows
+    const BATCH=Number(qs('batchSize').value)||5;
+    for (let b=0;b<pending.length;b+=BATCH) {
+      const chunk=pending.slice(b,b+BATCH);
+      msg('status',`BGG batch ${Math.floor(b/BATCH)+1}/${Math.ceil(pending.length/BATCH)} — rows ${b+1}–${Math.min(b+BATCH,pending.length)} in parallel…`);
+
+      // All searches in this batch fire concurrently
+      const searches=await Promise.all(chunk.map(({row})=>bggSearch(row.item).catch(()=>[])));
+
+      // Single batched thing call for all unique IDs in this batch
+      const allIds=[...new Set(searches.flat().map(s=>s.id))];
+      const details=allIds.length?await bggThing(allIds).catch(()=>[]): [];
+
+      chunk.forEach(({origIdx,row,collHit},j)=>{
+        const bggCands=scoreBGG(searches[j],details,row.item,row.year);
+        const collCands=collHit?collectionCandidates(row.item,row.year,3):[];
+        const collIds=new Set(collCands.map(c=>c.id));
+        const all=[...collCands,...bggCands.filter(b=>!collIds.has(b.id))].sort((a,b2)=>b2.conf-a.conf).slice(0,6);
+        const best=all[0];
+        state.results[origIdx]={...row,
+          source:best&&best.conf>=CONF_MIN?'bgg_search':'none',
+          match:best&&best.conf>=CONF_MIN?best:null,
+          conf:best?.conf||0,candidates:all,locked:false};
+      });
+
+      setProgress(collHits+Math.min(b+BATCH,pending.length),state.rows.length);
+      renderResults(); updateSummary(); drawCharts();
+      if (b+BATCH<pending.length) await sleep(220);
+    }
+  }
+
+  state.busy=false; qs('matchBtn').disabled=false;
+  setProgress(state.rows.length,state.rows.length);
+  const tot=state.results.filter(r=>r.match).length;
+  msg('status',`Done — ${tot}/${state.results.length} matched. Click ✏ to review any row.`);
+  renderResults(); updateSummary(); drawCharts();
+}
+
+function setProgress(done,total) {
+  qs('progressBar').style.width=total?`${Math.round(done/total*100)}%`:'0%';
+}
+
+// ═══════════════════════════════════════════════════════════ PARSE
+function parseAndRender() {
+  try {
+    state.rows=parseDelimited(qs('rawInput').value);
+    state.results=state.rows.map(r=>({...r,source:'',match:null,conf:0,candidates:[],locked:false}));
+    renderResults(); updateSummary(); drawCharts();
+    msg('parseMsg',`✓ ${state.rows.length} row${state.rows.length!==1?'s':''} parsed.`);
+  } catch(e) { msg('parseMsg',`⚠ ${e.message}`); }
+}
+
+// ═══════════════════════════════════════════════════════════ SUMMARY
+function updateSummary() {
+  const rs=state.results, hits=rs.filter(r=>r.match);
+  const coll=rs.filter(r=>r.source==='coll_exact'||r.source==='coll_partial');
+  const bgg=rs.filter(r=>r.source==='bgg_search');
+  const avgC=hits.length?hits.reduce((s,r)=>s+r.conf,0)/hits.length:0;
+  qs('sRows').textContent   =state.rows.length;
+  qs('sMatched').textContent=hits.length;
+  qs('sColl').textContent   =coll.length;
+  qs('sBgg').textContent    =bgg.length;
+  qs('sConf').textContent   =hits.length?`${(avgC*100).toFixed(1)}%`:'—';
+}
+
+// ═══════════════════════════════════════════════════════════ CHARTS
+function drawBars(id,bars) {
+  const cv=qs(id),g=cv.getContext('2d'),W=cv.width,H=cv.height;
+  g.clearRect(0,0,W,H);
+  if (!bars.length) return;
+  const pad={l:8,r:8,t:20,b:26},cw=W-pad.l-pad.r,ch=H-pad.t-pad.b;
+  const maxV=Math.max(...bars.map(b=>b.v),1);
+  const bw=Math.min(86,(cw/bars.length)*0.58);
+  g.textAlign='center';
+  bars.forEach((b,i)=>{
+    const x=pad.l+(i+.5)*(cw/bars.length),bh=Math.max(3,(b.v/maxV)*ch),y=pad.t+ch-bh;
+    g.fillStyle=b.c; g.fillRect(x-bw/2,y,bw,bh);
+    g.fillStyle='#94a3b8'; g.font='10px sans-serif'; g.fillText(b.k,x,H-7);
+    g.fillStyle='#f1f5f9'; g.font='bold 11px sans-serif'; g.fillText(String(b.v),x,Math.max(pad.t+11,y-3));
+  });
+}
+function drawCharts() {
+  const rs=state.results;
+  drawBars('chartSource',[
+    {k:'Coll Exact',  v:rs.filter(r=>r.source==='coll_exact').length,   c:'#10b981'},
+    {k:'Coll Partial',v:rs.filter(r=>r.source==='coll_partial').length, c:'#f59e0b'},
+    {k:'BGG Search',  v:rs.filter(r=>r.source==='bgg_search').length,   c:'#818cf8'},
+    {k:'No Match',    v:rs.filter(r=>!r.source||r.source==='none'||r.source==='_pending').length,c:'#f87171'},
+  ]);
+  drawBars('chartConf',[
+    {k:'High ≥85%', v:rs.filter(r=>r.match&&r.conf>=.85).length,             c:'#10b981'},
+    {k:'Med ≥65%',  v:rs.filter(r=>r.match&&r.conf>=.65&&r.conf<.85).length, c:'#f59e0b'},
+    {k:'Low <65%',  v:rs.filter(r=>r.match&&r.conf<.65).length,              c:'#fb7185'},
+    {k:'No Match',  v:rs.filter(r=>!r.match).length,                         c:'#64748b'},
+  ]);
+}
+
+// ═══════════════════════════════════════════════════════════ BADGES
+const confBadge=conf=>conf>=.85
+  ?`<span class="pill text-emerald-300 border-emerald-500/40">High ${(conf*100).toFixed(0)}%</span>`
+  :conf>=.65
+  ?`<span class="pill text-amber-300 border-amber-500/40">Med ${(conf*100).toFixed(0)}%</span>`
+  :`<span class="pill text-rose-300 border-rose-500/40">Low ${(conf*100).toFixed(0)}%</span>`;
+
+const srcBadge=src=>
+  src==='coll_exact'   ?`<span class="pill text-emerald-300 border-emerald-500/40">Coll Exact</span>`
+ :src==='coll_partial' ?`<span class="pill text-amber-300 border-amber-500/40">Coll Partial</span>`
+ :src==='bgg_search'   ?`<span class="pill text-indigo-300 border-indigo-400/40">BGG Search</span>`
+ :src==='_pending'     ?`<span class="pill text-slate-400">Pending…</span>`
+ :                      `<span class="pill text-rose-300 border-rose-500/40">No Match</span>`;
+
+const rowCls=src=>
+  src==='coll_exact'?'row-ce':src==='coll_partial'?'row-cp':src==='bgg_search'?'row-bs':'row-no';
+
+// ═══════════════════════════════════════════════════════════ FILTER + SORT
+function getFiltered() {
+  const { text, source, conf, year } = state.filter;
+  const t = text.trim().toLowerCase();
+  return state.results
+    .map((r, origIdx) => ({ ...r, _i: origIdx }))
+    .filter(r => {
+      if (t && !r.item.toLowerCase().includes(t) && !(r.match?.name||'').toLowerCase().includes(t)) return false;
+      if (source !== 'all' && r.source !== source) return false;
+      if (year   !== 'all' && r.year !== Number(year)) return false;
+      if (conf !== 'all') {
+        if (conf === 'nomatch') return !r.match;
+        if (conf === 'high')    return r.match && r.conf >= .85;
+        if (conf === 'med')     return r.match && r.conf >= .65 && r.conf < .85;
+        if (conf === 'low')     return r.match && r.conf < .65;
+      }
+      return true;
+    });
+}
+
+function getSorted(rows) {
+  const { col, dir } = state.sort;
+  const d = dir === 'asc' ? 1 : -1;
+  return rows.slice().sort((a, b) => {
+    let av, bv;
+    if (col === 'year')   { av = a.year;  bv = b.year; }
+    else if (col === 'rank') { av = a.rank;  bv = b.rank; }
+    else if (col === 'name') { av = a.item.toLowerCase(); bv = b.item.toLowerCase(); }
+    else if (col === 'conf') { av = a.conf;  bv = b.conf; }
+    else if (col === 'src')  { av = a.source; bv = b.source; }
+    else { av = a.rank; bv = b.rank; }
+    return av < bv ? -d : av > bv ? d : 0;
+  });
+}
+
+function sortHeader(col, label) {
+  const active = state.sort.col === col;
+  const arrow  = active ? (state.sort.dir === 'asc' ? ' ↑' : ' ↓') : ' ↕';
+  const cls = active ? 'text-slate-200' : 'text-slate-500';
+  return `<th class="px-2 py-1.5 cursor-pointer select-none whitespace-nowrap hover:text-slate-200 ${cls}" data-sortcol="${col}">${label}<span class="opacity-60 text-[10px]">${arrow}</span></th>`;
+}
+
+function updateYearFilter() {
+  const years = [...new Set(state.results.map(r=>r.year))].sort((a,b)=>b-a);
+  const sel = qs('filterYear');
+  const cur = sel.value;
+  sel.innerHTML = '<option value="all">All years</option>' +
+    years.map(y=>`<option value="${y}"${String(y)===cur?'selected':''}>${y}</option>`).join('');
+}
+
+// ═══════════════════════════════════════════════════════════ RESULTS TABLE
+function renderResults() {
+  const el = qs('results');
+  if (!state.results.length) {
+    el.innerHTML='<div class="text-slate-500 text-sm py-6 text-center">No results yet.</div>';
+    qs('filterCount').textContent='';
+    return;
+  }
+  updateYearFilter();
+  const filtered = getSorted(getFiltered());
+  qs('filterCount').textContent = `${filtered.length} / ${state.results.length} rows`;
+
+  const tbody = filtered.map(r => {
+    const ri = r._i;  // original index in state.results
+    const m  = r.match;
+    const cands = (r.candidates||[]).slice(0,5).map((c,ci)=>{
+      const sel = m && c.id === m.id;
+      return `<button data-r="${ri}" data-c="${ci}" class="candBtn flex flex-col items-center p-0.5 rounded-lg border transition-colors ${sel?'border-violet-400 bg-violet-500/20':'border-slate-700 hover:border-slate-500'}">
+        <img class="thumb-xs" src="${c.thumb||PLACEHOLDER}" loading="lazy" alt="">
+        <div class="text-[8px] mt-0.5 w-[40px] truncate text-center text-slate-400" title="${escH(c.name)}">${escH(c.name)}</div>
+      </button>`;
+    }).join('');
+    const matchCell = m
+      ? `<div class="flex items-center gap-2">
+           <img class="thumb" src="${m.thumb||PLACEHOLDER}" loading="lazy" alt="">
+           <div><div class="text-xs font-semibold leading-snug">${escH(m.name)}</div>
+           <div class="text-[10px] text-slate-400">ID ${m.id}${m.year?' · '+m.year:''}</div></div>
+         </div>`
+      : `<span class="text-rose-400 text-xs">—</span>`;
+    const lockIcon = r.locked ? '🔒' : '';
+    return `<tr class="border-b border-slate-800/50 align-middle ${rowCls(r.source)}">
+      <td class="px-2 py-1.5 mono text-xs text-slate-400">${r.year}</td>
+      <td class="px-2 py-1.5 mono text-xs text-slate-400">${r.rank}</td>
+      <td class="px-2 py-1.5 text-xs max-w-[140px] truncate" title="${escH(r.item)}">${escH(r.item)}</td>
+      <td class="px-2 py-1.5 min-w-[180px]">${matchCell}</td>
+      <td class="px-2 py-1.5 whitespace-nowrap">${m?confBadge(r.conf):'<span class="pill text-slate-600">—</span>'}</td>
+      <td class="px-2 py-1.5 whitespace-nowrap">${srcBadge(r.source)}</td>
+      <td class="px-2 py-1.5"><div class="flex gap-0.5 flex-wrap">${cands||'<span class="text-[10px] text-slate-700">—</span>'}</div></td>
+      <td class="px-2 py-1.5 whitespace-nowrap">
+        <button data-edit="${ri}" class="editBtn text-slate-400 hover:text-slate-100 text-xs px-2 py-1 rounded border border-slate-700 hover:border-slate-500 transition-colors">${lockIcon}✏</button>
+      </td>
+    </tr>`;
+  }).join('');
+
+  el.innerHTML = `<table class="w-full text-sm">
+    <thead><tr class="text-left border-b border-slate-700/60">
+      ${sortHeader('year','Year')}${sortHeader('rank','Rank')}${sortHeader('name','Name')}
+      <th class="px-2 py-1.5 text-[11px] text-slate-500">Match</th>
+      ${sortHeader('conf','Confidence')}${sortHeader('src','Source')}
+      <th class="px-2 py-1.5 text-[11px] text-slate-500">Options</th>
+      <th class="px-2 py-1.5"></th>
+    </tr></thead><tbody>${tbody}</tbody></table>`;
+
+  // Sort header clicks
+  el.querySelectorAll('[data-sortcol]').forEach(th => th.addEventListener('click', () => {
+    const col = th.dataset.sortcol;
+    state.sort = { col, dir: state.sort.col === col && state.sort.dir === 'asc' ? 'desc' : 'asc' };
+    renderResults();
+  }));
+  // Candidate thumbnail overrides
+  el.querySelectorAll('.candBtn').forEach(btn => btn.addEventListener('click', e => {
+    const ri=Number(e.currentTarget.dataset.r), ci=Number(e.currentTarget.dataset.c);
+    const row=state.results[ri];
+    if (!row||row.locked||!row.candidates?.[ci]) return;
+    row.match=row.candidates[ci];
+    row.conf=Math.min(1,similarity(row.item,row.match.name)+yearBonus(row.match.year,row.year));
+    renderResults(); updateSummary(); drawCharts();
+  }));
+  // Edit modal
+  el.querySelectorAll('.editBtn').forEach(btn => btn.addEventListener('click', e => {
+    openEditModal(Number(e.currentTarget.dataset.edit));
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════ EDIT MODAL
+function openEditModal(idx) {
+  state.editIdx=idx;
+  const r=state.results[idx];
+  const m=r.match;
+  qs('modalCurrentMatch').innerHTML=m
+    ?`<div class="flex items-center gap-3">
+        <img class="thumb" src="${m.thumb||PLACEHOLDER}" loading="lazy">
+        <div>
+          <div class="font-semibold">${escH(m.name)}</div>
+          <div class="text-[11px] text-slate-400">ID ${m.id} · ${m.year||'?'} · ${(r.conf*100).toFixed(0)}% confidence · source: ${r.source}</div>
+          <div class="text-[11px] text-slate-400 mt-0.5">Input: <em>${escH(r.item)}</em> (${r.year})</div>
+        </div>
+      </div>`
+    :`<div class="text-rose-400 text-sm">No match currently — <em>${escH(r.item)}</em> (${r.year})</div>`;
+  qs('modalSearch').value=r.item;
+  qs('modalResults').innerHTML='';
+  qs('modalLockBtn').textContent=r.locked?'Unlock Match':'Lock This Match ✓';
+  qs('editModal').classList.remove('hidden');
+  qs('modalSearch').focus();
+}
+function closeEditModal() {
+  qs('editModal').classList.add('hidden');
+  state.editIdx=-1;
+}
+async function runModalSearch() {
+  const q=qs('modalSearch').value.trim(); if (!q) return;
+  qs('modalResults').innerHTML='<div class="text-xs text-slate-400 py-2">Searching…</div>';
+  try {
+    const search=await bggSearch(q);
+    const details=await bggThing(search.map(s=>s.id));
+    const scored=scoreBGG(search,details,q,state.results[state.editIdx]?.year||0);
+    qs('modalResults').innerHTML=scored.length
+      ?scored.slice(0,6).map((g,gi)=>`
+        <button data-gi="${gi}" class="modalPickBtn w-full flex items-center gap-2 p-2 rounded-lg border border-slate-700 hover:border-indigo-400 hover:bg-indigo-500/10 transition-colors text-left" data-idx="${gi}">
+          <img class="thumb-xs" src="${g.thumb||PLACEHOLDER}" loading="lazy">
+          <div class="min-w-0">
+            <div class="text-xs font-semibold truncate">${escH(g.name)}</div>
+            <div class="text-[10px] text-slate-400">ID ${g.id} · ${g.year||'?'} · ${(g.conf*100).toFixed(0)}%</div>
+          </div>
+        </button>`).join('')
+      :'<div class="text-xs text-slate-500 py-2">No results found.</div>';
+    qs('modalResults').querySelectorAll('.modalPickBtn').forEach((btn,gi)=>{
+      btn.addEventListener('click',()=>{
+        const g=scored[gi];
+        const row=state.results[state.editIdx];
+        if (!row||row.locked) { closeEditModal(); return; }
+        row.match=g; row.conf=Math.min(1,similarity(row.item,g.name)+yearBonus(g.year,row.year));
+        row.source='bgg_search';
+        if (!row.candidates.find(c=>c.id===g.id)) row.candidates.unshift(g);
+        renderResults(); updateSummary(); drawCharts();
+        closeEditModal();
+      });
+    });
+    // also store for potential reuse
+    state._modalSearched=scored;
+  } catch(e) { qs('modalResults').innerHTML=`<div class="text-rose-400 text-xs py-2">${e.message}</div>`; }
+}
+
+// ═══════════════════════════════════════════════════════════ MULTI-YEAR TABLE
+function buildMultiYearData() {
+  const years=[...new Set(state.rows.map(r=>r.year))].sort((a,b)=>b-a);
+  const gameMap=new Map();
+  for (const r of state.results) {
+    const key=r.match?.id||`_u_${norm(r.item)}`;
+    if (!gameMap.has(key)) gameMap.set(key,{
+      id:r.match?.id||null, name:r.match?.name||r.item,
+      thumb:r.match?.thumb||'', ranks:new Map(),
+    });
+    const g=gameMap.get(key);
+    const ex=g.ranks.get(r.year);
+    if (!ex||r.rank<ex) g.ranks.set(r.year,r.rank);
+  }
+  const games=[...gameMap.values()].map(g=>{
+    const rl=[...g.ranks.values()];
+    const avg=rl.length?rl.reduce((a,b)=>a+b,0)/rl.length:0;
+    const diff=rl.length>1?Math.max(...rl)-Math.min(...rl):0;
+    return {...g,avg,diff};
+  }).sort((a,b)=>a.avg-b.avg);
+  return {games,years};
+}
+
+function rankClass(r) {
+  if (!r) return ''; if (r<=5) return 'rk-1'; if (r<=15) return 'rk-2'; if (r<=25) return 'rk-3'; return 'rk-4';
+}
+
+function renderMultiYear() {
+  const {games, years} = buildMultiYearData();
+
+  // Apply modal sort
+  const sc  = qs('mytSortCol').value;
+  const dir = qs('mytSortDir').value === 'asc' ? 1 : -1;
+  const sorted = games.slice().sort((a, b) => {
+    const av = sc==='name' ? a.name.toLowerCase() : sc==='spread' ? a.diff : a.avg;
+    const bv = sc==='name' ? b.name.toLowerCase() : sc==='spread' ? b.diff : b.avg;
+    return av < bv ? -dir : av > bv ? dir : 0;
+  });
+
+  const hdrCols = years.map(y=>`<th class="px-3 py-2 text-center font-semibold whitespace-nowrap">${y}</th>`).join('');
+  const tbody = sorted.map(g => {
+    const rankCols = years.map(y => {
+      const r = g.ranks.get(y);
+      return `<td class="px-3 py-2 text-center mono text-sm ${rankClass(r)}">${r||''}</td>`;
+    }).join('');
+    return `<tr class="border-b border-slate-800/50 hover:bg-slate-800/30 transition-colors">
+      <td class="px-2 py-1.5"><img class="thumb-xs" src="${g.thumb||PLACEHOLDER}" loading="lazy" onerror="this.src='${PLACEHOLDER}'"></td>
+      <td class="px-3 py-2 text-sm font-medium max-w-[200px] truncate" title="${escH(g.name)}">${escH(g.name)}</td>
+      ${rankCols}
+      <td class="px-3 py-2 text-center mono text-sm text-slate-300">${g.avg.toFixed(1)}</td>
+      <td class="px-3 py-2 text-center mono text-sm text-slate-400">${g.diff}</td>
+    </tr>`;
+  }).join('');
+
+  qs('multiyearTable').innerHTML = `<table class="w-full text-sm border-collapse">
+    <thead><tr class="text-left text-[11px] text-slate-400 border-b border-slate-700 sticky top-0 bg-slate-900/95">
+      <th class="px-2 py-2"></th>
+      <th class="px-3 py-2">Item</th>
+      ${hdrCols}
+      <th class="px-3 py-2 text-center">Average</th>
+      <th class="px-3 py-2 text-center">Spread</th>
+    </tr></thead>
+    <tbody>${tbody}</tbody>
+  </table>`;
+
+  qs('multiyearModal').classList.remove('hidden');
+}
+
+function closeMultiyearModal() {
+  qs('multiyearModal').classList.add('hidden');
+}
+
+// ═══════════════════════════════════════════════════════════ EXPORT / SHARE
+function buildCSV() {
+  const esc=s=>`"${String(s||'').replace(/"/g,'""')}"`;
+  const hdr='year,rank,name,match_confidence,match_percent,match_id,match_name';
+  const rows=state.results.map(r=>{
+    const conf=r.match?(r.conf>=.85?'High':r.conf>=.65?'Medium':'Low'):'None';
+    return [r.year,r.rank,esc(r.item),conf,(r.conf*100).toFixed(1)+'%',r.match?.id||'',esc(r.match?.name||'')].join(',');
+  });
+  return [hdr,...rows].join('\n');
+}
+
+function buildShareableHTML() {
+  const {games,years}=buildMultiYearData();
+  const hdrCols=years.map(y=>`<th>${y}</th>`).join('');
+  const rkStyle=r=>!r?'':r<=5?'color:#6ee7b7;font-weight:700':r<=15?'color:#67e8f9':r<=25?'color:#fde047':'color:#fca5a5';
+  const tbody=games.map(g=>`<tr>
+    <td><img src="${g.thumb}" style="width:40px;height:40px;object-fit:cover;border-radius:6px" onerror="this.style.display='none'" loading="lazy"></td>
+    <td style="text-align:left;padding:6px 12px;font-weight:500">${escH(g.name)}</td>
+    ${years.map(y=>{const r=g.ranks.get(y);return `<td style="${rkStyle(r)}">${r||''}</td>`;}).join('')}
+    <td>${g.avg.toFixed(1)}</td>
+    <td style="color:#94a3b8">${g.diff}</td>
+  </tr>`).join('');
+  return `<!DOCTYPE html><html lang="en"><head><meta charset="UTF-8">
+<title>BGG Multi-Year Rankings</title>
+<style>
+body{background:#020617;color:#f1f5f9;font-family:system-ui,sans-serif;padding:2rem;max-width:900px;margin:0 auto}
+h1{font-weight:900;font-size:1.5rem;margin-bottom:1.5rem}
+table{border-collapse:collapse;width:100%}
+th,td{padding:7px 14px;text-align:center;border-bottom:1px solid rgba(148,163,184,.12);font-size:13px}
+th{font-size:11px;text-transform:uppercase;letter-spacing:.04em;color:#94a3b8;background:rgba(2,6,23,.6)}
+tr:hover{background:rgba(148,163,184,.05)}
+</style></head><body>
+<h1>BGG Rankings Comparison — generated ${new Date().toLocaleDateString()}</h1>
+<table><thead><tr><th></th><th style="text-align:left">Item</th>${hdrCols}<th>Average</th><th>Spread</th></tr></thead>
+<tbody>${tbody}</tbody></table></body></html>`;
+}
+
+function encodeShareState() {
+  const d=state.results.map(r=>({
+    y:r.year,rk:r.rank,n:r.item,
+    mi:r.match?.id,mn:r.match?.name,mt:r.match?.thumb,my:r.match?.year,
+    c:Math.round((r.conf||0)*100),s:r.source,
+  }));
+  return btoa(unescape(encodeURIComponent(JSON.stringify(d))));
+}
+function decodeShareState(enc) {
+  const d=JSON.parse(decodeURIComponent(escape(atob(enc))));
+  return d.map(r=>({
+    year:r.y,rank:r.rk,item:r.n,
+    match:r.mi?{id:r.mi,name:r.mn,thumb:r.mt,year:r.my}:null,
+    conf:r.c/100,source:r.s,candidates:[],locked:false,
+  }));
+}
+
+// ═══════════════════════════════════════════════════════════ EVENT WIRING
+qs('parseBtn').addEventListener('click',parseAndRender);
+qs('matchBtn').addEventListener('click',runMatch);
+qs('loadCollBtn').addEventListener('click',()=>{const u=qs('collUser').value.trim();if(u)loadCollection(u);});
+qs('fileInput').addEventListener('change',async e=>{
+  const f=e.target.files?.[0]; if(!f) return;
+  qs('rawInput').value=await f.text(); parseAndRender();
+});
+qs('batchSize').addEventListener('input',()=>{ qs('batchSizeVal').textContent=qs('batchSize').value; });
+
+// Multi-year modal
+qs('genTableBtn').addEventListener('click', renderMultiYear);
+qs('closeMultiyear').addEventListener('click', closeMultiyearModal);
+qs('multiyearModal').addEventListener('click', e=>{ if(e.target===qs('multiyearModal')) closeMultiyearModal(); });
+qs('mytSortCol').addEventListener('change', ()=>{ if(!qs('multiyearModal').classList.contains('hidden')) renderMultiYear(); });
+qs('mytSortDir').addEventListener('change', ()=>{ if(!qs('multiyearModal').classList.contains('hidden')) renderMultiYear(); });
+
+// Filter / sort controls
+const onFilter = () => renderResults();
+qs('filterText').addEventListener('input',   ()=>{ state.filter.text   = qs('filterText').value;   onFilter(); });
+qs('filterYear').addEventListener('change',  ()=>{ state.filter.year   = qs('filterYear').value;   onFilter(); });
+qs('filterSource').addEventListener('change',()=>{ state.filter.source = qs('filterSource').value; onFilter(); });
+qs('filterConf').addEventListener('change',  ()=>{ state.filter.conf   = qs('filterConf').value;   onFilter(); });
+qs('clearFilters').addEventListener('click', ()=>{
+  state.filter = { text:'', source:'all', conf:'all', year:'all' };
+  qs('filterText').value=''; qs('filterYear').value='all';
+  qs('filterSource').value='all'; qs('filterConf').value='all';
+  onFilter();
+});
+
+qs('copyCSV').addEventListener('click',async()=>{
+  if(!state.results.length){msg('status','No results yet.');return;}
+  try{await navigator.clipboard.writeText(buildCSV());msg('status','CSV copied.');}
+  catch{msg('status','Clipboard denied — use Download.');}
+});
+qs('dlCSV').addEventListener('click',()=>{
+  if(!state.results.length){msg('status','No results yet.');return;}
+  const a=Object.assign(document.createElement('a'),{
+    href:URL.createObjectURL(new Blob([buildCSV()],{type:'text/csv'})),
+    download:`bgg-matches${state.collectionUser?'-'+state.collectionUser:''}.csv`,
+  }); a.click(); URL.revokeObjectURL(a.href);
+});
+
+qs('copyTableBtn').addEventListener('click',async()=>{
+  try{await navigator.clipboard.writeText(buildShareableHTML());msg('status','Table HTML copied.');}
+  catch{msg('status','Clipboard denied.');}
+});
+qs('dlTableBtn').addEventListener('click',()=>{
+  const a=Object.assign(document.createElement('a'),{
+    href:URL.createObjectURL(new Blob([buildShareableHTML()],{type:'text/html'})),
+    download:`bgg-rankings-${new Date().toISOString().slice(0,10)}.html`,
+  }); a.click(); URL.revokeObjectURL(a.href);
+  msg('status','Rankings HTML downloaded.');
+});
+qs('shareLinkBtn').addEventListener('click',async()=>{
+  if(!state.results.length){msg('status','No results to share yet.');return;}
+  const enc=encodeShareState();
+  const url=`${location.origin}${location.pathname}#s=${enc}`;
+  try{await navigator.clipboard.writeText(url);msg('status','Share link copied to clipboard!');}
+  catch{prompt('Copy this share link:',url);}
+});
+
+// modal wiring
+qs('closeModal').addEventListener('click',closeEditModal);
+qs('editModal').addEventListener('click',e=>{if(e.target===qs('editModal'))closeEditModal();});
+qs('modalSearchBtn').addEventListener('click',runModalSearch);
+qs('modalSearch').addEventListener('keydown',e=>{if(e.key==='Enter')runModalSearch();});
+qs('modalClearBtn').addEventListener('click',()=>{
+  const row=state.results[state.editIdx]; if(!row||row.locked) return;
+  row.match=null; row.conf=0; row.source='none';
+  renderResults(); updateSummary(); drawCharts(); closeEditModal();
+});
+qs('modalLockBtn').addEventListener('click',()=>{
+  const row=state.results[state.editIdx]; if(!row) return;
+  row.locked=!row.locked;
+  qs('modalLockBtn').textContent=row.locked?'Unlock Match':'Lock This Match ✓';
+  renderResults();
+});
+
+// ═══════════════════════════════════════════════════════════ INIT (share link restore)
+(function init() {
+  if (location.hash.startsWith('#s=')) {
+    try {
+      state.results=decodeShareState(location.hash.slice(3));
+      state.rows=state.results.map(r=>({year:r.year,rank:r.rank,item:r.item}));
+      msg('parseMsg',`✓ ${state.rows.length} rows restored from share link.`);
+      renderResults(); updateSummary(); drawCharts();
+      renderMultiYear();
+      return;
+    } catch(e) { console.warn('Share link decode failed:',e); }
+  }
+  parseAndRender();
+})();
+</script>
+</body>
+</html>

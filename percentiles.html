@@ -1,0 +1,453 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <meta name="viewport" content="width=device-width,initial-scale=1,viewport-fit=cover" />
+  <title>BGG Percentiles</title>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="stylesheet" href="https://cdnjs.cloudflare.com/ajax/libs/font-awesome/6.4.0/css/all.min.css">
+  <script>
+    tailwind.config = {
+      theme: {
+        extend: {
+          fontFamily: { sans: ['Inter', 'system-ui', 'sans-serif'] },
+          fontSize: { '2xs': ['10px', '12px'] }
+        }
+      }
+    }
+  </script>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800;900&display=swap" rel="stylesheet">
+  <style>
+    /* ── Percentile color scale ── */
+    .pc-95{background:#14532d;color:#fff}.pc-85{background:#166534;color:#fff}
+    .pc-75{background:#15803d;color:#fff}.pc-65{background:#16a34a;color:#fff}
+    .pc-55{background:#22c55e;color:#052e16}.pc-45{background:#86efac;color:#052e16}
+    .pc-35{background:#fef08a;color:#713f12}.pc-25{background:#fde047;color:#713f12}
+    .pc-15{background:#fb923c;color:#fff}.pc-5{background:#ef4444;color:#fff}
+    .pc-na{background:#e2e8f0;color:#64748b}
+
+    /* ── Compact table ── */
+    #dtable{border-collapse:separate;border-spacing:0;width:100%;font-size:13px}
+    #dtable th{position:sticky;top:0;z-index:10;background:#f8fafc;border-bottom:2px solid #e2e8f0;
+      padding:4px 6px;font-size:11px;font-weight:800;text-transform:uppercase;letter-spacing:.04em;
+      color:#64748b;white-space:nowrap;text-align:center;user-select:none}
+    #dtable th.col-game{text-align:left;min-width:120px}
+    #dtable td{padding:3px 5px;border-bottom:1px solid #f1f5f9;white-space:nowrap;text-align:center;vertical-align:middle}
+    #dtable tbody tr:hover{background:#f8fafc}
+    #dtable .frozen{position:sticky;background:#fff;z-index:5}
+    #dtable .frozen-idx{left:0;width:28px;text-align:center;font-size:9px;color:#94a3b8;font-weight:700}
+    #dtable .frozen-img{left:0;width:26px;border-right:1px solid #e2e8f0}
+    #dtable .frozen-name{text-align:left;max-width:130px;overflow:hidden;text-overflow:ellipsis}
+    #dtable .frozen-name a:hover{color:#4f46e5;text-decoration:underline}
+    #dtable th.frozen-idx{left:0;z-index:15}
+    #dtable th.frozen-img{left:0;z-index:15;border-right:1px solid #e2e8f0}
+    #dtable th.frozen-name{text-align:left}
+    #dtable .col-comb{background:#fff1f2;font-weight:800;border-left:2px solid #fda4af;border-right:2px solid #fda4af}
+    #dtable th.col-comb{background:#ffe4e6;color:#be123c;border-left:2px solid #fda4af;border-right:2px solid #fda4af}
+
+    .pbadge{display:inline-block;font-size:9px;font-weight:800;padding:1px 3px;border-radius:3px;
+      min-width:24px;text-align:center;line-height:1.1;vertical-align:middle}
+    .val{font-weight:700;font-size:12px;margin-right:2px;vertical-align:middle}
+    .dim{opacity:.35}
+
+    /* ── Scroll wrapper ── */
+    .scroll-wrap{max-height:calc(100vh - 100px);overflow:auto;border:1px solid #e2e8f0;border-radius:6px;background:#fff; -webkit-overflow-scrolling: touch;}
+
+    /* ── Loader ── */
+    .spin{animation:sp .6s linear infinite}
+    @keyframes sp{to{transform:rotate(360deg)}}
+  </style>
+</head>
+<body class="bg-slate-50 font-sans text-slate-900">
+
+<!-- ════ HEADER ════ -->
+<header class="sticky top-0 z-40 bg-white/95 backdrop-blur border-b border-slate-200 px-2 py-1.5 flex items-center gap-2">
+  <div class="flex items-center gap-1">
+    <div class="w-5 h-5 rounded bg-indigo-600 flex items-center justify-center">
+      <i class="fa-solid fa-chart-simple text-white text-[8px]"></i>
+    </div>
+    <span class="text-[10px] font-black tracking-tight text-slate-800">PERCENTILES</span>
+  </div>
+  <div class="flex items-center gap-1 ml-auto bg-slate-100 rounded px-1 py-0.5 border border-slate-200">
+    <input id="username" type="text" value="sportomax" class="bg-transparent text-[10px] font-semibold outline-none w-16 px-0.5">
+    <button onclick="fetchFullData()" class="bg-indigo-600 hover:bg-indigo-700 text-white text-[10px] font-black px-2 py-0.5 rounded transition-colors">GO</button>
+  </div>
+  <div class="flex items-center gap-1 bg-slate-100 rounded px-1 py-0.5 border border-slate-200">
+    <input type="file" id="csvFile" accept=".csv" onchange="loadCsv(this)" class="hidden">
+    <button onclick="document.getElementById('csvFile').click()" class="text-[10px] font-black text-slate-500 hover:text-indigo-600">Upload CSV</button>
+    <span id="csvLabel" class="hidden text-[8px] font-bold text-emerald-600"></span>
+  </div>
+  <div class="flex items-center gap-1 bg-slate-100 rounded px-1 py-0.5 border border-slate-200">
+    <button onclick="downloadCsv()" class="text-[10px] font-black text-slate-500 hover:text-indigo-600">Download</button>
+    <button onclick="copyData()" class="text-[10px] font-black text-slate-500 hover:text-indigo-600">Copy</button>
+  </div>
+</header>
+
+<!-- ════ LOADING ════ -->
+<div id="loadingSection" class="hidden fixed inset-0 z-50 bg-white/80 backdrop-blur flex items-center justify-center">
+  <div class="flex items-center gap-2 bg-white border rounded-lg px-4 py-2 shadow-lg">
+    <i class="fa-solid fa-circle-notch spin text-indigo-600 text-sm"></i>
+    <span id="loadingStatus" class="text-xs font-bold text-slate-600">Loading...</span>
+  </div>
+</div>
+
+<!-- ════ RESULTS ════ -->
+<div id="resultsSection" class="hidden">
+
+  <!-- Config bar -->
+  <div class="sticky top-[33px] z-30 bg-slate-50 border-b border-slate-200 px-3 py-1 flex flex-wrap items-center gap-x-3 gap-y-1">
+    <label class="flex items-center gap-1 cursor-pointer select-none">
+      <input id="showExpansions" type="checkbox" onchange="renderDisplay()" class="w-3 h-3 accent-indigo-600">
+      <span class="text-[10px] font-bold text-slate-500">Expansions</span>
+    </label>
+    <div class="flex items-center gap-1 border-l border-slate-300 pl-2 ml-auto">
+      <span class="text-[8px] font-bold text-slate-400">MOD%</span>
+      <input id="globalModifier" type="number" value="100" oninput="renderDisplay()" class="w-9 text-center border rounded text-[9px] font-bold px-0.5 py-0">
+    </div>
+    <input id="tableSearch" type="text" placeholder="Search..." oninput="renderDisplay()" class="border rounded text-[10px] px-2 py-0.5 w-28 lg:w-44 outline-none focus:border-indigo-400">
+    <span id="countBadge" class="text-[9px] font-bold text-slate-400"></span>
+  </div>
+
+  <!-- Desktop table -->
+  <div class="px-2 pt-1 pb-2">
+    <div class="scroll-wrap">
+      <table id="dtable">
+        <thead id="tableHead"></thead>
+        <tbody id="tableBody"></tbody>
+      </table>
+    </div>
+  </div>
+
+</div>
+
+<script>
+  const API_BASE = '/api/bgg-helper';
+  const BATCH_SIZE = 20;
+  const PARALLEL_LIMIT = 100;
+  let allGames = [];
+  let percentileData = {};
+  let sortCol = 'combined', sortAsc = false;
+  let csvDataMap = {}; // objectid -> {invdate, pricepaid, collid}
+
+  const metricConfig = [
+    { id: 'year',        label: 'Year',   order: 'desc', active: true },
+    { id: 'time',        label: 'Time',   order: 'asc',  active: true },
+    { id: 'age',         label: 'Age',    order: 'asc',  active: true },
+    { id: 'usersrated',  label: 'Rated',  order: 'desc', active: true },
+    { id: 'average',     label: 'Avg',    order: 'desc', active: true, ignoreNull: true },
+    { id: 'bayesaverage',label: 'Bayes',  order: 'desc', active: true, ignoreNull: true },
+    { id: 'rating',      label: 'Rating', order: 'desc', active: true, ignoreNull: true },
+    { id: 'rank',        label: 'Rank',   order: 'asc',  active: true, ignoreNull: true },
+    { id: 'stddev',      label: 'StdDev', order: 'asc',  active: true },
+    { id: 'owned',       label: 'Owned',  order: 'desc', active: true },
+    { id: 'trading',     label: 'Trade',  order: 'desc', active: true },
+    { id: 'wanting',     label: 'Want',   order: 'desc', active: true },
+    { id: 'wishing',     label: 'Wish',   order: 'desc', active: true },
+    { id: 'weight',      label: 'Weight',  order: 'asc',  active: true, ignoreNull: true },
+    { id: 'invdate',   label: 'Inv Date', order: 'desc', active: false, source: 'csv' },
+    { id: 'pricepaid', label: 'Price',    order: 'asc',  active: false, source: 'csv' },
+    { id: 'collid',    label: 'Coll ID',  order: 'desc', active: false, source: 'csv' }
+  ];
+
+  /* ── percentile color class ── */
+  function pc(p){
+    if(p==null)return'pc-na';
+    if(p>=95)return'pc-95';if(p>=85)return'pc-85';if(p>=75)return'pc-75';
+    if(p>=65)return'pc-65';if(p>=55)return'pc-55';if(p>=45)return'pc-45';
+    if(p>=35)return'pc-35';if(p>=25)return'pc-25';if(p>=15)return'pc-15';
+    return'pc-5';
+  }
+
+  /* ── format value ── */
+  function fv(v, id){
+    if(v==null||v===undefined)return'—';
+    if(id === 'year' || id === 'collid') return v.toString();
+    if(id === 'pricepaid') return '$' + (typeof v === 'number' ? v.toFixed(2) : v);
+    if(typeof v!=='number')return v;
+    return Number.isInteger(v)?v.toLocaleString():v.toLocaleString(undefined,{maximumFractionDigits:1});
+  }
+
+  /* ── init config toggles (Removed redundant settings list) ── */
+  function initSettings(){} 
+  function toggleMetric(id,on){const m=metricConfig.find(x=>x.id===id);if(m)m.active=on;buildHeader();renderDisplay()}
+
+  /* ── build table header (called once after data) ── */
+  function buildHeader(){
+    const h=document.getElementById('tableHead');
+    // Row 1: Toggles
+    let r1 = `<tr class="bg-slate-50">
+      <th class="frozen frozen-img"></th>
+      <th class="frozen-name col-game"></th>
+      <th class="col-comb"></th>`;
+    metricConfig.forEach(m => {
+      r1 += `<th class="py-1"><input type="checkbox" ${m.active?'checked':''} onchange="toggleMetric('${m.id}',this.checked)" class="w-2.5 h-2.5 accent-indigo-600"></th>`;
+    });
+    r1 += `</tr>`;
+    
+    // Row 2: Labels
+    let r2 = `<tr>
+      <th class="frozen frozen-img"></th>
+      <th class="frozen-name col-game cursor-pointer" onclick="setSort('name')">Game</th>
+      <th class="col-comb cursor-pointer" onclick="setSort('combined')">Comb</th>`;
+    metricConfig.forEach(m => {
+      r2 += `<th class="cursor-pointer" onclick="setSort('${m.id}')">${m.label}</th>`;
+    });
+    r2 += `</tr>`;
+    
+    h.innerHTML = r1 + r2;
+  }
+  function setSort(col){if(sortCol===col)sortAsc=!sortAsc;else{sortCol=col;sortAsc=false}renderDisplay()}
+
+  /* ── RENDER ── */
+  function renderDisplay(){
+    const search=document.getElementById('tableSearch').value.toLowerCase();
+    const showExp = document.getElementById('showExpansions').checked;
+    const mod=parseFloat(document.getElementById('globalModifier').value)/100||1;
+    const activeIds=metricConfig.filter(m=>m.active).map(m=>m.id);
+
+    // compute combined for every game
+    const enriched=allGames.map(g=>{
+      let s=0,c=0;
+      activeIds.forEach(id=>{const p=percentileData[id]?.[g.id];if(p!=null){s+=p;c++}});
+      return{...g,combined:c>0?(s/c)*mod:null};
+    });
+
+    // filter
+    let filtered=enriched.filter(g => {
+      const matchSearch = g.name.toLowerCase().includes(search);
+      const matchExp = showExp || !g.isExpansion;
+      return matchSearch && matchExp;
+    });
+
+    // sort
+    filtered.sort((a,b)=>{
+      if(sortCol==='idx') return 0;
+      if(sortCol==='name'){
+        const va=a.name.toLowerCase(), vb=b.name.toLowerCase();
+        return sortAsc ? (va<vb?-1:1) : (vb<va?-1:1);
+      }
+      let va=sortCol==='combined'?a.combined:(percentileData[sortCol]?.[a.id]??null);
+      let vb=sortCol==='combined'?b.combined:(percentileData[sortCol]?.[b.id]??null);
+      if(va==null&&vb==null)return 0;if(va==null)return 1;if(vb==null)return -1;
+      return sortAsc?va-vb:vb-va;
+    });
+
+    document.getElementById('countBadge').textContent=filtered.length+'/'+allGames.length;
+
+    // ── Desktop table body ──
+    const tb=document.getElementById('tableBody');
+    const rows=filtered.map((g, i)=>{
+      const comb=g.combined;
+      const combP=comb!=null?Math.round(comb):null;
+      const bggLink = `https://boardgamegeek.com/boardgame/${g.id}`;
+      let r=`<tr>`;
+      r+=`<td class="frozen frozen-img"><div class="flex items-center gap-1"><span class="text-[8px] font-bold text-slate-400 w-3">${i+1}</span><a href="${bggLink}" target="_blank"><img src="${g.thumb}" width="16" height="16" class="rounded" loading="lazy"></a></div></td>`;
+      r+=`<td class="frozen-name" title="${g.name}"><a href="${bggLink}" target="_blank" class="text-slate-900 no-underline">${g.name}</a></td>`;
+      r+=`<td class="col-comb">${comb!=null?comb.toFixed(1):'—'} <span class="pbadge ${pc(combP)}">${combP!=null?combP+'%':'—'}</span></td>`;
+      metricConfig.forEach(f=>{
+        const v=g[f.id], p=percentileData[f.id]?.[g.id]??null;
+        const cls=f.active?'':'dim';
+        r+=`<td class="${cls}"><span class="val">${fv(v, f.id)}</span><span class="pbadge ${pc(p!=null?Math.round(p):null)}">${p!=null?Math.round(p)+'%':'—'}</span></td>`;
+      });
+      r+=`</tr>`;
+      return r;
+    });
+    tb.innerHTML=rows.join('');
+  }
+
+  /* ── DATA FETCH ── */
+  async function fetchFullData(){
+    const username=document.getElementById('username').value.trim();
+    if(!username)return;
+    document.getElementById('loadingSection').classList.remove('hidden');
+    document.getElementById('resultsSection').classList.add('hidden');
+    try{
+      const collXml=await fetchWithRetry(`${API_BASE}?endpoint=collection&username=${encodeURIComponent(username)}&stats=1&own=1&version=2`);
+      const collDoc=new DOMParser().parseFromString(collXml,'text/xml');
+      const items=Array.from(collDoc.querySelectorAll('item'));
+      const ids=items.map(it=>it.getAttribute('objectid'));
+      if(!ids.length)throw new Error('No games found.');
+
+      const userRatings={};
+      items.forEach(it=>{
+        const oid=it.getAttribute('objectid');
+        const r=it.querySelector('stats rating')?.getAttribute('value');
+        if(oid && r && r!=='N/A') userRatings[oid]=parseFloat(r);
+      });
+
+      const batches=[];
+      for(let i=0;i<ids.length;i+=BATCH_SIZE)batches.push(ids.slice(i,i+BATCH_SIZE));
+
+      function parseThingXml(xml){
+        const doc=new DOMParser().parseFromString(xml,'text/xml');
+        return Array.from(doc.querySelectorAll('item')).map(item=>{
+          const s=item.querySelector('statistics ratings');
+          const rN=s?.querySelector('rank[type="subtype"]');
+          const rV=rN?rN.getAttribute('value'):null;
+          return{
+            id:item.getAttribute('id'),
+            isExpansion: item.getAttribute('type') === 'boardgameexpansion',
+            name:item.querySelector('name[type="primary"]')?.getAttribute('value')||item.querySelector('name')?.textContent,
+            thumb:item.querySelector('thumbnail')?.textContent||'',
+            year:parseInt(item.querySelector('yearpublished')?.getAttribute('value')||'0'),
+            time:parseInt(item.querySelector('playingtime')?.getAttribute('value')||'0'),
+            age:parseInt(item.querySelector('minage')?.getAttribute('value')||'0'),
+            usersrated:parseInt(s?.querySelector('usersrated')?.getAttribute('value')||'0'),
+            average:parseFloat(s?.querySelector('average')?.getAttribute('value')||'0'),
+            bayesaverage:parseFloat(s?.querySelector('bayesaverage')?.getAttribute('value')||'0'),
+            rank:(rV&&rV!=='Not Ranked')?parseInt(rV):null,
+            stddev:parseFloat(s?.querySelector('stddev')?.getAttribute('value')||'0'),
+            owned:parseInt(s?.querySelector('owned')?.getAttribute('value')||'0'),
+            trading:parseInt(s?.querySelector('trading')?.getAttribute('value')||'0'),
+            wanting:parseInt(s?.querySelector('wanting')?.getAttribute('value')||'0'),
+            wishing:parseInt(s?.querySelector('wishing')?.getAttribute('value')||'0'),
+            weight:parseFloat(s?.querySelector('averageweight')?.getAttribute('value')||'0')
+          };
+        });
+      }
+
+      const results=[];
+      for(let c=0;c<batches.length;c+=PARALLEL_LIMIT){
+        const chunk=batches.slice(c,c+PARALLEL_LIMIT);
+        const xmls=await Promise.all(chunk.map(b=>fetchWithRetry(`${API_BASE}?endpoint=thing&id=${encodeURIComponent(b.join(','))}&stats=1`)));
+        xmls.forEach(xml=>results.push(...parseThingXml(xml)));
+        document.getElementById('loadingStatus').textContent=`${results.length} / ${ids.length} games`;
+      }
+
+      allGames=results;
+      allGames.forEach(g=>{if(userRatings[g.id]) g.rating=userRatings[g.id]});
+      if(Object.keys(csvDataMap).length){
+        allGames.forEach(g=>{const c=csvDataMap[g.id];if(c){g.invdate=c.invdate;g.pricepaid=c.pricepaid;g.collid=c.collid}});
+      }
+      calculatePercentiles();
+      buildHeader();
+      document.getElementById('loadingSection').classList.add('hidden');
+      document.getElementById('resultsSection').classList.remove('hidden');
+      renderDisplay();
+    }catch(err){alert(err.message);document.getElementById('loadingSection').classList.add('hidden')}
+  }
+
+  function downloadCsv(){
+    const data = getExportData();
+    const csvContent = data.map(e => e.join(",")).join("\n");
+    const blob = new Blob([csvContent], { type: 'text/csv;charset=utf-8;' });
+    const link = document.createElement("a");
+    const url = URL.createObjectURL(blob);
+    link.setAttribute("href", url);
+    link.setAttribute("download", `bgg_percentiles_${document.getElementById('username').value}.csv`);
+    document.body.appendChild(link);
+    link.click();
+    document.body.removeChild(link);
+  }
+
+  function copyData(){
+    const data = getExportData();
+    const text = data.map(e => e.join("\t")).join("\n");
+    navigator.clipboard.writeText(text).then(() => alert("Data copied to clipboard (Tab-separated)"));
+  }
+
+  function getExportData(){
+    const search=document.getElementById('tableSearch').value.toLowerCase();
+    const showExp = document.getElementById('showExpansions').checked;
+    const activeMetrics = metricConfig.filter(m => m.active);
+    
+    let filtered = allGames.filter(g => {
+      const matchSearch = g.name.toLowerCase().includes(search);
+      const matchExp = showExp || !g.isExpansion;
+      return matchSearch && matchExp;
+    });
+
+    const headers = ["ID", "Name", "Combined Percentile", ...activeMetrics.map(m => m.label)];
+    const rows = filtered.map(g => {
+      const activeIds = activeMetrics.map(m => m.id);
+      let s=0,c=0;
+      activeIds.forEach(id=>{const p=percentileData[id]?.[g.id];if(p!=null){s+=p;c++}});
+      const comb = c>0 ? (s/c) : null;
+      
+      return [
+        g.id,
+        `"${g.name.replace(/"/g, '""')}"`,
+        comb ? comb.toFixed(2) : "",
+        ...activeMetrics.map(m => g[m.id] || "")
+      ];
+    });
+    return [headers, ...rows];
+  }
+
+  function calculatePercentiles(){
+    percentileData={};
+    metricConfig.forEach(f=>{
+      let valid=allGames.map(g=>{
+        let val=g[f.id];
+        if(f.id==='invdate'&&val) val=new Date(val).getTime();
+        return {id:g.id,val};
+      });
+      if(f.ignoreNull||f.id==='rank'||f.source==='csv') valid=valid.filter(g=>g.val!=null&&g.val!==0&&!Number.isNaN(g.val));
+      valid.sort((a,b)=>f.order==='asc'?a.val-b.val:b.val-a.val);
+      const N=valid.length,ranks={};
+      valid.forEach((g,i)=>ranks[g.id]=N>1?(1-(i/(N-1)))*100:100);
+      percentileData[f.id]=ranks;
+    });
+  }
+
+  async function fetchWithRetry(url,r=5){
+    for(let i=0;i<r;i++){
+      try{
+        const res=await fetch(url);
+        if(res.status===202){await new Promise(ok=>setTimeout(ok,2000));continue}
+        if(res.ok)return await res.text();
+        await new Promise(ok=>setTimeout(ok,1000));
+      }catch(e){await new Promise(ok=>setTimeout(ok,1000))}
+    }
+    throw new Error('Request failed after retries');
+  }
+
+  function parseCsvRow(line){
+    const r=[];let cur='',inQ=false;
+    for(const ch of line){
+      if(ch==='"'){inQ=!inQ}
+      else if(ch===','&&!inQ){r.push(cur.trim());cur=''}
+      else cur+=ch;
+    }r.push(cur.trim());return r;
+  }
+
+  function loadCsv(input){
+    const file=input.files[0];if(!file)return;
+    const reader=new FileReader();
+    reader.onload=e=>{
+      const lines=e.target.result.replace(/\r/g,'').split('\n').filter(l=>l.trim());
+      if(lines.length<2)return;
+      const hdrs=parseCsvRow(lines[0]).map(h=>h.replace(/^"|"$/g,'').toLowerCase());
+      const ci=n=>hdrs.indexOf(n);
+      const iid=ci('objectid'),iinvdate=ci('invdate'),iprice=ci('pricepaid'),icoll=ci('collid');
+      if(iid<0){alert('CSV must have an OBJECTID column');return;}
+      csvDataMap={};
+      for(let i=1;i<lines.length;i++){
+        const row=parseCsvRow(lines[i]);
+        const oid=row[iid]?.replace(/^"|"$/g,'');
+        if(!oid)continue;
+        csvDataMap[oid]={
+          invdate   :iinvdate>=0?(row[iinvdate]?.replace(/^"|"$/g,'')||null):null,
+          pricepaid :iprice>=0?(parseFloat(row[iprice])||null):null,
+          collid    :icoll>=0?(parseInt(row[icoll])||null):null
+        };
+      }
+      const n=Object.keys(csvDataMap).length;
+      const lbl=document.getElementById('csvLabel');
+      lbl.textContent=n+' rows';
+      lbl.classList.remove('hidden');
+      metricConfig.filter(m=>m.source==='csv').forEach(m=>m.active=true);
+      if(allGames.length){
+        allGames.forEach(g=>{const c=csvDataMap[g.id];if(c){g.invdate=c.invdate;g.pricepaid=c.pricepaid;g.collid=c.collid}});
+        calculatePercentiles();
+        buildHeader();
+        renderDisplay();
+      }
+    };
+    reader.readAsText(file);
+  }
+
+  initSettings();
+</script>
+</body>
+</html>
