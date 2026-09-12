@@ -1,0 +1,299 @@
+<script>
+(() => {
+  if (window.__GEEKMAIL_CLOUD_PATCH__) return;
+  window.__GEEKMAIL_CLOUD_PATCH__ = true;
+
+  const API = '/api/geekmail';
+  let password = localStorage.getItem('app_password_hint') || '';
+  let unlocked = false;
+  let busy = false;
+  let loadingFromCloud = false;
+  let lastImportedRows = [];
+
+  const css = `
+    .gm-lock{position:fixed;inset:0;z-index:9999;display:flex;align-items:center;justify-content:center;padding:24px;background:#070b14}
+    .gm-lock.hidden{display:none}.gm-lock-card{width:min(420px,100%);border:1px solid #2d3b59;border-radius:24px;overflow:hidden;background:#11192b;box-shadow:0 28px 80px rgba(0,0,0,.55)}
+    .gm-lock-hero{padding:28px;text-align:center;background:linear-gradient(135deg,#315fca,#7558da)}
+    .gm-lock-icon{width:70px;height:70px;margin:0 auto 14px;border-radius:18px;display:grid;place-items:center;font-size:32px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25)}
+    .gm-lock-hero h2{margin:0;font-size:22px}.gm-lock-hero p{margin:5px 0 0;color:#dce6ff;font-size:12px}
+    .gm-lock-body{padding:22px}.gm-lock-body label{display:block;color:#9fb0cc;font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:0 0 6px}
+    .gm-lock-body input{width:100%;background:#0d1424;color:#edf2ff;border:1px solid #28344f;border-radius:10px;padding:13px 14px;font-size:16px;box-sizing:border-box}
+    .gm-lock-error{min-height:20px;color:#ff929f;font-size:12px;text-align:center;margin:9px 0 2px}
+    .gm-lock-btn{width:100%;margin-top:6px;padding:13px;border-radius:12px;border:1px solid #5d8df0;background:#315fca;color:#fff;font-weight:800;cursor:pointer}
+    .gm-cloud-pill{display:inline-flex;align-items:center;gap:5px;border:1px solid #28344f;background:#0f182a;border-radius:999px;padding:5px 8px;font-size:10px;color:#9fb0cc;white-space:nowrap}
+    .gm-cloud-pill.ok{border-color:#326a59;color:#aee5d3;background:#112920}.gm-cloud-pill.busy{border-color:#6b5c2d;color:#ffd58a;background:#2b2110}
+  `;
+  const style = document.createElement('style');
+  style.textContent = css;
+  document.head.appendChild(style);
+
+  const lock = document.createElement('div');
+  lock.className = 'gm-lock';
+  lock.innerHTML = `
+    <div class="gm-lock-card">
+      <div class="gm-lock-hero">
+        <div class="gm-lock-icon">✉️</div>
+        <h2>GeekMail Explorer</h2>
+        <p>Private Supabase-backed message archive</p>
+      </div>
+      <div class="gm-lock-body">
+        <label>Access Key</label>
+        <input id="gmCloudPassword" type="password" placeholder="••••••••" autocomplete="current-password">
+        <div id="gmCloudError" class="gm-lock-error"></div>
+        <button id="gmCloudUnlock" class="gm-lock-btn">Unlock GeekMail</button>
+      </div>
+    </div>`;
+  document.body.appendChild(lock);
+
+  const actions = document.querySelector('.actions');
+  const loadBtn = document.createElement('button');
+  loadBtn.className = 'btn';
+  loadBtn.textContent = '☁ Load DB';
+  loadBtn.title = 'Load messages from Supabase';
+
+  const saveBtn = document.createElement('button');
+  saveBtn.className = 'btn primary';
+  saveBtn.textContent = '☁ Save Last CSV';
+  saveBtn.title = 'Upsert the last uploaded CSV into Supabase';
+
+  const status = document.createElement('span');
+  status.className = 'gm-cloud-pill';
+  status.textContent = 'Cloud locked';
+
+  if (actions) {
+    const columns = actions.querySelector('#columnsBtn');
+    actions.insertBefore(loadBtn, columns || null);
+    actions.insertBefore(saveBtn, columns || null);
+    actions.insertBefore(status, columns || null);
+  }
+
+  const pwInput = lock.querySelector('#gmCloudPassword');
+  const unlockBtn = lock.querySelector('#gmCloudUnlock');
+  const errorEl = lock.querySelector('#gmCloudError');
+
+  function setStatus(text, state='') {
+    status.textContent = text;
+    status.classList.remove('ok','busy');
+    if (state) status.classList.add(state);
+  }
+
+  async function request(action, extra={}) {
+    const r = await fetch(API, {
+      method: 'POST',
+      headers: {'Content-Type':'application/json'},
+      body: JSON.stringify({action, password, ...extra})
+    });
+    let data = {};
+    try { data = await r.json(); } catch {}
+    if (!r.ok || !data.ok) throw new Error(data.error || `Cloud request failed (${r.status})`);
+    return data;
+  }
+
+  function csvCell(v='') {
+    return `"${String(v ?? '').replace(/"/g,'""')}"`;
+  }
+
+  const exportColumns = [
+    'folder','message_id','from_username','to_username','from_avatar_url','to_avatar_url',
+    'subject','message_date','body_text','body_html','game_ids','game_names','game_urls',
+    'game_artwork_urls','game_match_methods','game_search_terms'
+  ];
+
+  function rowsToCsv(rows) {
+    return [
+      exportColumns.join(','),
+      ...rows.map(r => exportColumns.map(c => csvCell(r[c] ?? '')).join(','))
+    ].join('\r\n');
+  }
+
+  function parseCSV(text) {
+    text = text.replace(/^\uFEFF/, '');
+    const out=[]; let row=[], field='', quoted=false;
+    for (let i=0;i<text.length;i++) {
+      const c=text[i], n=text[i+1];
+      if (quoted) {
+        if (c === '"' && n === '"') { field+='"'; i++; }
+        else if (c === '"') quoted=false;
+        else field+=c;
+      } else {
+        if (c === '"') quoted=true;
+        else if (c === ',') { row.push(field); field=''; }
+        else if (c === '\n') { row.push(field); out.push(row); row=[]; field=''; }
+        else if (c !== '\r') field+=c;
+      }
+    }
+    if (field.length || row.length) { row.push(field); out.push(row); }
+    if (!out.length) return [];
+    const headers=out[0].map(h=>h.trim());
+    return out.slice(1).filter(r=>r.some(x=>String(x).trim()!=='')).map(r=>{
+      const obj={}; headers.forEach((h,i)=>obj[h]=r[i] ?? ''); return obj;
+    });
+  }
+
+  function parseClock(clock) {
+    const m=String(clock||'').trim().match(/^(\d{1,2}):(\d{2})\s*(am|pm)$/i);
+    if (!m) return null;
+    let h=+m[1], min=+m[2], ap=m[3].toLowerCase();
+    if (ap==='pm' && h<12) h+=12;
+    if (ap==='am' && h===12) h=0;
+    return {h,min};
+  }
+
+  function parseMessageDate(value) {
+    const s=String(value||'').trim();
+    if (!s) return null;
+    const now=new Date();
+    let m=s.match(/^Today\s+(.+)$/i);
+    if (m) {
+      const c=parseClock(m[1]); if(!c) return null;
+      return new Date(now.getFullYear(),now.getMonth(),now.getDate(),c.h,c.min).toISOString();
+    }
+    m=s.match(/^Yesterday\s+(.+)$/i);
+    if (m) {
+      const c=parseClock(m[1]); if(!c) return null;
+      return new Date(now.getFullYear(),now.getMonth(),now.getDate()-1,c.h,c.min).toISOString();
+    }
+    const cleaned=s.replace(/^[A-Za-z]{3}\s+/,'');
+    const d=new Date(cleaned);
+    return Number.isNaN(+d) ? null : d.toISOString();
+  }
+
+  function cloudRow(r, sourceFile='') {
+    return {
+      message_id: Number(r.message_id),
+      folder: String(r.folder||''),
+      from_username: String(r.from_username||''),
+      to_username: String(r.to_username||''),
+      from_avatar_url: String(r.from_avatar_url||''),
+      to_avatar_url: String(r.to_avatar_url||''),
+      subject: String(r.subject||''),
+      message_date: String(r.message_date||''),
+      message_ts: r.message_ts || parseMessageDate(r.message_date),
+      body_text: String(r.body_text||''),
+      body_html: String(r.body_html||''),
+      game_ids: String(r.game_ids||''),
+      game_names: String(r.game_names||''),
+      game_urls: String(r.game_urls||''),
+      game_artwork_urls: String(r.game_artwork_urls||''),
+      game_match_methods: String(r.game_match_methods||''),
+      game_search_terms: String(r.game_search_terms||''),
+      source_file: sourceFile || String(r.source_file||'')
+    };
+  }
+
+  async function upsertRows(rows) {
+    if (!rows.length) return;
+    busy = true;
+    loadBtn.disabled = true;
+    saveBtn.disabled = true;
+    try {
+      const batchSize = 150;
+      for (let i=0;i<rows.length;i+=batchSize) {
+        const batch=rows.slice(i,i+batchSize);
+        setStatus(`Saving ${Math.min(i+batch.length,rows.length).toLocaleString()}/${rows.length.toLocaleString()}…`,'busy');
+        await request('UPSERT',{rows:batch});
+      }
+      setStatus(`DB ${rows.length.toLocaleString()} synced`,'ok');
+    } finally {
+      busy=false; loadBtn.disabled=false; saveBtn.disabled=false;
+    }
+  }
+
+  async function loadCloud() {
+    if (!unlocked || busy) return;
+    busy=true; loadBtn.disabled=true; saveBtn.disabled=true; setStatus('Loading DB…','busy');
+    try {
+      const result=await request('READ',{limit:5000});
+      const csv=rowsToCsv(result.rows||[]);
+      loadingFromCloud=true;
+      const file=new File([csv],`supabase-geekmail-${Date.now()}.csv`,{type:'text/csv'});
+      const dt=new DataTransfer(); dt.items.add(file);
+      const input=document.querySelector('#fileInput');
+      if (!input) throw new Error('CSV input not found');
+      input.files=dt.files;
+      input.dispatchEvent(new Event('change',{bubbles:true}));
+      setTimeout(()=>{loadingFromCloud=false;},500);
+      setStatus(`DB ${Number(result.count||0).toLocaleString()} msgs`,'ok');
+    } catch(e) {
+      console.error(e); setStatus('DB load failed'); alert(e.message);
+    } finally {
+      busy=false; loadBtn.disabled=false; saveBtn.disabled=false;
+    }
+  }
+
+  async function importFiles(files) {
+    if (!unlocked || loadingFromCloud) return;
+    const all=[];
+    for (const file of [...files]) {
+      if (!file.name.toLowerCase().endsWith('.csv')) continue;
+      try {
+        const parsed=parseCSV(await file.text());
+        parsed.forEach(r=>all.push(cloudRow(r,file.name)));
+      } catch(e) { console.error('Cloud CSV parse failed',file.name,e); }
+    }
+    lastImportedRows=all;
+    if (all.length) {
+      try { await upsertRows(all); }
+      catch(e) { console.error(e); setStatus('DB save failed'); alert(e.message); }
+    }
+  }
+
+  async function unlock() {
+    const entered=pwInput.value;
+    if (!entered) { errorEl.textContent='Enter the access key.'; return; }
+    unlockBtn.disabled=true; unlockBtn.textContent='Unlocking…'; errorEl.textContent='';
+    try {
+      password=entered;
+      await request('PING');
+      unlocked=true;
+      localStorage.setItem('app_password_hint',entered);
+      lock.classList.add('hidden');
+      setStatus('Cloud connected','ok');
+      await loadCloud();
+    } catch(e) {
+      unlocked=false;
+      errorEl.textContent='Invalid key or cloud connection unavailable.';
+      setStatus('Cloud locked');
+      console.error(e);
+    } finally {
+      unlockBtn.disabled=false; unlockBtn.textContent='Unlock GeekMail';
+    }
+  }
+
+  async function trySaved() {
+    if (!password) return;
+    pwInput.value=password;
+    try {
+      await request('PING');
+      unlocked=true;
+      lock.classList.add('hidden');
+      setStatus('Cloud connected','ok');
+      await loadCloud();
+    } catch {
+      localStorage.removeItem('app_password_hint');
+      password=''; unlocked=false; pwInput.value='';
+      lock.classList.remove('hidden'); setStatus('Cloud locked');
+    }
+  }
+
+  unlockBtn.addEventListener('click',unlock);
+  pwInput.addEventListener('keydown',e=>{if(e.key==='Enter')unlock();});
+  loadBtn.addEventListener('click',loadCloud);
+  saveBtn.addEventListener('click',async()=>{
+    if (!lastImportedRows.length) return alert('Upload a CSV first; CSV uploads are automatically synced to Supabase.');
+    try { await upsertRows(lastImportedRows); }
+    catch(e){console.error(e);setStatus('DB save failed');alert(e.message);}
+  });
+
+  const fileInput=document.querySelector('#fileInput');
+  fileInput?.addEventListener('change',e=>{
+    if (!loadingFromCloud && e.target.files?.length) importFiles(e.target.files);
+  });
+  const drop=document.querySelector('#drop');
+  drop?.addEventListener('drop',e=>{
+    if (!loadingFromCloud && e.dataTransfer?.files?.length) importFiles(e.dataTransfer.files);
+  });
+
+  trySaved();
+})();
+</script>
