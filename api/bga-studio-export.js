@@ -6,7 +6,7 @@ const F=['game_name','license_status','publisher','designer','bgg_rating','compl
 const q=v=>{const s=String(v??'');return /[",\r\n]/.test(s)?`"${s.replace(/"/g,'""')}"`:s};
 export default async function handler(){
   if(!K)return new Response('Supabase public key is not configured',{status:500});
-  const r=await fetch(`${U}/rest/v1/bga_studio_games?select=*&order=game_name.asc&limit=10000`,{headers:{apikey:K,Authorization:`Bearer ${K}`}});
+  const r=await fetch(`${U}/rest/v1/bga_studio_games?select=*&order=game_name.asc,id.asc&limit=10000`,{headers:{apikey:K,Authorization:`Bearer ${K}`}});
   if(!r.ok)return new Response(await r.text(),{status:r.status});
   const rows=await r.json();
   const csv=[H.join(','),...rows.map(row=>F.map(f=>q(row[f])).join(','))].join('\n');
