@@ -52,7 +52,7 @@ export default async function handler(req) {
     if (req.method === 'GET') {
       if (!PUBLIC_KEY) return json({ ok: false, error: 'Supabase public key is not configured.' }, 500);
       const r = await fetch(
-        `${SUPABASE_URL}/rest/v1/bga_studio_games?select=*&order=game_name.asc&limit=10000`,
+        `${SUPABASE_URL}/rest/v1/bga_studio_games?select=*&order=game_name.asc,id.asc&limit=10000`,
         { headers: { apikey: PUBLIC_KEY, Authorization: `Bearer ${PUBLIC_KEY}` } }
       );
       const text = await r.text();
@@ -84,17 +84,6 @@ export default async function handler(req) {
 
     const rows = body.rows.map(normalizeRow).filter(r => r.game_name);
     if (!rows.length) return json({ ok: false, error: 'No valid games found.' }, 400);
-
-    const names = new Set();
-    const dupes = [];
-    for (const row of rows) {
-      const key = row.game_name.toLocaleLowerCase();
-      if (names.has(key)) dupes.push(row.game_name);
-      names.add(key);
-    }
-    if (dupes.length) {
-      return json({ ok: false, error: `Duplicate game names: ${[...new Set(dupes)].slice(0, 20).join(', ')}` }, 400);
-    }
 
     const r = await fetch(`${SUPABASE_URL}/rest/v1/rpc/replace_bga_studio_games`, {
       method: 'POST',
