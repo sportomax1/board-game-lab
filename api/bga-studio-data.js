@@ -2,7 +2,8 @@ export const config = { runtime: 'edge' };
 
 const SUPABASE_URL = process.env.SUPABASE_URL || 'https://jadyqyrpgcmaixroizov.supabase.co';
 const PUBLIC_KEY = process.env.SUPABASE_ANON_KEY || process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-const ADMIN_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY;
+const ADMIN_KEY = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_SECRET_KEY || PUBLIC_KEY;
+const WRITE_SECRET = process.env.BGA_STUDIO_WRITE_SECRET || process.env.BGG_API_TOKEN || '';
 const APP_PASSWORD = process.env.PASSWORD || '';
 
 const HEADERS = {
@@ -73,10 +74,11 @@ export default async function handler(req) {
 
     if (action !== 'replace') return json({ ok: false, error: 'Unknown action.' }, 400);
     if (!validPassword(body.password)) return json({ ok: false, error: 'Invalid key.' }, 401);
-    if (!ADMIN_KEY) {
+    if (!ADMIN_KEY) return json({ ok: false, error: 'Supabase key is not configured.' }, 500);
+    if (!WRITE_SECRET) {
       return json({
         ok: false,
-        error: 'Supabase admin key is not configured. Add SUPABASE_SERVICE_ROLE_KEY (or SUPABASE_SECRET_KEY) to the Vercel project environment.'
+        error: 'Studio write credential is unavailable. Expected BGG_API_TOKEN (already used by Board Game Lab) or BGA_STUDIO_WRITE_SECRET.'
       }, 500);
     }
     if (!Array.isArray(body.rows)) return json({ ok: false, error: 'rows must be an array.' }, 400);
@@ -92,10 +94,15 @@ export default async function handler(req) {
         Authorization: `Bearer ${ADMIN_KEY}`,
         'content-type': 'application/json'
       },
-      body: JSON.stringify({ payload: rows })
+      body: JSON.stringify({ payload: rows, p_secret: WRITE_SECRET })
     });
     const text = await r.text();
-    if (!r.ok) return json({ ok: false, error: text }, r.status);
+    if (!r.ok) {
+      const message = /unauthorized/i.test(text)
+        ? 'Studio write credential does not match Supabase Vault. Check BGG_API_TOKEN / bgg_api_token.'
+        : text;
+      return json({ ok: false, error: message }, r.status);
+    }
 
     const inserted = Number(JSON.parse(text));
     return json({ ok: true, inserted, replaced: true });
