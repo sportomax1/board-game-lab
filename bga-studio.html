@@ -79,9 +79,9 @@
 
     <section class="grid grid-cols-2 md:grid-cols-5 gap-3">
       <div class="bg-white border rounded-xl p-3"><div id="statShown" class="text-2xl font-black text-slate-900">0</div><div class="text-[10px] uppercase font-black text-slate-400">Shown</div></div>
-      <div class="bg-white border rounded-xl p-3"><div id="statStudio" class="text-2xl font-black text-emerald-600">0</div><div class="text-[10px] uppercase font-black text-slate-400">Studio Games</div></div>
+      <div class="bg-white border rounded-xl p-3"><div id="statStudio" class="text-2xl font-black text-emerald-600">0</div><div class="text-[10px] uppercase font-black text-slate-400">Studio Rows</div></div>
       <div class="bg-white border rounded-xl p-3"><div id="statCollection" class="text-2xl font-black text-indigo-600">0</div><div class="text-[10px] uppercase font-black text-slate-400">Collection</div></div>
-      <div class="bg-white border rounded-xl p-3"><div id="statMatches" class="text-2xl font-black text-violet-600">0</div><div class="text-[10px] uppercase font-black text-slate-400">Matches</div></div>
+      <div class="bg-white border rounded-xl p-3"><div id="statMatches" class="text-2xl font-black text-violet-600">0</div><div class="text-[10px] uppercase font-black text-slate-400">Collection Matches</div></div>
       <div class="bg-white border rounded-xl p-3 col-span-2 md:col-span-1"><div id="statLicensed" class="text-2xl font-black text-amber-600">0</div><div class="text-[10px] uppercase font-black text-slate-400">Licensed</div></div>
     </section>
 
@@ -114,7 +114,7 @@
 
 <div id="importModal" class="modal hidden fixed inset-0 z-50 p-4 overflow-auto">
   <div class="max-w-4xl mx-auto my-6 bg-white rounded-2xl shadow-2xl overflow-hidden">
-    <div class="px-5 py-4 border-b flex items-center gap-3"><div><h2 class="font-black">Replace Studio Games</h2><p class="text-xs text-slate-500">CSV or TSV replaces the entire Supabase Studio snapshot.</p></div><button class="ml-auto text-slate-400 hover:text-slate-700" onclick="closeImport()"><i class="fa-solid fa-xmark text-xl"></i></button></div>
+    <div class="px-5 py-4 border-b flex items-center gap-3"><div><h2 class="font-black">Replace Studio Games</h2><p class="text-xs text-slate-500">CSV or TSV replaces the entire Supabase Studio snapshot. Duplicate game names are allowed.</p></div><button class="ml-auto text-slate-400 hover:text-slate-700" onclick="closeImport()"><i class="fa-solid fa-xmark text-xl"></i></button></div>
     <div class="p-5 space-y-4">
       <div class="rounded-xl bg-slate-50 border p-3 text-xs">
         <div class="font-black mb-1">Required schema</div>
@@ -136,7 +136,7 @@
   <div class="max-w-4xl mx-auto my-6 bg-white rounded-2xl shadow-2xl overflow-hidden">
     <div class="px-5 py-4 border-b flex items-center gap-3"><div><h2 class="font-black">BGA Studio Scraper</h2><p class="text-xs text-slate-500">Run this in the browser console on the BGA Studio licensing page, then paste the copied TSV into Replace Studio Data.</p></div><button class="ml-auto text-slate-400 hover:text-slate-700" onclick="closeScript()"><i class="fa-solid fa-xmark text-xl"></i></button></div>
     <div class="p-5 space-y-3">
-      <div class="flex justify-end"><button onclick="copyScraper()" class="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-black"><i class="fa-regular fa-copy mr-1"></i> Copy Script</button></div>
+      <div class="flex justify-end"><button onclick="copyScraper(this)" class="px-3 py-2 rounded-xl bg-slate-900 text-white text-xs font-black"><i class="fa-regular fa-copy mr-1"></i> Copy Script</button></div>
       <pre id="scraperPre" class="bg-slate-950 text-slate-100 rounded-xl p-4 overflow-auto text-[11px] leading-5 max-h-[65vh]"></pre>
       <div class="text-xs text-slate-500">Output is tab-separated and can be pasted directly into this app or Google Sheets.</div>
     </div>
@@ -198,6 +198,19 @@ function truth(v){return v===true||v===1||v==='1'||String(v).toLowerCase()==='tr
 function licenseDate(status){const m=String(status||'').match(/license granted:\s*(\d{4}-\d{2}-\d{2})/i);return m?m[1]:''}
 function statuses(c){return c?STATUS_FIELDS.filter(f=>truth(c[f])):[]}
 function statusHtml(c){const a=statuses(c);if(!a.length)return '<span class="muted">—</span>';return a.map(s=>`<span class="inline-block mr-1 mb-1 px-2 py-0.5 rounded-full bg-slate-100 text-[10px] font-black text-slate-600">${esc(STATUS_LABELS[s])}</span>`).join('')}
+function groupByName(rows,nameFn){const m=new Map();for(const row of rows){const k=keyName(nameFn(row));if(!m.has(k))m.set(k,[]);m.get(k).push(row)}return m}
+function personSet(v){return new Set(String(v||'').split(/[,;]|\s+&\s+|\s+and\s+/i).map(keyName).filter(Boolean))}
+function designerOverlap(studio,collection){const a=personSet(studio?.designer),b=personSet(collection?.designers);let n=0;for(const x of a)if(b.has(x))n++;return n}
+function matchScore(studio,collection){
+  let score=100;
+  score+=designerOverlap(studio,collection)*40;
+  const sr=num(studio?.bgg_rating),cr=num(collection?.bgg_rating);
+  if(sr!==null&&cr!==null)score+=Math.max(0,10-Math.abs(sr-cr)*10);
+  return score;
+}
+function bestCollection(studio,candidates){if(!candidates?.length)return null;return [...candidates].sort((a,b)=>matchScore(studio,b)-matchScore(studio,a)||(num(a.bgg_id)??0)-(num(b.bgg_id)??0))[0]}
+function bestStudio(collection,candidates){if(!candidates?.length)return null;return [...candidates].sort((a,b)=>matchScore(b,collection)-matchScore(a,collection)||(num(a.id)??0)-(num(b.id)??0))[0]}
+function uniqueThumbs(candidates){const seen=new Set();return (candidates||[]).map(c=>c?.thumb||c?.image||'').filter(x=>x&&!seen.has(x)&&seen.add(x)).slice(0,4)}
 
 async function apiPost(url,body){const r=await fetch(url,{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});const text=await r.text();let data;try{data=JSON.parse(text)}catch{data={ok:false,error:text}}if(!r.ok||data.ok===false)throw new Error(data.error||`HTTP ${r.status}`);return data}
 
@@ -217,17 +230,17 @@ async function loadData(force=false){
   try{
     const [studio,collection]=await Promise.all([loadTable('bga_studio_games',10000),loadTable('bgg_collection',5000)]);
     studioRows=studio.map(s=>({...s,game_name:decodeHtml(s.game_name),publisher:decodeHtml(s.publisher),designer:decodeHtml(s.designer)}));
-    collectionRows=collection.map(c=>({...c,name:decodeHtml(c.name)}));
+    collectionRows=collection.map(c=>({...c,name:decodeHtml(c.name),designers:decodeHtml(c.designers)}));
     rebuildMerge();
-    document.getElementById('syncLine').textContent=`Supabase • ${studioRows.length.toLocaleString()} studio • ${collectionRows.length.toLocaleString()} collection`;
+    document.getElementById('syncLine').textContent=`Supabase • ${studioRows.length.toLocaleString()} studio rows • ${collectionRows.length.toLocaleString()} collection`;
     render();
   }catch(e){document.getElementById('loading').innerHTML=`<div class="text-red-600 font-black">Load failed</div><div class="text-xs text-slate-500 mt-1">${esc(e.message)}</div>`}
 }
 function rebuildMerge(){
-  const sMap=new Map(studioRows.map(s=>[keyName(s.game_name),s]));
-  const cMap=new Map(collectionRows.map(c=>[keyName(c.name),c]));
-  const studioMerged=studioRows.map(s=>({game:s.game_name,studio:s,collection:cMap.get(keyName(s.game_name))||null}));
-  const collectionMerged=collectionRows.map(c=>({game:c.name,studio:sMap.get(keyName(c.name))||null,collection:c}));
+  const sGroups=groupByName(studioRows,s=>s.game_name);
+  const cGroups=groupByName(collectionRows,c=>c.name);
+  const studioMerged=studioRows.map(s=>{const candidates=cGroups.get(keyName(s.game_name))||[];return {game:s.game_name,studio:s,collection:bestCollection(s,candidates),collectionCandidates:candidates}});
+  const collectionMerged=collectionRows.map(c=>{const candidates=sGroups.get(keyName(c.name))||[];return {game:c.name,studio:bestStudio(c,candidates),collection:c,collectionCandidates:[c]}});
   merged={studio:studioMerged,collection:collectionMerged};
 }
 function setScope(next){scope=next;document.getElementById('scopeStudio').classList.toggle('active',next==='studio');document.getElementById('scopeCollection').classList.toggle('active',next==='collection');render()}
@@ -239,22 +252,29 @@ function filteredRows(){
   rows=rows.filter(r=>{
     if(studioFilter==='in'&&!r.studio)return false;if(studioFilter==='out'&&r.studio)return false;
     if(selected.length&&!selected.some(s=>truth(r.collection?.[s])))return false;
-    if(q){const hay=keyName([r.game,r.studio?.publisher,r.studio?.designer,r.studio?.studio_projects,r.studio?.license_status].filter(Boolean).join(' '));if(!hay.includes(q))return false}
+    if(q){const hay=keyName([r.game,r.studio?.publisher,r.studio?.designer,r.studio?.studio_projects,r.studio?.license_status,r.collection?.designers].filter(Boolean).join(' '));if(!hay.includes(q))return false}
     return true;
   });
   const sort=document.getElementById('sort').value;
   rows.sort((a,b)=>{
     const ac=a.collection,bc=b.collection,as=a.studio,bs=b.studio;
-    if(sort==='name')return a.game.localeCompare(b.game);
+    if(sort==='name')return a.game.localeCompare(b.game)||(num(as?.id)??0)-(num(bs?.id)??0);
     if(sort==='publisher')return String(as?.publisher||'').localeCompare(String(bs?.publisher||''))||a.game.localeCompare(b.game);
     if(sort==='rating-desc')return (num(bs?.bgg_rating??bc?.bgg_rating)??-1)-(num(as?.bgg_rating??ac?.bgg_rating)??-1)||a.game.localeCompare(b.game);
     if(sort==='rank')return (num(ac?.primary_rank)??9999999)-(num(bc?.primary_rank)??9999999)||a.game.localeCompare(b.game);
     if(sort==='year-desc')return (num(bc?.year)??0)-(num(ac?.year)??0)||a.game.localeCompare(b.game);
-    return String(licenseDate(bs?.license_status)).localeCompare(String(licenseDate(as?.license_status)))||a.game.localeCompare(b.game);
+    return String(licenseDate(bs?.license_status)).localeCompare(String(licenseDate(as?.license_status)))||a.game.localeCompare(b.game)||(num(as?.id)??0)-(num(bs?.id)??0);
   });
   return rows;
 }
 function fmt(v,d=1){const n=num(v);return n===null?'—':n.toFixed(d).replace(/\.0$/,'')}
+function renderThumbs(r,thumbs){
+  if(!thumbs)return '';
+  const imgs=uniqueThumbs(r.collectionCandidates);
+  if(!imgs.length)return '<div class="w-14 h-14 rounded border bg-slate-50 grid place-items-center text-xl">🎲</div>';
+  if(imgs.length===1)return `<img loading="lazy" src="${esc(imgs[0])}" alt="" class="w-14 h-14 object-contain rounded bg-white border">`;
+  return `<div class="flex -space-x-4">${imgs.map((src,i)=>`<img loading="lazy" src="${esc(src)}" alt="" title="${imgs.length} BGG matches" class="w-12 h-12 object-contain rounded bg-white border-2 border-white shadow-sm" style="z-index:${10-i}">`).join('')}</div><div class="text-[9px] mt-1 text-slate-400 font-bold">${imgs.length} matches</div>`;
+}
 function render(){
   if(!merged[scope])return;
   const rows=filteredRows();
@@ -262,11 +282,12 @@ function render(){
   document.getElementById('dataTable').classList.toggle('thumb-off',!thumbs);
   const body=document.getElementById('tbody');
   body.innerHTML=rows.map(r=>{
-    const s=r.studio,c=r.collection,thumb=c?.thumb||c?.image||'',rating=s?.bgg_rating??c?.bgg_rating,complexity=s?.complexity??c?.avgweight,rank=num(c?.primary_rank),year=c?.year;
+    const s=r.studio,c=r.collection,rating=s?.bgg_rating??c?.bgg_rating,complexity=s?.complexity??c?.avgweight,rank=num(c?.primary_rank),year=c?.year;
     const license=s?.license_status||'';
+    const duplicateCount=scope==='studio'?(r.collectionCandidates?.length||0):0;
     return `<tr class="border-b border-slate-100 hover:bg-slate-50 ${s?'row-studio':''}">
-      <td class="thumb-col px-3 py-2">${thumbs?(thumb?`<img loading="lazy" src="${esc(thumb)}" alt="" class="w-14 h-14 object-contain rounded bg-white border">`:'<div class="w-14 h-14 rounded border bg-slate-50 grid place-items-center text-xl">🎲</div>'):''}</td>
-      <td class="px-3 py-2"><div class="font-black text-sm">${esc(r.game)}</div><div class="mt-1">${s?'<span class="text-[10px] font-black text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">IN STUDIO</span>':'<span class="text-[10px] font-black text-slate-400">NOT IN STUDIO</span>'}</div></td>
+      <td class="thumb-col px-3 py-2">${renderThumbs(r,thumbs)}</td>
+      <td class="px-3 py-2"><div class="font-black text-sm">${esc(r.game)}</div><div class="mt-1">${s?'<span class="text-[10px] font-black text-emerald-700 bg-emerald-50 px-1.5 py-0.5 rounded">IN STUDIO</span>':'<span class="text-[10px] font-black text-slate-400">NOT IN STUDIO</span>'}${duplicateCount>1?` <span class="text-[10px] font-black text-violet-700 bg-violet-50 px-1.5 py-0.5 rounded">${duplicateCount} BGG MATCHES</span>`:''}</div></td>
       <td class="px-3 py-2">${statusHtml(c)}</td>
       <td class="px-3 py-2 text-center font-bold">${year??'—'}</td>
       <td class="px-3 py-2 text-center font-black">${fmt(rating,1)}</td>
@@ -280,7 +301,7 @@ function render(){
   }).join('');
   document.getElementById('loading').classList.add('hidden');
   document.getElementById('tableWrap').classList.toggle('hidden',!rows.length);document.getElementById('empty').classList.toggle('hidden',!!rows.length);
-  const matches=collectionRows.filter(c=>studioRows.some(s=>keyName(s.game_name)===keyName(c.name))).length;
+  const matches=(merged.collection||[]).filter(r=>r.studio).length;
   document.getElementById('statShown').textContent=rows.length.toLocaleString();document.getElementById('statStudio').textContent=studioRows.length.toLocaleString();document.getElementById('statCollection').textContent=collectionRows.length.toLocaleString();document.getElementById('statMatches').textContent=matches.toLocaleString();document.getElementById('statLicensed').textContent=studioRows.filter(s=>/good to go/i.test(s.license_status||'')).length.toLocaleString();
 }
 
@@ -288,7 +309,7 @@ function openImport(){document.getElementById('importModal').classList.remove('h
 function closeImport(){document.getElementById('importModal').classList.add('hidden')}
 function openScript(){document.getElementById('scriptModal').classList.remove('hidden')}
 function closeScript(){document.getElementById('scriptModal').classList.add('hidden')}
-async function copyScraper(){await navigator.clipboard.writeText(SCRAPER);const b=event.currentTarget,old=b.innerHTML;b.innerHTML='<i class="fa-solid fa-check mr-1"></i> Copied';setTimeout(()=>b.innerHTML=old,1200)}
+async function copyScraper(btn){await navigator.clipboard.writeText(SCRAPER);const old=btn.innerHTML;btn.innerHTML='<i class="fa-solid fa-check mr-1"></i> Copied';setTimeout(()=>btn.innerHTML=old,1200)}
 async function loadFile(input){const f=input.files?.[0];if(!f)return;document.getElementById('importText').value=await f.text();previewImport()}
 function debouncedPreview(){clearTimeout(previewTimer);previewTimer=setTimeout(previewImport,150)}
 
@@ -317,15 +338,15 @@ function previewImport(){
     const missing=EXPECTED_HEADERS.filter(h=>!headers.some(x=>x.toLowerCase()===h.toLowerCase()));if(missing.length)throw new Error(`Missing columns: ${missing.join(', ')}`);
     const idx=Object.fromEntries(EXPECTED_HEADERS.map(h=>[h,headers.findIndex(x=>x.toLowerCase()===h.toLowerCase())]));
     parsedImport=rows.slice(1).filter(r=>r.some(v=>String(v).trim())).map(r=>Object.fromEntries(EXPECTED_HEADERS.map(h=>[h,String(r[idx[h]]??'').replace(/\s+/g,' ').trim()]))).filter(r=>r['Game name']);
-    const duplicates=parsedImport.map(r=>keyName(r['Game name'])).filter((x,i,a)=>a.indexOf(x)!==i);
-    if(duplicates.length)throw new Error(`Duplicate game names detected (${new Set(duplicates).size}).`);
-    preview.innerHTML=`<div class="font-black text-emerald-700">Ready: ${parsedImport.length.toLocaleString()} games</div><div class="mt-1">First: ${esc(parsedImport[0]?.['Game name']||'—')} • Last: ${esc(parsedImport.at(-1)?.['Game name']||'—')}</div><div class="mt-2 text-amber-700 font-bold">Replace means the current Studio table is fully replaced.</div>`;btn.disabled=!parsedImport.length;
+    const counts=new Map();for(const r of parsedImport){const k=keyName(r['Game name']);counts.set(k,(counts.get(k)||0)+1)}
+    const duplicateNames=[...counts.values()].filter(n=>n>1).length;
+    preview.innerHTML=`<div class="font-black text-emerald-700">Ready: ${parsedImport.length.toLocaleString()} rows</div><div class="mt-1">First: ${esc(parsedImport[0]?.['Game name']||'—')} • Last: ${esc(parsedImport.at(-1)?.['Game name']||'—')}</div>${duplicateNames?`<div class="mt-2 text-violet-700 font-bold">${duplicateNames} duplicate game name${duplicateNames===1?'':'s'} detected — allowed and preserved.</div>`:''}<div class="mt-2 text-amber-700 font-bold">Replace means the current Studio table is fully replaced.</div>`;btn.disabled=!parsedImport.length;
   }catch(e){preview.innerHTML=`<div class="font-black text-red-600">${esc(e.message)}</div>`}
 }
 async function replaceData(){
   if(!parsedImport.length)return;
-  const btn=document.getElementById('replaceBtn'),status=document.getElementById('importStatus');btn.disabled=true;status.textContent='Replacing…';
-  try{const data=await apiPost('/api/bga-studio-data',{action:'replace',password:sessionStorage.getItem('bgaStudioKey')||'',rows:parsedImport});status.textContent=`Saved ${data.inserted.toLocaleString()} games`;closeImport();await loadData(true)}
+  const btn=document.getElementById('replaceBtn'),status=document.getElementById('importStatus');btn.disabled=true;status.textContent='Replacing…';status.className='text-xs font-bold text-slate-500';
+  try{const data=await apiPost('/api/bga-studio-data',{action:'replace',password:sessionStorage.getItem('bgaStudioKey')||'',rows:parsedImport});status.textContent=`Saved ${data.inserted.toLocaleString()} rows`;closeImport();await loadData(true)}
   catch(e){status.textContent=e.message;status.className='text-xs font-bold text-red-600';btn.disabled=false}
 }
 
