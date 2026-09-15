@@ -3,52 +3,134 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>GeekMail CSV Explorer</title>
+<title>GeekMail</title>
 <style>
-  body{margin:0;background:#0b1020;color:#edf2ff;font:14px system-ui;display:grid;place-items:center;min-height:100vh}
-  #boot{padding:24px;text-align:center}
+  *{box-sizing:border-box}
+  body{margin:0;background:#070b14;color:#edf2ff;font:14px system-ui;min-height:100vh}
+  #gate{min-height:100vh;display:flex;align-items:center;justify-content:center;padding:24px}
+  .card{width:min(430px,100%);overflow:hidden;border:1px solid #2d3b59;border-radius:24px;background:#11192b;box-shadow:0 28px 80px rgba(0,0,0,.55)}
+  .hero{padding:30px;text-align:center;background:linear-gradient(135deg,#315fca,#7558da)}
+  .icon{width:72px;height:72px;margin:0 auto 14px;border-radius:18px;display:grid;place-items:center;font-size:34px;background:rgba(255,255,255,.16);border:1px solid rgba(255,255,255,.25)}
+  h1{margin:0;font-size:23px}.hero p{margin:6px 0 0;color:#dce6ff;font-size:12px}
+  .body{padding:22px}.body label{display:block;color:#9fb0cc;font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:0 0 6px}
+  input{width:100%;background:#0d1424;color:#edf2ff;border:1px solid #28344f;border-radius:10px;padding:13px 14px;font-size:16px}
+  #error{min-height:20px;color:#ff929f;font-size:12px;text-align:center;margin:9px 0 2px}
+  button{width:100%;margin-top:6px;padding:13px;border-radius:12px;border:1px solid #5d8df0;background:#315fca;color:#fff;font-weight:800;cursor:pointer}
+  button:disabled{opacity:.55;cursor:wait}
+  #boot{display:none;min-height:100vh;align-items:center;justify-content:center;padding:24px;text-align:center;background:#0b1020}
 </style>
 </head>
 <body>
+<div id="gate">
+  <div class="card">
+    <div class="hero">
+      <div class="icon">✉️</div>
+      <h1>GeekMail Explorer</h1>
+      <p>Password required before the app or message data loads</p>
+    </div>
+    <div class="body">
+      <label for="password">Access Key</label>
+      <input id="password" type="password" placeholder="••••••••" autocomplete="current-password" autofocus>
+      <div id="error"></div>
+      <button id="unlock">Unlock GeekMail</button>
+    </div>
+  </div>
+</div>
 <div id="boot">Loading GeekMail Explorer…</div>
 <script>
 (async()=>{
-  const BUILD='20260914-2258-geekmail-crud-sync';
-  try{
-    const urls=[1,2,3].map(n=>`assets/geekmail/payload-${n}.txt?v=${BUILD}`);
-    const patchUrls=[
-      `assets/geekmail/collection-patch.txt?v=${BUILD}`,
-      `assets/geekmail/ui-patch.txt?v=${BUILD}`,
-      `assets/geekmail/cloud-patch.txt?v=${BUILD}`,
-      `assets/geekmail/reload-patch.txt?v=${BUILD}`
-    ];
-    const [parts,patches]=await Promise.all([
-      Promise.all(urls.map(async url=>{
-        const response=await fetch(url,{cache:'no-store'});
-        if(!response.ok) throw new Error(`${url}: ${response.status}`);
-        return response.text();
-      })),
-      Promise.all(patchUrls.map(async url=>{
-        const response=await fetch(url,{cache:'no-store'});
-        if(!response.ok) throw new Error(`${url}: ${response.status}`);
-        return response.text();
-      }))
-    ]);
-    let app=parts.join('');
-    const buildMarker=`<script>window.GEEKMAIL_BUILD=${JSON.stringify(BUILD)};<\/script>`;
-    const patch=buildMarker+'\n'+patches.join('\n');
-    if(/<\/body>\s*<\/html>\s*$/i.test(app)){
-      app=app.replace(/<\/body>\s*<\/html>\s*$/i,patch+'\n</body></html>');
-    }else{
-      app+=patch;
-    }
-    document.open();
-    document.write(app);
-    document.close();
-  }catch(error){
-    document.getElementById('boot').textContent='Could not load GeekMail Explorer: '+error.message;
-    console.error(error);
+  const BUILD='20260914-2315-password-autosync';
+  const SESSION_KEY='geekmail_access_key';
+  const gate=document.getElementById('gate');
+  const boot=document.getElementById('boot');
+  const input=document.getElementById('password');
+  const unlockBtn=document.getElementById('unlock');
+  const error=document.getElementById('error');
+
+  // A fresh password entry is required on every full page load/reload.
+  sessionStorage.removeItem(SESSION_KEY);
+
+  async function verifyPassword(password){
+    const response=await fetch('/api/geekmail',{
+      method:'POST',
+      headers:{'Content-Type':'application/json'},
+      cache:'no-store',
+      body:JSON.stringify({action:'PING',password})
+    });
+    let data={};
+    try{data=await response.json();}catch{}
+    if(!response.ok||!data.ok) throw new Error(data.error||'Invalid access key');
+    return data;
   }
+
+  async function loadApp(){
+    gate.style.display='none';
+    boot.style.display='flex';
+    try{
+      const urls=[1,2,3].map(n=>`assets/geekmail/payload-${n}.txt?v=${BUILD}`);
+      const patchUrls=[
+        `assets/geekmail/collection-patch.txt?v=${BUILD}`,
+        `assets/geekmail/ui-patch.txt?v=${BUILD}`,
+        `assets/geekmail/cloud-patch.txt?v=${BUILD}`,
+        `assets/geekmail/reload-patch.txt?v=${BUILD}`,
+        `assets/geekmail/auto-sync-patch.txt?v=${BUILD}`
+      ];
+      const [parts,patches]=await Promise.all([
+        Promise.all(urls.map(async url=>{
+          const response=await fetch(url,{cache:'no-store'});
+          if(!response.ok) throw new Error(`${url}: ${response.status}`);
+          return response.text();
+        })),
+        Promise.all(patchUrls.map(async url=>{
+          const response=await fetch(url,{cache:'no-store'});
+          if(!response.ok) throw new Error(`${url}: ${response.status}`);
+          return response.text();
+        }))
+      ]);
+      let app=parts.join('');
+      const buildMarker=`<script>window.GEEKMAIL_BUILD=${JSON.stringify(BUILD)};<\/script>`;
+      const patch=buildMarker+'\n'+patches.join('\n');
+      if(/<\/body>\s*<\/html>\s*$/i.test(app)){
+        app=app.replace(/<\/body>\s*<\/html>\s*$/i,patch+'\n</body></html>');
+      }else{
+        app+=patch;
+      }
+      document.open();
+      document.write(app);
+      document.close();
+    }catch(err){
+      gate.style.display='none';
+      boot.style.display='flex';
+      boot.textContent='Could not load GeekMail Explorer: '+err.message;
+      console.error(err);
+    }
+  }
+
+  async function unlock(){
+    const password=input.value;
+    if(!password){error.textContent='Enter the access key.';input.focus();return;}
+    unlockBtn.disabled=true;
+    unlockBtn.textContent='Checking…';
+    error.textContent='';
+    try{
+      await verifyPassword(password);
+      // Used only by the loaded GeekMail cloud module during this page instance.
+      // This key is cleared at the beginning of every full page load.
+      sessionStorage.setItem(SESSION_KEY,password);
+      await loadApp();
+    }catch(err){
+      sessionStorage.removeItem(SESSION_KEY);
+      error.textContent='Invalid access key.';
+      input.select();
+      console.error(err);
+    }finally{
+      unlockBtn.disabled=false;
+      unlockBtn.textContent='Unlock GeekMail';
+    }
+  }
+
+  unlockBtn.addEventListener('click',unlock);
+  input.addEventListener('keydown',event=>{if(event.key==='Enter')unlock();});
 })();
 </script>
 </body>
