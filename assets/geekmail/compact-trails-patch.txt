@@ -1,219 +1,298 @@
 <script>
 (() => {
-  if (window.__GEEKMAIL_COMPACT_TRAILS_V3__) return;
-  window.__GEEKMAIL_COMPACT_TRAILS_V3__ = true;
+  if (window.__GEEKMAIL_COMPACT_VIEW_V1__) return;
+  window.__GEEKMAIL_COMPACT_VIEW_V1__ = true;
 
-  const DATE_RE = /(?:Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Sept|Oct|Nov|Dec)[a-z]*\s+\d{1,2},?\s+\d{4}(?:,?\s+\d{1,2}:\d{2}(?:\s*[AP]M)?)?|\b\d{1,2}\/\d{1,2}\/\d{2,4}(?:\s+\d{1,2}:\d{2}(?:\s*[AP]M)?)?|\b20\d{2}-\d{2}-\d{2}(?:[ T]\d{2}:\d{2}(?::\d{2})?)?/i;
-  const ARROW_RE = /(?:→|➜|->|←|↔|⇄)/;
+  const API = '/api/geekmail';
+  const SESSION_KEY = 'geekmail_access_key';
+  let rows = [];
+  let loaded = false;
+  let loading = false;
+  let compactActive = false;
+  let compactTab = null;
+  let tabRow = null;
+  let viewHost = null;
+  let compactPanel = null;
+  let dataBar = null;
+  let controlsModal = null;
+  let detailModal = null;
+  let mode = 'grouped';
+  let contactSort = 'recent';
+  let messageSort = 'newest';
+  let searchText = '';
+  let folderFilter = 'all';
 
-  const style = document.createElement('style');
-  style.textContent = `
-    .gm-trail-card{margin:1px 0!important;padding:0!important;border-radius:4px!important;overflow:hidden!important;min-height:22px!important;box-shadow:none!important}
-    .gm-trail-card:not(.gm-expanded)>*:not(.gm-compact-line){display:none!important}
-    .gm-compact-line{display:grid!important;grid-template-columns:minmax(76px,118px) minmax(110px,1fr) auto;align-items:center;gap:5px;min-height:22px;padding:2px 6px!important;cursor:pointer;font-size:10px!important;line-height:1.05!important;background:#101a2d!important;border:0!important}
-    .gm-compact-line:hover{background:#182640!important}
-    .gm-compact-user{font-weight:800;color:#e5edff;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
-    .gm-compact-subject{color:#c2cee3;white-space:nowrap;overflow:hidden;text-overflow:ellipsis;min-width:0}
-    .gm-compact-date{color:#8396b7;white-space:nowrap;text-align:right;font-variant-numeric:tabular-nums;font-size:9px}
-    .gm-trail-card.gm-expanded{padding:7px!important;margin:4px 0!important}
-    .gm-trail-card.gm-expanded>.gm-compact-line{margin:-7px -7px 7px!important;border-bottom:1px solid #263653!important}
+  const css = `
+    .gm-data-bar{display:flex;align-items:center;gap:8px;min-height:38px;padding:5px 8px;margin:4px 0 7px;border:1px solid #263653;border-radius:10px;background:#0f1829;position:relative;z-index:3}
+    .gm-data-brand{font-weight:900;font-size:13px;color:#eef4ff;white-space:nowrap}.gm-data-summary{font-size:10px;color:#91a5c4;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .gm-data-spacer{flex:1}.gm-shell-btn{border:1px solid #344765;background:#14213a;color:#dce7fa;border-radius:8px;padding:6px 9px;font:700 10px system-ui;cursor:pointer;white-space:nowrap;margin:0!important;width:auto!important}.gm-shell-btn:hover{border-color:#608ae2}
+    .gm-shell-hidden{display:none!important}.gm-shell-collapsed{min-height:0!important;height:auto!important;padding-top:3px!important;padding-bottom:3px!important;margin-top:0!important;margin-bottom:0!important}
 
-    .gm-contact-header{padding:0!important;margin:0!important;min-height:24px!important;border-bottom:1px solid #263653!important}
-    .gm-contact-header:not(.gm-header-expanded)>*:not(.gm-contact-line){display:none!important}
-    .gm-contact-line{display:flex!important;align-items:center;gap:7px;min-height:24px;padding:3px 7px!important;cursor:pointer;background:#141f34!important}
-    .gm-contact-compact-user{font-weight:900;font-size:11px;color:#edf3ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}
-    .gm-contact-count{margin-left:auto;color:#8497b8;font-size:9px;white-space:nowrap}
-    .gm-contact-header.gm-header-expanded{padding:7px!important}
-    .gm-contact-header.gm-header-expanded>.gm-contact-line{margin:-7px -7px 7px!important}
-    .gm-compact-loaded{display:inline-flex!important;align-items:center!important;margin-left:7px!important;padding:2px 7px!important;border:1px solid #2e6e57!important;border-radius:999px!important;background:#10261f!important;color:#a9e7cd!important;font-size:9px!important;font-weight:800!important;white-space:nowrap!important;vertical-align:middle!important}
+    .gm-compact-panel{display:none;border:1px solid #263653;border-radius:12px;background:#0b1322;overflow:hidden;margin-top:7px;min-height:260px}
+    body.gm-compact-active .gm-compact-panel{display:block}.gm-original-view-node.gm-hide-for-compact{display:none!important}
+    .gm-compact-toolbar{display:flex;align-items:center;gap:6px;flex-wrap:wrap;padding:6px;border-bottom:1px solid #24324c;background:#10192b;position:sticky;top:0;z-index:5}
+    .gm-compact-search{flex:1;min-width:180px;max-width:420px;background:#0a1221;color:#edf3ff;border:1px solid #2b3a56;border-radius:8px;padding:7px 9px;font:11px system-ui}
+    .gm-compact-select{background:#0a1221;color:#dce7fa;border:1px solid #2b3a56;border-radius:8px;padding:6px 8px;font:10px system-ui;min-width:96px}
+    .gm-seg{display:inline-flex;border:1px solid #2b3a56;border-radius:8px;overflow:hidden;background:#0b1322}.gm-seg button{margin:0!important;width:auto!important;border:0!important;border-right:1px solid #2b3a56!important;border-radius:0!important;background:transparent!important;color:#91a5c4!important;padding:6px 9px!important;font:800 10px system-ui!important}.gm-seg button:last-child{border-right:0!important}.gm-seg button.active{background:#284d94!important;color:#fff!important}
+    .gm-compact-count{margin-left:auto;font-size:9px;color:#8296b8;white-space:nowrap}
+    .gm-compact-body{padding:6px;max-height:calc(100vh - 235px);overflow:auto}
+    .gm-contact-grid{display:grid;grid-template-columns:repeat(auto-fill,minmax(285px,1fr));gap:6px;align-items:start}
+    .gm-contact-box{border:1px solid #22314a;border-radius:7px;background:#0d1626;overflow:hidden}.gm-contact-box-head{display:flex;align-items:center;gap:6px;min-height:27px;padding:4px 7px;background:#121f34;border-bottom:1px solid #233551}.gm-contact-name{font-weight:900;font-size:11px;color:#edf3ff;overflow:hidden;text-overflow:ellipsis;white-space:nowrap}.gm-contact-meta{margin-left:auto;color:#8194b3;font-size:8.5px;white-space:nowrap}
+    .gm-mini-row{display:grid;grid-template-columns:64px 15px minmax(0,1fr);gap:4px;align-items:center;min-height:23px;padding:2px 6px;border-bottom:1px solid #172338;cursor:pointer}.gm-mini-row:last-child{border-bottom:0}.gm-mini-row:hover{background:#14213a}.gm-mini-date{font-size:8.5px;color:#7f93b3;font-variant-numeric:tabular-nums;white-space:nowrap}.gm-mini-dir{font-size:10px;text-align:center;font-weight:900}.gm-mini-dir.sent{color:#7ca8ff}.gm-mini-dir.received{color:#72d5aa}.gm-mini-subject{font-size:10px;color:#c9d5e8;white-space:nowrap;overflow:hidden;text-overflow:ellipsis}
+    .gm-flat-wrap{border:1px solid #22314a;border-radius:8px;overflow:hidden}.gm-flat-head,.gm-flat-row{display:grid;grid-template-columns:78px 18px minmax(90px,150px) minmax(160px,1fr);gap:5px;align-items:center}.gm-flat-head{position:sticky;top:0;z-index:2;background:#15213a;color:#8fa3c3;font-size:8.5px;font-weight:900;text-transform:uppercase;letter-spacing:.06em;padding:5px 7px;border-bottom:1px solid #2b3a56}.gm-flat-row{min-height:23px;padding:2px 7px;border-bottom:1px solid #172338;cursor:pointer;font-size:9.5px}.gm-flat-row:hover{background:#14213a}.gm-flat-user,.gm-flat-subject{white-space:nowrap;overflow:hidden;text-overflow:ellipsis}.gm-flat-user{font-weight:800;color:#e1eafd}.gm-flat-subject{color:#c5d1e5}
+    .gm-empty{padding:36px;text-align:center;color:#8397b7;font-size:12px}.gm-loading{padding:42px;text-align:center;color:#9db0ce;font-size:12px}
 
-    @media(max-width:700px){
-      .gm-compact-line{grid-template-columns:minmax(60px,88px) minmax(75px,1fr) auto;gap:4px;padding:2px 4px!important;font-size:9px!important}
-      .gm-compact-date{font-size:8px}
-    }
+    .gm-overlay{position:fixed;inset:0;z-index:120000;background:rgba(3,7,15,.82);backdrop-filter:blur(6px);display:flex;align-items:center;justify-content:center;padding:16px}.gm-overlay.hidden{display:none}.gm-overlay-card{width:min(920px,96vw);max-height:90vh;overflow:hidden;display:flex;flex-direction:column;border:1px solid #2b3c5c;border-radius:16px;background:#0c1423;box-shadow:0 28px 90px rgba(0,0,0,.6)}.gm-overlay-head{display:flex;align-items:center;gap:10px;padding:10px 12px;border-bottom:1px solid #24324c;background:#111c31}.gm-overlay-head strong{font-size:13px}.gm-overlay-head span{font-size:9px;color:#8397b7}.gm-overlay-x{margin-left:auto!important;width:30px!important;height:30px!important;padding:0!important;border:1px solid #334562!important;border-radius:7px!important;background:#14213a!important;color:#dbe7fa!important;cursor:pointer}.gm-overlay-body{padding:10px;overflow:auto}.gm-controls-stack{display:grid;gap:9px}.gm-controls-section{border:1px solid #22314a;border-radius:10px;padding:8px;background:#0b1322}.gm-controls-label{font-size:9px;text-transform:uppercase;letter-spacing:.09em;color:#8195b7;font-weight:900;margin:0 0 6px}.gm-controls-section>*{max-width:100%!important}.gm-controls-section .actions{display:flex!important;flex-wrap:wrap!important;gap:6px!important}.gm-controls-section .actions>*{margin:0!important}.gm-detail-grid{display:grid;grid-template-columns:110px 1fr;gap:5px 10px;font-size:10px;margin-bottom:10px}.gm-detail-grid b{color:#8fa3c3}.gm-detail-grid span{color:#e1e9f7;min-width:0;word-break:break-word}.gm-detail-body{white-space:pre-wrap;line-height:1.45;font-size:11px;color:#d5dfef;border:1px solid #22314a;border-radius:9px;background:#09111f;padding:10px;max-height:52vh;overflow:auto}
+    .gm-compact-tab.gm-tab-active{outline:2px solid #5d8df0!important;outline-offset:-2px!important;background:#244a8f!important;color:#fff!important}
+
+    @media(max-width:720px){.gm-data-summary{display:none}.gm-data-bar{gap:5px}.gm-contact-grid{grid-template-columns:1fr}.gm-compact-body{max-height:calc(100vh - 190px)}.gm-flat-head,.gm-flat-row{grid-template-columns:68px 16px 90px minmax(100px,1fr)}.gm-compact-toolbar{padding:5px}.gm-compact-search{max-width:none;flex-basis:100%}}
   `;
+  const style = document.createElement('style');
+  style.textContent = css;
   document.head.appendChild(style);
 
-  function clean(v){ return String(v || '').replace(/\s+/g,' ').trim(); }
-  function norm(v){ return clean(v).toLowerCase().replace(/[^a-z0-9]+/g,''); }
-  function lines(el){ return String(el?.innerText || el?.textContent || '').split(/\n+/).map(clean).filter(Boolean); }
-
-  function isDirectionBadge(el){
-    if (!(el instanceof HTMLElement)) return false;
-    const t = clean(el.textContent).toUpperCase();
-    return (t === 'SENT' || t === 'RECEIVED') && el.children.length <= 2;
+  function clean(v){ return String(v ?? '').replace(/\s+/g,' ').trim(); }
+  function norm(v){ return clean(v).toLowerCase(); }
+  function esc(v){ return String(v ?? '').replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c])); }
+  function ts(row){ const n=Date.parse(row.message_ts || row.message_date || ''); return Number.isFinite(n) ? n : 0; }
+  function ownUser(){ return clean(document.querySelector('#myUser')?.value || 'sportomax'); }
+  function isSent(row){ return norm(row.from_username) === norm(ownUser()); }
+  function otherUser(row){ return clean(isSent(row) ? row.to_username : row.from_username) || '(unknown)'; }
+  function shortDate(row){
+    const n=ts(row); if(!n) return clean(row.message_date).slice(0,10);
+    const d=new Date(n); return d.toLocaleDateString(undefined,{month:'2-digit',day:'2-digit',year:'2-digit'});
+  }
+  function fullDate(row){
+    const n=ts(row); if(!n) return clean(row.message_date);
+    return new Date(n).toLocaleString(undefined,{year:'numeric',month:'short',day:'numeric',hour:'numeric',minute:'2-digit'});
+  }
+  function exactText(text){
+    return [...document.querySelectorAll('button,a,[role="tab"],span,div')].find(el => clean(el.textContent).toLowerCase()===text.toLowerCase() && el.children.length<=3) || null;
+  }
+  function closestMatching(start, test, max=6){
+    let el=start;
+    for(let i=0; el && i<max; i++,el=el.parentElement){ if(test(el)) return el; }
+    return null;
   }
 
-  function badgeCount(el){
-    let n = isDirectionBadge(el) ? 1 : 0;
-    for (const child of el.querySelectorAll('*')) if (isDirectionBadge(child)) n++;
-    return n;
+  function createModals(){
+    controlsModal=document.createElement('div');
+    controlsModal.className='gm-overlay hidden';
+    controlsModal.innerHTML=`<div class="gm-overlay-card"><div class="gm-overlay-head"><div><strong>GeekMail Controls</strong><br><span>Import, filters, statistics, columns, export, and database tools</span></div><button class="gm-overlay-x" type="button">✕</button></div><div class="gm-overlay-body"><div class="gm-controls-stack" id="gmControlsStack"></div></div></div>`;
+    document.body.appendChild(controlsModal);
+    controlsModal.querySelector('.gm-overlay-x').onclick=()=>controlsModal.classList.add('hidden');
+    controlsModal.addEventListener('click',e=>{if(e.target===controlsModal)controlsModal.classList.add('hidden');});
+
+    detailModal=document.createElement('div');
+    detailModal.className='gm-overlay hidden';
+    detailModal.innerHTML=`<div class="gm-overlay-card"><div class="gm-overlay-head"><div><strong id="gmDetailTitle">Message</strong><br><span id="gmDetailMeta"></span></div><button class="gm-overlay-x" type="button">✕</button></div><div class="gm-overlay-body"><div class="gm-detail-grid" id="gmDetailGrid"></div><div class="gm-detail-body" id="gmDetailBody"></div></div></div>`;
+    document.body.appendChild(detailModal);
+    detailModal.querySelector('.gm-overlay-x').onclick=()=>detailModal.classList.add('hidden');
+    detailModal.addEventListener('click',e=>{if(e.target===detailModal)detailModal.classList.add('hidden');});
   }
 
-  function addLoadedIndicator(){
-    if (document.querySelector('.gm-compact-loaded')) return;
-    const candidates = [...document.querySelectorAll('button,a,div,span')];
-    const tab = candidates.find(el => /^Contact trails$/i.test(clean(el.textContent)) && el.children.length <= 3);
-    if (!tab) return;
-    const chip = document.createElement('span');
-    chip.className = 'gm-compact-loaded';
-    chip.textContent = 'Compact ✓';
-    tab.insertAdjacentElement('afterend', chip);
+  function moveSection(el,label){
+    if(!el || !controlsModal || el.closest('#gmControlsStack')) return;
+    const section=document.createElement('section'); section.className='gm-controls-section';
+    const title=document.createElement('div'); title.className='gm-controls-label'; title.textContent=label;
+    section.append(title,el); controlsModal.querySelector('#gmControlsStack').appendChild(section);
   }
 
-  function enhanceContactHeaders(root){
-    const profileNodes = [...root.querySelectorAll('a,button,span,div')].filter(el => /^BGG profile(?:\s*↗)?$/i.test(clean(el.textContent)));
-    for (const profile of profileNodes){
-      let node = profile.parentElement;
-      let candidate = null;
-      while (node && node !== root){
-        const txt = clean(node.innerText);
-        const count = badgeCount(node);
-        if (/\b\d+\s+msgs?\b/i.test(txt) && count === 0) candidate = node;
-        const parent = node.parentElement;
-        if (!parent || parent === root || badgeCount(parent) > 0) break;
-        node = parent;
-      }
-      if (!candidate || candidate.classList.contains('gm-contact-header')) continue;
+  function compactShell(){
+    if(document.querySelector('.gm-data-bar')) return;
+    createModals();
 
-      const ls = lines(candidate);
-      const username = ls.find(v => !/^BGG profile/i.test(v) && !/\bmsgs?\b/i.test(v) && !/\bsent\b|\breceived\b|\bspan\b|since last contact|longest reply|slowest reply|waiting now/i.test(v)) || 'Contact';
-      const count = clean(candidate.innerText).match(/\b\d+\s+msgs?\b/i)?.[0] || '';
-      const line = document.createElement('div');
-      line.className = 'gm-contact-line';
-      line.title = 'Click to show/hide contact statistics';
-      const user = document.createElement('span');
-      user.className = 'gm-contact-compact-user';
-      user.textContent = username;
-      const ct = document.createElement('span');
-      ct.className = 'gm-contact-count';
-      ct.textContent = count;
-      line.append(user, ct);
-      line.addEventListener('click', e => {
-        e.preventDefault();
-        e.stopPropagation();
-        candidate.classList.toggle('gm-header-expanded');
-      });
-      candidate.prepend(line);
-      candidate.classList.add('gm-contact-header');
+    const heading=[...document.querySelectorAll('h1,h2,h3,strong')].find(el=>/^GeekMail CSV Explorer$/i.test(clean(el.textContent)));
+    const addCsv=exactText('Add CSV');
+    const actionRow=closestMatching(addCsv,el=>{const t=clean(el.innerText);return /Add CSV/i.test(t)&&/Open BGG GeekMail/i.test(t)&&/Columns/i.test(t)&&/Clear/i.test(t);},7);
+    const searchInput=[...document.querySelectorAll('input')].find(el=>/subject, username, ID, body, folder/i.test(el.getAttribute('placeholder')||''));
+    const filterPanel=closestMatching(searchInput,el=>{const t=clean(el.innerText);return /My BGG username/i.test(t)&&/Rows per page/i.test(t)&&/Folder/i.test(t)&&/Person/i.test(t);},6);
+    const statCandidates=[...document.querySelectorAll('div,section')].filter(el=>{const t=clean(el.innerText);return /messages/i.test(t)&&/contacts/i.test(t)&&/longest wait for reply/i.test(t);}).sort((a,b)=>clean(a.innerText).length-clean(b.innerText).length);
+    const stats=statCandidates[0]||null;
+
+    let headerWrap=null;
+    if(heading){
+      const p=heading.parentElement;
+      if(p && !/Add CSV/i.test(clean(p.innerText))) p.classList.add('gm-shell-hidden');
+      else heading.classList.add('gm-shell-hidden');
+      headerWrap=p?.parentElement||null;
     }
-  }
+    if(headerWrap && actionRow && headerWrap.contains(actionRow)) headerWrap.classList.add('gm-shell-collapsed');
 
-  function findMessageCard(badge, root){
-    let node = badge.parentElement;
-    let candidate = null;
-    while (node && node !== root){
-      const txt = clean(node.innerText);
-      const count = badgeCount(node);
-      if (count > 1) break;
-      if (count === 1 && DATE_RE.test(txt) && ARROW_RE.test(txt) && txt.length < 5000) candidate = node;
-      node = node.parentElement;
-    }
-    return candidate;
-  }
+    moveSection(actionRow,'Actions & database');
+    moveSection(filterPanel,'Search & filters');
+    moveSection(stats,'Statistics');
 
-  function extractDate(card){
-    const txt = String(card.innerText || card.textContent || '');
-    return clean(txt.match(DATE_RE)?.[0] || '');
-  }
-
-  function extractRoute(card){
-    return lines(card).find(v => ARROW_RE.test(v) && v.length < 180) || '';
-  }
-
-  function extractUsername(card){
-    const own = clean(document.querySelector('#myUser')?.value || '');
-    const route = extractRoute(card);
-    if (route){
-      const parts = route.split(/\s*(?:→|➜|->|←|↔|⇄)\s*/).map(v => clean(v.replace(/^(?:from|to)\s*:?\s*/i,''))).filter(Boolean);
-      if (parts.length > 1){
-        const other = parts.find(v => norm(v) !== norm(own));
-        if (other) return other;
-      }
-    }
-    let node = card.parentElement;
-    while (node){
-      const user = node.querySelector('.gm-contact-compact-user');
-      if (user?.textContent) return clean(user.textContent);
-      node = node.parentElement;
-    }
-    return 'Contact';
-  }
-
-  function extractSubject(card){
-    const explicit = card.querySelector('[class*="subject" i]');
-    if (explicit && !explicit.classList.contains('gm-compact-subject')){
-      const value = clean(explicit.textContent);
-      if (value) return value;
-    }
-    const route = extractRoute(card);
-    const date = extractDate(card);
-    const bad = /^(?:SENT|RECEIVED|Inbox|Outbox)$/i;
-    const ls = lines(card).filter(v => {
-      if (!v || bad.test(v)) return false;
-      if (date && v.includes(date)) return false;
-      if (route && v === route) return false;
-      if (ARROW_RE.test(v)) return false;
-      if (/^(?:ID\s*)?\d{5,}$/.test(v)) return false;
-      if (/^(?:Inbox|Outbox)\s+ID\b/i.test(v)) return false;
-      if (/^🔎/.test(v)) return false;
-      return true;
+    [actionRow,filterPanel,stats].forEach(el=>{
+      const old=el?.parentElement;
+      if(old && old!==controlsModal && old.children.length===0) old.classList.add('gm-shell-hidden');
     });
-    return ls[0] || '(no subject)';
+
+    dataBar=document.createElement('div'); dataBar.className='gm-data-bar';
+    dataBar.innerHTML=`<span class="gm-data-brand">✉ GeekMail</span><span class="gm-data-summary" id="gmDataSummary">Data-first view</span><span class="gm-data-spacer"></span><button class="gm-shell-btn" id="gmControlsBtn" type="button">☰ Controls</button><button class="gm-shell-btn" id="gmReloadCompact" type="button">↻ Data</button>`;
+    if(tabRow?.parentElement) tabRow.parentElement.insertBefore(dataBar,tabRow); else document.body.prepend(dataBar);
+    dataBar.querySelector('#gmControlsBtn').onclick=()=>controlsModal.classList.remove('hidden');
+    dataBar.querySelector('#gmReloadCompact').onclick=()=>loadRows(true);
+
+    const summaryBits=[];
+    const bodyText=clean(document.body.innerText);
+    const m=bodyText.match(/([\d,]+)\s+messages/i); if(m) summaryBits.push(`${m[1]} msgs`);
+    const c=bodyText.match(/([\d,]+)\s+contacts/i); if(c) summaryBits.push(`${c[1]} contacts`);
+    if(summaryBits.length) dataBar.querySelector('#gmDataSummary').textContent=summaryBits.join(' · ');
   }
 
-  function enhanceCard(card){
-    if (!(card instanceof HTMLElement) || card.classList.contains('gm-trail-card')) return;
-    const line = document.createElement('div');
-    line.className = 'gm-compact-line';
-    line.title = 'Click to expand/collapse full message';
+  function createCompactPanel(){
+    compactPanel=document.createElement('section'); compactPanel.className='gm-compact-panel';
+    compactPanel.innerHTML=`
+      <div class="gm-compact-toolbar">
+        <input class="gm-compact-search" id="gmCompactSearch" placeholder="Quick search: contact or subject…">
+        <div class="gm-seg"><button type="button" id="gmGrouped" class="active">Grouped</button><button type="button" id="gmFlat">Flat</button></div>
+        <select class="gm-compact-select" id="gmContactSort" title="Contact sort"><option value="recent">Recent contacts</option><option value="alpha">A–Z contacts</option><option value="count">Most messages</option></select>
+        <select class="gm-compact-select" id="gmMessageSort" title="Message order"><option value="newest">Newest first</option><option value="oldest">Oldest first</option></select>
+        <select class="gm-compact-select" id="gmFolderFilter" title="Folder"><option value="all">All folders</option></select>
+        <span class="gm-compact-count" id="gmCompactCount">Load Compact to view data</span>
+      </div>
+      <div class="gm-compact-body" id="gmCompactBody"><div class="gm-loading">Compact view will load the full GeekMail archive.</div></div>`;
+    const parent=tabRow?.parentElement||document.body; parent.insertBefore(compactPanel,tabRow?.nextSibling||null);
 
-    const user = document.createElement('span');
-    user.className = 'gm-compact-user';
-    user.textContent = extractUsername(card);
+    compactPanel.querySelector('#gmCompactSearch').addEventListener('input',e=>{searchText=e.target.value;render();});
+    compactPanel.querySelector('#gmGrouped').onclick=()=>{mode='grouped';setModeButtons();render();};
+    compactPanel.querySelector('#gmFlat').onclick=()=>{mode='flat';setModeButtons();render();};
+    compactPanel.querySelector('#gmContactSort').onchange=e=>{contactSort=e.target.value;render();};
+    compactPanel.querySelector('#gmMessageSort').onchange=e=>{messageSort=e.target.value;render();};
+    compactPanel.querySelector('#gmFolderFilter').onchange=e=>{folderFilter=e.target.value;render();};
+  }
 
-    const subject = extractSubject(card);
-    const subj = document.createElement('span');
-    subj.className = 'gm-compact-subject';
-    subj.textContent = subject;
-    subj.title = subject;
+  function setModeButtons(){
+    compactPanel?.querySelector('#gmGrouped')?.classList.toggle('active',mode==='grouped');
+    compactPanel?.querySelector('#gmFlat')?.classList.toggle('active',mode==='flat');
+  }
 
-    const date = document.createElement('span');
-    date.className = 'gm-compact-date';
-    date.textContent = extractDate(card);
+  function setupTabs(){
+    const contact=exactText('Contact trails');
+    const data=exactText('Data table');
+    const getNew=exactText('Get New Data');
+    if(!contact || !data) return false;
+    tabRow=contact.parentElement;
+    viewHost=tabRow?.parentElement||null;
 
-    line.append(user, subj, date);
-    line.addEventListener('click', e => {
-      e.preventDefault();
-      e.stopPropagation();
-      card.classList.toggle('gm-expanded');
+    compactTab=document.createElement('button');
+    compactTab.type='button'; compactTab.textContent='Compact'; compactTab.className=`${contact.className||''} gm-compact-tab`.trim();
+    compactTab.removeAttribute('id'); compactTab.setAttribute('aria-selected','false');
+    contact.insertAdjacentElement('afterend',compactTab);
+    compactTab.addEventListener('click',showCompact);
+    [contact,data,getNew].filter(Boolean).forEach(tab=>tab.addEventListener('click',hideCompact));
+
+    createCompactPanel();
+    compactShell();
+    return true;
+  }
+
+  function markOriginalViewNodes(){
+    if(!viewHost || !tabRow) return;
+    [...viewHost.children].forEach(child=>{
+      if(child===tabRow||child===compactPanel||child===dataBar||child===controlsModal||child===detailModal) return;
+      child.classList.add('gm-original-view-node');
+      child.classList.toggle('gm-hide-for-compact',compactActive);
     });
-    card.prepend(line);
-    card.classList.add('gm-trail-card');
   }
 
-  function scan(){
-    const root = document.body;
-    addLoadedIndicator();
-    enhanceContactHeaders(root);
-    const badges = [...root.querySelectorAll('*')].filter(isDirectionBadge);
-    const cards = new Set();
-    for (const badge of badges){
-      const card = findMessageCard(badge, root);
-      if (card) cards.add(card);
-    }
-    cards.forEach(enhanceCard);
-    document.documentElement.dataset.geekmailCompact = String(cards.size);
-    if (cards.size) console.debug(`[GeekMail compact trails v3] compacted ${cards.size} visible message cards`);
+  async function showCompact(e){
+    e?.preventDefault(); e?.stopPropagation();
+    compactActive=true; document.body.classList.add('gm-compact-active'); compactTab?.classList.add('gm-tab-active'); compactTab?.setAttribute('aria-selected','true');
+    markOriginalViewNodes();
+    if(!loaded) await loadRows(false); else render();
+  }
+  function hideCompact(){
+    compactActive=false; document.body.classList.remove('gm-compact-active'); compactTab?.classList.remove('gm-tab-active'); compactTab?.setAttribute('aria-selected','false');
+    document.querySelectorAll('.gm-original-view-node').forEach(el=>el.classList.remove('gm-hide-for-compact'));
   }
 
-  let timer;
-  const queue = () => {
-    clearTimeout(timer);
-    timer = setTimeout(scan, 30);
-  };
-  const observer = new MutationObserver(queue);
-  observer.observe(document.body, { childList:true, subtree:true });
-  scan();
+  async function loadRows(force=false){
+    if(loading || (loaded&&!force)) return;
+    loading=true;
+    const body=compactPanel?.querySelector('#gmCompactBody'); if(body) body.innerHTML='<div class="gm-loading">Loading full GeekMail archive…</div>';
+    try{
+      const password=sessionStorage.getItem(SESSION_KEY)||'';
+      const response=await fetch(API,{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({action:'READ',password,limit:10000})});
+      const data=await response.json().catch(()=>({}));
+      if(!response.ok||!data.ok) throw new Error(data.error||`GeekMail read failed (${response.status})`);
+      rows=Array.isArray(data.rows)?data.rows:[]; loaded=true;
+      populateFolders();
+      const contacts=new Set(rows.map(otherUser).filter(Boolean));
+      const summary=dataBar?.querySelector('#gmDataSummary'); if(summary) summary.textContent=`${rows.length.toLocaleString()} msgs · ${contacts.size.toLocaleString()} contacts`;
+      render();
+    }catch(err){ if(body) body.innerHTML=`<div class="gm-empty">Compact view could not load: ${esc(err.message)}</div>`; }
+    finally{loading=false;}
+  }
+
+  function populateFolders(){
+    const sel=compactPanel?.querySelector('#gmFolderFilter'); if(!sel) return;
+    const old=sel.value||'all';
+    const folders=[...new Set(rows.map(r=>clean(r.folder)).filter(Boolean))].sort((a,b)=>a.localeCompare(b));
+    sel.innerHTML='<option value="all">All folders</option>'+folders.map(f=>`<option value="${esc(f)}">${esc(f)}</option>`).join('');
+    if([...sel.options].some(o=>o.value===old)) sel.value=old;
+  }
+
+  function filteredRows(){
+    const q=norm(searchText);
+    return rows.filter(r=>{
+      if(folderFilter!=='all' && clean(r.folder)!==folderFilter) return false;
+      if(!q) return true;
+      return [otherUser(r),r.subject,r.message_date,r.folder].some(v=>norm(v).includes(q));
+    });
+  }
+
+  function sortedMessages(list){ return [...list].sort((a,b)=>messageSort==='oldest'?ts(a)-ts(b):ts(b)-ts(a)); }
+
+  function render(){
+    if(!compactPanel||!loaded) return;
+    const body=compactPanel.querySelector('#gmCompactBody'); const list=filteredRows();
+    const contacts=new Map();
+    list.forEach(r=>{const u=otherUser(r); if(!contacts.has(u))contacts.set(u,[]); contacts.get(u).push(r);});
+    compactPanel.querySelector('#gmCompactCount').textContent=`${list.length.toLocaleString()} messages · ${contacts.size.toLocaleString()} contacts`;
+    if(!list.length){body.innerHTML='<div class="gm-empty">No messages match the compact filters.</div>';return;}
+    if(mode==='flat') renderFlat(body,list); else renderGrouped(body,contacts);
+  }
+
+  function renderGrouped(body,contacts){
+    let groups=[...contacts.entries()].map(([user,msgs])=>({user,msgs:sortedMessages(msgs),recent:Math.max(...msgs.map(ts),0)}));
+    groups.sort((a,b)=>contactSort==='alpha'?a.user.localeCompare(b.user):contactSort==='count'?b.msgs.length-a.msgs.length:b.recent-a.recent);
+    body.innerHTML=`<div class="gm-contact-grid">${groups.map(g=>`<section class="gm-contact-box"><div class="gm-contact-box-head"><span class="gm-contact-name" title="${esc(g.user)}">${esc(g.user)}</span><span class="gm-contact-meta">${g.msgs.length} msg${g.msgs.length===1?'':'s'}</span></div><div>${g.msgs.map(messageRowHtml).join('')}</div></section>`).join('')}</div>`;
+    bindRows(body);
+  }
+
+  function messageRowHtml(r){
+    const sent=isSent(r), dir=sent?'→':'←';
+    return `<div class="gm-mini-row" data-mid="${esc(r.message_id)}" title="${esc(fullDate(r))} · ${sent?'Sent':'Received'}"><span class="gm-mini-date">${esc(shortDate(r))}</span><span class="gm-mini-dir ${sent?'sent':'received'}">${dir}</span><span class="gm-mini-subject" title="${esc(r.subject||'(no subject)')}">${esc(r.subject||'(no subject)')}</span></div>`;
+  }
+
+  function renderFlat(body,list){
+    const ordered=sortedMessages(list);
+    body.innerHTML=`<div class="gm-flat-wrap"><div class="gm-flat-head"><span>Date</span><span></span><span>Contact</span><span>Subject</span></div>${ordered.map(r=>{const sent=isSent(r);return `<div class="gm-flat-row" data-mid="${esc(r.message_id)}"><span class="gm-mini-date">${esc(shortDate(r))}</span><span class="gm-mini-dir ${sent?'sent':'received'}">${sent?'→':'←'}</span><span class="gm-flat-user" title="${esc(otherUser(r))}">${esc(otherUser(r))}</span><span class="gm-flat-subject" title="${esc(r.subject||'(no subject)')}">${esc(r.subject||'(no subject)')}</span></div>`;}).join('')}</div>`;
+    bindRows(body);
+  }
+
+  function bindRows(root){ root.querySelectorAll('[data-mid]').forEach(el=>el.addEventListener('click',()=>openDetail(el.dataset.mid))); }
+  function openDetail(id){
+    const r=rows.find(x=>String(x.message_id)===String(id)); if(!r||!detailModal)return;
+    const sent=isSent(r); detailModal.querySelector('#gmDetailTitle').textContent=r.subject||'(no subject)';
+    detailModal.querySelector('#gmDetailMeta').textContent=`${sent?'Sent to':'Received from'} ${otherUser(r)} · ${fullDate(r)}`;
+    const items=[['Contact',otherUser(r)],['Direction',sent?'Sent →':'← Received'],['Date',fullDate(r)],['Folder',r.folder||''],['Message ID',r.message_id||''],['Route',`${r.from_username||''} → ${r.to_username||''}`]];
+    detailModal.querySelector('#gmDetailGrid').innerHTML=items.map(([k,v])=>`<b>${esc(k)}</b><span>${esc(v)}</span>`).join('');
+    detailModal.querySelector('#gmDetailBody').textContent=r.body_text||r.body_html||'(No message body)'; detailModal.classList.remove('hidden');
+  }
+
+  function boot(){
+    let attempts=0;
+    const timer=setInterval(()=>{
+      attempts++;
+      if(setupTabs()||attempts>80) clearInterval(timer);
+    },100);
+    const observer=new MutationObserver(()=>{if(compactActive)markOriginalViewNodes();});
+    observer.observe(document.body,{childList:true,subtree:false});
+  }
+
+  boot();
 })();
 </script>
