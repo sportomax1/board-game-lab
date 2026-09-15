@@ -1,0 +1,108 @@
+<script>
+(() => {
+  if (window.__GEEKMAIL_DIAGNOSTICS__) return;
+  window.__GEEKMAIL_DIAGNOSTICS__ = true;
+
+  const SESSION_KEY='geekmail_access_key';
+  const logs=[];
+  const now=()=>new Date().toLocaleTimeString();
+  const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
+
+  const btn=document.createElement('button');
+  btn.textContent='DB Debug';
+  btn.title='Open GeekMail upload/database diagnostics';
+  btn.style.cssText='position:fixed;right:12px;bottom:12px;z-index:100500;width:auto;margin:0;padding:8px 10px;border-radius:10px;border:1px solid #40557d;background:#111a2d;color:#dce8ff;font:700 11px system-ui;cursor:pointer';
+
+  const panel=document.createElement('div');
+  panel.style.cssText='position:fixed;right:12px;bottom:52px;z-index:100500;width:min(620px,calc(100vw - 24px));max-height:55vh;display:none;flex-direction:column;border:1px solid #33486f;border-radius:14px;background:#07101f;color:#eaf1ff;box-shadow:0 20px 70px rgba(0,0,0,.55);overflow:hidden';
+  panel.innerHTML=`
+    <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0e1a30;border-bottom:1px solid #263a5d">
+      <b style="flex:1">GeekMail DB Diagnostics</b>
+      <button id="gmDiagHealth" style="width:auto;margin:0;padding:6px 8px">Health</button>
+      <button id="gmDiagClear" style="width:auto;margin:0;padding:6px 8px">Clear</button>
+      <button id="gmDiagClose" style="width:auto;margin:0;padding:6px 8px">✕</button>
+    </div>
+    <div id="gmDiagStatus" style="padding:8px 12px;font:11px system-ui;color:#9fb4d8;border-bottom:1px solid #203452">Ready.</div>
+    <pre id="gmDiagLog" style="margin:0;padding:10px 12px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;min-height:170px"></pre>`;
+
+  document.body.append(btn,panel);
+  const logEl=panel.querySelector('#gmDiagLog');
+  const statusEl=panel.querySelector('#gmDiagStatus');
+
+  function log(message,data){
+    const line=`[${now()}] ${message}${data===undefined?'':'\n'+JSON.stringify(data,null,2)}`;
+    logs.push(line);
+    if(logs.length>250) logs.splice(0,logs.length-250);
+    logEl.textContent=logs.join('\n');
+    logEl.scrollTop=logEl.scrollHeight;
+    console.log('[GeekMail]',message,data??'');
+  }
+  window.gmDiagLog=log;
+
+  btn.onclick=()=>{panel.style.display=panel.style.display==='flex'?'none':'flex';};
+  panel.querySelector('#gmDiagClose').onclick=()=>panel.style.display='none';
+  panel.querySelector('#gmDiagClear').onclick=()=>{logs.length=0;logEl.textContent='';};
+
+  async function api(action,extra={}){
+    const password=sessionStorage.getItem(SESSION_KEY)||'';
+    const started=performance.now();
+    const r=await fetch('/api/geekmail',{method:'POST',headers:{'Content-Type':'application/json'},cache:'no-store',body:JSON.stringify({action,password,...extra})});
+    let data={}; try{data=await r.json();}catch{}
+    log(`API ${action} → HTTP ${r.status} (${Math.round(performance.now()-started)}ms)`,data);
+    if(!r.ok||!data.ok) throw new Error(data.error||`HTTP ${r.status}`);
+    return data;
+  }
+
+  panel.querySelector('#gmDiagHealth').onclick=async()=>{
+    statusEl.textContent='Checking password/API/Supabase…';
+    try{
+      const ping=await api('PING');
+      const stats=await api('STATS');
+      statusEl.textContent=`Connected · key=${ping.keySource||'unknown'} · DB rows=${stats.count}`;
+    }catch(e){statusEl.textContent='FAILED: '+e.message;log('Health check failed',{error:e.message});}
+  };
+
+  const originalFetch=window.fetch.bind(window);
+  window.fetch=async function(input,init){
+    const url=typeof input==='string'?input:(input?.url||'');
+    const isGeek=url.includes('/api/geekmail');
+    let action='';
+    if(isGeek&&init?.body){try{action=JSON.parse(init.body).action||'';}catch{}}
+    if(isGeek) log(`→ ${action||'REQUEST'} /api/geekmail`);
+    try{
+      const r=await originalFetch(input,init);
+      if(isGeek){
+        const clone=r.clone(); let payload='';
+        try{payload=await clone.json();}catch{try{payload=await clone.text();}catch{}}
+        log(`← ${action||'REQUEST'} HTTP ${r.status}`,payload);
+        if(action==='SYNC'&&r.ok&&payload?.ok){
+          statusEl.textContent=`SYNC OK · upserted=${payload.upserted||0} · deleted=${payload.deleted||0} · existing=${payload.summary?.existing??'?'} → incoming=${payload.summary?.incoming??'?'}`;
+          panel.style.display='flex';
+        } else if(isGeek&&!r.ok){statusEl.textContent=`API FAILED · ${payload?.error||r.statusText}`;panel.style.display='flex';}
+      }
+      return r;
+    }catch(e){if(isGeek){log(`✖ ${action||'REQUEST'} network error`,{error:e.message});statusEl.textContent='NETWORK ERROR: '+e.message;panel.style.display='flex';}throw e;}
+  };
+
+  function describeFiles(files){return [...(files||[])].map(f=>({name:f.name,size:f.size,type:f.type||''}));}
+  document.querySelector('#fileInput')?.addEventListener('change',e=>{if(e.target.files?.length){log('CSV file selected',describeFiles(e.target.files));statusEl.textContent='CSV selected; waiting for parse/delta/write…';panel.style.display='flex';}},true);
+  document.querySelector('#drop')?.addEventListener('drop',e=>{if(e.dataTransfer?.files?.length){log('Files dropped',describeFiles(e.dataTransfer.files));statusEl.textContent='CSV dropped; waiting for parse/delta/write…';panel.style.display='flex';}},true);
+
+  const observer=new MutationObserver(()=>{
+    const delta=document.querySelector('#gmDeltaContent');
+    if(delta&&delta.style.display!=='none'){
+      const summary={
+        added:document.querySelector('#gmDeltaAdded')?.textContent,
+        changed:document.querySelector('#gmDeltaChanged')?.textContent,
+        unchanged:document.querySelector('#gmDeltaSame')?.textContent,
+        missing:document.querySelector('#gmDeltaMissing')?.textContent
+      };
+      const sig=JSON.stringify(summary);
+      if(window.__gmLastDelta!==sig){window.__gmLastDelta=sig;log('Delta comparison ready',summary);}
+    }
+  });
+  observer.observe(document.documentElement,{subtree:true,attributes:true,childList:true,characterData:true});
+
+  log('Diagnostics loaded',{build:window.GEEKMAIL_BUILD||'unknown'});
+})();
+</script>
