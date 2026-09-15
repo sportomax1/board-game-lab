@@ -6,7 +6,6 @@
   const SESSION_KEY='geekmail_access_key';
   const logs=[];
   const now=()=>new Date().toLocaleTimeString();
-  const esc=s=>String(s??'').replace(/[&<>]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;'}[c]));
 
   const btn=document.createElement('button');
   btn.textContent='DB Debug';
@@ -14,7 +13,7 @@
   btn.style.cssText='position:fixed;right:12px;bottom:12px;z-index:100500;width:auto;margin:0;padding:8px 10px;border-radius:10px;border:1px solid #40557d;background:#111a2d;color:#dce8ff;font:700 11px system-ui;cursor:pointer';
 
   const panel=document.createElement('div');
-  panel.style.cssText='position:fixed;right:12px;bottom:52px;z-index:100500;width:min(620px,calc(100vw - 24px));max-height:55vh;display:none;flex-direction:column;border:1px solid #33486f;border-radius:14px;background:#07101f;color:#eaf1ff;box-shadow:0 20px 70px rgba(0,0,0,.55);overflow:hidden';
+  panel.style.cssText='position:fixed;right:12px;bottom:52px;z-index:100500;width:min(650px,calc(100vw - 24px));max-height:60vh;display:none;flex-direction:column;border:1px solid #33486f;border-radius:14px;background:#07101f;color:#eaf1ff;box-shadow:0 20px 70px rgba(0,0,0,.55);overflow:hidden';
   panel.innerHTML=`
     <div style="display:flex;align-items:center;gap:8px;padding:10px 12px;background:#0e1a30;border-bottom:1px solid #263a5d">
       <b style="flex:1">GeekMail DB Diagnostics</b>
@@ -23,7 +22,7 @@
       <button id="gmDiagClose" style="width:auto;margin:0;padding:6px 8px">✕</button>
     </div>
     <div id="gmDiagStatus" style="padding:8px 12px;font:11px system-ui;color:#9fb4d8;border-bottom:1px solid #203452">Ready.</div>
-    <pre id="gmDiagLog" style="margin:0;padding:10px 12px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;min-height:170px"></pre>`;
+    <pre id="gmDiagLog" style="margin:0;padding:10px 12px;overflow:auto;white-space:pre-wrap;word-break:break-word;font:11px/1.45 ui-monospace,SFMono-Regular,Consolas,monospace;min-height:190px"></pre>`;
 
   document.body.append(btn,panel);
   const logEl=panel.querySelector('#gmDiagLog');
@@ -58,8 +57,8 @@
     try{
       const ping=await api('PING');
       const stats=await api('STATS');
-      statusEl.textContent=`Connected · key=${ping.keySource||'unknown'} · DB rows=${stats.count}`;
-    }catch(e){statusEl.textContent='FAILED: '+e.message;log('Health check failed',{error:e.message});}
+      statusEl.textContent=`Connected · key=${ping.keySource||'unknown'} · table=${ping.table||'geekmail_messages'} · DB rows=${stats.count}`;
+    }catch(e){statusEl.textContent='FAILED: '+e.message;log('Health check failed',{error:e.message});panel.style.display='flex';}
   };
 
   const originalFetch=window.fetch.bind(window);
@@ -76,33 +75,75 @@
         try{payload=await clone.json();}catch{try{payload=await clone.text();}catch{}}
         log(`← ${action||'REQUEST'} HTTP ${r.status}`,payload);
         if(action==='SYNC'&&r.ok&&payload?.ok){
-          statusEl.textContent=`SYNC OK · upserted=${payload.upserted||0} · deleted=${payload.deleted||0} · existing=${payload.summary?.existing??'?'} → incoming=${payload.summary?.incoming??'?'}`;
+          statusEl.textContent=`SYNC OK · upserted=${payload.upserted||0} · DB after=${payload.databaseCountAfter??'?'} · incoming=${payload.summary?.incoming??'?'}`;
           panel.style.display='flex';
-        } else if(isGeek&&!r.ok){statusEl.textContent=`API FAILED · ${payload?.error||r.statusText}`;panel.style.display='flex';}
+        } else if(isGeek&&!r.ok){
+          statusEl.textContent=`API FAILED · ${payload?.error||r.statusText}`;
+          panel.style.display='flex';
+        }
       }
       return r;
-    }catch(e){if(isGeek){log(`✖ ${action||'REQUEST'} network error`,{error:e.message});statusEl.textContent='NETWORK ERROR: '+e.message;panel.style.display='flex';}throw e;}
+    }catch(e){
+      if(isGeek){log(`✖ ${action||'REQUEST'} network error`,{error:e.message});statusEl.textContent='NETWORK ERROR: '+e.message;panel.style.display='flex';}
+      throw e;
+    }
   };
 
-  function describeFiles(files){return [...(files||[])].map(f=>({name:f.name,size:f.size,type:f.type||''}));}
-  document.querySelector('#fileInput')?.addEventListener('change',e=>{if(e.target.files?.length){log('CSV file selected',describeFiles(e.target.files));statusEl.textContent='CSV selected; waiting for parse/delta/write…';panel.style.display='flex';}},true);
-  document.querySelector('#drop')?.addEventListener('drop',e=>{if(e.dataTransfer?.files?.length){log('Files dropped',describeFiles(e.dataTransfer.files));statusEl.textContent='CSV dropped; waiting for parse/delta/write…';panel.style.display='flex';}},true);
+  function parseCsvLine(line){
+    const out=[];let field='',quoted=false;
+    for(let i=0;i<line.length;i++){
+      const c=line[i],n=line[i+1];
+      if(quoted){if(c==='"'&&n==='"'){field+='"';i++;}else if(c==='"')quoted=false;else field+=c;}
+      else{if(c==='"')quoted=true;else if(c===','){out.push(field);field='';}else field+=c;}
+    }
+    out.push(field);return out;
+  }
+
+  async function inspectFiles(files,source){
+    const csvs=[...(files||[])].filter(f=>f?.name?.toLowerCase().endsWith('.csv'));
+    log(`${source}: ${csvs.length} CSV file(s)`,csvs.map(f=>({name:f.name,size:f.size,type:f.type||''})));
+    panel.style.display='flex';
+    for(const file of csvs){
+      try{
+        const text=await file.text();
+        const lines=text.replace(/^\uFEFF/,'').split(/\r?\n/).filter(Boolean);
+        const headers=lines.length?parseCsvLine(lines[0]).map(x=>x.trim()):[];
+        const idIndex=headers.indexOf('message_id');
+        let numericIds=0,blankIds=0;
+        if(idIndex>=0){
+          for(const line of lines.slice(1)){
+            const cols=parseCsvLine(line);const raw=(cols[idIndex]??'').trim();
+            if(raw&&Number.isFinite(Number(raw))) numericIds++; else blankIds++;
+          }
+        }
+        const info={file:file.name,rowsExcludingHeader:Math.max(lines.length-1,0),headers,messageIdColumn:idIndex,numericMessageIds:numericIds,invalidOrBlankMessageIds:blankIds};
+        log('CSV preflight',info);
+        if(idIndex<0){statusEl.textContent='CSV ERROR: required message_id column not found.';}
+        else if(numericIds===0){statusEl.textContent='CSV ERROR: no numeric message_id rows found.';}
+        else{statusEl.textContent=`CSV parsed preflight: ${numericIds} usable message IDs. Waiting for DB delta/write…`;}
+      }catch(e){log('CSV preflight failed',{file:file.name,error:e.message});statusEl.textContent='CSV read failed: '+e.message;}
+    }
+  }
+
+  document.querySelector('#fileInput')?.addEventListener('change',e=>{if(e.target.files?.length)inspectFiles(e.target.files,'File selected');},true);
+  document.querySelector('#drop')?.addEventListener('drop',e=>{if(e.dataTransfer?.files?.length)inspectFiles(e.dataTransfer.files,'Drop');},true);
 
   const observer=new MutationObserver(()=>{
+    const loading=document.querySelector('#gmDeltaLoading');
+    if(loading&&loading.style.display!=='none'&&loading.textContent){
+      const text=loading.textContent.trim();
+      if(text&&window.__gmLastLoading!==text){window.__gmLastLoading=text;log('Sync UI',text);if(/error|failed|missing|not configured/i.test(text)){statusEl.textContent=text;panel.style.display='flex';}}
+    }
     const delta=document.querySelector('#gmDeltaContent');
     if(delta&&delta.style.display!=='none'){
-      const summary={
-        added:document.querySelector('#gmDeltaAdded')?.textContent,
-        changed:document.querySelector('#gmDeltaChanged')?.textContent,
-        unchanged:document.querySelector('#gmDeltaSame')?.textContent,
-        missing:document.querySelector('#gmDeltaMissing')?.textContent
-      };
+      const summary={added:document.querySelector('#gmDeltaAdded')?.textContent,changed:document.querySelector('#gmDeltaChanged')?.textContent,unchanged:document.querySelector('#gmDeltaSame')?.textContent,missing:document.querySelector('#gmDeltaMissing')?.textContent};
       const sig=JSON.stringify(summary);
-      if(window.__gmLastDelta!==sig){window.__gmLastDelta=sig;log('Delta comparison ready',summary);}
+      if(window.__gmLastDelta!==sig){window.__gmLastDelta=sig;log('Delta comparison ready',summary);statusEl.textContent=`Delta ready: +${summary.added} ~${summary.changed} =${summary.unchanged} missing=${summary.missing}`;}
     }
   });
   observer.observe(document.documentElement,{subtree:true,attributes:true,childList:true,characterData:true});
 
   log('Diagnostics loaded',{build:window.GEEKMAIL_BUILD||'unknown'});
+  setTimeout(()=>panel.querySelector('#gmDiagHealth')?.click(),500);
 })();
 </script>
