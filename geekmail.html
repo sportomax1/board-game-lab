@@ -14,7 +14,7 @@
   h1{margin:0;font-size:23px}.hero p{margin:6px 0 0;color:#dce6ff;font-size:12px}
   .body{padding:22px}.body label{display:block;color:#9fb0cc;font-size:10px;text-transform:uppercase;letter-spacing:.12em;margin:0 0 6px}
   input{width:100%;background:#0d1424;color:#edf2ff;border:1px solid #28344f;border-radius:10px;padding:13px 14px;font-size:16px}
-  #error{min-height:20px;color:#ff929f;font-size:12px;text-align:center;margin:9px 0 2px}
+  #error{min-height:20px;color:#ff929f;font-size:12px;text-align:center;margin:9px 0 2px;white-space:pre-wrap}
   button{width:100%;margin-top:6px;padding:13px;border-radius:12px;border:1px solid #5d8df0;background:#315fca;color:#fff;font-weight:800;cursor:pointer}
   button:disabled{opacity:.55;cursor:wait}
   #boot{display:none;min-height:100vh;align-items:center;justify-content:center;padding:24px;text-align:center;background:#0b1020}
@@ -26,7 +26,7 @@
     <div class="hero">
       <div class="icon">✉️</div>
       <h1>GeekMail Explorer</h1>
-      <p>Password required before the app or message data loads</p>
+      <p>Password + Supabase connection required before the app loads</p>
     </div>
     <div class="body">
       <label for="password">Access Key</label>
@@ -39,7 +39,7 @@
 <div id="boot">Loading GeekMail Explorer…</div>
 <script>
 (async()=>{
-  const BUILD='20260914-2315-password-autosync';
+  const BUILD='20260914-2345-db-diagnostics';
   const SESSION_KEY='geekmail_access_key';
   const gate=document.getElementById('gate');
   const boot=document.getElementById('boot');
@@ -47,10 +47,9 @@
   const unlockBtn=document.getElementById('unlock');
   const error=document.getElementById('error');
 
-  // A fresh password entry is required on every full page load/reload.
   sessionStorage.removeItem(SESSION_KEY);
 
-  async function verifyPassword(password){
+  async function verifyPasswordAndDb(password){
     const response=await fetch('/api/geekmail',{
       method:'POST',
       headers:{'Content-Type':'application/json'},
@@ -59,7 +58,9 @@
     });
     let data={};
     try{data=await response.json();}catch{}
-    if(!response.ok||!data.ok) throw new Error(data.error||'Invalid access key');
+    if(!response.ok||!data.ok) throw new Error(data.error||`GeekMail API failed (${response.status})`);
+    if(!data.storageConfigured) throw new Error('Password accepted, but Supabase storage is not configured.');
+    if(data.databaseReachable===false) throw new Error(data.databaseError||'Password accepted, but Supabase could not be reached.');
     return data;
   }
 
@@ -73,7 +74,8 @@
         `assets/geekmail/ui-patch.txt?v=${BUILD}`,
         `assets/geekmail/cloud-patch.txt?v=${BUILD}`,
         `assets/geekmail/reload-patch.txt?v=${BUILD}`,
-        `assets/geekmail/auto-sync-patch.txt?v=${BUILD}`
+        `assets/geekmail/auto-sync-patch.txt?v=${BUILD}`,
+        `assets/geekmail/diagnostics-patch.txt?v=${BUILD}`
       ];
       const [parts,patches]=await Promise.all([
         Promise.all(urls.map(async url=>{
@@ -90,11 +92,8 @@
       let app=parts.join('');
       const buildMarker=`<script>window.GEEKMAIL_BUILD=${JSON.stringify(BUILD)};<\/script>`;
       const patch=buildMarker+'\n'+patches.join('\n');
-      if(/<\/body>\s*<\/html>\s*$/i.test(app)){
-        app=app.replace(/<\/body>\s*<\/html>\s*$/i,patch+'\n</body></html>');
-      }else{
-        app+=patch;
-      }
+      if(/<\/body>\s*<\/html>\s*$/i.test(app)) app=app.replace(/<\/body>\s*<\/html>\s*$/i,patch+'\n</body></html>');
+      else app+=patch;
       document.open();
       document.write(app);
       document.close();
@@ -110,17 +109,16 @@
     const password=input.value;
     if(!password){error.textContent='Enter the access key.';input.focus();return;}
     unlockBtn.disabled=true;
-    unlockBtn.textContent='Checking…';
+    unlockBtn.textContent='Checking password + database…';
     error.textContent='';
     try{
-      await verifyPassword(password);
-      // Used only by the loaded GeekMail cloud module during this page instance.
-      // This key is cleared at the beginning of every full page load.
+      const health=await verifyPasswordAndDb(password);
       sessionStorage.setItem(SESSION_KEY,password);
+      console.log('[GeekMail gate] database health',health);
       await loadApp();
     }catch(err){
       sessionStorage.removeItem(SESSION_KEY);
-      error.textContent='Invalid access key.';
+      error.textContent=err.message||'Could not unlock GeekMail.';
       input.select();
       console.error(err);
     }finally{
