@@ -1,80 +1,50 @@
-export const config = { runtime: 'edge' };
+const EDGE_URL = 'https://jadyqyrpgcmaixroizov.supabase.co/functions/v1/bga-game-catalog-db';
 
-const json = (body, status = 200) => new Response(JSON.stringify(body), {
-  status,
-  headers: {
-    'Content-Type': 'application/json',
-    'Cache-Control': 'no-store',
-    'Access-Control-Allow-Origin': '*',
-    'Access-Control-Allow-Methods': 'GET,POST,OPTIONS',
-    'Access-Control-Allow-Headers': 'Content-Type'
-  }
-});
+function json(res, status, body) {
+  res.setHeader('Cache-Control', 'no-store');
+  res.setHeader('Content-Type', 'application/json');
+  return res.status(status).json(body);
+}
 
-const normalizeRow = row => ({
-  game_key: String(row.game_key ?? row.Key ?? '').trim(),
-  game: String(row.game ?? row.Game ?? '').trim(),
-  status: String(row.status ?? row.Status ?? '').trim(),
-  players: String(row.players ?? row.Players ?? '').trim(),
-  minutes: row.minutes === '' || row.minutes == null ? null : Number(row.minutes ?? row.Minutes),
-  premium: typeof row.premium === 'boolean' ? row.premium : /^yes|true|1$/i.test(String(row.Premium ?? row.premium ?? '')),
-  url: String(row.url ?? row.URL ?? '').trim(),
-  source: String(row.source ?? 'bga_gamelist'),
-  bgg_id: row.bgg_id == null || row.bgg_id === '' ? null : Number(row.bgg_id),
-  bgg_name: row.bgg_name ?? null,
-  bgg_thumbnail: row.bgg_thumbnail ?? null,
-  bgg_username: row.bgg_username ?? null,
-  bgg_status: row.bgg_status && typeof row.bgg_status === 'object' ? row.bgg_status : {},
-  updated_at: new Date().toISOString()
-});
-
-export default async function handler(req) {
-  if (req.method === 'OPTIONS') return new Response(null, { status: 204, headers: { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' } });
-
-  const url = process.env.SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
-  if (!url || !key) return json({ ok: false, error: 'Supabase server credentials are not configured.' }, 500);
-
-  const headers = { Authorization: `Bearer ${key}`, apikey: key, Accept: 'application/json' };
-  const tableUrl = `${url}/rest/v1/bga_game_catalog`;
+export default async function handler(req, res) {
+  if (req.method !== 'POST') return json(res, 405, { ok: false, error: 'POST required' });
 
   try {
-    if (req.method === 'GET') {
-      const r = await fetch(`${tableUrl}?select=*&order=game.asc&limit=10000`, { headers });
-      const text = await r.text();
-      if (!r.ok) return json({ ok: false, error: text }, r.status);
-      const rows = JSON.parse(text);
-      return json({ ok: true, rows, count: rows.length });
+    const body = req.body || {};
+    const suppliedPassword = String(body.password ?? '');
+    const configuredPassword = String(process.env.PASSWORD || '');
+
+    if (!configuredPassword) return json(res, 500, { ok: false, error: 'PASSWORD is not configured' });
+    if (!suppliedPassword || suppliedPassword !== configuredPassword) {
+      return json(res, 401, { ok: false, error: 'Invalid access key' });
     }
 
-    if (req.method === 'POST') {
-      const body = await req.json();
-      const input = Array.isArray(body.rows) ? body.rows : [];
-      const rows = input.map(normalizeRow).filter(r => r.game_key && r.game);
-      if (!rows.length) return json({ ok: false, error: 'No valid rows supplied.' }, 400);
+    const response = await fetch(EDGE_URL, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(body)
+    });
 
-      const batchSize = 500;
-      let saved = 0;
-      for (let i = 0; i < rows.length; i += batchSize) {
-        const batch = rows.slice(i, i + batchSize);
-        const r = await fetch(`${tableUrl}?on_conflict=game_key`, {
-          method: 'POST',
-          headers: {
-            ...headers,
-            'Content-Type': 'application/json',
-            Prefer: 'resolution=merge-duplicates,return=minimal'
-          },
-          body: JSON.stringify(batch)
-        });
-        const text = await r.text();
-        if (!r.ok) return json({ ok: false, error: text, saved }, r.status);
-        saved += batch.length;
-      }
-      return json({ ok: true, saved });
+    const text = await response.text();
+    let payload;
+    try { payload = text ? JSON.parse(text) : {}; }
+    catch { payload = { ok: false, error: text || `BGA catalog DB returned HTTP ${response.status}` }; }
+
+    if (!response.ok) {
+      return json(res, response.status, {
+        ok: false,
+        error: payload?.error || `BGA catalog DB returned HTTP ${response.status}`,
+        backend: 'supabase-edge-runtime'
+      });
     }
 
-    return json({ ok: false, error: 'GET or POST required.' }, 405);
+    return json(res, 200, { ...payload, backend: 'supabase-edge-runtime' });
   } catch (error) {
-    return json({ ok: false, error: error.message }, 500);
+    console.error('BGA catalog proxy error:', error);
+    return json(res, 502, {
+      ok: false,
+      error: error?.message || 'BGA catalog database proxy failed',
+      backend: 'supabase-edge-runtime'
+    });
   }
 }
