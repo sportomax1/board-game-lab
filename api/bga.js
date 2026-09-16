@@ -59,7 +59,7 @@ function validPassword(password) {
 }
 function csvCell(value) {
   const s = String(value ?? '');
-  return /[",\r\n]/.test(s) ? `"${s.replace(/"/g, '""')}"` : s;
+  return /[\",\r\n]/.test(s) ? `\"${s.replace(/\"/g, '\"\"')}\"` : s;
 }
 async function supabaseRows(path, key = PUBLIC_KEY) {
   if (!key) throw new Error('Supabase public key is not configured');
@@ -69,6 +69,21 @@ async function supabaseRows(path, key = PUBLIC_KEY) {
   const text = await r.text();
   if (!r.ok) throw Object.assign(new Error(text), { status: r.status });
   return text ? JSON.parse(text) : [];
+}
+async function supabaseAdmin(path, options = {}) {
+  if (!ADMIN_KEY) throw new Error('Supabase service role key is not configured');
+  const r = await fetch(`${SUPABASE_URL}/rest/v1/${path}`, {
+    ...options,
+    headers: {
+      apikey: ADMIN_KEY,
+      Authorization: `Bearer ${ADMIN_KEY}`,
+      'Content-Type': 'application/json',
+      ...(options.headers || {}),
+    },
+  });
+  const text = await r.text();
+  if (!r.ok) throw Object.assign(new Error(text || `Supabase returned HTTP ${r.status}`), { status: r.status });
+  return text ? JSON.parse(text) : null;
 }
 
 async function handleData(req) {
@@ -101,7 +116,7 @@ async function handlePlays(req, url) {
     const contentType = upstream.headers.get('content-type') || '';
     if (!upstream.ok) return json({ ok: false, error: `Google Sheets returned HTTP ${upstream.status}` }, 502);
     const looksLikeHtml = /^\s*</.test(body) || contentType.includes('text/html');
-    const hasExpectedHeader = /(^|,)"?Year"?(,|\r?\n)/.test(body.slice(0, 500));
+    const hasExpectedHeader = /(^|,)\"?Year\"?(,|\r?\n)/.test(body.slice(0, 500));
     if (looksLikeHtml || !hasExpectedHeader) {
       return json({ ok: false, error: 'The Google Sheet is not publicly readable as CSV. Set sharing to Anyone with the link (Viewer) or publish the Data tab.' }, 502);
     }
@@ -161,7 +176,7 @@ async function handleStudioExport(req) {
     return response(req.method === 'HEAD' ? '' : csv, 200, {
       'Content-Type': 'text/csv; charset=utf-8',
       'Cache-Control': 'no-store',
-      'Content-Disposition': 'inline; filename="bga-studio.csv"',
+      'Content-Disposition': 'inline; filename=\"bga-studio.csv\"',
     });
   } catch (error) {
     return response(error.message, error.status || 500, { 'Content-Type': 'text/plain; charset=utf-8' });
@@ -192,6 +207,105 @@ async function handleGameCatalog(req) {
   }
 }
 
+function normalizeBggRankingRow(row = {}) {
+  const pick = (...keys) => {
+    for (const key of keys) {
+      if (row[key] !== undefined && row[key] !== null) return row[key];
+    }
+    return '';
+  };
+  return {
+    rank: cleanNumber(pick('rank', 'Rank')),
+    bgg_id: cleanNumber(pick('bgg_id', 'BGG ID', 'id')),
+    title: cleanText(pick('title', 'Title', 'name')),
+    year_published: cleanNumber(pick('year_published', 'Year Published', 'year')),
+    description: cleanText(pick('description', 'Description')),
+    geek_rating: cleanNumber(pick('geek_rating', 'Geek Rating')),
+    average_rating: cleanNumber(pick('average_rating', 'Average Rating')),
+    number_of_voters: cleanNumber(pick('number_of_voters', 'Number of Voters')),
+    your_rating: cleanText(pick('your_rating', 'Your Rating')),
+    your_rating_last_updated: cleanText(pick('your_rating_last_updated', 'Your Rating Last Updated')),
+    collection_status: cleanText(pick('collection_status', 'Collection Status', 'status')),
+    your_plays: cleanText(pick('your_plays', 'Your Plays')),
+    shop_offers: cleanText(pick('shop_offers', 'Shop Offers')),
+    bgg_url: cleanText(pick('bgg_url', 'BGG URL', 'url')),
+    thumbnail_url: cleanText(pick('thumbnail_url', 'Thumbnail URL', 'thumbnail')),
+    source_page: cleanNumber(pick('source_page', 'Source Page')),
+    page_fetch_seconds: cleanNumber(pick('page_fetch_seconds', 'Page Fetch Seconds')),
+    collection_started_at: cleanText(pick('collection_started_at', 'Collection Started At')) || null,
+    collection_duration_seconds: cleanNumber(pick('collection_duration_seconds', 'Collection Duration Seconds')),
+  };
+}
+
+async function handleBggRankings(req) {
+  try {
+    if (req.method === 'GET') {
+      if (!ADMIN_KEY) return json({ ok: false, error: 'Supabase service role key is not configured.' }, 500);
+      const runs = await supabaseAdmin('bgg_rank_runs?select=*&status=eq.complete&order=imported_at.desc&limit=1');
+      const run = runs?.[0] || null;
+      if (!run) return json({ ok: true, run: null, rows: [] });
+      const rows = await supabaseAdmin(`bgg_rankings?select=*&run_id=eq.${encodeURIComponent(run.id)}&order=rank.asc&limit=10000`);
+      return json({ ok: true, run, rows });
+    }
+    if (req.method !== 'POST') return json({ ok: false, error: 'GET or POST required.' }, 405);
+    const body = await req.json();
+    if (cleanText(body.action).toLowerCase() !== 'import') return json({ ok: false, error: 'Unknown action.' }, 400);
+    if (!validPassword(body.password)) return json({ ok: false, error: 'Invalid access key.' }, 401);
+    if (!ADMIN_KEY) return json({ ok: false, error: 'Supabase service role key is not configured.' }, 500);
+    if (!Array.isArray(body.rows)) return json({ ok: false, error: 'rows must be an array.' }, 400);
+    if (!body.rows.length) return json({ ok: false, error: 'No rows supplied.' }, 400);
+    if (body.rows.length > 10000) return json({ ok: false, error: 'Maximum 10,000 rows per import.' }, 413);
+
+    const rows = body.rows.map(normalizeBggRankingRow).filter(r => r.rank && r.bgg_id && r.title);
+    if (!rows.length) return json({ ok: false, error: 'No valid BGG ranking rows found.' }, 400);
+
+    const started = rows.find(r => r.collection_started_at)?.collection_started_at || null;
+    const duration = rows.find(r => r.collection_duration_seconds != null)?.collection_duration_seconds ?? null;
+    const runRows = await supabaseAdmin('bgg_rank_runs?select=*', {
+      method: 'POST',
+      headers: { Prefer: 'return=representation' },
+      body: JSON.stringify([{
+        source_filename: cleanText(body.source_filename) || 'browser-import.csv',
+        record_count: rows.length,
+        status: 'loading',
+        collection_started_at: started,
+        collection_duration_seconds: duration,
+      }]),
+    });
+    const run = runRows?.[0];
+    if (!run?.id) throw new Error('Could not create BGG ranking import run.');
+
+    try {
+      const chunkSize = 500;
+      for (let i = 0; i < rows.length; i += chunkSize) {
+        const chunk = rows.slice(i, i + chunkSize).map(r => ({ ...r, run_id: run.id }));
+        await supabaseAdmin('bgg_rankings', {
+          method: 'POST',
+          headers: { Prefer: 'return=minimal' },
+          body: JSON.stringify(chunk),
+        });
+      }
+      await supabaseAdmin(`bgg_rank_runs?id=eq.${encodeURIComponent(run.id)}`, {
+        method: 'PATCH',
+        headers: { Prefer: 'return=minimal' },
+        body: JSON.stringify({ status: 'complete', record_count: rows.length, completed_at: new Date().toISOString() }),
+      });
+      return json({ ok: true, run_id: run.id, inserted: rows.length });
+    } catch (error) {
+      try {
+        await supabaseAdmin(`bgg_rank_runs?id=eq.${encodeURIComponent(run.id)}`, {
+          method: 'PATCH',
+          headers: { Prefer: 'return=minimal' },
+          body: JSON.stringify({ status: 'failed', completed_at: new Date().toISOString() }),
+        });
+      } catch {}
+      throw error;
+    }
+  } catch (error) {
+    return json({ ok: false, error: error?.message || String(error) }, error.status || 500);
+  }
+}
+
 export default async function handler(req) {
   if (req.method === 'OPTIONS') return response(null, 204);
   const url = new URL(req.url);
@@ -202,7 +316,8 @@ export default async function handler(req) {
     case 'studio-data': return handleStudioData(req);
     case 'studio-export': return handleStudioExport(req);
     case 'game-catalog': return handleGameCatalog(req);
+    case 'bgg-rankings': return handleBggRankings(req);
     default:
-      return json({ ok: false, error: 'Unknown BGA route', routes: ['data', 'plays', 'studio-data', 'studio-export', 'game-catalog'] }, 404);
+      return json({ ok: false, error: 'Unknown BGA route', routes: ['data', 'plays', 'studio-data', 'studio-export', 'game-catalog', 'bgg-rankings'] }, 404);
   }
 }
