@@ -228,6 +228,7 @@
   }
 
   renderContacts = function() {
+    if (matchMedia('(max-width:768px)').matches && contactView==='table' && !document.getElementById('contacts')?.classList.contains('allowMobileTable')) contactView='cards';
     if (document.getElementById('contactsTabCount')) document.getElementById('contactsTabCount').textContent = contacts.length;
     updateQuickStats();
     const a = filteredContacts();
