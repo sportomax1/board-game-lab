@@ -82,7 +82,7 @@
     const main = document.createElement('div'); main.className = 'modernMain';
     const top = document.createElement('header'); top.className = 'modernTopbar';
     top.innerHTML = `<div class="topTitle"><h1 id="modernPageTitle">Collection</h1><p id="modernPageSubtitle"></p></div>
-      <div class="topActions"><button id="modernRefresh" class="modernButton secondary">${icon('fa-arrows-rotate')}<span>Refresh BGG</span></button></div>`;
+      <div class="topActions"><button id="modernRefresh" class="modernButton secondary">${icon('fa-arrows-rotate')}<span>Sync Collection</span></button></div>`;
     const scroll = document.createElement('div'); scroll.className = 'modernScroll';
     sections.forEach(section => scroll.appendChild(section));
     main.append(top, scroll);
@@ -127,6 +127,8 @@
     if (title) title.textContent = meta.title;
     if (sub) sub.textContent = meta.subtitle;
     document.body.dataset.activeTab = tab;
+    const refresh=document.getElementById('modernRefresh');
+    if(refresh){refresh.hidden=tab!=='collection';refresh.title='Sync the BGG collection for '+(document.getElementById('user')?.value||'sportomax');}
     if (tab === 'bga') hydrateBga();
   }
 
@@ -300,10 +302,10 @@
     }
     const btn=document.getElementById('load');
     const modern=document.getElementById('modernRefresh');
-    if(modern){modern.disabled=true;modern.innerHTML=`${icon('fa-spinner fa-spin')}<span>Refreshing…</span>`;}
+    if(modern){modern.disabled=true;modern.innerHTML=`${icon('fa-spinner fa-spin')}<span>Syncing collection…</span>`;}
     try { await legacyLoad(); toast('BGG collection refreshed'); }
     catch(err) { toast(err.message || 'Refresh failed','bad'); throw err; }
-    finally { if(modern){modern.disabled=false;modern.innerHTML=`${icon('fa-arrows-rotate')}<span>Refresh BGG</span>`;} if(btn)btn.disabled=false; }
+    finally { if(modern){modern.disabled=false;modern.innerHTML=`${icon('fa-arrows-rotate')}<span>Sync Collection</span>`;} if(btn)btn.disabled=false; }
   };
 
   function improveFilters() {
