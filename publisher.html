@@ -74,7 +74,15 @@
     .game-wrap{display:grid;grid-template-columns:54px minmax(0,1fr);align-items:center;gap:10px}
     .thumb{width:54px;height:54px;border-radius:10px;object-fit:cover;background:#172842;border:1px solid #29415f}
     .game-name{font-weight:850;white-space:normal;line-height:1.22}
-    .game-meta{color:var(--dim);font-size:11px;margin-top:4px}
+    .game-name a{color:var(--text);text-decoration:none}
+    .game-name a:hover{color:#fff;text-decoration:underline}
+    .game-meta{color:var(--dim);font-size:11px;margin-top:5px;display:flex;gap:8px;flex-wrap:wrap;align-items:center}
+    .meta-item{white-space:nowrap}
+    .meta-sort{color:#a9c8ef;cursor:pointer;font-weight:750}
+    .meta-sort:hover{color:#fff;text-decoration:underline}
+    .save-btn{border:1px solid #355071;background:#13243c;color:#8fa4c2;border-radius:8px;width:30px;height:30px;padding:0;display:grid;place-items:center;font-size:17px;line-height:1;flex:0 0 auto}
+    .save-btn.saved{color:#ffd166;border-color:#7d6731;background:#2b2617}
+    .saved-toggle.active{border-color:#7d6731;color:#ffd166;background:#2b2617}
     .publisher-cell{white-space:normal;line-height:1.25;color:#d7e4f5}
     .publisher-link{color:#d7e4f5;text-decoration:none}
     .publisher-link:hover{color:white;text-decoration:underline}
@@ -108,6 +116,7 @@
       <option value="">Indexed history</option>
     </select>
     <button id="refreshBtn" class="btn secondary" title="Ignore cached history and reload from BGG">Refresh BGG</button>
+    <button id="savedBtn" class="btn secondary saved-toggle" title="Show only games saved in this browser">★ Saved <span id="savedCount">0</span></button>
     <button id="clearBtn" class="btn secondary" title="Clear all table filters">Clear Filters</button>
   </header>
   <div class="progress"><div id="progressBar"></div></div>
@@ -156,6 +165,7 @@
   const DB_NAME = 'publisherMatrixDB';
   const DB_VERSION = 1;
   const STORE = 'runs';
+  const SAVED_KEY = 'publisherMatrix.savedGames.v1';
 
   const state = {
     rows: [],
@@ -165,12 +175,36 @@
     sortKey: 'name',
     sortDir: 1,
     columnFilters: {},
-    forceRefresh: false
+    forceRefresh: false,
+    savedOnly: false,
+    saved: loadSaved()
   };
 
   const $ = id => document.getElementById(id);
   const esc = s => String(s ?? '').replace(/[&<>"']/g, ch => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[ch]));
   const norm = s => String(s ?? '').trim().toLowerCase();
+
+  function loadSaved(){
+    try{
+      const raw=JSON.parse(localStorage.getItem(SAVED_KEY)||'[]');
+      return new Set(Array.isArray(raw)?raw.map(String):[]);
+    }catch{return new Set();}
+  }
+  function persistSaved(){
+    localStorage.setItem(SAVED_KEY,JSON.stringify([...state.saved]));
+    updateSavedUi();
+  }
+  function updateSavedUi(){
+    const n=state.saved.size;
+    $('savedCount').textContent=n.toLocaleString();
+    $('savedBtn').classList.toggle('active',state.savedOnly);
+  }
+  function toggleSaved(id){
+    id=String(id);
+    if(state.saved.has(id)) state.saved.delete(id); else state.saved.add(id);
+    persistSaved();
+    filterAndRender();
+  }
 
   function setStatus(text, type=''){
     const el = $('status');
@@ -252,11 +286,16 @@
         id:x.getAttribute('id')||'',
         name:x.getAttribute('value')||''
       })).filter(x=>x.name);
+      const ratingRaw=item.querySelector('statistics ratings average')?.getAttribute('value')||'';
+      const rankNode=[...item.querySelectorAll('statistics ratings ranks rank')].find(r=>r.getAttribute('name')==='boardgame');
+      const rankRaw=rankNode?.getAttribute('value')||'';
       map.set(id,{
         id,
         name:primary?.getAttribute('value')||'',
         year:item.querySelector('yearpublished')?.getAttribute('value')||'',
         thumbnail:item.querySelector('thumbnail')?.textContent?.trim()||'',
+        rating:Number.isFinite(Number(ratingRaw))?Number(ratingRaw):null,
+        rank:/^\d+$/.test(rankRaw)?Number(rankRaw):null,
         publishers
       });
     });
@@ -292,7 +331,7 @@
       let lastErr;
       for(let attempt=1;attempt<=3;attempt++){
         try{
-          const doc=await fetchXml({endpoint:'thing',id:ids.join(',')},'Thing batch');
+          const doc=await fetchXml({endpoint:'thing',id:ids.join(','),stats:'1'},'Thing batch');
           completed++;
           setStatus('Loading publisher metadata… '+completed+'/'+batches.length);
           setProgress(5 + (completed/batches.length)*90);
@@ -314,6 +353,8 @@
         name:d.name||g.name,
         year:d.year||g.year,
         thumbnail:d.thumbnail||g.thumbnail,
+        rating:d.rating??null,
+        rank:d.rank??null,
         publishers:Array.isArray(d.publishers)?d.publishers:[]
       };
     });
@@ -363,6 +404,9 @@
 
   function valueForSort(row,key){
     if(key==='name') return norm(row.name);
+    if(key==='year') return Number(row.year)||0;
+    if(key==='rank') return Number(row.rank)||Number.MAX_SAFE_INTEGER;
+    if(key==='rating') return Number(row.rating)||0;
     if(key.startsWith('pub')){
       const idx=Number(key.slice(3))-1;
       return norm(row.publishers?.[idx]?.name||'');
@@ -374,7 +418,8 @@
     const global=norm($('globalSearch').value);
     let rows=state.rows.filter(row=>{
       const pubs=row.publishers||[];
-      const hay=[row.name,row.id,row.year,...pubs.map(p=>p.name)].join(' ').toLowerCase();
+      const hay=[row.name,row.id,row.year,row.rank,row.rating,...pubs.map(p=>p.name)].join(' ').toLowerCase();
+      if(state.savedOnly && !state.saved.has(String(row.id))) return false;
       if(global && !hay.includes(global)) return false;
       for(const [key,raw] of Object.entries(state.columnFilters)){
         const q=norm(raw); if(!q) continue;
@@ -390,7 +435,8 @@
 
     rows.sort((a,b)=>{
       const av=valueForSort(a,state.sortKey), bv=valueForSort(b,state.sortKey);
-      return av.localeCompare(bv,undefined,{numeric:true,sensitivity:'base'})*state.sortDir;
+      if(typeof av==='number' && typeof bv==='number') return (av-bv)*state.sortDir;
+      return String(av).localeCompare(String(bv),undefined,{numeric:true,sensitivity:'base'})*state.sortDir;
     });
 
     state.filtered=rows;
@@ -410,7 +456,12 @@
       const img=row.thumbnail
         ? '<img class="thumb" src="'+esc(row.thumbnail)+'" loading="lazy" alt="">'
         : '<div class="thumb"></div>';
-      const game='<td class="game-cell"><div class="game-wrap">'+img+'<div><div class="game-name">'+esc(row.name)+'</div><div class="game-meta">BGG '+esc(row.id)+(row.year?' · '+esc(row.year):'')+'</div></div></div></td>';
+      const gameUrl='https://boardgamegeek.com/boardgame/'+encodeURIComponent(row.id);
+      const saved=state.saved.has(String(row.id));
+      const rating=row.rating!=null?Number(row.rating).toFixed(1):'—';
+      const rank=row.rank!=null?'#'+Number(row.rank).toLocaleString():'—';
+      const year=row.year||'—';
+      const game='<td class="game-cell"><div class="game-wrap">'+img+'<div><div style="display:flex;align-items:flex-start;gap:8px"><div style="min-width:0;flex:1"><div class="game-name"><a href="'+gameUrl+'" target="_blank" rel="noopener">'+esc(row.name)+'</a></div><div class="game-meta"><span class="meta-item">BGG '+esc(row.id)+'</span><span class="meta-item meta-sort" data-meta-sort="year">Year '+esc(year)+'</span><span class="meta-item meta-sort" data-meta-sort="rating">Rating '+esc(rating)+'</span><span class="meta-item meta-sort" data-meta-sort="rank">Rank '+esc(rank)+'</span></div></div><button class="save-btn '+(saved?'saved':'')+'" data-save-id="'+esc(row.id)+'" title="'+(saved?'Remove from saved games':'Save game in this browser')+'">★</button></div></div></div></td>';
       const pubs=Array.from({length:state.maxPublishers},(_,i)=>{
         const p=row.publishers?.[i];
         if(!p) return '<td class="publisher-cell"></td>';
@@ -420,6 +471,12 @@
       return '<tr>'+game+pubs+'</tr>';
     }).join('');
 
+    $('tbody').querySelectorAll('[data-save-id]').forEach(btn=>btn.addEventListener('click',e=>{e.preventDefault();e.stopPropagation();toggleSaved(btn.dataset.saveId);}));
+    $('tbody').querySelectorAll('[data-meta-sort]').forEach(el=>el.addEventListener('click',()=>{
+      const key=el.dataset.metaSort;
+      if(state.sortKey===key) state.sortDir*=-1; else {state.sortKey=key; state.sortDir=(key==='rating'?-1:1);}
+      filterAndRender();
+    }));
     $('tableNote').textContent=rows.length.toLocaleString()+' matching · showing '+shown.length.toLocaleString();
   }
 
@@ -455,6 +512,11 @@
   $('username').addEventListener('keydown',e=>{if(e.key==='Enter') loadUser(false);});
   $('globalSearch').addEventListener('input',filterAndRender);
   $('pageSize').addEventListener('change',filterAndRender);
+  $('savedBtn').addEventListener('click',()=>{
+    state.savedOnly=!state.savedOnly;
+    updateSavedUi();
+    filterAndRender();
+  });
   $('clearBtn').addEventListener('click',()=>{
     $('globalSearch').value='';
     state.columnFilters={};
@@ -471,6 +533,7 @@
     }
   });
 
+  updateSavedUi();
   refreshHistory();
 })();
 </script>
