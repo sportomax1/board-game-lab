@@ -163,7 +163,7 @@
   const THING_BATCH = 20;
   const WORKERS = 100;
   const DB_NAME = 'publisherMatrixDB';
-  const DB_VERSION = 1;
+  const DB_VERSION = 2;
   const STORE = 'runs';
   const SAVED_KEY = 'publisherMatrix.savedGames.v1';
 
@@ -269,12 +269,22 @@
   }
 
   function parseCollection(doc){
-    return [...doc.querySelectorAll('item[objectid]')].map(item=>({
-      id:item.getAttribute('objectid')||'',
-      name:item.querySelector('name')?.textContent?.trim()||('BGG #'+item.getAttribute('objectid')),
-      year:item.querySelector('yearpublished')?.textContent?.trim()||'',
-      thumbnail:item.querySelector('thumbnail')?.textContent?.trim()||''
-    }));
+    return [...doc.querySelectorAll('item[objectid]')].map(item=>{
+      const statsEl=item.querySelector('stats');
+      const ratingEl=statsEl?.querySelector('rating');
+      const bggRaw=ratingEl?.querySelector('average')?.getAttribute('value')||'';
+      const rankRaw=ratingEl?.querySelector('ranks rank[name="boardgame"]')?.getAttribute('value')||'';
+      const bggAvg=(bggRaw && bggRaw!=='N/A')?parseFloat(bggRaw):null;
+      const rankParsed=parseInt(rankRaw,10);
+      return {
+        id:item.getAttribute('objectid')||'',
+        name:item.querySelector('name')?.textContent?.trim()||('BGG #'+item.getAttribute('objectid')),
+        year:item.querySelector('yearpublished')?.textContent?.trim()||'',
+        thumbnail:item.querySelector('thumbnail')?.textContent?.trim()||'',
+        rating:Number.isFinite(bggAvg)?bggAvg:null,
+        rank:Number.isFinite(rankParsed)?rankParsed:null
+      };
+    });
   }
 
   function parseThing(doc){
@@ -353,8 +363,8 @@
         name:d.name||g.name,
         year:d.year||g.year,
         thumbnail:d.thumbnail||g.thumbnail,
-        rating:d.rating??null,
-        rank:d.rank??null,
+        rating:d.rating??g.rating??null,
+        rank:d.rank??g.rank??null,
         publishers:Array.isArray(d.publishers)?d.publishers:[]
       };
     });
@@ -489,10 +499,14 @@
       if(!force){
         const cached=await dbGet(username);
         if(cached?.rows?.length){
-          applyRows(cached.rows,cached.displayUsername||username,'Indexed history');
-          setStatus('Loaded from indexed history','good');
-          setProgress(100);
-          return;
+          const hasStats=cached.rows.some(r=>r.rating!=null || r.rank!=null);
+          if(hasStats){
+            applyRows(cached.rows,cached.displayUsername||username,'Indexed history');
+            setStatus('Loaded from indexed history','good');
+            setProgress(100);
+            return;
+          }
+          setStatus('Old cache missing rank/rating — refreshing BGG…');
         }
       }
       const rows=await loadFresh(username);
