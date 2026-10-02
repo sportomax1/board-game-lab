@@ -285,6 +285,7 @@
               <option value="plays">Plays</option>
               <option value="numowned"># Owned</option>
               <option value="bggRank">BGG Rank</option>
+              <option value="weight">Game Weight</option>
               <option value="year">Year</option>
               <option value="name">Name</option>
             </select>
@@ -301,7 +302,7 @@
           </div>
         </div>
 
-        <div id="gameList" class="space-y-1.5 max-h-[62vh] sm:max-h-[500px] overflow-y-auto">
+        <div id="gameList" class="space-y-1.5 h-[calc(100dvh-285px)] min-h-[420px] sm:h-auto sm:min-h-0 sm:max-h-[650px] overflow-y-auto">
           <!-- Game items will be populated here -->
         </div>
 
@@ -529,9 +530,12 @@ async function fetchCollection() {
         preordered: statusNode?.getAttribute('preordered') === '1'
       };
       
-      return { name, objectid, thumb, rating, average, year, numplays, numowned, bggRank, status, selected: false };
+      return { name, objectid, thumb, rating, average, year, numplays, numowned, bggRank, weight: null, status, selected: false };
     }).filter(game => game.name);
     
+    // Enrich all games from BGG Thing API: 20 IDs/request, up to 100 concurrent requests.
+    await enrichThingWeights(collectionGames, progressStatus);
+
     // Apply filters and sort
     filterCollection();
     
@@ -547,6 +551,67 @@ async function fetchCollection() {
     progressStatus.classList.add('hidden');
     alert('Failed to fetch collection. Please try again.');
   }
+}
+
+function chunkIds(ids, size = 20) {
+  const out = [];
+  for (let i = 0; i < ids.length; i += size) out.push(ids.slice(i, i + size));
+  return out;
+}
+
+async function mapLimit(items, limit, fn) {
+  let next = 0;
+  const workers = Array.from({ length: Math.min(limit, items.length) }, async () => {
+    while (true) {
+      const i = next++;
+      if (i >= items.length) return;
+      await fn(items[i], i);
+    }
+  });
+  await Promise.all(workers);
+}
+
+async function fetchThingBatch(ids) {
+  const url = `/api/bgg-helper?endpoint=thing&id=${encodeURIComponent(ids.join(','))}&stats=1`;
+  for (let attempt = 0; attempt < 4; attempt++) {
+    try {
+      const res = await fetch(url, { cache: 'no-store' });
+      if (res.status === 202 || res.status === 429 || res.status >= 500) {
+        await wait(500 * Math.pow(2, attempt));
+        continue;
+      }
+      if (!res.ok) throw new Error(`Thing API ${res.status}`);
+      return new DOMParser().parseFromString(await res.text(), 'text/xml');
+    } catch (e) {
+      if (attempt === 3) throw e;
+      await wait(500 * Math.pow(2, attempt));
+    }
+  }
+}
+
+async function enrichThingWeights(games, progressStatus) {
+  const byId = new Map(games.map(g => [String(g.objectid), g]));
+  const batches = chunkIds([...byId.keys()], 20);
+  let done = 0;
+  await mapLimit(batches, 100, async ids => {
+    try {
+      const doc = await fetchThingBatch(ids);
+      doc.querySelectorAll('item[id]').forEach(item => {
+        const game = byId.get(item.getAttribute('id'));
+        if (!game) return;
+        const raw = item.querySelector('statistics ratings averageweight')?.getAttribute('value');
+        const weight = parseFloat(raw);
+        game.weight = Number.isFinite(weight) ? weight : null;
+      });
+    } catch (e) {
+      console.warn('Thing weight batch failed', ids, e);
+    } finally {
+      done++;
+      if (progressStatus) {
+        progressStatus.innerHTML = `<i class="fa-solid fa-circle-notch fa-spin mr-2"></i>Details ${done}/${batches.length}`;
+      }
+    }
+  });
 }
 
 function filterCollectionRealtime() {
@@ -631,6 +696,10 @@ function sortGames() {
       const ra = (typeof a.bggRank === 'number') ? a.bggRank : Infinity;
       const rb = (typeof b.bggRank === 'number') ? b.bggRank : Infinity;
       return ra - rb;
+    } else if (sortBy === 'weight') {
+      const wa = Number.isFinite(a.weight) ? a.weight : -1;
+      const wb = Number.isFinite(b.weight) ? b.weight : -1;
+      return wb - wa;
     } else if (sortBy === 'year') {
       // Sort by year published (descending, newest first)
       const yearA = parseInt(a.year);
@@ -671,7 +740,7 @@ function renderGameList() {
   
   filteredGames.forEach((game, index) => {
     const gameItem = document.createElement('div');
-    gameItem.className = 'flex items-center gap-3 p-3 bg-white rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors';
+    gameItem.className = 'flex items-center gap-2 sm:gap-3 p-2 sm:p-3 bg-white rounded-lg border border-slate-200 hover:bg-slate-50 transition-colors';
     
     const checkbox = document.createElement('input');
     checkbox.type = 'checkbox';
@@ -708,7 +777,8 @@ function renderGameList() {
         User: ${game.rating !== 'N/A' ? parseFloat(game.rating).toFixed(1) : 'N/A'} • 
         Avg: ${game.average !== 'N/A' ? parseFloat(game.average).toFixed(1) : 'N/A'} •
         Plays: ${game.numplays} •
-        Owned: ${game.numowned || 0}
+        Owned: ${game.numowned || 0} •
+        Weight: ${Number.isFinite(game.weight) ? game.weight.toFixed(2) : 'N/A'}
       </div>
     `;
     
