@@ -13,18 +13,7 @@ module.exports = async function handler(req, res) {
 
   try {
     const body = req.body || {};
-    const suppliedPassword = String(body.password ?? '').trim();
-    const configuredPassword = String(process.env.PASSWORD || '').trim();
-
-    if (!configuredPassword) {
-      return json(res, 500, { ok: false, error: 'PASSWORD is not configured' });
-    }
-
-    if (!suppliedPassword || suppliedPassword !== configuredPassword) {
-      return json(res, 401, { ok: false, error: 'Invalid access key' });
-    }
-
-    const response = await fetch(EDGE_URL, {
+const response = await fetch(EDGE_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify(body)
