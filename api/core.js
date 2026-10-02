@@ -8,6 +8,10 @@ const handlers = {
   'cardboard-proxy': require('../server/api-handlers/cardboard-proxy'),
   'image-proxy': require('../server/api-handlers/image-proxy'),
   'log-ranks': require('../server/api-handlers/log-ranks'),
+  'firebase-config': require('../server/api-handlers/firebase-config'),
+  'geekmail': require('../server/api-handlers/geekmail'),
+  'get-password': require('../server/api-handlers/get-password'),
+  'supabase-config': require('../server/api-handlers/supabase-config'),
 };
 module.exports = async (req,res) => {
   const route = String(req.query.route || '').trim();
