@@ -14,7 +14,7 @@ const handlers = {
   'supabase-config': require('../server/api-handlers/supabase-config'),
 };
 module.exports = async (req,res) => {
-  const route = String(req.query.route || '').trim();
+  const route = String(req.query.route || req.url?.match(/^\/api\/core\/([^?]+)/)?.[1] || '').trim();
   const handler = handlers[route];
   if (!handler) return res.status(404).json({ok:false,error:'Unknown consolidated API route'});
   const originalQuery = req.query;
