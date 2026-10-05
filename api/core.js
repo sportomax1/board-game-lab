@@ -15,6 +15,7 @@ const handlerPaths = {
   'firebase-config': '../server/api-handlers/firebase-config',
   'geekmail': '../server/api-handlers/geekmail',
   'get-password': '../server/api-handlers/get-password',
+  'verify-password': '../server/api-handlers/verify-password',
   'supabase-config': '../server/api-handlers/supabase-config',
 };
 
