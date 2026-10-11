@@ -87,6 +87,9 @@ textarea{width:100%;resize:vertical;font-size:13px}
 .combo{font-size:12.5px;padding:6px 8px;border-radius:8px;background:var(--chip);margin-bottom:5px}
 .combo b{color:var(--accent);margin-right:6px}
 .row{display:flex;gap:8px;align-items:center;flex-wrap:wrap}
+.scopebar{background:var(--accent-soft)}
+.scopebar[hidden]{display:none}
+.seg button small{opacity:.75;margin-left:4px}
 .toast{position:fixed;left:50%;bottom:calc(18px + env(safe-area-inset-bottom,0));transform:translateX(-50%);background:var(--ink);color:var(--panel);padding:9px 14px;border-radius:9px;font-size:13px;opacity:0;transition:opacity .2s;pointer-events:none;z-index:9}
 .toast.on{opacity:1}
 @media (max-width:768px){.lane,.lane.wide{flex-basis:86vw}.board{padding:12px}}
@@ -106,17 +109,20 @@ textarea{width:100%;resize:vertical;font-size:13px}
 
 <div class="controls">
   <label>BGG user <input type="text" id="username" value="sportomax" placeholder="e.g., sportomax" style="width:140px"></label>
-  <label>Scope
+  <button class="btn" id="runAll">▶ Run step 1</button>
+  <button class="btn ghost" id="exportJson">Export JSON</button>
+  <button class="btn ghost" id="exportCsv">Export CSV</button>
+  <label class="btn ghost" style="cursor:pointer">Import JSON<input type="file" id="importJson" accept=".json" hidden></label>
+</div>
+<div class="controls scopebar" id="scopeBar" hidden>
+  <label>Analyze results for
     <span class="seg" id="scopeSeg">
       <button data-scope="own" class="on">Owned</button>
       <button data-scope="notown">Not owned</button>
       <button data-scope="all">All</button>
     </span>
   </label>
-  <button class="btn" id="runAll">▶ Run step 1</button>
-  <button class="btn ghost" id="exportJson">Export JSON</button>
-  <button class="btn ghost" id="exportCsv">Export CSV</button>
-  <label class="btn ghost" style="cursor:pointer">Import JSON<input type="file" id="importJson" accept=".json" hidden></label>
+  <span class="hint" style="margin:0">Filters the pulled data. No refetch; lanes 3–5 update instantly.</span>
 </div>
 
 <main class="board" id="board">
@@ -132,7 +138,7 @@ textarea{width:100%;resize:vertical;font-size:13px}
       <div class="block"><h3>Result</h3><div class="stats" id="out1"><div class="empty">No data yet.</div></div></div>
       <div class="block"><h3>Manual steps</h3><ul class="manual" data-lane="1">
         <li>Confirm the BGG username is right</li>
-        <li>Pick the scope: Owned, Not owned, or All</li>
+        <li>After the pull, pick Owned / Not owned / All in the filter bar</li>
         <li>Sanity-check the owned count against BGG's collection page</li>
       </ul></div>
     </div>
@@ -142,7 +148,7 @@ textarea{width:100%;resize:vertical;font-size:13px}
   <section class="lane" id="lane2">
     <div class="lane-head"><span class="lane-status" id="st2">idle</span>
       <div class="lane-num">Lane 2 · Enrich</div><h2>Fetch game details</h2>
-      <p>Thing API in batches of 20: designers, artists, publishers, mechanics, categories, weight, time.</p></div>
+      <p>Thing API, 20 IDs per call, 100 calls in parallel: designers, artists, publishers, mechanics, categories, weight, time.</p></div>
     <div class="lane-body">
       <div class="block"><button class="btn sm" id="run2" disabled>Fetch details</button>
         <div class="bar"><i id="bar2"></i></div><div class="log" id="log2">Needs lane 1.</div></div>
@@ -350,26 +356,42 @@ function renderLane1(){
 }
 
 /* ---------- Lane 2 ---------- */
+const THING_BATCH = 20, MAX_CONCURRENCY = 100;   // 100x parallel, 20 IDs per call (repo standard)
+async function fetchThingsParallel(ids, onBatch){
+  const queue = [];
+  for (let i = 0; i < ids.length; i += THING_BATCH) queue.push(ids.slice(i, i + THING_BATCH));
+  const total = queue.length, failed = [];
+  async function worker(){
+    while (queue.length){
+      const batch = queue.shift(); if (!batch) break;
+      try{ Object.assign(S.details, parseThings(await fetchFromBGG('thing', { ids: batch.join(','), stats:'1' }))); onBatch(batch, true); }
+      catch(e){ failed.push(batch); console.warn(`${APP} ⚠️ batch failed: ${e.message}`); onBatch(batch, false, e.message); }
+    }
+  }
+  await Promise.all(Array.from({ length: Math.min(MAX_CONCURRENCY, total) }, worker));
+  return failed;
+}
 async function runLane2(){
   const ids = S.items.map(g => g.id).filter(id => !S.details[id]);
   status(2,'running'); $('run2').disabled = true;
   if (!ids.length){ $('log2').textContent = `All details cached ✓ (${Object.keys(S.details).length} games)`; $('bar2').style.width='100%'; status(2,'done'); renderLane2(); analyze(); $('run2').disabled=false; return true; }
-  log(2, `Fetching ${ids.length} games in ${Math.ceil(ids.length/20)} batches…`);
-  let done = 0, failed = 0;
-  for (let i = 0; i < ids.length; i += 20){
-    const batch = ids.slice(i, i + 20);
-    try{
-      const text = await fetchFromBGG('thing', { ids: batch.join(','), stats:'1' });
-      Object.assign(S.details, parseThings(text));
-    }catch(e){ failed += batch.length; console.warn(`${APP} ⚠️ batch failed: ${e.message}`); log(2, `⚠️ batch ${i/20+1} failed: ${e.message}`); }
-    done += batch.length;
-    $('bar2').style.width = Math.round(done/ids.length*100) + '%';
-    if (((i/20) % 5) === 0) log(2, `…${done}/${ids.length}`);
-    await sleep(500);
+  const batches = Math.ceil(ids.length / THING_BATCH), t0 = performance.now();
+  $('log2').textContent = `Fetching ${ids.length} games: ${batches} batches × 20 IDs, ${Math.min(MAX_CONCURRENCY, batches)} in parallel…`;
+  let done = 0;
+  const tick = (batch, ok, err) => {
+    done++; $('bar2').style.width = Math.round(done / batches * 100) + '%';
+    if (!ok) log(2, `⚠️ ${err}`);
+  };
+  let failed = await fetchThingsParallel(ids, tick);
+  if (failed.length){                       // one automatic retry pass for anything that failed
+    log(2, `Retrying ${failed.length} failed batches…`);
+    const retryIds = failed.flat(); done = batches - failed.length;
+    failed = await fetchThingsParallel(retryIds, tick);
   }
   store.set(snapKey(), { user:S.user, savedAt:Date.now(), details:S.details });
-  log(2, `✓ details for ${Object.keys(S.details).length} games${failed ? `, ${failed} failed (re-run to retry)` : ''}`);
-  status(2, failed ? 'partial' : 'done'); $('run2').disabled = false;
+  const missing = failed.flat().length;
+  log(2, `✓ ${Object.keys(S.details).length} games in ${((performance.now() - t0)/1000).toFixed(1)}s${missing ? `, ${missing} still missing (re-run to retry)` : ''}`);
+  status(2, missing ? 'partial' : 'done'); $('run2').disabled = false;
   renderLane2(); analyze();
   return true;
 }
@@ -397,7 +419,17 @@ function countBy(games, key){
   games.forEach(g => new Set((g[key]||[]).filter(isCredit)).forEach(v => m.set(v, (m.get(v)||0)+1)));
   return [...m].sort((a,b) => b[1]-a[1] || a[0].localeCompare(b[0]));
 }
+function updateScopeBar(){
+  const withDetail = S.items.filter(g => S.details[g.id]);
+  $('scopeBar').hidden = !withDetail.length;
+  const n = { own: withDetail.filter(g=>g.own).length, notown: withDetail.filter(g=>!g.own).length, all: withDetail.length };
+  $('scopeSeg').querySelectorAll('button').forEach(b => {
+    const label = { own:'Owned', notown:'Not owned', all:'All' }[b.dataset.scope];
+    b.innerHTML = `${label}<small>${n[b.dataset.scope]}</small>`;
+  });
+}
 function analyze(){
+  updateScopeBar();
   const games = scopedGames();
   if (!games.length){ S.analysis = null; renderAnalysis(); return; }
   const freq = {}; ['mechanics','categories','designers','publishers','artists'].forEach(k => freq[k] = countBy(games, k));
