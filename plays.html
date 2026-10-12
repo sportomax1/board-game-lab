@@ -8,6 +8,14 @@
     <style>
         @import url('https://fonts.googleapis.com/css2?family=Inter:wght@300;400;600;700&display=swap');
         body { font-family: 'Inter', sans-serif; background-color: #e8eef6; }
+        /* Responsive, compact workspace */
+        .workspace-shell { max-width: 1600px; }
+        .history-date-toolbar { display:flex; flex-wrap:wrap; align-items:center; gap:6px; }
+        .history-date-toolbar input, .history-date-toolbar select { min-height:32px; border:1px solid #cbd5e1; border-radius:7px; padding:4px 8px; background:white; font-size:12px; }
+        .history-date-toolbar button { min-height:32px; padding:5px 10px; border-radius:7px; font-size:11px; font-weight:700; background:#eef2ff; color:#3730a3; }
+        .history-date-toolbar button:hover { background:#c7d2fe; }
+        .history-date-toolbar button[aria-pressed="true"] { background:#4338ca; color:white; }
+        @media(max-width:640px) { body { padding:6px!important; } .history-date-toolbar { width:100%; } .history-date-toolbar input { width:135px; } .tab-bar-scroll button { padding:10px 12px; } .glass-card { border-radius:9px; } }
         .glass-card {
             background: rgba(255, 255, 255, 0.97);
             backdrop-filter: blur(10px);
@@ -82,7 +90,7 @@
     </style>
 </head>
 <body class="p-2 md:p-4">
-    <div class="max-w-7xl mx-auto">
+    <div class="workspace-shell mx-auto">
         <!-- Compact Integrated Header -->
         <div class="glass-card rounded-xl p-3 mb-3">
             <div class="flex flex-wrap items-center justify-between gap-3">
@@ -104,11 +112,7 @@
                         <option value="">Buddies ↓</option>
                     </select>
                     
-                    <div class="flex items-center gap-1 bg-slate-50 px-2 py-1 rounded border border-slate-100">
-                        <input type="date" id="mindate" onchange="updateUI()" class="bg-transparent text-[9px] outline-none text-slate-500" title="Start Date Filter">
-                        <span class="text-slate-300">→</span>
-                        <input type="date" id="maxdate" onchange="updateUI()" class="bg-transparent text-[9px] outline-none text-slate-500" title="End Date Filter">
-                    </div>
+                    <span id="cacheStatus" class="text-[10px] text-slate-500" aria-live="polite">Local cache: checking</span>
 
                     <button id="startBtn" onclick="startParsing()" 
                         class="bg-blue-600 hover:bg-blue-700 text-white font-bold text-[11px] px-3 py-1 rounded transition-all shadow-sm flex items-center gap-1">
@@ -154,6 +158,16 @@
                     </div>
                     
                     <!-- History Specific Filters -->
+                    <div id="history-date-toolbar" class="history-date-toolbar">
+                        <select id="historyPeriod" onchange="setHistoryPeriod(this.value)" aria-label="History date range">
+                            <option value="all">All time</option><option value="7">Last 7 days</option><option value="30">Last 30 days</option><option value="90">Last 90 days</option><option value="365">Last 12 months</option><option value="year">This year</option><option value="custom">Custom range</option>
+                        </select>
+                        <input type="date" id="mindate" onchange="onHistoryDateChange()" aria-label="History start date" title="Start date">
+                        <span class="text-slate-400">to</span>
+                        <input type="date" id="maxdate" onchange="onHistoryDateChange()" aria-label="History end date" title="End date">
+                        <button type="button" onclick="setHistoryPeriod('all')" title="Clear date filters">Clear</button>
+                        <span id="historyRangeCount" class="text-[10px] font-semibold text-slate-500" aria-live="polite"></span>
+                    </div>
                     <div id="history-filters" class="flex items-center gap-2 flex-wrap">
                         <select id="venueFilter" onchange="updateUI()" class="text-[10px] border border-slate-200 rounded px-2 py-1.5 outline-none bg-white text-slate-600 min-w-[100px]">
                             <option value="">All Venues</option>
@@ -420,7 +434,107 @@
         // or via an environment-backed API. Do NOT commit secrets to the repo.
         const BGG_BEARER_TOKEN = ""; // TODO: set securely
         
-        let totalPlays = [];
+
+        // IndexedDB stores a per-user snapshot; live BGG sync remains authoritative.
+        const CACHE_DB = 'sportomax-play-counter';
+        const CACHE_VERSION = 1;
+        function openPlayCache() {
+            return new Promise((resolve, reject) => {
+                if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable'));
+                const request = indexedDB.open(CACHE_DB, CACHE_VERSION);
+                request.onupgradeneeded = () => {
+                    const db = request.result;
+                    if (!db.objectStoreNames.contains('snapshots')) db.createObjectStore('snapshots', {keyPath:'username'});
+                };
+                request.onsuccess = () => resolve(request.result);
+                request.onerror = () => reject(request.error);
+            });
+        }
+        async function playCacheOperation(mode, value) {
+            const db = await openPlayCache();
+            try {
+                return await new Promise((resolve,reject) => {
+                    const tx = db.transaction('snapshots',mode);
+                    const store = tx.objectStore('snapshots');
+                    const req = mode === 'readonly' ? store.get(value) : store.put(value);
+                    req.onsuccess = () => resolve(req.result);
+                    req.onerror = () => reject(req.error);
+                    tx.onerror = () => reject(tx.error);
+                });
+            } finally { db.close(); }
+        }
+        function cacheLabel(message) { const el=document.getElementById('cacheStatus'); if(el) el.textContent=message; }
+        async function savePlaySnapshot() {
+            try {
+                const username=document.getElementById('username').value.trim().toLowerCase();
+                if(!username || !totalPlays.length) return;
+                await playCacheOperation('readwrite', {
+                    username, savedAt:Date.now(), totalPlays, collection,
+                    ownedIds:[...ownedIds], gameThumbnails:[...gameThumbnails],
+                    gameTypes:[...gameTypes], gameYears:[...gameYears],
+                    gameDetailsMap:[...gameDetailsMap], collectionRatings:[...collectionRatings]
+                });
+                cacheLabel('Saved locally · '+new Date().toLocaleDateString());
+            } catch(e) { console.warn('Play cache save failed',e); cacheLabel('Local cache unavailable'); }
+        }
+        async function restorePlaySnapshot() {
+            if(isRunning || totalPlays.length) return;
+            const username=document.getElementById('username').value.trim().toLowerCase();
+            if(!username) return;
+            try {
+                const snapshot=await playCacheOperation('readonly',username);
+                if(!snapshot || isRunning || totalPlays.length) { cacheLabel('No saved history'); return; }
+                totalPlays=snapshot.totalPlays||[];
+                basePlays=totalPlays.slice();
+                collection=snapshot.collection||[];
+                ownedIds=new Set(snapshot.ownedIds||[]);
+                gameThumbnails=new Map(snapshot.gameThumbnails||[]);
+                gameTypes=new Map(snapshot.gameTypes||[]);
+                gameYears=new Map(snapshot.gameYears||[]);
+                gameDetailsMap=new Map(snapshot.gameDetailsMap||[]);
+                collectionRatings=new Map(snapshot.collectionRatings||[]);
+                document.getElementById('statsBadge').classList.remove('hidden');
+                document.getElementById('collectionCounter').textContent=collection.length+' Owned';
+                refreshVenueOptions();
+                updateUI();
+                cacheLabel('Cached · '+new Date(snapshot.savedAt).toLocaleString());
+            } catch(e) { console.warn('Play cache restore failed',e); cacheLabel('Local cache unavailable'); }
+        }
+        function refreshVenueOptions() {
+            const select=document.getElementById('venueFilter');
+            const previous=select.value;
+            const venues=[...new Set(totalPlays.map(p=>p.location).filter(Boolean))].sort();
+            select.replaceChildren(new Option('All Venues',''),...venues.map(v=>new Option(v,v)));
+            if(venues.includes(previous)) select.value=previous;
+        }
+        function localISODate(date) {
+            return date.getFullYear()+'-'+String(date.getMonth()+1).padStart(2,'0')+'-'+String(date.getDate()).padStart(2,'0');
+        }
+        function setHistoryPeriod(period) {
+            const today=new Date();
+            let min='',max='';
+            if(period==='year') { min=today.getFullYear()+'-01-01'; max=localISODate(today); }
+            else if(/^\\d+$/.test(period)) { const d=new Date(today.getFullYear(),today.getMonth(),today.getDate()); d.setDate(d.getDate()-Number(period)+1); min=localISODate(d); max=localISODate(today); }
+            else if(period==='custom') { document.getElementById('historyPeriod').value='custom'; document.getElementById('mindate').focus(); return; }
+            document.getElementById('mindate').value=min;
+            document.getElementById('maxdate').value=max;
+            document.getElementById('historyPeriod').value=period;
+            updateUI();
+        }
+        function onHistoryDateChange() {
+            document.getElementById('historyPeriod').value='custom';
+            const min=document.getElementById('mindate'),max=document.getElementById('maxdate');
+            min.setCustomValidity(min.value && max.value && min.value>max.value?'Start date must be on or before end date':'');
+            if(min.validationMessage) { min.reportValidity(); return; }
+            updateUI();
+        }
+        window.addEventListener('DOMContentLoaded',()=>{
+            restorePlaySnapshot();
+            document.getElementById('username').addEventListener('change',()=>{
+                if(!isRunning) { totalPlays=[]; collection=[]; updateUI(); restorePlaySnapshot(); }
+            });
+        });
+\n        let totalPlays = [];
         let basePlays = []; // preserve the main user's plays regardless of buddy selection
         let collection = []; 
         let ownedIds = new Set();
@@ -585,9 +699,7 @@
             await fetchCollectionRatings(baseUsername);
 
             // Populate Venues unique list
-            const venues = [...new Set(totalPlays.map(p => p.location))].filter(v => v).sort();
-            const venueSelect = document.getElementById('venueFilter');
-            venueSelect.innerHTML = '<option value="">All Venues</option>' + venues.map(v => `<option value="${v}">${v}</option>`).join('');
+            refreshVenueOptions();
 
             updateStatus(`Loading Icons & Metadata...`);
             const playIdsToFetch = new Set();
@@ -610,6 +722,7 @@
             }
 
             finishParsing();
+            await savePlaySnapshot();
         }
         
         async function fetchAllPlays(username) {
@@ -787,6 +900,8 @@
             const filteredPlays = applyFilters(totalPlays);
             document.getElementById('playCounter').textContent = `${totalPlays.length} Plays`;
             renderPlays(filteredPlays);
+            const rangeCount = document.getElementById('historyRangeCount');
+            if (rangeCount) rangeCount.textContent = `${filteredPlays.length.toLocaleString()} / ${totalPlays.length.toLocaleString()} plays`;
             renderStats(filteredPlays);
             
             // Update unplayed tab if player is selected
@@ -1282,6 +1397,7 @@
                 if (tabBtn) tabBtn.classList.toggle('text-slate-400', t !== tab);
             });
             document.getElementById('history-filters').classList.toggle('hidden', tab !== 'plays');
+            document.getElementById('history-date-toolbar').classList.toggle('hidden', tab !== 'plays');
             document.getElementById('stats-filters').classList.toggle('hidden', tab !== 'stats');
             document.getElementById('locations-filters').classList.toggle('hidden', tab !== 'locations');
             if (tab === 'locations') renderLocations();
