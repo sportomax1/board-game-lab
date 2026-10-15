@@ -902,7 +902,7 @@
       }
     });
     document.addEventListener('pointerdown',event=>{
-      if (!$('searchWrap').contains(event.target)) hideSuggestions();
+      if (!$('searchWrap').contains(event.target) && !$('creditScopes').contains(event.target)) hideSuggestions();
     });
     document.addEventListener('keydown',event=>{
       if (event.key === '/' && !(event.target instanceof HTMLInputElement) &&
