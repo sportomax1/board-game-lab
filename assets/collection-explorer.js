@@ -1,6 +1,6 @@
-/* Collection Explorer — stand-alone, cache-first BGG collection browser.
-   Up to 100 asynchronous queue consumers; API dispatches are globally paced.
-   The BGG API documents a 20-ID Thing limit and recommends ~5s between calls. */
+/* Collection Explorer — cache-first BGG browser.
+   Thing batches contain at most 20 IDs and run through up to 100 genuine
+   concurrent requests, with exponential retry on transient failures. */
 (() => {
   'use strict';
 
@@ -10,7 +10,6 @@
   const DB_VERSION = 1;
   const BATCH_SIZE = 20;
   const WORKER_COUNT = 100;
-  const REQUEST_SPACING_MS = 5000;
   const META_TTL_MS = 30 * 86400000;
   const PAGE_SIZE = 60;
   const STATUS_FIELDS = [
@@ -39,11 +38,10 @@
     username:'', items:[], metadata:new Map(), games:[], index:[],
     chips:[], query:'', results:[], visible:PAGE_SIZE, selectedSuggestion:0,
     loading:false, controller:null, runId:0, failedBatches:[],
-    hasCollection:false, cacheAvailable:true, cacheAt:0, initialUrlApplied:false
+    hasCollection:false, cacheAvailable:true, cacheAt:0, initialUrlApplied:false,
+    activeFacet:''
   };
   let db = null;
-  let scheduleTail = Promise.resolve();
-  let nextRequestAt = 0;
   let suggestionRows = [];
   let renderTimer = null;
   let urlTimer = null;
@@ -252,24 +250,13 @@
     }).filter(Boolean);
   }
 
-  // A sequential launch gate enforces a safe interval even with 100 async consumers.
-  async function takeRequestSlot(signal) {
-    let release;
-    const previous = scheduleTail;
-    scheduleTail = new Promise(resolve => { release = resolve; });
-    await previous;
-    try {
-      if (signal.aborted) throw new DOMException('Stopped', 'AbortError');
-      await delay(Math.max(0, nextRequestAt - Date.now()), signal);
-      nextRequestAt = Date.now() + REQUEST_SPACING_MS;
-    } finally { release(); }
-  }
   async function fetchXml(endpoint, params, signal) {
     const query = new URLSearchParams(Object.assign({endpoint:endpoint}, params));
     let lastError;
     for (let attempt=0; attempt<4; attempt++) {
-      if (attempt) await delay(Math.min(18000, 4000 * attempt), signal);
-      await takeRequestSlot(signal);
+      // A batch is launched immediately. A failed batch alone backs off and retries;
+      // successful batches never wait behind a global five-second request gate.
+      if (attempt) await delay(Math.min(30000, 1500 * 2 ** (attempt - 1)) + Math.floor(Math.random() * 900), signal);
       try {
         const response = await fetch(API + '?' + query.toString(), {signal:signal, cache:'no-store'});
         const body = await response.text();
@@ -486,21 +473,33 @@
     renderTimer = setTimeout(() => { renderTimer=null; rebuild(); }, 180);
   }
 
-  function hideSuggestions() {
+  const SEARCH_PLACEHOLDER = 'Search games, publishers, designers, mechanics, years, artists, categories…';
+  function renderFacetButtons() {
+    document.querySelectorAll('[data-facet]').forEach(button => {
+      const active = button.dataset.facet === state.activeFacet;
+      button.classList.toggle('active', active);
+      button.setAttribute('aria-pressed', String(active));
+    });
+    const facet = FACET_MAP.get(state.activeFacet);
+    $('search').placeholder = facet ? 'Find ' + facet.label.toLowerCase() + ' tags…' : SEARCH_PLACEHOLDER;
+  }
+  function hideSuggestions(resetFacet = true) {
     $('suggestions').hidden = true;
     $('search').setAttribute('aria-expanded','false');
     $('suggestions').replaceChildren();
     suggestionRows = [];
     state.selectedSuggestion = 0;
+    if (resetFacet) { state.activeFacet = ''; renderFacetButtons(); }
   }
   function suggestions() {
     const query = normalize($('search').value);
     const host = $('suggestions');
     host.replaceChildren();
-    if (!query || !state.hasCollection) { hideSuggestions(); return; }
+    if ((!query && !state.activeFacet) || !state.hasCollection) { hideSuggestions(false); return; }
     const selected = new Set(state.chips.map(chipKey));
     let matches = state.index.filter(row =>
-      (row.normalized.includes(query) || normalize(row.label).includes(query)) &&
+      (!state.activeFacet || row.key === state.activeFacet) &&
+      (!query || row.normalized.includes(query) || normalize(row.label).includes(query)) &&
       !selected.has(chipKey(row))
     );
     matches.sort((a,b) => {
@@ -509,7 +508,9 @@
     });
     suggestionRows = matches.slice(0, 12);
     state.selectedSuggestion = 0;
-    const hint = node('div','suggestion-note','Searches all fields as you type · select a result to apply a filter');
+    const hint = node('div','suggestion-note',state.activeFacet
+      ? 'Select a ' + FACET_MAP.get(state.activeFacet).label.toLowerCase() + ' tag to filter'
+      : 'Search every field · select any result to add a filter');
     host.append(hint);
     suggestionRows.forEach((row,index) => {
       const btn = node('button','suggestion' + (index===0 ? ' active' : ''));
@@ -698,7 +699,7 @@
       if (current(run)) {
         setBusy(false);
         setMessage('Collection ready. All ' + fmt(state.items.length) + ' games have current cached metadata.','success');
-        note('Metadata cache is valid for 30 days · 20 BGG IDs per request.');
+        note('Metadata cached for 30 days · 20 IDs/request · up to 100 parallel requests.');
       }
       return;
     }
@@ -708,7 +709,7 @@
     const failures = [];
     const progress = () => {
       setProgress('Thing metadata: ' + fmt(done) + ' / ' + fmt(total) + ' batches',done/total);
-      note(fmt(loaded) + ' games enriched this run · ' + fmt(failures.length) + ' failed batches · 20 IDs/request · paced upstream requests');
+      note(fmt(loaded) + ' games enriched this run · ' + fmt(failures.length) + ' failed batches · 20 IDs/request · up to 100 concurrent');
     };
     progress();
     async function worker() {
@@ -800,6 +801,7 @@
     },250);
   }
   function installEvents() {
+    renderFacetButtons();
     $('usernameForm').addEventListener('submit',event=>{event.preventDefault(); loadCollection($('username').value);});
     $('stopBtn').addEventListener('click',stop);
     $('refreshBtn').addEventListener('click',()=>loadCollection(state.username));
@@ -809,6 +811,16 @@
     $('clearBtn').addEventListener('click',()=>{
       state.chips=[]; state.query=''; $('search').value=''; $('statusScope').value='all';
       state.visible=PAGE_SIZE; hideSuggestions(); render(); scheduleUrl();
+    });
+    document.querySelectorAll('[data-facet]').forEach(button => {
+      button.addEventListener('click', () => {
+        if ($('search').disabled) return;
+        const key=button.dataset.facet;
+        state.activeFacet = state.activeFacet === key ? '' : key;
+        renderFacetButtons();
+        if (state.activeFacet) { $('search').focus(); suggestions(); }
+        else hideSuggestions();
+      });
     });
     $('exportBtn').addEventListener('click',exportCsv);
     $('moreBtn').addEventListener('click',()=>{state.visible+=PAGE_SIZE;render();});
