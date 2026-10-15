@@ -181,7 +181,7 @@
     return doc;
   }
   function xmlAttr(parent, selector, attribute) {
-    return parent.querySelector(selector)?.getAttribute(attribute || 'value') || '';
+    return parent?.querySelector(selector)?.getAttribute(attribute || 'value') || '';
   }
   function linkList(parent, type) {
     const seen = new Set();
