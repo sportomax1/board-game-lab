@@ -34,12 +34,14 @@
     {key:'type', label:'Type', icon:'◇'}
   ];
   const FACET_MAP = new Map(FACETS.map(f => [f.key, f]));
+  const CREDIT_FIELDS = ['publisher', 'designer', 'artist'];
   const state = {
     username:'', items:[], metadata:new Map(), games:[], index:[],
     chips:[], query:'', results:[], visible:PAGE_SIZE, selectedSuggestion:0,
     loading:false, controller:null, runId:0, failedBatches:[],
     hasCollection:false, cacheAvailable:true, cacheAt:0, initialUrlApplied:false,
-    activeFacet:''
+    activeFacet:'',
+    creditScopes:{publisher:'all', designer:'all', artist:'all'}
   };
   let db = null;
   let suggestionRows = [];
@@ -281,11 +283,17 @@
     throw lastError || new Error('BGG request failed');
   }
 
-  function facetValues(game, key) {
+  function facetValues(game, key, creditMode) {
     if (key === 'title') return [game.title].concat(game.alternativeNames || []).filter(Boolean);
     const fields = {publisher:'publishers', designer:'designers', artist:'artists',
       mechanic:'mechanics', category:'categories', family:'families'};
-    if (fields[key]) return (game[fields[key]] || []).map(x => x.name).filter(Boolean);
+    if (fields[key]) {
+      const credits = game[fields[key]] || [];
+      // BGG Thing credits preserve their listed order. Top 1 means index 0.
+      const mode = creditMode || state.creditScopes[key] || 'all';
+      const scoped = CREDIT_FIELDS.includes(key) && mode === 'top1' ? credits.slice(0, 1) : credits;
+      return scoped.map(x => x.name).filter(Boolean);
+    }
     if (key === 'year') return game.year ? [String(game.year)] : [];
     if (key === 'players') {
       const min = game.minPlayers, max = game.maxPlayers;
@@ -306,7 +314,8 @@
     const parts = [game.id, game.title, game.year, game.subtype,
       game.average, game.weight, game.rank, game.minPlayers, game.maxPlayers,
       game.playingTime, game.plays, game.personalRating];
-    FACETS.forEach(f => parts.push(...facetValues(game, f.key)));
+    // Global free-text search remains universal; scope only applies to facet suggestions and chips.
+    FACETS.forEach(f => parts.push(...facetValues(game, f.key, 'all')));
     return normalize(parts.join(' '));
   }
   function rebuild() {
@@ -408,6 +417,7 @@
       wrap.append(close);
       host.append(wrap);
     });
+    renderCreditScopes();
   }
   function makeImage(game, className) {
     if (!game.thumb && !game.image) return node('div', className + ' cover-placeholder', '♟');
@@ -474,6 +484,48 @@
   }
 
   const SEARCH_PLACEHOLDER = 'Search games, publishers, designers, mechanics, years, artists, categories…';
+  function setCreditScope(key, mode) {
+    if (!CREDIT_FIELDS.includes(key) || !['all', 'top1'].includes(mode)) return;
+    if (state.creditScopes[key] === mode) return;
+    state.creditScopes[key] = mode;
+    state.visible = PAGE_SIZE;
+    // Counts and available suggestions must reflect the new BGG credit position.
+    rebuildFacets();
+    render();
+    renderFacetButtons();
+    if (state.activeFacet && !$('suggestions').hidden) suggestions();
+    scheduleUrl();
+  }
+  function renderCreditScopes() {
+    const host = $('creditScopes');
+    const keys = CREDIT_FIELDS.filter(key =>
+      state.activeFacet === key || state.chips.some(chip => chip.key === key));
+    host.replaceChildren();
+    host.hidden = keys.length === 0;
+    for (const key of keys) {
+      const facet = FACET_MAP.get(key);
+      const group = node('div', 'credit-scope-group');
+      group.setAttribute('role', 'group');
+      group.setAttribute('aria-label', facet.label + ' matching scope');
+      group.append(node('span', 'credit-scope-label', facet.label + ':'));
+      const options = node('div', 'credit-scope-options');
+      for (const mode of ['all', 'top1']) {
+        const selected = state.creditScopes[key] === mode;
+        const button = node('button', 'credit-scope-option' + (selected ? ' selected' : ''),
+          mode === 'all' ? 'All' : 'Top 1');
+        button.type = 'button';
+        button.setAttribute('aria-pressed', String(selected));
+        button.title = mode === 'top1' ? 'Only the first BGG-listed ' + facet.label.toLowerCase() + ' credit' :
+          'Match any credited ' + facet.label.toLowerCase();
+        button.addEventListener('click', () => setCreditScope(key, mode));
+        options.append(button);
+      }
+      group.append(options);
+      host.append(group);
+    }
+    if (keys.length) host.append(node('span', 'credit-scope-hint',
+      'Top 1 = first BGG-listed credit'));
+  }
   function renderFacetButtons() {
     document.querySelectorAll('[data-facet]').forEach(button => {
       const active = button.dataset.facet === state.activeFacet;
@@ -482,6 +534,7 @@
     });
     const facet = FACET_MAP.get(state.activeFacet);
     $('search').placeholder = facet ? 'Find ' + facet.label.toLowerCase() + ' tags…' : SEARCH_PLACEHOLDER;
+    renderCreditScopes();
   }
   function hideSuggestions(resetFacet = true) {
     $('suggestions').hidden = true;
@@ -509,7 +562,10 @@
     suggestionRows = matches.slice(0, 12);
     state.selectedSuggestion = 0;
     const hint = node('div','suggestion-note',state.activeFacet
-      ? 'Select a ' + FACET_MAP.get(state.activeFacet).label.toLowerCase() + ' tag to filter'
+      ? 'Select a ' + FACET_MAP.get(state.activeFacet).label.toLowerCase() + ' tag · ' +
+        (CREDIT_FIELDS.includes(state.activeFacet)
+          ? (state.creditScopes[state.activeFacet] === 'top1' ? 'Top 1 credits only' : 'All credits')
+          : 'Filter by tag')
       : 'Search every field · select any result to add a filter');
     host.append(hint);
     suggestionRows.forEach((row,index) => {
@@ -793,6 +849,8 @@
       const q = new URLSearchParams();
       if (state.username) q.set('username',state.username);
       if (state.chips.length) q.set('filters',JSON.stringify(state.chips));
+      const top1 = CREDIT_FIELDS.filter(key => state.creditScopes[key] === 'top1');
+      if (top1.length) q.set('top1', top1.join(','));
       if (state.query) q.set('q',state.query);
       if ($('sort').value !== 'name') q.set('sort',$('sort').value);
       if ($('statusScope').value !== 'all') q.set('status',$('statusScope').value);
@@ -810,7 +868,8 @@
     $('details').addEventListener('click',event=>{ if (event.target === $('details')) $('details').close(); });
     $('clearBtn').addEventListener('click',()=>{
       state.chips=[]; state.query=''; $('search').value=''; $('statusScope').value='all';
-      state.visible=PAGE_SIZE; hideSuggestions(); render(); scheduleUrl();
+      CREDIT_FIELDS.forEach(key => { state.creditScopes[key] = 'all'; });
+      state.visible=PAGE_SIZE; rebuildFacets(); hideSuggestions(); render(); scheduleUrl();
     });
     document.querySelectorAll('[data-facet]').forEach(button => {
       button.addEventListener('click', () => {
@@ -864,6 +923,8 @@
           typeof x.value==='string' && x.value.length<250).slice(0,40);
       } catch (_) { /* Ignore malformed shared URL. */ }
     }
+    const top1 = new Set((params.get('top1') || '').split(',').filter(Boolean));
+    CREDIT_FIELDS.forEach(key => { state.creditScopes[key] = top1.has(key) ? 'top1' : 'all'; });
     if (params.has('q')) { state.query=(params.get('q') || '').slice(0,250); $('search').value=state.query; }
     if (Array.from($('sort').options).some(x=>x.value===params.get('sort'))) $('sort').value=params.get('sort');
     if (Array.from($('statusScope').options).some(x=>x.value===params.get('status'))) $('statusScope').value=params.get('status');
