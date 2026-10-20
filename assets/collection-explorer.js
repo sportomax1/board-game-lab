@@ -35,6 +35,7 @@
   ];
   const FACET_MAP = new Map(FACETS.map(f => [f.key, f]));
   const CREDIT_FIELDS = ['publisher', 'designer', 'artist'];
+  const CREDIT_PROPS = {publisher:'publishers', designer:'designers', artist:'artists'};
   const state = {
     username:'', items:[], metadata:new Map(), games:[], index:[],
     chips:[], query:'', results:[], visible:PAGE_SIZE, selectedSuggestion:0,
@@ -291,8 +292,11 @@
       const credits = game[fields[key]] || [];
       // BGG Thing credits preserve their listed order. Top 1 means index 0.
       const mode = creditMode || state.creditScopes[key] || 'all';
-      const scoped = CREDIT_FIELDS.includes(key) && mode === 'top1' ? credits.slice(0, 1) : credits;
-      return scoped.map(x => x.name).filter(Boolean);
+      if (CREDIT_FIELDS.includes(key)) {
+        if (mode === 'top1') return credits.slice(0, 1).map(x => x.name).filter(Boolean);
+        if (mode === 'only1' && credits.length !== 1) return [];
+      }
+      return credits.map(x => x.name).filter(Boolean);
     }
     if (key === 'year') return game.year ? [String(game.year)] : [];
     if (key === 'players') {
@@ -335,9 +339,14 @@
     rebuildFacets();
     render();
   }
+  function matchesCreditCountScopes(game) {
+    return CREDIT_FIELDS.every(key =>
+      state.creditScopes[key] !== 'only1' || (game[CREDIT_PROPS[key]] || []).length === 1);
+  }
   function rebuildFacets() {
     const maps = new Map(FACETS.map(f => [f.key,new Map()]));
     for (const game of state.games) {
+      if (!matchesCreditCountScopes(game)) continue;
       for (const facet of FACETS) {
         const seen = new Set();
         for (const value of facetValues(game, facet.key)) {
@@ -399,6 +408,7 @@
   function filteredGames() {
     const words = normalize(state.query).split(/\s+/).filter(Boolean);
     return state.games.filter(game => {
+      if (!matchesCreditCountScopes(game)) return false;
       if ($('statusScope').value !== 'all' && !game.statuses[$('statusScope').value]) return false;
       if (words.some(word => !game._search.includes(word))) return false;
       return matchesChips(game);
@@ -485,7 +495,7 @@
 
   const SEARCH_PLACEHOLDER = 'Search games, publishers, designers, mechanics, years, artists, categories…';
   function setCreditScope(key, mode) {
-    if (!CREDIT_FIELDS.includes(key) || !['all', 'top1'].includes(mode)) return;
+    if (!CREDIT_FIELDS.includes(key) || !['all', 'top1', 'only1'].includes(mode)) return;
     if (state.creditScopes[key] === mode) return;
     state.creditScopes[key] = mode;
     state.visible = PAGE_SIZE;
@@ -509,14 +519,16 @@
       group.setAttribute('aria-label', facet.label + ' matching scope');
       group.append(node('span', 'credit-scope-label', facet.label + ':'));
       const options = node('div', 'credit-scope-options');
-      for (const mode of ['all', 'top1']) {
+      for (const mode of ['all', 'top1', 'only1']) {
         const selected = state.creditScopes[key] === mode;
         const button = node('button', 'credit-scope-option' + (selected ? ' selected' : ''),
-          mode === 'all' ? 'All' : 'Top 1');
+          mode === 'all' ? 'All' : mode === 'top1' ? 'Top 1' : 'Only 1');
         button.type = 'button';
         button.setAttribute('aria-pressed', String(selected));
-        button.title = mode === 'top1' ? 'Only the first BGG-listed ' + facet.label.toLowerCase() + ' credit' :
-          'Match any credited ' + facet.label.toLowerCase();
+        button.title = mode === 'only1'
+          ? 'Show only games with exactly one BGG-listed ' + facet.label.toLowerCase().replace(/s$/, '')
+          : mode === 'top1' ? 'Match only the first BGG-listed ' + facet.label.toLowerCase() + ' credit'
+          : 'Match any credited ' + facet.label.toLowerCase();
         button.addEventListener('click', () => setCreditScope(key, mode));
         options.append(button);
       }
@@ -524,7 +536,7 @@
       host.append(group);
     }
     if (keys.length) host.append(node('span', 'credit-scope-hint',
-      'Top 1 = first BGG-listed credit'));
+      'Top 1 = first BGG-listed credit · Only 1 = exactly one credit'));
   }
   function renderFacetButtons() {
     document.querySelectorAll('[data-facet]').forEach(button => {
@@ -564,7 +576,9 @@
     const hint = node('div','suggestion-note',state.activeFacet
       ? 'Select a ' + FACET_MAP.get(state.activeFacet).label.toLowerCase() + ' tag · ' +
         (CREDIT_FIELDS.includes(state.activeFacet)
-          ? (state.creditScopes[state.activeFacet] === 'top1' ? 'Top 1 credits only' : 'All credits')
+          ? (state.creditScopes[state.activeFacet] === 'top1' ? 'Top 1 credits only'
+             : state.creditScopes[state.activeFacet] === 'only1' ? 'Exactly one credit only'
+             : 'All credits')
           : 'Filter by tag')
       : 'Search every field · select any result to add a filter');
     host.append(hint);
@@ -851,6 +865,8 @@
       if (state.chips.length) q.set('filters',JSON.stringify(state.chips));
       const top1 = CREDIT_FIELDS.filter(key => state.creditScopes[key] === 'top1');
       if (top1.length) q.set('top1', top1.join(','));
+      const only1 = CREDIT_FIELDS.filter(key => state.creditScopes[key] === 'only1');
+      if (only1.length) q.set('only1', only1.join(','));
       if (state.query) q.set('q',state.query);
       if ($('sort').value !== 'name') q.set('sort',$('sort').value);
       if ($('statusScope').value !== 'all') q.set('status',$('statusScope').value);
@@ -924,7 +940,10 @@
       } catch (_) { /* Ignore malformed shared URL. */ }
     }
     const top1 = new Set((params.get('top1') || '').split(',').filter(Boolean));
-    CREDIT_FIELDS.forEach(key => { state.creditScopes[key] = top1.has(key) ? 'top1' : 'all'; });
+    const only1 = new Set((params.get('only1') || '').split(',').filter(Boolean));
+    CREDIT_FIELDS.forEach(key => {
+      state.creditScopes[key] = only1.has(key) ? 'only1' : top1.has(key) ? 'top1' : 'all';
+    });
     if (params.has('q')) { state.query=(params.get('q') || '').slice(0,250); $('search').value=state.query; }
     if (Array.from($('sort').options).some(x=>x.value===params.get('sort'))) $('sort').value=params.get('sort');
     if (Array.from($('statusScope').options).some(x=>x.value===params.get('status'))) $('statusScope').value=params.get('status');
