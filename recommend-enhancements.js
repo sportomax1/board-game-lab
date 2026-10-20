@@ -158,8 +158,9 @@ function setView(mode){
 const oldSortRender=sortAndRender;sortAndRender=function(){shown=120;oldSortRender();savePrefs()};
 filterGames=function(){shown=120;renderGameList()};
 $('selectionFilter').addEventListener('change',()=>{shown=120;savePrefs()});
-const oldSelectAll=selectAll;selectAll=function(){oldSelectAll();saveSelected()};
-const oldDeselectAll=deselectAll;deselectAll=function(){oldDeselectAll();saveSelected()};
+// Batch actions use the same search/CSV metadata filter as the displayed cards.
+selectAll=function(){for(const g of visible())g.selected=true;renderGameList();saveSelected()};
+deselectAll=function(){for(const g of visible())g.selected=false;renderGameList();saveSelected()};
 const oldFilterRealtime=filterCollectionRealtime;filterCollectionRealtime=function(){oldFilterRealtime();savePrefs()};
 proceedToReview=function(){
  const ids=new Set(activeGames.map(g=>String(g.objectid)));
