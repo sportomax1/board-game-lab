@@ -95,25 +95,93 @@ function visible(){
  return activeGames.filter(g=>(filter!=='selected'||g.selected)&&(filter!=='notselected'||!g.selected)&&
  (!query||g.name.toLowerCase().includes(query)||g.csv&&['acquiredfrom','invlocation','comment','wishlistcomment','version_publishers'].some(k=>String(g.csv[k]||'').toLowerCase().includes(query))))
 }
+// Track the last interacted tile; ranges follow the currently sorted and filtered games.
+let selectionAnchor=null,rangeArmed=false;
+const gameId=g=>String(g.objectid);
+const pageSize=()=>window.innerWidth<640?48:120;
+function getRange(games,start,end){
+ const a=games.findIndex(g=>gameId(g)===start),b=games.findIndex(g=>gameId(g)===end);
+ return a<0||b<0?[]:games.slice(Math.min(a,b),Math.max(a,b)+1);
+}
+function rangeNotice(){
+ const hint=$('rangeHelp'),btn=$('rangeBtn');
+ if(!hint||!btn)return;
+ const anchor=visible().find(g=>gameId(g)===selectionAnchor);
+ hint.textContent=rangeArmed?
+  (anchor?'Range: tap the last game to select everything from '+anchor.name+'.':'Range: tap the first game, then tap the last.'):
+  'Tap a tile or image to select. Ctrl/Cmd-click toggles; Shift-click selects a range. On mobile tap Range. Only the game name opens BGG.';
+ btn.textContent=rangeArmed?'Cancel range':'Range';
+ btn.setAttribute('aria-pressed',String(rangeArmed));
+ btn.classList.toggle('bg-indigo-600',rangeArmed);
+ btn.classList.toggle('text-white',rangeArmed);
+ btn.classList.toggle('bg-indigo-50',!rangeArmed);
+ btn.classList.toggle('text-indigo-700',!rangeArmed)
+}
+function reflectSelection(el,game){
+ el.classList.toggle('ring-2',game.selected);
+ el.classList.toggle('ring-indigo-400',game.selected);
+ el.classList.toggle('border-indigo-400',game.selected);
+ el.classList.toggle('border-slate-200',!game.selected);
+ el.classList.toggle('bg-indigo-50',game.selected);
+ el.dataset.selected=String(game.selected);
+ const check=el.querySelector('input[type="checkbox"]');
+ if(check)check.checked=game.selected
+}
+function updateSelections(){
+ const all=new Map(collectionGames.map(g=>[gameId(g),g]));
+ for(const el of $('gameList').querySelectorAll('.recommend-select-card')){
+  const g=all.get(el.dataset.gameId);if(g)reflectSelection(el,g)
+ }
+ updateSelectedCount();rangeNotice()
+}
+function selectTile(game,event={}){
+ const games=visible(),id=gameId(game);
+ const found=selectionAnchor!==null&&games.some(g=>gameId(g)===selectionAnchor);
+ if(found&&(event.shiftKey||rangeArmed)){
+  for(const g of getRange(games,selectionAnchor,id))g.selected=true;
+ }else game.selected=!game.selected;
+ if(rangeArmed&&found)rangeArmed=false;
+ selectionAnchor=id;
+ if($('selectionFilter').value==='all')updateSelections();else renderGameList();
+ saveSelected()
+}
 function makeCard(g){
- const grid=view==='grid',el=document.createElement('label');el.dataset.gameId=String(g.objectid);
- el.className=grid?'relative bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col cursor-pointer hover:border-indigo-400':'flex items-center gap-3 p-2 bg-white rounded-xl border border-slate-200 cursor-pointer hover:bg-indigo-50 min-w-0';
- if(grid&&g.selected)el.classList.add('ring-2','ring-indigo-400');
- const checkbox=document.createElement('input');checkbox.type='checkbox';checkbox.checked=g.selected;checkbox.setAttribute('aria-label','Select '+g.name);
- checkbox.className=grid?'absolute top-2 left-2 z-10 w-5 h-5 accent-indigo-600':'w-5 h-5 accent-indigo-600 flex-shrink-0';
- checkbox.onchange=()=>{g.selected=checkbox.checked;updateSelectedCount();saveSelected();if(grid)el.classList.toggle('ring-2',g.selected);if($('selectionFilter').value!=='all')renderGameList()};
+ const grid=view==='grid',el=document.createElement('div');
+ el.dataset.gameId=gameId(g);
+ el.className=(grid?
+ 'relative bg-white rounded-xl border border-slate-200 shadow-sm overflow-hidden flex flex-col cursor-pointer hover:border-indigo-400 min-w-0':
+ 'flex items-center gap-3 p-2 sm:p-3 bg-white rounded-xl border border-slate-200 cursor-pointer hover:bg-indigo-50 min-w-0')+
+ ' recommend-select-card focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-indigo-600';
+ el.tabIndex=0;el.setAttribute('role','group');
+ el.setAttribute('aria-label','Select '+g.name+'. The title opens BoardGameGeek.');
+ el.addEventListener('click',e=>{if(!e.target.closest('a,button,input,select'))selectTile(g,e)});
+ el.addEventListener('keydown',e=>{if(e.target===el&&(e.key==='Enter'||e.key===' ')){e.preventDefault();selectTile(g,e)}});
+ const checkbox=document.createElement('input');
+ checkbox.type='checkbox';checkbox.setAttribute('aria-label','Select '+g.name);
+ checkbox.className=grid?'absolute top-2 left-2 z-10 w-5 h-5 accent-indigo-600 cursor-pointer':'w-5 h-5 accent-indigo-600 flex-shrink-0 cursor-pointer';
+ checkbox.addEventListener('click',e=>{e.stopPropagation();selectTile(g,e)});
  el.append(checkbox);
- const artBox=document.createElement('div');artBox.className=grid?'relative w-full aspect-square bg-slate-100 overflow-hidden':'relative w-14 h-14 sm:w-16 sm:h-16 bg-slate-100 rounded-lg overflow-hidden flex-shrink-0';
- const fallback=document.createElement('span');fallback.className='absolute inset-0 flex items-center justify-center font-bold text-2xl text-slate-300';fallback.textContent=g.name[0]||'?';artBox.append(fallback);
+ const artBox=document.createElement('div');
+ artBox.className=grid?'relative w-full aspect-square bg-slate-100 overflow-hidden cursor-pointer':
+ 'relative w-[68px] h-[68px] sm:w-20 sm:h-20 bg-slate-100 rounded-lg overflow-hidden flex-shrink-0 cursor-pointer';
+ const fallback=document.createElement('span');
+ fallback.className='absolute inset-0 flex items-center justify-center font-bold text-2xl text-slate-300';
+ fallback.textContent=g.name[0]||'?';artBox.append(fallback);
  if(g.thumb)addThumb(artBox,g.thumb);
- artBox.title='Open '+g.name+' on BoardGameGeek';artBox.classList.add('thumb-clickable');
- artBox.onclick=e=>{e.preventDefault();e.stopPropagation();window.open('https://boardgamegeek.com/boardgame/'+encodeURIComponent(g.objectid),'_blank','noopener')};
- el.append(artBox);
- const info=document.createElement('div');info.className=grid?'p-2 min-w-0':'flex-1 min-w-0';
- const title=document.createElement('div');title.className=grid?'font-bold text-sm text-slate-900 line-clamp-2':'font-bold text-sm text-slate-900 truncate';
- title.textContent=g.name;title.title=g.name;info.append(title);
- const sub=document.createElement('div');sub.className=grid?'text-[10px] text-slate-500 mt-1 line-clamp-3':'text-xs text-slate-500';sub.textContent=displayMetadata(g);info.append(sub);el.append(info);
- return el
+ artBox.title='Select '+g.name;artBox.classList.add('thumb-clickable');el.append(artBox);
+ const info=document.createElement('div');info.className=grid?'p-2 sm:p-3 min-w-0':'flex-1 min-w-0';
+ const title=document.createElement('a');
+ title.href='https://boardgamegeek.com/boardgame/'+encodeURIComponent(g.objectid);
+ title.target='_blank';title.rel='noopener noreferrer';
+ title.className=grid?
+ 'block font-bold text-sm text-indigo-800 hover:text-indigo-600 hover:underline line-clamp-2':
+ 'block font-bold text-sm sm:text-base text-indigo-800 hover:text-indigo-600 hover:underline truncate';
+ title.textContent=g.name;title.title='Open '+g.name+' on BoardGameGeek';
+ title.addEventListener('click',e=>e.stopPropagation());info.append(title);
+ const sub=document.createElement('div');sub.className=grid?
+ 'text-[10px] sm:text-xs text-slate-500 mt-1 line-clamp-3':'text-xs text-slate-500 leading-relaxed';
+ sub.textContent=displayMetadata(g);info.append(sub);el.append(info);
+ reflectSelection(el,g);return el
 }
 function addThumb(container,url){
  const img=document.createElement('img');img.src=url;img.loading='lazy';img.decoding='async';img.referrerPolicy='no-referrer';img.alt='';
@@ -123,11 +191,15 @@ function addThumb(container,url){
 }
 renderGameList=function(){
  const el=$('gameList'),games=visible(),subset=games.slice(0,shown);el.replaceChildren();
- el.className=view==='grid'?'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 gap-2 sm:gap-3 max-h-[70vh] overflow-y-auto content-start':'flex flex-col gap-1.5 max-h-[70vh] overflow-y-auto';
+ el.className=view==='grid'?
+ 'grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 2xl:grid-cols-8 gap-2 sm:gap-3 content-start overflow-visible lg:max-h-[calc(100dvh-300px)] lg:overflow-y-auto':
+ 'grid grid-cols-1 xl:grid-cols-2 2xl:grid-cols-3 gap-2 content-start overflow-visible lg:max-h-[calc(100dvh-300px)] lg:overflow-y-auto';
  const fragment=document.createDocumentFragment();subset.forEach(g=>fragment.append(makeCard(g)));
  if(!games.length){const p=document.createElement('p');p.className='text-sm text-slate-500 text-center p-8';p.textContent=collectionGames.length?'No matching games':'Fetch a collection or upload a CSV to begin';fragment.append(p)}
  el.append(fragment);$('shownCount').textContent=`Showing ${subset.length.toLocaleString()} of ${games.length.toLocaleString()} games`;
- $('moreGames').classList.toggle('hidden',subset.length>=games.length);updateSelectedCount();
+ $('moreGames').classList.toggle('hidden',subset.length>=games.length);
+ $('moreGames').textContent='Load '+Math.min(pageSize(),Math.max(0,games.length-subset.length))+' more';
+ updateSelectedCount();rangeNotice();
  void fetchArt(subset.filter(g=>!g.thumb))
 };
 async function fetchArt(games){
@@ -151,12 +223,12 @@ async function fetchArt(games){
  }
 }
 function setView(mode){
- view=mode==='grid'?'grid':'list';shown=120;
+ view=mode==='grid'?'grid':'list';shown=pageSize();
  for(const m of ['list','grid']){const button=$('mode-'+m),yes=m===view;button.classList.toggle('bg-indigo-600',yes);button.classList.toggle('text-white',yes);button.classList.toggle('bg-slate-100',!yes);button.classList.toggle('text-slate-600',!yes);button.setAttribute('aria-pressed',String(yes))}
  renderGameList();savePrefs()
 }
-const oldSortRender=sortAndRender;sortAndRender=function(){shown=120;oldSortRender();savePrefs()};
-filterGames=function(){shown=120;renderGameList()};
+const oldSortRender=sortAndRender;sortAndRender=function(){shown=pageSize();oldSortRender();savePrefs()};
+filterGames=function(){shown=pageSize();renderGameList()};
 $('selectionFilter').addEventListener('change',()=>{shown=120;savePrefs()});
 // Batch actions use the same search/CSV metadata filter as the displayed cards.
 selectAll=function(){for(const g of visible())g.selected=true;renderGameList();saveSelected()};
@@ -182,7 +254,7 @@ async function clearAll(){
  if(!confirm('Clear the collection, CSV, selections and preferences stored in this browser?'))return;
  clearTimeout(saveTimer);const d=await db();
  if(d)await new Promise(done=>{try{const t=d.transaction(STORE,'readwrite');t.objectStore(STORE).clear();t.oncomplete=done;t.onerror=done;t.onabort=done}catch{done()}});
- base=[];csv=[];fields=[];csvUser='';art={};owner=currentUser();selected.clear();collectionGames=[];activeGames=[];selectedGames=[];shown=120;loadingImages.clear();lastXmlResponse='';
+ base=[];csv=[];fields=[];csvUser='';art={};owner=currentUser();selected.clear();collectionGames=[];activeGames=[];selectedGames=[];shown=pageSize();selectionAnchor=null;rangeArmed=false;loadingImages.clear();lastXmlResponse='';
  $('csvFeedback').textContent='Local data cleared';$('viewXmlBtn').classList.add('hidden');$('tab-1').disabled=true;$('tab-2').disabled=true;
  updateCsvSorts();switchTab(0);renderGameList();status(!!d)
 }
@@ -190,15 +262,16 @@ function controls(){
  const box=document.createElement('section');box.className='p-4 rounded-xl border border-indigo-100 bg-indigo-50/50 space-y-2';
  box.innerHTML='<div class="flex items-center justify-between gap-2"><b class="text-sm text-slate-800">Import BGG CSV</b><span class="text-[10px] text-slate-500">CSV only or merge by BGG ID</span></div><input id="csvUpload" type="file" accept=".csv,text/csv" aria-label="Import BGG collection CSV" class="block w-full text-xs file:mr-2 file:bg-indigo-600 file:text-white file:border-0 file:px-3 file:py-2 file:rounded-lg"><p id="csvFeedback" class="text-xs text-slate-600" role="status">Upload your BGG collection export to sort by wishlist, price, date, storage location and more. Data stays in this browser.</p><div class="flex items-center justify-between border-t border-indigo-100 pt-2 gap-2"><span id="cacheStatus" class="text-[11px] text-slate-500">Checking local storage…</span><button id="clearCache" type="button" class="text-[11px] text-red-600 font-semibold hover:underline">Clear saved data</button></div>';
  $('viewXmlBtn').before(box);$('csvUpload').addEventListener('change',e=>void upload(e.target.files?.[0]));$('clearCache').onclick=()=>void clearAll();
- const controls=document.createElement('div');controls.className='flex flex-wrap gap-2 items-center pt-1';
- controls.innerHTML='<span class="text-xs font-bold text-slate-500 uppercase">View</span><div role="group" aria-label="Selection layout" class="flex gap-1"><button id="mode-list" type="button" class="text-xs font-bold px-3 py-2 rounded-lg" aria-pressed="true">☰ List</button><button id="mode-grid" type="button" class="text-xs font-bold px-3 py-2 rounded-lg" aria-pressed="false">▦ Thumbnail grid</button></div><label class="text-xs font-bold text-slate-500 uppercase ml-auto" for="sortDir">Order</label><select id="sortDir" class="px-2 py-2 rounded-lg border border-slate-200 bg-white text-xs"><option value="default">Default</option><option value="asc">Ascending</option><option value="desc">Descending</option></select>';
+ const controls=document.createElement('div');controls.className='flex flex-wrap gap-2 sm:gap-3 items-center p-2 sm:p-3 bg-slate-50 border border-slate-100 rounded-xl';
+ controls.innerHTML='<span class="text-xs font-bold text-slate-500 uppercase">View</span><div role="group" aria-label="Selection layout" class="flex gap-1"><button id="mode-list" type="button" class="text-xs font-bold px-3 py-2.5 min-h-10 rounded-lg" aria-pressed="true">☰ List</button><button id="mode-grid" type="button" class="text-xs font-bold px-3 py-2.5 min-h-10 rounded-lg" aria-pressed="false">▦ Grid</button></div><button id="rangeBtn" type="button" aria-pressed="false" class="min-h-10 px-3 py-2.5 rounded-lg text-xs font-bold bg-indigo-50 text-indigo-700 border border-indigo-100">Range</button><label class="text-xs font-bold text-slate-500 uppercase ml-auto" for="sortDir">Order</label><select id="sortDir" class="min-h-10 px-2 py-2.5 rounded-lg border border-slate-200 bg-white text-xs"><option value="default">Default</option><option value="asc">Ascending</option><option value="desc">Descending</option></select><p id="rangeHelp" role="status" aria-live="polite" class="w-full text-[11px] sm:text-xs text-slate-500"></p>';
  $('gameList').before(controls);
  const paging=document.createElement('div');paging.className='flex flex-col items-center gap-2 py-3';
  paging.innerHTML='<span id="shownCount" class="text-xs text-slate-500" aria-live="polite"></span><button id="moreGames" type="button" class="hidden bg-indigo-50 text-indigo-600 hover:bg-indigo-100 rounded-lg text-sm font-bold px-4 py-2">Load 120 more</button>';
  $('gameList').after(paging);
  $('mode-list').onclick=()=>setView('list');$('mode-grid').onclick=()=>setView('grid');
  $('sortDir').onchange=e=>{direction=e.target.value;sortAndRender()};
- $('moreGames').onclick=()=>{shown+=120;renderGameList()};
+ $('moreGames').onclick=()=>{shown+=pageSize();renderGameList()};
+ $('rangeBtn').onclick=()=>{rangeArmed=!rangeArmed;if(rangeArmed&&!visible().some(g=>gameId(g)===selectionAnchor))selectionAnchor=null;rangeNotice()};
 }
 async function init(){
  controls();const [prefs,saved,imported,sel,images]=await Promise.all([get('prefs'),get('bgg'),get('csv'),get('selected'),get('art')]);
