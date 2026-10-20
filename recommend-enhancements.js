@@ -202,26 +202,92 @@ renderGameList=function(){
  updateSelectedCount();rangeNotice();
  void fetchArt(subset.filter(g=>!g.thumb))
 };
-async function fetchArt(games){
- if(typeof fetchThingBatch!=='function')return;
- const ids=games.map(g=>String(g.objectid)).filter(id=>/^\d+$/.test(id)&&!loadingImages.has(id));
- ids.forEach(id=>loadingImages.add(id));
- for(let i=0;i<ids.length;i+=20){
- const batch=ids.slice(i,i+20);
- try{
- const xml=await fetchThingBatch(batch);let changed=false;
- xml.querySelectorAll('item[id]').forEach(item=>{
- const id=item.getAttribute('id'),url=item.querySelector('thumbnail')?.textContent?.trim()||item.querySelector('image')?.textContent?.trim();
- if(!id||!url)return;art[id]=url;changed=true;
- for(const game of collectionGames)if(String(game.objectid)===id)game.thumb=url;
- for(const game of base)if(String(game.objectid)===id)game.thumb=url;
- const card=[...$('gameList').children].find(e=>e.dataset.gameId===id);
- if(card&&!card.querySelector('img'))addThumb(card.querySelector('.thumb-clickable'),url)
- });
- if(changed)void put('art',art)
- }catch(e){console.warn('BGG thumbnail request failed',e)}
+
+// Cover URLs are not present in standard BGG collection CSV exports.
+// Keep one shared lookup for background cards and export, so export never
+// snapshots an unpopulated thumbnail field while background work is pending.
+const coverRequests = new Map();
+const normaliseCoverUrl = url => {
+ const raw = String(url || '').trim();
+ if (raw.startsWith('//')) return 'https:' + raw;
+ if (raw.startsWith('http://')) return 'https://' + raw.slice(7);
+ return /^https:\/\//i.test(raw) ? raw : '';
+};
+function syncArtwork(id,url){
+ if(!url)return;
+ art[id]=url;
+ for(const g of collectionGames)if(String(g.objectid)===id)g.thumb=url;
+ for(const g of base)if(String(g.objectid)===id)g.thumb=url;
+ for(const g of selectedGames)if(String(g.objectid)===id)g.thumb=url;
+ const card=[...$('gameList').querySelectorAll('.recommend-select-card')]
+   .find(el=>el.dataset.gameId===id);
+ if(card&&!card.querySelector('img')) {
+   const box=card.querySelector('.thumb-clickable');
+   if(box)addThumb(box,url);
  }
 }
+async function ensureGameCovers(games,progress,{force=false}={}){
+ const ids=[...new Set(games.map(g=>String(g.objectid)).filter(id=>/^\d+$/.test(id)))];
+ for(const id of ids)if(art[id]) {
+   const url=normaliseCoverUrl(art[id]);
+   if(url)syncArtwork(id,url);
+ }
+ const thumb=id=>games.find(g=>String(g.objectid)===id)?.thumb
+   ||collectionGames.find(g=>String(g.objectid)===id)?.thumb||art[id];
+ const missing=()=>ids.filter(id=>!normaliseCoverUrl(thumb(id)));
+ const needed=ids.filter(id=>force||!normaliseCoverUrl(thumb(id)));
+ let settled=0;
+ const errors=[];
+ const fresh=needed.filter(id=>!coverRequests.has(id));
+ const batches=chunkIds(fresh,20);
+ // BGG frequently queues large bursts. Keep requests at low concurrency.
+ let cursor=0;
+ // Per-batch promise gates allow simultaneous export to wait for a background lookup.
+ const gates=batches.map(()=>{let resolve,reject;const promise=new Promise((a,b)=>{resolve=a;reject=b});return{promise,resolve,reject}});
+ batches.forEach((batch,i)=>batch.forEach(id=>coverRequests.set(id,gates[i].promise)));
+ const existing=[...new Set(needed.map(id=>coverRequests.get(id)).filter(Boolean))];
+ // Catch failures here and report them in one place, avoiding unhandled rejections.
+ const execute=async()=>{
+   while(cursor<batches.length){
+     const i=cursor++,batch=batches[i];
+     try{
+       const doc=await fetchThingBatch(batch);
+       if(doc.querySelector('parsererror'))throw new Error('BGG returned invalid XML.');
+       doc.querySelectorAll('item[id]').forEach(item=>{
+         const id=item.getAttribute('id');
+         const url=normaliseCoverUrl(item.querySelector('thumbnail')?.textContent
+           ||item.querySelector('image')?.textContent);
+         if(id&&url)syncArtwork(id,url);
+       });
+       gates[i].resolve(true);
+     }catch(err){gates[i].reject(err)}
+     finally{for(const id of batch)if(coverRequests.get(id)===gates[i].promise)coverRequests.delete(id)}
+   }
+ };
+ // Observe all promises before starting workers to avoid unhandled rejections.
+ const settledPromises=existing.map(p=>p.then(()=>({ok:true}),error=>({ok:false,error})));
+ const workers=Array.from({length:Math.min(2,batches.length)},()=>execute());
+ await Promise.all(workers);
+ await Promise.all(settledPromises.map(async done=>{
+   const r=await done;if(!r.ok)errors.push(r.error);
+   settled++;if(typeof progress==='function')progress({
+     completed:settled,total:existing.length,
+     resolved:ids.length-missing().length,
+     requested:ids.length
+   });
+ }));
+ if(ids.length)await put('art',art);
+ const unavailable=missing();
+ if(errors.length)console.warn('Some BGG artwork requests failed',errors[0]);
+ return {requested:ids.length,resolved:ids.length-unavailable.length,
+   missing:unavailable,errors:errors.map(err=>String(err?.message||err))}
+}
+async function fetchArt(games) {
+ if(!games.length)return;
+ try {await ensureGameCovers(games)}catch(err){console.warn('BGG cover enrichment failed',err)}
+}
+window.recommendEnsureArtwork=ensureGameCovers;
+
 function setView(mode){
  view=mode==='grid'?'grid':'list';shown=pageSize();
  for(const m of ['list','grid']){const button=$('mode-'+m),yes=m===view;button.classList.toggle('bg-indigo-600',yes);button.classList.toggle('text-white',yes);button.classList.toggle('bg-slate-100',!yes);button.classList.toggle('text-slate-600',!yes);button.setAttribute('aria-pressed',String(yes))}
