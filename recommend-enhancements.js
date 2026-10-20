@@ -304,7 +304,24 @@ proceedToReview=function(){
  const ids=new Set(activeGames.map(g=>String(g.objectid)));
  selectedGames=activeGames.filter(g=>g.selected).concat(collectionGames.filter(g=>g.selected&&!ids.has(String(g.objectid))));
  if(!selectedGames.length){alert('Please select at least one game!');return}
- $('tab-2').disabled=false;switchTab(2)
+ $('tab-2').disabled=false;switchTab(2);
+ const missing=selectedGames.filter(g=>!g.thumb);
+ if(missing.length){
+  const feedback=$('exportFeedback');
+  if(feedback)feedback.textContent='Loading BGG artwork for '+missing.length+' selected games…';
+  void ensureGameCovers(missing,p=>{
+   if(feedback)feedback.textContent='Resolving BGG covers: '+p.resolved+' of '+p.requested+' found…';
+  }).then(report=>{
+   if(currentTab===2)renderRecommendations();
+   const remaining=selectedGames.filter(g=>!g.thumb).length;
+   if(feedback)feedback.textContent=remaining
+     ? 'Artwork unavailable for '+remaining+' games. Use Retry artwork before exporting.'
+     : 'Artwork ready for all '+selectedGames.length+' selected games.';
+  }).catch(error=>{
+   console.warn('Review artwork loading failed',error);
+   if(feedback)feedback.textContent='Some cover images could not be loaded. Use Retry artwork before exporting.';
+  });
+ }
 };
 const originalFetch=fetchCollection;
 fetchCollection=async function(){
