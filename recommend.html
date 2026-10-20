@@ -406,6 +406,7 @@
         </div>
       </div>
       <p id="exportFeedback" class="text-sm text-slate-600 text-center mt-3" role="status" aria-live="polite"></p>
+      <div class="text-center"><a id="exportDownloadLink" class="hidden text-sm font-bold text-indigo-600 underline" href="#" download>Download image manually</a></div>
     </div>
   </main>
 
@@ -1328,15 +1329,36 @@ async function makeExportZip(entries) {
   return new Blob([...sections, ...directory, end], { type: 'application/zip' });
 }
 
+let previousExportUrl = null;
+let previousExportTimer = null;
 function downloadExportBlob(blob, filename) {
   const url = URL.createObjectURL(blob);
+  if (previousExportTimer) clearTimeout(previousExportTimer);
+  if (previousExportUrl) URL.revokeObjectURL(previousExportUrl);
+  previousExportUrl = url;
+  const fallback = document.getElementById('exportDownloadLink');
+  if (fallback) {
+    fallback.href = url;
+    fallback.download = filename;
+    fallback.textContent = 'Download ' + filename + ' manually if the download did not start';
+    fallback.classList.remove('hidden');
+  }
   const anchor = document.createElement('a');
   anchor.href = url; anchor.download = filename;
   document.body.appendChild(anchor);
   anchor.click();
   anchor.remove();
-  // Delay revocation: Safari and iOS may read the blob after the click handler.
-  setTimeout(() => URL.revokeObjectURL(url), 60000);
+  // Keep the manually clickable link available on browsers that block auto-downloads.
+  previousExportTimer = setTimeout(() => {
+    if (previousExportUrl === url) {
+      if (fallback) {
+        fallback.removeAttribute('href');
+        fallback.classList.add('hidden');
+      }
+      URL.revokeObjectURL(url);
+      previousExportUrl = null;
+    }
+  }, 300000);
 }
 
 async function renderExportBlob(plan, pageIndex) {
@@ -1354,7 +1376,7 @@ async function composeAndDownload() {
     if (plan.pages === 1) {
       const png = await renderExportBlob(plan, 0);
       downloadExportBlob(png, 'bgg_recommendations_' + Date.now() + '.png');
-      exportMessage('PNG saved (' + plan.games.length + ' games).');
+      exportMessage('PNG prepared (' + plan.games.length + ' games). If the download did not start, use the manual link below.');
     } else {
       const images = [];
       for (let page = 0; page < plan.pages; page++) {
@@ -1364,7 +1386,7 @@ async function composeAndDownload() {
       }
       const zip = await makeExportZip(images);
       downloadExportBlob(zip, 'bgg_recommendations_' + Date.now() + '.zip');
-      exportMessage('ZIP saved with ' + plan.pages + ' PNG pages (' + plan.games.length + ' games).');
+      exportMessage('ZIP prepared with ' + plan.pages + ' PNG pages (' + plan.games.length + ' games). If the download did not start, use the manual link below.');
     }
   } catch (error) {
     console.error('Save image failed', error);
