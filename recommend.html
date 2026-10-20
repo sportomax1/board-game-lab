@@ -389,6 +389,13 @@
               <input type="checkbox" id="zoomImages" onchange="renderRecommendations()" class="w-4 h-4 rounded text-indigo-600">
               <span class="text-xs font-bold text-slate-600">Zoom</span>
             </label>
+            <label class="flex items-center gap-2 cursor-pointer" title="By default exports stop if artwork cannot load">
+              <input type="checkbox" id="allowMissingArtwork" class="w-4 h-4 rounded text-indigo-600">
+              <span class="text-xs font-bold text-slate-600">Allow placeholders</span>
+            </label>
+            <button id="retryArtworkBtn" onclick="retryRecommendArtwork()" class="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg hover:bg-indigo-100 transition-colors" title="Retry loading BGG cover images for selected games">
+              <i class="fa-solid fa-rotate mr-1"></i> Retry artwork
+            </button>
             <button onclick="exportCSV()" class="text-xs font-bold text-indigo-600 bg-indigo-50 px-3 py-1 rounded-lg hover:bg-indigo-100 transition-colors">
               <i class="fa-solid fa-download mr-1"></i> CSV
             </button>
@@ -1219,6 +1226,21 @@ async function getComposedCanvas(pageIndex = 0, plan = exportPlan()) {
   const accentColor = document.getElementById('accentColor').value;
   const first = pageIndex * plan.perPage;
   const games = plan.games.slice(first, first + plan.perPage);
+  // BGG CSV exports include game IDs but no thumbnail URLs. Resolve from XMLAPI2
+  // BEFORE attempting to render; never silently turn a cover gallery into initials.
+  if (!plan.namesOnly && typeof window.recommendEnsureArtwork === 'function') {
+    const blanks = games.filter(g => !g.thumb);
+    if (blanks.length) {
+      exportMessage('Finding BGG artwork for ' + blanks.length + ' games…');
+      const report = await window.recommendEnsureArtwork(blanks, details =>
+        exportMessage('Loading BGG artwork: ' + details.completed + ' of ' + details.total +
+          ' batches, ' + details.resolved + ' covers found…'));
+      if (report.errors?.length) console.warn('Artwork lookup errors:', report.errors);
+      if (report.resolved > 0 && typeof renderRecommendations === 'function') {
+        renderRecommendations();
+      }
+    }
+  }
   const canvas = document.createElement('canvas');
   const rowHeight = plan.namesOnly ? 52 : 150;
   const cols = plan.namesOnly || plan.listMode ? 1 : plan.cols;
@@ -1235,14 +1257,25 @@ async function getComposedCanvas(pageIndex = 0, plan = exportPlan()) {
   // Image requests are bounded so a large selection won't stall the browser.
   const images = new Array(games.length).fill(null);
   if (!plan.namesOnly) {
-    let next = 0;
+    let next = 0, finished = 0;
     const worker = async () => {
       while (next < games.length) {
         const i = next++;
         images[i] = await fetchExportImage(games[i].thumb).catch(() => null);
+        finished++;
+        if (finished % 5 === 0 || finished === games.length)
+          exportMessage('Loading cover images: ' + finished + '/' + games.length + '…');
       }
     };
-    await Promise.all(Array.from({ length: Math.min(8, games.length) }, worker));
+    await Promise.all(Array.from({ length: Math.min(6, games.length) }, worker));
+    const missing = games.filter((_,i) => !images[i]);
+    if (missing.length && !document.getElementById('allowMissingArtwork')?.checked) {
+      const examples = missing.slice(0,3).map(g=>g.name).join(', ');
+      throw new Error('Could not load artwork for ' + missing.length + ' of ' + games.length +
+        ' games (' + examples + '). Export canceled to avoid placeholders. ' +
+        'Check the BGG connection or click Retry artwork. ' +
+        'If covers are unavailable for particular games, enable Allow placeholders.');
+    }
   }
 
   for (let i = 0; i < games.length; i++) {
@@ -1365,6 +1398,27 @@ async function renderExportBlob(plan, pageIndex) {
   const canvas = await getComposedCanvas(pageIndex, plan);
   try { return await canvasPngBlob(canvas); }
   finally { canvas.width = 0; canvas.height = 0; }
+}
+
+async function retryRecommendArtwork() {
+  const button = document.getElementById('retryArtworkBtn');
+  const plan = exportPlan();
+  if (!plan.games.length) { exportMessage('Select games first.', true); return; }
+  if (typeof window.recommendEnsureArtwork !== 'function') {
+    exportMessage('Art loading is not available. Reload the app and try again.', true); return;
+  }
+  if (button) button.disabled = true;
+  try {
+    const report = await window.recommendEnsureArtwork(plan.games,
+      p => exportMessage('Refreshing artwork: ' + p.completed + ' of ' + p.total + ' requests…'), { force: true });
+    for (const game of plan.games) if (game.thumb) exportImageCache.delete(game.thumb);
+    renderRecommendations();
+    const n=plan.games.filter(g=>!g.thumb).length;
+    exportMessage(n ? 'BGG returned no cover URLs for '+n+' games. They cannot be exported with covers yet.' :
+      'Artwork URLs refreshed for '+report.resolved+' games. Try saving again.',n>0);
+  } catch(e) {
+    console.error(e);exportMessage('Could not reload BGG artwork: '+(e.message||e),true);
+  } finally {if(button)button.disabled=false}
 }
 
 async function composeAndDownload() {
