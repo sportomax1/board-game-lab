@@ -405,11 +405,12 @@
           </div>
         </div>
       </div>
+      <p id="exportFeedback" class="text-sm text-slate-600 text-center mt-3" role="status" aria-live="polite"></p>
     </div>
   </main>
 
   <div id="footerAction" class="footer-action hidden">
-    <button onclick="composeAndDownload()" class="cta-btn primary" title="Save image to disk">
+    <button id="saveBtn" onclick="composeAndDownload()" class="cta-btn primary" title="Download a PNG or a ZIP of PNG pages">
       <span class="cta-icon"><i class="fa-solid fa-camera"></i></span>
       <span>Save</span>
     </button>
@@ -910,7 +911,7 @@ function renderRecommendations() {
     });
     textContainer.appendChild(textList);
     container.appendChild(textContainer);
-    document.getElementById('footerAction').classList.add('hidden');
+    document.getElementById('footerAction').classList.remove('hidden');
     return;
   }
   
@@ -1075,202 +1076,326 @@ function exportCSV() {
   a.click();
 }
 
-async function getComposedCanvas() {
+// Canvas exports are rendered independently from the DOM preview so image failures
+// cannot prevent game names, ranks, or placeholder artwork from being exported.
+const EXPORT_LIST_PAGE_SIZE = 50;
+const EXPORT_NAMES_PAGE_SIZE = 100;
+const exportImageCache = new Map();
+let exportRunning = false;
+
+function exportPlan() {
   const layout = document.getElementById('layoutSelect').value;
+  const namesOnly = layout === 'namesRank' || layout === 'namesAlpha';
+  const listMode = layout.startsWith('list');
+  const limitMap = { grid9: 9, grid25: 25, grid100: 100, shelfie: 10, list10: 10, list50: 50, list100: 100 };
+  const limit = limitMap[layout] ?? selectedGames.length;
+  let games = selectedGames.slice(0, limit);
+  if (layout === 'namesAlpha') games = games.slice().sort((a, b) => a.name.localeCompare(b.name));
+  const perPage = namesOnly ? EXPORT_NAMES_PAGE_SIZE : listMode ? EXPORT_LIST_PAGE_SIZE : Math.max(1, games.length);
+  const pages = Math.max(1, Math.ceil(games.length / perPage));
+  const cols = layout === 'grid9' ? 3 : layout === 'grid100' ? 10 : 5;
+  const tile = layout === 'grid100' ? 170 : layout === 'grid9' ? 370 : 290;
+  return { layout, games, namesOnly, listMode, pages, perPage, cols, tile };
+}
+
+function exportMessage(message, isError = false) {
+  const status = document.getElementById('exportFeedback');
+  if (status) {
+    status.textContent = message;
+    status.classList.toggle('text-red-600', isError);
+    status.classList.toggle('text-slate-600', !isError);
+  }
+  if (isError) console.error('Recommend Pro export:', message);
+}
+
+function setExportBusy(busy, label = '') {
+  exportRunning = busy;
+  for (const id of ['copyBtn', 'saveBtn']) {
+    const button = document.getElementById(id);
+    if (button) button.disabled = busy;
+  }
+  if (label) exportMessage(label);
+}
+
+function canvasPngBlob(canvas) {
+  return new Promise((resolve, reject) => {
+    try {
+      canvas.toBlob(blob => blob && blob.size
+        ? resolve(blob)
+        : reject(new Error('Could not encode PNG. Try saving a smaller selection.')), 'image/png');
+    } catch (error) { reject(error); }
+  });
+}
+
+async function fetchExportImage(src) {
+  if (!src) return null;
+  if (exportImageCache.has(src)) return exportImageCache.get(src);
+  const task = (async () => {
+    // Fetch a same-origin proxy first to avoid tainting the canvas. A direct URL
+    // is a CORS-only fallback; neither route is drawn if decoding fails.
+    const urls = [getProxyImageUrl(src), src];
+    for (const url of urls) {
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 9000);
+      try {
+        const response = await fetch(url, { signal: controller.signal, mode: 'cors' });
+        if (!response.ok) throw new Error('Image HTTP ' + response.status);
+        const blob = await response.blob();
+        if (!blob.type.startsWith('image/')) throw new Error('Non-image response');
+        const blobUrl = URL.createObjectURL(blob);
+        try {
+          const image = await new Promise((resolve, reject) => {
+            const img = new Image();
+            img.onload = () => resolve(img);
+            img.onerror = () => reject(new Error('Invalid image'));
+            img.src = blobUrl;
+          });
+          return image;
+        } finally {
+          URL.revokeObjectURL(blobUrl);
+        }
+      } catch (error) {
+        // Missing artwork is nonfatal. The text and placeholder still export.
+      } finally {
+        clearTimeout(timeout);
+      }
+    }
+    return null;
+  })();
+  exportImageCache.set(src, task);
+  // Don't indefinitely cache failures: transient image/CDN errors can recover.
+  task.then(value => { if (!value) exportImageCache.delete(src); },
+    () => exportImageCache.delete(src));
+  return task;
+}
+
+function drawExportCover(ctx, img, x, y, w, h, cover, fallbackName) {
+  ctx.save();
+  ctx.beginPath();
+  ctx.rect(x, y, w, h);
+  ctx.clip();
+  ctx.fillStyle = '#293548';
+  ctx.fillRect(x, y, w, h);
+  if (img && img.naturalWidth && img.naturalHeight) {
+    const iw = img.naturalWidth, ih = img.naturalHeight;
+    const scale = cover ? Math.max(w / iw, h / ih) : Math.min(w / iw, h / ih);
+    const dw = iw * scale, dh = ih * scale;
+    ctx.drawImage(img, x + (w - dw) / 2, y + (h - dh) / 2, dw, dh);
+  } else {
+    ctx.fillStyle = '#8090aa';
+    ctx.font = 'bold ' + Math.max(24, Math.min(w, h) * 0.28) + 'px sans-serif';
+    ctx.textAlign = 'center';
+    ctx.textBaseline = 'middle';
+    ctx.fillText((fallbackName || '?').trim().slice(0, 2).toUpperCase(), x + w / 2, y + h / 2);
+  }
+  ctx.restore();
+}
+
+function fitExportText(ctx, value, maxWidth) {
+  let str = String(value ?? '');
+  if (ctx.measureText(str).width <= maxWidth) return str;
+  while (str.length > 1 && ctx.measureText(str + '…').width > maxWidth) str = str.slice(0, -1);
+  return str + '…';
+}
+
+function drawExportRank(ctx, rank, x, y, size) {
+  ctx.fillStyle = 'rgba(0,0,0,.78)';
+  ctx.fillRect(x, y, size, size);
+  ctx.fillStyle = '#fff';
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.font = 'bold ' + Math.round(size * 0.52) + 'px sans-serif';
+  ctx.fillText(String(rank), x + size / 2, y + size / 2, size - 4);
+}
+
+async function getComposedCanvas(pageIndex = 0, plan = exportPlan()) {
+  if (!plan.games.length) throw new Error('Select at least one game to export.');
+  if (pageIndex < 0 || pageIndex >= plan.pages) throw new Error('Invalid export page.');
   const showNames = document.getElementById('showNames').checked;
   const showRanks = document.getElementById('showRanks').checked;
   const zoom = document.getElementById('zoomImages').checked;
   const bgColor = document.getElementById('bgColor').value;
-  
-  let limit = 25;
-  if (layout === 'grid9') limit = 9;
-  else if (layout === 'grid100') limit = 100;
-  else if (layout === 'shelfie') limit = 10;
-  else if (layout.startsWith('list')) limit = layout === 'listAll' ? selectedGames.length : parseInt(layout.replace('list', ''));
-  
-  const list = selectedGames.slice(0, limit);
-  let cols = 1, rows = 1, tile = 400;
-  let isList = layout.startsWith('list');
-  let isShelf = (layout === 'shelfie');
-
-  if (layout === 'grid9') { cols = 3; rows = 3; }
-  else if (layout === 'grid25') { cols = 5; rows = 5; }
-  else if (layout === 'grid100') { cols = 10; rows = 10; tile = 200; }
-  else if (isShelf) { cols = 5; rows = 2; tile = 350; }
-  else if (isList) { cols = 1; rows = list.length; tile = 160; }
-
+  const accentColor = document.getElementById('accentColor').value;
+  const first = pageIndex * plan.perPage;
+  const games = plan.games.slice(first, first + plan.perPage);
   const canvas = document.createElement('canvas');
-  canvas.width = isList ? 1200 : cols * tile;
-  canvas.height = rows * tile;
-  
+  const rowHeight = plan.namesOnly ? 52 : 150;
+  const cols = plan.namesOnly || plan.listMode ? 1 : plan.cols;
+  const rows = plan.namesOnly || plan.listMode ? games.length : Math.ceil(games.length / cols);
+  canvas.width = plan.namesOnly || plan.listMode ? 1200 : cols * plan.tile;
+  canvas.height = Math.max(1, rows * (plan.namesOnly || plan.listMode ? rowHeight : plan.tile));
+  // Splitting at 7,500 px avoids blank canvases on common mobile browsers.
+  if (canvas.height > 8192 || canvas.width > 8192) throw new Error('Export canvas is too large.');
   const ctx = canvas.getContext('2d');
+  if (!ctx) throw new Error('Canvas drawing is unavailable in this browser.');
   ctx.fillStyle = bgColor;
   ctx.fillRect(0, 0, canvas.width, canvas.height);
 
-  const images = await Promise.all(list.map(game => {
-    return loadImage(getProxyImageUrl(game.thumb));
-  }));
-  
-  images.forEach((img, i) => {
-    const c = i % cols;
-    const r = Math.floor(i / cols);
-    const x = c * tile;
-    const y = r * tile;
-    
-    if (img) {
-      if (isShelf) {
-        // Shelfie view uses same grid style as regular grids now
-        const aspect = img.width / img.height;
-        let dw = tile, dh = tile;
-        if (zoom) {
-          const scale = Math.max(tile / img.width, tile / img.height);
-          dw = img.width * scale;
-          dh = img.height * scale;
-          ctx.drawImage(img, x + (tile - dw) / 2, y + (tile - dh) / 2, dw, dh);
-        } else {
-          if (aspect > 1) dh = tile / aspect;
-          else dw = tile * aspect;
-          ctx.drawImage(img, x + (tile - dw) / 2, y + (tile - dh) / 2, dw, dh);
-        }
-        if (showRanks) {
-          const fontSize = 24;
-          const boxSize = 40;
-          ctx.fillStyle = 'rgba(0,0,0,0.7)';
-          ctx.fillRect(x + 5, y + 5, boxSize, boxSize);
-          ctx.fillStyle = 'white';
-          ctx.font = `bold ${fontSize}px sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(i + 1, x + 5 + boxSize / 2, y + 5 + boxSize / 2);
-        }
-        if (showNames) {
-          ctx.fillStyle = 'rgba(0,0,0,0.6)';
-          ctx.fillRect(x, y + tile - 50, tile, 50);
-          ctx.fillStyle = 'white';
-          ctx.font = '20px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'alphabetic';
-          ctx.fillText(list[i].name, x + tile / 2, y + tile - 18);
-        }
-      } else if (isList) {
-        const size = tile - 30;
-        if (zoom) {
-          const scale = Math.max(size / img.width, size / img.height);
-          const dw = img.width * scale, dh = img.height * scale;
-          ctx.save();
-          ctx.beginPath();
-          // Use arc-based rounded corners for broader browser support
-          // roundRect() is not supported in Safari < 16 and older browsers
-          const x1 = 15, y1 = y + 15, radius = 20;
-          ctx.moveTo(x1 + radius, y1);
-          ctx.lineTo(x1 + size - radius, y1);
-          ctx.arcTo(x1 + size, y1, x1 + size, y1 + radius, radius);
-          ctx.lineTo(x1 + size, y1 + size - radius);
-          ctx.arcTo(x1 + size, y1 + size, x1 + size - radius, y1 + size, radius);
-          ctx.lineTo(x1 + radius, y1 + size);
-          ctx.arcTo(x1, y1 + size, x1, y1 + size - radius, radius);
-          ctx.lineTo(x1, y1 + radius);
-          ctx.arcTo(x1, y1, x1 + radius, y1, radius);
-          ctx.closePath();
-          ctx.clip();
-          ctx.drawImage(img, 15 + (size - dw) / 2, y + 15 + (size - dh) / 2, dw, dh);
-          ctx.restore();
-        } else {
-          const aspect = img.width / img.height;
-          let dw = size, dh = size;
-          if (aspect > 1) dh = size / aspect;
-          else dw = size * aspect;
-          ctx.drawImage(img, 15 + (size - dw) / 2, y + 15 + (size - dh) / 2, dw, dh);
-        }
-        ctx.fillStyle = '#ffffff';
-        ctx.font = `bold 42px sans-serif`;
-        ctx.textAlign = 'left';
-        let txt = "";
-        if (showRanks) txt += `#${i + 1} `;
-        if (showNames) txt += list[i].name;
-        ctx.fillText(txt, tile + 30, y + (tile / 2) + 15);
-      } else {
-        const aspect = img.width / img.height;
-        let dw = tile, dh = tile;
-        if (zoom) {
-          const scale = Math.max(tile / img.width, tile / img.height);
-          dw = img.width * scale;
-          dh = img.height * scale;
-          ctx.drawImage(img, x + (tile - dw) / 2, y + (tile - dh) / 2, dw, dh);
-        } else {
-          if (aspect > 1) dh = tile / aspect;
-          else dw = tile * aspect;
-          ctx.drawImage(img, x + (tile - dw) / 2, y + (tile - dh) / 2, dw, dh);
-        }
-        if (showRanks) {
-          const fontSize = layout === 'grid100' ? 18 : 24;
-          const boxSize = layout === 'grid100' ? 32 : 40;
-          ctx.fillStyle = 'rgba(0,0,0,0.7)';
-          ctx.fillRect(x + 5, y + 5, boxSize, boxSize);
-          ctx.fillStyle = 'white';
-          ctx.font = `bold ${fontSize}px sans-serif`;
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'middle';
-          ctx.fillText(i + 1, x + 5 + boxSize / 2, y + 5 + boxSize / 2);
-        }
-        if (showNames && layout !== 'grid100') {
-          ctx.fillStyle = 'rgba(0,0,0,0.6)';
-          ctx.fillRect(x, y + tile - 50, tile, 50);
-          ctx.fillStyle = 'white';
-          ctx.font = '20px sans-serif';
-          ctx.textAlign = 'center';
-          ctx.textBaseline = 'alphabetic';
-          ctx.fillText(list[i].name, x + tile / 2, y + tile - 18);
-        }
+  // Image requests are bounded so a large selection won't stall the browser.
+  const images = new Array(games.length).fill(null);
+  if (!plan.namesOnly) {
+    let next = 0;
+    const worker = async () => {
+      while (next < games.length) {
+        const i = next++;
+        images[i] = await fetchExportImage(games[i].thumb).catch(() => null);
       }
+    };
+    await Promise.all(Array.from({ length: Math.min(8, games.length) }, worker));
+  }
+
+  for (let i = 0; i < games.length; i++) {
+    const game = games[i], img = images[i], rank = first + i + 1;
+    if (plan.namesOnly) {
+      const y = i * rowHeight;
+      ctx.fillStyle = '#fff';
+      ctx.fillRect(0, y + 1, canvas.width, rowHeight - 2);
+      ctx.font = 'bold 25px sans-serif';
+      ctx.fillStyle = '#1e293b';
+      ctx.textBaseline = 'middle';
+      ctx.textAlign = 'left';
+      const prefix = plan.layout === 'namesRank' ? rank + '.  ' : '•  ';
+      ctx.fillText(fitExportText(ctx, prefix + game.name, canvas.width - 64), 28, y + rowHeight / 2);
+    } else if (plan.listMode) {
+      const y = i * rowHeight, height = rowHeight - 8;
+      ctx.fillStyle = 'rgba(255,255,255,.1)';
+      ctx.fillRect(0, y, canvas.width, height);
+      drawExportCover(ctx, img, 8, y + 8, 125, 125, zoom, game.name);
+      ctx.textAlign = 'left';
+      ctx.textBaseline = 'middle';
+      ctx.font = 'bold 35px sans-serif';
+      ctx.fillStyle = accentColor;
+      const prefix = showRanks ? '#' + rank + '  ' : '';
+      const title = showNames ? game.name : '';
+      ctx.fillText(fitExportText(ctx, prefix + title, canvas.width - 178), 160, y + 72);
+    } else {
+      const tile = plan.tile, col = i % cols, row = Math.floor(i / cols);
+      const x = col * tile, y = row * tile;
+      drawExportCover(ctx, img, x, y, tile, tile, zoom, game.name);
+      if (showNames && plan.layout !== 'grid100') {
+        const bar = 46;
+        ctx.fillStyle = 'rgba(0,0,0,.75)';
+        ctx.fillRect(x, y + tile - bar, tile, bar);
+        ctx.fillStyle = '#fff';
+        ctx.font = 'bold ' + (tile < 300 ? 16 : 20) + 'px sans-serif';
+        ctx.textAlign = 'center';
+        ctx.textBaseline = 'middle';
+        ctx.fillText(fitExportText(ctx, game.name, tile - 18), x + tile / 2, y + tile - bar / 2);
+      }
+      if (showRanks) drawExportRank(ctx, rank, x + 5, y + 5, plan.layout === 'grid100' ? 30 : 42);
     }
-  });
+  }
   return canvas;
 }
 
+// ZIP (store method): one download for all pages, without adding a third-party dependency.
+const zipEncoder = new TextEncoder();
+function zipCRC(bytes) {
+  let crc = -1;
+  for (const b of bytes) {
+    crc ^= b;
+    for (let i = 0; i < 8; i++) crc = (crc >>> 1) ^ (crc & 1 ? 0xedb88320 : 0);
+  }
+  return (crc ^ -1) >>> 0;
+}
+async function makeExportZip(entries) {
+  const sections = [], directory = [];
+  let offset = 0;
+  for (const entry of entries) {
+    const name = zipEncoder.encode(entry.name);
+    const data = new Uint8Array(await entry.blob.arrayBuffer());
+    const crc = zipCRC(data);
+    const local = new Uint8Array(30 + name.length), l = new DataView(local.buffer);
+    l.setUint32(0, 0x04034b50, true);
+    l.setUint16(4, 20, true);
+    l.setUint32(14, crc, true); l.setUint32(18, data.length, true); l.setUint32(22, data.length, true);
+    l.setUint16(26, name.length, true); local.set(name, 30);
+    const central = new Uint8Array(46 + name.length), c = new DataView(central.buffer);
+    c.setUint32(0, 0x02014b50, true);
+    c.setUint16(4, 20, true); c.setUint16(6, 20, true);
+    c.setUint32(16, crc, true); c.setUint32(20, data.length, true); c.setUint32(24, data.length, true);
+    c.setUint16(28, name.length, true); c.setUint32(42, offset, true);
+    central.set(name, 46);
+    sections.push(local, data);
+    directory.push(central);
+    offset += local.length + data.length;
+  }
+  const dirSize = directory.reduce((total, bytes) => total + bytes.length, 0);
+  const end = new Uint8Array(22), e = new DataView(end.buffer);
+  e.setUint32(0, 0x06054b50, true);
+  e.setUint16(8, entries.length, true); e.setUint16(10, entries.length, true);
+  e.setUint32(12, dirSize, true); e.setUint32(16, offset, true);
+  return new Blob([...sections, ...directory, end], { type: 'application/zip' });
+}
+
+function downloadExportBlob(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const anchor = document.createElement('a');
+  anchor.href = url; anchor.download = filename;
+  document.body.appendChild(anchor);
+  anchor.click();
+  anchor.remove();
+  // Delay revocation: Safari and iOS may read the blob after the click handler.
+  setTimeout(() => URL.revokeObjectURL(url), 60000);
+}
+
+async function renderExportBlob(plan, pageIndex) {
+  const canvas = await getComposedCanvas(pageIndex, plan);
+  try { return await canvasPngBlob(canvas); }
+  finally { canvas.width = 0; canvas.height = 0; }
+}
+
 async function composeAndDownload() {
-  const canvas = await getComposedCanvas();
-  const a = document.createElement('a');
-  a.href = canvas.toDataURL('image/png');
-  a.download = `bgg_recommendations_${Date.now()}.png`;
-  a.click();
+  if (exportRunning) return;
+  setExportBusy(true, 'Preparing image…');
+  try {
+    const plan = exportPlan();
+    if (!plan.games.length) throw new Error('Select at least one game to save.');
+    if (plan.pages === 1) {
+      const png = await renderExportBlob(plan, 0);
+      downloadExportBlob(png, 'bgg_recommendations_' + Date.now() + '.png');
+      exportMessage('PNG saved (' + plan.games.length + ' games).');
+    } else {
+      const images = [];
+      for (let page = 0; page < plan.pages; page++) {
+        exportMessage('Creating PNG page ' + (page + 1) + ' of ' + plan.pages + '…');
+        const blob = await renderExportBlob(plan, page);
+        images.push({ name: 'recommendations_page_' + String(page + 1).padStart(2, '0') + '.png', blob });
+      }
+      const zip = await makeExportZip(images);
+      downloadExportBlob(zip, 'bgg_recommendations_' + Date.now() + '.zip');
+      exportMessage('ZIP saved with ' + plan.pages + ' PNG pages (' + plan.games.length + ' games).');
+    }
+  } catch (error) {
+    console.error('Save image failed', error);
+    exportMessage('Could not save image: ' + (error.message || error), true);
+  } finally { setExportBusy(false); }
 }
 
 async function composeAndCopy() {
-  const btn = document.getElementById('copyBtn');
-  const originalText = btn.innerHTML;
-  try {
-    const canvas = await getComposedCanvas();
-    canvas.toBlob(async (blob) => {
-      try {
-        const item = new ClipboardItem({ "image/png": blob });
-        await navigator.clipboard.write([item]);
-        btn.innerHTML = '<i class="fa-solid fa-check"></i> Copied!';
-        setTimeout(() => btn.innerHTML = originalText, 2000);
-      } catch (err) {
-        btn.innerHTML = '<i class="fa-solid fa-xmark"></i> Fail';
-        setTimeout(() => btn.innerHTML = originalText, 2000);
-      }
-    });
-  } catch (err) {
-    btn.innerHTML = '<i class="fa-solid fa-xmark"></i> Fail';
-    setTimeout(() => btn.innerHTML = originalText, 2000);
+  if (exportRunning) return;
+  if (!navigator.clipboard?.write || typeof ClipboardItem === 'undefined') {
+    exportMessage('Image clipboard is not supported or allowed. Use Save instead.', true);
+    return;
   }
-}
-
-function loadImage(src) {
-  return new Promise((resolve) => {
-    fetch(src)
-      .then(res => res.blob())
-      .then(blob => {
-        const url = URL.createObjectURL(blob);
-        const img = new Image();
-        img.onload = () => { URL.revokeObjectURL(url); resolve(img); };
-        img.onerror = () => { URL.revokeObjectURL(url); resolve(null); };
-        img.src = url;
-      })
-      .catch(() => resolve(null));
-  });
+  setExportBusy(true, 'Preparing clipboard image…');
+  const btn = document.getElementById('copyBtn');
+  try {
+    const plan = exportPlan();
+    if (!plan.games.length) throw new Error('Select at least one game to copy.');
+    // IMPORTANT: call clipboard.write during the click's user activation, BEFORE
+    // awaiting remote images. ClipboardItem accepts a promise for the PNG bytes.
+    const blobPromise = renderExportBlob(plan, 0);
+    const item = new ClipboardItem({ 'image/png': blobPromise });
+    await navigator.clipboard.write([item]);
+    if (btn) btn.title = 'Image copied';
+    exportMessage(plan.pages > 1
+      ? 'Copied page 1 of ' + plan.pages + '. Use Save to export every page in a ZIP.'
+      : 'PNG copied to clipboard (' + plan.games.length + ' games).');
+  } catch (error) {
+    console.error('Copy image failed', error);
+    exportMessage('Could not copy image: ' + (error.message || error) + '. Try Save instead.', true);
+  } finally { setExportBusy(false); }
 }
 
 function openXmlModal() {
