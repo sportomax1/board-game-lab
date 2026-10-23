@@ -292,6 +292,21 @@
         #view-xml pre { font-size:11px; line-height:1.55; }
         :is(#playDetailModal,#calendarModal,#locationModal,#yearPlaysModal) { backdrop-filter:blur(4px); padding:12px; }
         :is(#playDetailModal,#calendarModal,#locationModal,#yearPlaysModal) > div { border-radius:14px; overflow:hidden; box-shadow:0 20px 75px rgba(18,36,66,.24); }
+        /* Calendar: independent scrolling and a wrapping, accessible location sidebar. */
+        .calendar-layout { display:flex; flex:1 1 auto; min-height:0; overflow:hidden; }
+        .calendar-location-panel { flex:0 0 252px; width:252px; min-height:0; overflow-y:auto; background:#f8fafc; border-right:1px solid #e2e8f0; padding:16px 13px; }
+        #calendarLocationFilter { display:flex; flex-wrap:wrap; align-content:flex-start; gap:7px; }
+        .calendar-location-option { display:inline-flex; align-items:center; gap:7px; max-width:100%; min-width:0; padding:7px 9px; border:1px solid #cbd5e1; border-radius:8px; font-size:11px; font-weight:650; line-height:1.25; text-align:left; color:#475569; background:white; white-space:normal; overflow-wrap:anywhere; transition:background .15s,border-color .15s; }
+        .calendar-location-option[aria-pressed="true"] { background:#dbeafe; border-color:#93c5fd; color:#1d4ed8; }
+        .calendar-location-option[aria-pressed="false"]:hover { background:#f1f5f9; border-color:#94a3b8; }
+        .calendar-location-option .calendar-location-count { margin-left:auto; flex:0 0 auto; font-size:10px; color:#64748b; font-variant-numeric:tabular-nums; }
+        .calendar-location-option .calendar-location-dot { width:9px; height:9px; flex:0 0 9px; border-radius:3px; }
+        .calendar-month-grid { display:grid; grid-template-columns:repeat(auto-fit,minmax(min(100%,220px),1fr)); gap:16px; align-content:start; }
+        @media(max-width:760px) {
+            .calendar-layout { flex-direction:column; }
+            .calendar-location-panel { flex:0 0 auto; width:100%; max-height:200px; border-right:0; border-bottom:1px solid #e2e8f0; padding:10px 12px; }
+            .calendar-month-grid { grid-template-columns:repeat(auto-fit,minmax(min(100%,190px),1fr)); }
+        }
         /* Consistent, readable board-game covers throughout modal drilldowns. */
         .modal-game-cover { width:64px; height:64px; flex:0 0 64px; border-radius:8px; object-fit:cover; background:#f1f5f9; border:1px solid #e2e8f0; }
         .modal-game-cover--small { width:52px; height:52px; flex-basis:52px; }
@@ -709,19 +724,37 @@
 
     <!-- Calendar Modal -->
     <div id="calendarModal" class="hidden fixed inset-0 bg-black/50 z-50 flex items-center justify-center p-2">
-        <div class="bg-white rounded-xl shadow-2xl w-full max-h-[96vh] overflow-hidden flex flex-col" style="max-width: min(95vw, 900px);">
+        <div class="bg-white rounded-xl shadow-2xl w-full max-h-[96vh] overflow-hidden flex flex-col" style="max-width:min(96vw,1200px); height:min(92vh,850px);">
             <div class="bg-gradient-to-r from-blue-600 to-blue-800 text-white p-4 flex justify-between items-center flex-shrink-0">
                 <h2 class="text-lg font-bold">Plays Calendar</h2>
-                <button onclick="closeCalendarModal()" class="text-2xl font-light hover:text-blue-100">×</button>
+                <button type="button" onclick="closeCalendarModal()" aria-label="Close calendar" class="text-2xl font-light hover:text-blue-100">×</button>
             </div>
-            <!-- Location filter bar -->
-            <div class="border-b border-slate-100 bg-slate-50 px-4 py-2 flex-shrink-0 overflow-x-auto" style="-webkit-overflow-scrolling:touch; scrollbar-width:none;">
-                <div id="calendarLocationFilter" class="flex items-center gap-1.5 flex-nowrap min-w-max">
-                    <!-- chips rendered by JS -->
+            <div class="calendar-layout">
+                <aside class="calendar-location-panel custom-scrollbar" aria-label="Calendar location filters">
+                    <div class="flex items-center justify-between gap-2 mb-3">
+                        <h3 class="text-xs font-bold text-slate-800">Locations</h3>
+                        <span id="calendarLocationSummary" class="text-[10px] text-slate-500 font-semibold"></span>
+                    </div>
+                    <div class="flex flex-wrap items-center gap-2 mb-3">
+                        <button type="button" id="calendarSelectAllButton" onclick="calendarSelectAllLocations()" class="px-3 py-1.5 rounded-lg border text-[11px] font-bold bg-blue-600 border-blue-600 text-white">All</button>
+                        <button type="button" id="calendarSelectNoneButton" onclick="calendarClearLocations()" class="px-3 py-1.5 rounded-lg border text-[11px] font-bold bg-white border-slate-200 text-slate-600 hover:bg-slate-100">None</button>
+                    </div>
+                    <div class="mb-4">
+                        <label for="calendarTimePeriod" class="block text-[10px] font-bold text-slate-600 mb-1">Time period</label>
+                        <select id="calendarTimePeriod" onchange="renderCalendar()" class="w-full rounded-lg border border-slate-200 bg-white px-2 py-2 text-xs text-slate-700">
+                            <option value="999999">All Time</option>
+                            <option value="365">Last Year</option>
+                            <option value="30">Last 30 Days</option>
+                            <option value="7">Last 7 Days</option>
+                        </select>
+                    </div>
+                    <div id="calendarLocationFilter" class="calendar-location-list" aria-label="Individual locations">
+                        <!-- Wrapping location filters rendered by JS -->
+                    </div>
+                </aside>
+                <div id="calendarContent" class="p-4 overflow-y-auto flex-1 min-w-0 custom-scrollbar">
+                    <!-- Calendar months rendered by JS -->
                 </div>
-            </div>
-            <div id="calendarContent" class="p-4 overflow-y-auto flex-1 custom-scrollbar">
-                <!-- Calendar will be rendered here -->
             </div>
         </div>
     </div>
@@ -1090,8 +1123,10 @@
         let locationsSortDir = 1;
         // Days view location filter: 'both' | 'bga' | 'irl'
         let daysLocationFilter = 'both';
-        // Calendar modal location filter: empty Set = all locations
+        // Calendar selection explicitly tracks every selected location (empty = none).
+        let calendarLocationOptions = [];
         let calendarSelectedLocations = new Set();
+        const calendarLocationPalette = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16'];
         // Cache for period drilldown modal: cacheKey → plays[]
         let periodPlaysCache = {};
 
@@ -2225,7 +2260,10 @@
         }
         
         function openCalendarModal() {
-            calendarSelectedLocations = new Set();
+            calendarLocationOptions = [...new Set(totalPlays.map(p => p.location || 'IRL'))].sort((a, b) => a.localeCompare(b));
+            calendarSelectedLocations = new Set(calendarLocationOptions);
+            // Start with the Locations tab's currently selected range, but let the calendar change it independently.
+            document.getElementById('calendarTimePeriod').value = document.getElementById('locationTimePeriod').value;
             buildCalendarLocationChips();
             renderCalendar();
             document.getElementById('calendarModal').classList.remove('hidden');
@@ -2236,30 +2274,50 @@
         }
 
         function buildCalendarLocationChips() {
-            const locs = [...new Set(totalPlays.map(p => p.location || 'IRL'))].sort();
-            const bar = document.getElementById('calendarLocationFilter');
-            const allActive = calendarSelectedLocations.size === 0;
-            let html = `<button onclick="calendarToggleLocation(null)" class="flex-shrink-0 px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-tighter border transition-colors ${allActive ? 'bg-blue-600 text-white border-blue-600' : 'bg-white text-slate-500 border-slate-200 hover:border-blue-300'}">All</button>`;
-            locs.forEach(loc => {
-                const active = calendarSelectedLocations.has(loc);
-                const isBGA = loc.toLowerCase().includes('boardgamearena') || loc.toLowerCase().includes('bga');
-                const color = isBGA ? (active ? 'bg-blue-600 text-white border-blue-600' : 'bg-blue-50 text-blue-600 border-blue-200 hover:border-blue-400')
-                                    : (active ? 'bg-slate-700 text-white border-slate-700' : 'bg-white text-slate-600 border-slate-200 hover:border-slate-400');
-                html += `<button onclick="calendarToggleLocation(${JSON.stringify(loc)})" class="flex-shrink-0 px-2.5 py-1 rounded-full text-[9px] font-bold uppercase tracking-tighter border transition-colors ${color}">${escapeHtml(loc)}</button>`;
+            const counts = new Map();
+            totalPlays.forEach(p => {
+                const loc = p.location || 'IRL';
+                counts.set(loc, (counts.get(loc) || 0) + 1);
             });
-            bar.innerHTML = html;
+            const bar = document.getElementById('calendarLocationFilter');
+            bar.innerHTML = calendarLocationOptions.map((loc, index) => {
+                const active = calendarSelectedLocations.has(loc);
+                const color = calendarLocationPalette[index % calendarLocationPalette.length];
+                // Numeric indices avoid breaking inline event handlers for quoted location names.
+                return `<button type="button" onclick="calendarToggleLocation(${index})" aria-pressed="${active}" class="calendar-location-option">
+                    <span class="calendar-location-dot" style="background-color:${color}"></span>
+                    <span>${escapeHtml(loc)}</span>
+                    <span class="calendar-location-count">${counts.get(loc) || 0}</span>
+                </button>`;
+            }).join('');
+            const count = calendarSelectedLocations.size;
+            const all = calendarLocationOptions.length;
+            document.getElementById('calendarLocationSummary').textContent = `${count} / ${all} selected`;
+            const allButton = document.getElementById('calendarSelectAllButton');
+            const noneButton = document.getElementById('calendarSelectNoneButton');
+            allButton.setAttribute('aria-pressed', String(count === all));
+            noneButton.setAttribute('aria-pressed', String(count === 0));
+            allButton.className = `px-3 py-1.5 rounded-lg border text-[11px] font-bold ${count === all ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'}`;
+            noneButton.className = `px-3 py-1.5 rounded-lg border text-[11px] font-bold ${count === 0 ? 'bg-blue-600 border-blue-600 text-white' : 'bg-white border-slate-200 text-slate-600 hover:bg-slate-100'}`;
         }
 
-        function calendarToggleLocation(loc) {
-            if (loc === null) {
-                calendarSelectedLocations.clear();
-            } else {
-                if (calendarSelectedLocations.has(loc)) {
-                    calendarSelectedLocations.delete(loc);
-                } else {
-                    calendarSelectedLocations.add(loc);
-                }
-            }
+        function calendarSelectAllLocations() {
+            calendarSelectedLocations = new Set(calendarLocationOptions);
+            buildCalendarLocationChips();
+            renderCalendar();
+        }
+
+        function calendarClearLocations() {
+            calendarSelectedLocations.clear();
+            buildCalendarLocationChips();
+            renderCalendar();
+        }
+
+        function calendarToggleLocation(index) {
+            const loc = calendarLocationOptions[index];
+            if (typeof loc !== 'string') return;
+            if (calendarSelectedLocations.has(loc)) calendarSelectedLocations.delete(loc);
+            else calendarSelectedLocations.add(loc);
             buildCalendarLocationChips();
             renderCalendar();
         }
@@ -2372,7 +2430,7 @@
         }
         
         function renderCalendar() {
-            const days = parseInt(document.getElementById('locationTimePeriod').value) || 999999;
+            const days = parseInt(document.getElementById('calendarTimePeriod').value, 10) || 999999;
             const cutoffDate = new Date();
             cutoffDate.setDate(cutoffDate.getDate() - days);
             const cutoffStr = cutoffDate.toISOString().split('T')[0];
@@ -2380,9 +2438,19 @@
             // Build filtered plays
             const filteredPlays = totalPlays.filter(p => {
                 if (p.date < cutoffStr) return false;
-                if (calendarSelectedLocations.size > 0 && !calendarSelectedLocations.has(p.location || 'IRL')) return false;
+                if (!calendarSelectedLocations.has(p.location || 'IRL')) return false;
                 return true;
             });
+
+            const calendarContent = document.getElementById('calendarContent');
+            if (calendarSelectedLocations.size === 0) {
+                calendarContent.innerHTML = '<div class="flex items-center justify-center h-full p-8 text-center text-sm text-slate-500">Choose one or more locations on the left to display calendar plays.</div>';
+                return;
+            }
+            if (filteredPlays.length === 0) {
+                calendarContent.innerHTML = '<div class="flex items-center justify-center h-full p-8 text-center text-sm text-slate-500">No plays match the selected locations and time period.</div>';
+                return;
+            }
 
             // Count plays per day, and track which locations played
             const playsByDay = {}; // date -> { count, locations: Set }
@@ -2414,20 +2482,16 @@
             }
 
             // Assign a consistent color per location
-            const allLocs = [...new Set(totalPlays.map(p => p.location || 'IRL'))].sort();
-            const locColors = ['#3b82f6','#10b981','#f59e0b','#ef4444','#8b5cf6','#06b6d4','#ec4899','#84cc16'];
             const locColorMap = {};
-            allLocs.forEach((l, i) => { locColorMap[l] = locColors[i % locColors.length]; });
-
-            // Legend HTML
-            const showingLocs = calendarSelectedLocations.size > 0 ? [...calendarSelectedLocations] : allLocs;
-            let legendHtml = '<div class="flex flex-wrap gap-2 mb-4">';
-            showingLocs.forEach(l => {
-                legendHtml += `<div class="flex items-center gap-1"><div class="w-2.5 h-2.5 rounded-sm flex-shrink-0" style="background:${locColorMap[l] || '#94a3b8'}"></div><span class="text-[9px] text-slate-500 font-medium">${escapeHtml(l)}</span></div>`;
+            calendarLocationOptions.forEach((loc, index) => {
+                locColorMap[loc] = calendarLocationPalette[index % calendarLocationPalette.length];
             });
-            legendHtml += '</div>';
 
-            let html = legendHtml + '<div class="grid gap-5 sm:grid-cols-2 lg:grid-cols-3">';
+            // Location legend lives in the sidebar; keep the calendar area focused on months.
+            let html = `<div class="flex items-center justify-between gap-3 mb-3 text-[11px] text-slate-500">
+                <span>${filteredPlays.length.toLocaleString()} plays across ${Object.keys(playsByDay).length.toLocaleString()} days</span>
+                <span>${calendarSelectedLocations.size} location${calendarSelectedLocations.size === 1 ? '' : 's'}</span>
+            </div><div class="calendar-month-grid">`;
 
             months.forEach(monthDate => {
                 const year = monthDate.getFullYear();
@@ -2481,7 +2545,7 @@
             });
 
             html += '</div>';
-            document.getElementById('calendarContent').innerHTML = html;
+            calendarContent.innerHTML = html;
         }
         
         function showPlayDetail(playId) {
