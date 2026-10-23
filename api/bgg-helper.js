@@ -41,6 +41,11 @@ module.exports = async (req, res) => {
     const endpoint = req.query.endpoint; // e.g., 'collection', 'thing', 'user', 'hot', 'geeklist'
     const params = { ...req.query };
     delete params.endpoint; // Remove endpoint from params
+    // Bulk BGG license matching handles its own adaptive retries in the browser.
+    // Its opt-in "fast=1" prevents multiple nested retry loops (up to 5 server
+    // retries * 4 browser retries) while keeping defaults for other consumers.
+    const fastMode = ['search', 'thing'].includes(String(endpoint || '').toLowerCase()) && params.fast === '1';
+    delete params.fast; // Internal proxy control; never forward to BGG.
 
     if (!endpoint) {
         const errorMsg = 'E-400: Missing endpoint parameter. Supported: collection, thing, search, user, hot, geeklist, plays, family, forumlist, thread, browse, page, boardgame_v1, collection_v1, boardgamefamily_v1, boardgamepublisher_v1';
@@ -199,7 +204,7 @@ module.exports = async (req, res) => {
 
     console.log(`Endpoint: ${endpoint}, URL: ${bggUrl}`);
     
-    const MAX_BGG_RETRIES = 5;
+    const MAX_BGG_RETRIES = fastMode ? 1 : 5;
 
     for (let attempt = 0; attempt < MAX_BGG_RETRIES; attempt++) {
         try {
@@ -267,7 +272,7 @@ module.exports = async (req, res) => {
                 
                 console.error(errorMsg);
                 console.log('--- END: BGG Helper Failed (502) ---');
-                return res.status(502).json({ 
+                return res.status(fastMode && [429, 500, 503, 504].includes(status) ? status : 502).json({ 
                     status: status,
                     step: 'BGG Fetch Status Check',
                     error: 'BGG API Error', 
