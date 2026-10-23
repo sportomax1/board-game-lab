@@ -1,9 +1,11 @@
 /* BGA License Explorer: BGG XML API2 enrichment.
    Uses the existing authenticated /api/bgg-helper Vercel route.
-   100 logical jobs are queued; simultaneous upstream requests are paced/capped. */
+   Up to 100 concurrent search and thing HTTP calls, independently configurable.
+   Automatically reduces concurrency and backs off when BGG throttles. */
 'use strict';
-const BGG_WORKERS=100, BGG_BATCH=20, BGG_IN_FLIGHT=4, BGG_GAP_MS=1400, BGG_TTL_DAYS=30;
-let bggActiveRequests=0, bggNextRequest=0, bggBackoffUntil=0;
+const BGG_WORKERS=100, BGG_BATCH=20, BGG_MAX_CONCURRENCY=100, BGG_TTL_DAYS=30;
+let bggActiveRequests=0, bggBackoffUntil=0, bggAdaptiveCeiling=100;
+let bggSuccesses=0, bggThrottleEvents=0, bggLastSave=0;
 let bggCurrent=null, bggSaveChain=Promise.resolve(), bggLookupBusy=false, bggFatalError='';
 window.bggScanActive=false;
 const bggWait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
@@ -49,55 +51,89 @@ function parseBggThings(xml){
     };
   }).filter(game=>/^\d+$/.test(game.id));
 }
-async function bggAcquire(signal){
+
+/* No fixed request gap: the browser fills available slots immediately.
+   BGG may impose a much lower effective limit than the selected ceiling;
+   HTTP 202/429/503 automatically reduce the adaptive window. */
+function bggConfiguredConcurrency(endpoint){
+  const control=$(endpoint==='thing'?'bggThingConcurrency':'bggSearchConcurrency');
+  const n=Number(control?.value);
+  return Number.isInteger(n)&&n>=1?Math.min(n,BGG_MAX_CONCURRENCY):BGG_MAX_CONCURRENCY;
+}
+function bggEffectiveConcurrency(endpoint){
+  return Math.max(1,Math.min(bggConfiguredConcurrency(endpoint),bggAdaptiveCeiling));
+}
+function bggOnThrottle(retryAfterMs){
+  bggThrottleEvents++;
+  bggSuccesses=0;
+  bggAdaptiveCeiling=Math.max(2,Math.floor(bggAdaptiveCeiling/2));
+  bggBackoffUntil=Math.max(bggBackoffUntil,Date.now()+Math.min(60000,retryAfterMs));
+}
+function bggOnSuccess(){
+  bggSuccesses++;
+  if(bggSuccesses>=8){
+    bggSuccesses=0;
+    bggAdaptiveCeiling=Math.min(BGG_MAX_CONCURRENCY,bggAdaptiveCeiling+4);
+  }
+}
+async function bggAcquire(endpoint,signal){
   while(true){
     if(signal?.aborted)throw new DOMException('Stopped','AbortError');
-    const now=Date.now();
-    const remaining=Math.max(0,bggNextRequest-now,bggBackoffUntil-now);
-    if(bggActiveRequests<BGG_IN_FLIGHT && remaining===0){
-      bggActiveRequests++;bggNextRequest=now+BGG_GAP_MS;return;
+    const wait=Math.max(0,bggBackoffUntil-Date.now());
+    if(!wait && bggActiveRequests<bggEffectiveConcurrency(endpoint)){
+      bggActiveRequests++;
+      return;
     }
-    await bggWait(Math.min(350,Math.max(60,remaining||120)));
+    await bggWait(Math.min(250,Math.max(25,wait||50)));
   }
 }
 async function bggRequest(endpoint,params,signal){
   const url='/api/bgg-helper?'+new URLSearchParams({endpoint,...params});
   for(let attempt=0;attempt<4;attempt++){
-    await bggAcquire(signal);
+    await bggAcquire(endpoint,signal);
+    let response;
     try{
-      const response=await fetch(url,{signal,headers:{Accept:'application/xml,text/xml'}});
+      response=await fetch(url,{signal,headers:{Accept:'application/xml,text/xml'}});
       if(response.ok){
         const xml=await response.text();
-        if(!/^\s*(?:<\?xml[^>]*>\s*)?<items[\s>]/i.test(xml))throw new Error('BGG did not return an items XML document.');
+        if(!/^\s*(?:<\?xml[^>]*>\s*)?<items[\s>]/i.test(xml)){
+          throw new Error('BGG did not return an items XML document.');
+        }
+        bggOnSuccess();
         return xml;
       }
-      // Configuration/authentication failures cannot be repaired by retrying every title.
-      if([401,403,500].includes(response.status)){
-        const data=await response.clone().json().catch(()=>({}));
-        const reason=String(data.message||'');
-        if([401,403].includes(response.status)||/BGG_API_TOKEN|not configured|authentication failed/i.test(reason)){
-          if(bggCurrent?.controller)bggCurrent.controller.abort();
-          bggFatalError=reason||('BGG authentication failed (HTTP '+response.status+')');
-          throw new Error(bggFatalError);
-        }
-      }
-      const transient=[202,429,500,502,503,504].includes(response.status);
-      if(transient){
-        const retry=Number(response.headers.get('retry-after'));
-        const pause=Number.isFinite(retry)&&retry>0?retry*1000:Math.min(25000,3000*2**attempt);
-        bggBackoffUntil=Math.max(bggBackoffUntil,Date.now()+pause);
-        if(attempt<3)continue;
-      }
+      // Fail quickly if the proxy has no token / token is rejected.
       let reason='';
-      try{reason=(await response.json()).message||'';}catch{}
-      throw new Error(reason||'BGG '+endpoint+' HTTP '+response.status);
+      if([401,403,500,502].includes(response.status)){
+        try{reason=String((await response.clone().json()).message||'');}catch{}
+      }
+      if([401,403].includes(response.status) || /BGG_API_TOKEN|not configured|authentication failed/i.test(reason)){
+        bggFatalError=reason||('BGG authentication failed (HTTP '+response.status+')');
+        if(bggCurrent?.controller)bggCurrent.controller.abort();
+        const error=new Error(bggFatalError);
+        error.permanent=true;
+        throw error;
+      }
+      const retryable=[202,429,500,502,503,504].includes(response.status);
+      if(!retryable){
+        const error=new Error(reason||('BGG '+endpoint+' HTTP '+response.status));
+        error.permanent=true;
+        throw error;
+      }
+      if(attempt===3)throw new Error('BGG '+endpoint+' failed after retries (HTTP '+response.status+').');
+      const retry=Number(response.headers.get('retry-after'));
+      const pause=(Number.isFinite(retry)&&retry>0?retry*1000:Math.min(18000,1200*2**attempt));
+      bggOnThrottle(pause);
     }catch(error){
-      if(signal?.aborted||error.name==='AbortError')throw error;
+      if(signal?.aborted||error?.name==='AbortError'||error?.permanent)throw error;
       if(attempt===3)throw error;
-      bggBackoffUntil=Math.max(bggBackoffUntil,Date.now()+2000*2**attempt);
-    }finally{bggActiveRequests=Math.max(0,bggActiveRequests-1);}
+      // Network errors also get exponential backoff, but not a permanent fixed delay.
+      bggOnThrottle(Math.min(12000,800*2**attempt));
+    }finally{
+      bggActiveRequests=Math.max(0,bggActiveRequests-1);
+    }
   }
-  throw new Error('BGG request failed after retries.');
+  throw new Error('BGG '+endpoint+' failed after retries.');
 }
 const bggSearch=(title,signal,exact)=>bggRequest('search',{query:title,type:'boardgame,boardgameexpansion',...(exact?{exact:'1'}:{})},signal).then(parseBggSearch);
 function bggThing(ids,signal){
@@ -134,7 +170,10 @@ function chooseCandidates(title,results){
   if(exact.length>1)return {status:'review',candidates:exact.slice(0,20)};
   return results.length?{status:'review',candidates:results.slice(0,20)}:{status:'missing',candidates:[]};
 }
-function bggSaveSnapshot(snapshotDate){
+function bggSaveSnapshot(snapshotDate,force=false){
+  // Avoid cloning 2,280 rows and writing IndexedDB on every twentieth fast response.
+  if(!force && Date.now()-bggLastSave<3000)return bggSaveChain;
+  bggLastSave=Date.now();
   const rows=state.rows.map(row=>({...row,bgg:row.bgg?{...row.bgg}:undefined}));
   bggSaveChain=bggSaveChain.catch(()=>{}).then(async()=>{
     if(database && !window.bggImportPending && state.date===snapshotDate)
@@ -161,14 +200,20 @@ async function runBggAll(){
     return;
   }
   const controller=new AbortController(),signal=controller.signal;
-  bggFatalError='';bggCurrent={controller};bggScanButtons(true);
+  bggFatalError='';bggThrottleEvents=0;bggSuccesses=0;
+  bggAdaptiveCeiling=BGG_MAX_CONCURRENCY;
+  bggCurrent={controller};bggScanButtons(true);
   let searched=0,failed=0,detailFailures=0;
   try{
     bggProgress(all.length?'Searching: 0 / '+all.length:'Reusing cached title matches; loading missing game details',0,all.length||1);
+    const memo=new Map();
     await bggWorkerPool(all,async row=>{
       try{
-        let candidates=await bggSearch(row.game,signal,true);
-        if(!candidates.length)candidates=await bggSearch(row.game,signal,false);
+        // Exactly one non-exact XMLAPI2 search per distinct normalized title.
+        // Choose exact local name matches from its results; otherwise flag review.
+        const key=bggNormalized(row.game);
+        if(!memo.has(key))memo.set(key,bggSearch(row.game,signal,false));
+        const candidates=await memo.get(key);
         if(signal.aborted)return;
         row.bgg={...chooseCandidates(row.game,candidates),checkedAt:new Date().toISOString(),detail:null};
       }catch(error){
@@ -178,29 +223,37 @@ async function runBggAll(){
         searched++;
         if(searched%20===0)bggSaveSnapshot(snapshotDate);
       }
-    },signal,(done,total)=>bggProgress('Search: '+done+' / '+total+' · '+failed+' errors',done,total));
-    await bggSaveSnapshot(snapshotDate);
+    },signal,(done,total)=>bggProgress('Search: '+done+' / '+total+' · '+bggActiveRequests+' active · cap '+bggEffectiveConcurrency('search')+' / '+bggConfiguredConcurrency('search')+' · '+failed+' errors',done,total));
+    await bggSaveSnapshot(snapshotDate,true);
     if(signal.aborted||state.date!==snapshotDate)return;
     // Existing saved matches with details remain intact. Search results are batch-enriched.
     const need=state.rows.filter(row=>row.bgg?.status==='matched'&&row.bgg.id&&!row.bgg.detail);
     const ids=[...new Set(need.map(row=>row.bgg.id))],groups=[];
     for(let i=0;i<ids.length;i+=BGG_BATCH)groups.push(ids.slice(i,i+BGG_BATCH));
-    const detailMap=new Map();
+    const rowsById=new Map();
+    for(const row of need){
+      const id=String(row.bgg.id);
+      if(!rowsById.has(id))rowsById.set(id,[]);
+      rowsById.get(id).push(row);
+    }
     bggProgress('Thing: 0 / '+groups.length+' batches (20 IDs each)',0,groups.length||1);
     await bggWorkerPool(groups,async ids=>{
       try{
         const details=await bggThing(ids,signal);
-        for(const detail of details)detailMap.set(detail.id,detail);
+        if(signal.aborted||state.date!==snapshotDate)return;
+        for(const detail of details){
+          for(const row of rowsById.get(String(detail.id))||[])row.bgg.detail=detail;
+        }
+        bggSaveSnapshot(snapshotDate);
       }catch(error){if(!signal.aborted)detailFailures++;}
-    },signal,(done,total)=>bggProgress('Thing: '+done+' / '+total+' batches · '+detailFailures+' errors',done,total));
+    },signal,(done,total)=>bggProgress('Thing: '+done+' / '+total+' batches · '+bggActiveRequests+' active · cap '+bggEffectiveConcurrency('thing')+' / '+bggConfiguredConcurrency('thing')+' · '+detailFailures+' errors',done,total));
     if(signal.aborted||state.date!==snapshotDate)return;
-    for(const row of need)if(detailMap.has(row.bgg.id))row.bgg.detail=detailMap.get(row.bgg.id);
-    await bggSaveSnapshot(snapshotDate);
+    await bggSaveSnapshot(snapshotDate,true);
     showNotice('BGG matching finished: '+searched+' title searches, '+groups.length+' thing batches (up to 20 IDs each), '+(failed+detailFailures)+' request failures. Ambiguous matches remain available for manual review.');
   }catch(error){
     if(!signal.aborted)showNotice('BGG matching interrupted: '+error.message,true);
   }finally{
-    await bggSaveSnapshot(snapshotDate).catch(()=>{});
+    await bggSaveSnapshot(snapshotDate,true).catch(()=>{});
     const stopped=signal.aborted;
     bggCurrent=null;bggScanButtons(false);
     drawStats();render();
