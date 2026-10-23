@@ -145,15 +145,16 @@ async function runBggAll(){
   if(!state.rows.length){showNotice('Import your BGA license CSV before matching all games.');return;}
   const snapshotDate=state.date;
   const all=state.rows.filter(row=>!bggRecentlyChecked(row));
-  if(!all.length){
-    showNotice('All titles already have recent saved BGG searches. Reimport a fresh license snapshot or use Search BGG for new queries.');
+  const outstandingDetails=state.rows.some(row=>row.bgg?.status==='matched'&&row.bgg.id&&!row.bgg.detail);
+  if(!all.length&&!outstandingDetails){
+    showNotice('All titles already have recent saved BGG searches and details. Older results will be refreshed after 30 days.');
     return;
   }
   const controller=new AbortController(),signal=controller.signal;
   bggCurrent={controller};bggScanButtons(true);
   let searched=0,failed=0,detailFailures=0;
   try{
-    bggProgress('Searching: 0 / '+all.length,0,all.length);
+    bggProgress(all.length?'Searching: 0 / '+all.length:'Reusing cached title matches; loading missing game details',0,all.length||1);
     await bggWorkerPool(all,async row=>{
       try{
         let candidates=await bggSearch(row.game,signal,true);
@@ -185,7 +186,7 @@ async function runBggAll(){
     if(signal.aborted||state.date!==snapshotDate)return;
     for(const row of need)if(detailMap.has(row.bgg.id))row.bgg.detail=detailMap.get(row.bgg.id);
     await bggSaveSnapshot(snapshotDate);
-    showNotice('BGG matching finished: '+searched+' searches, '+groups.length+' thing batches, '+(failed+detailFailures)+' request failures. Ambiguous game names remain available for manual review.');
+    showNotice('BGG matching finished: '+searched+' title searches, '+groups.length+' thing batches (up to 20 IDs each), '+(failed+detailFailures)+' request failures. Ambiguous matches remain available for manual review.');
   }catch(error){
     if(!signal.aborted)showNotice('BGG matching interrupted: '+error.message,true);
   }finally{
