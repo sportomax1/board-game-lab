@@ -83,7 +83,6 @@ tbody tr:hover td{background:#f8faf9}
 .empty{padding:65px 20px!important;text-align:center;color:var(--muted);line-height:1.7}
 .footer{padding:11px 13px;display:flex;justify-content:space-between;align-items:center;flex-wrap:wrap;gap:10px}
 .pager .btn{min-height:34px;padding:5px 10px;font-size:12px}
-#pageText{font-size:12px;color:var(--muted);font-variant-numeric:tabular-nums}
 .badge{padding:3px 8px;background:#edf0f1;border-radius:6px;color:#5b6871;font-size:11px}
 small{font-size:11px}
 footer{margin-top:18px;color:var(--muted);font-size:12px}
@@ -134,6 +133,9 @@ footer{margin-top:18px;color:var(--muted);font-size:12px}
 @media(max-width:780px){.wrap{width:min(100% - 18px,1540px)}.top-line h1{font-size:18px}.inline-metrics{gap:6px;font-size:10px}.inline-metrics span+span{padding-left:6px}.paste-entry{flex:1 1 100%;order:3;max-width:none}.header-actions{order:4;width:100%}.compact-main .field,.compact-main .field.small{flex:1 1 135px;min-width:115px}.compact-main .field.search{flex:2 1 100%}.compact-main .table-wrap{max-height:calc(100vh - 250px)}}
 @media(max-width:440px){.inline-metrics{order:2;width:100%}.top-line h1{order:1}.header-actions{gap:4px}.compact-main .field.small{flex:1 1 112px}.compact-main .table-meta{gap:3px}}
 
+.scroll-sentinel{height:2px;width:100%}
+.scroll-sentinel[hidden]{display:none}
+.infinite-footer{font-variant-numeric:tabular-nums}
 </style>
 </head>
 <body>
@@ -171,12 +173,11 @@ footer{margin-top:18px;color:var(--muted);font-size:12px}
           <option value="">All statuses</option><option value="granted">Granted / Good to go</option><option value="pending">Pending / Requested</option><option value="unavailable">Unavailable / Denied</option><option value="other">Other status</option><option value="unspecified">Unspecified</option>
         </select></div>
         <div class="field small"><label class="caption" for="projectFilter">Studio project</label><select id="projectFilter" class="input"><option value="">All</option><option value="yes">Has project</option><option value="no">No project</option></select></div>
-        <div class="field small"><label class="caption" for="perPage">Rows per page</label><select id="perPage" class="input"><option value="25">25</option><option value="50" selected>50</option><option value="100">100</option><option value="250">250</option><option value="all">All</option></select></div>
       </div>
       <div class="import-actions"><button type="button" class="btn" id="resetFilters">Reset</button><span id="sortDescription" class="note">Sort: Game A–Z</span></div>
     </div>
     <div class="table-meta"><span id="countLabel">No imported data</span><span id="savedLabel">Local browser storage</span></div>
-    <div class="table-wrap" role="region" aria-label="Sortable licenses table" tabindex="0">
+    <div class="table-wrap" id="tableWrap" role="region" aria-label="Infinite scrolling licenses table" tabindex="0">
       <table>
         <thead><tr>
           <th class="th-game" data-sort="game" aria-sort="ascending" scope="col">Game ↕</th>
@@ -187,10 +188,11 @@ footer{margin-top:18px;color:var(--muted);font-size:12px}
         </tr></thead>
         <tbody id="rowsBody"><tr><td colspan="5" class="empty">No snapshot saved yet. Copy the console script, run it on the BGA licensing page, then paste the CSV here.</td></tr></tbody>
       </table>
+      <div id="scrollSentinel" class="scroll-sentinel" aria-hidden="true"></div>
     </div>
-    <div class="footer">
+    <div class="footer infinite-footer">
       <span id="rangeText" class="note">0 rows</span>
-      <div class="pager"><button type="button" class="btn" id="prevBtn" disabled>← Previous</button><span id="pageText">Page 0 of 0</span><button type="button" class="btn" id="nextBtn" disabled>Next →</button></div>
+      <span id="scrollStatus" class="note" role="status" aria-live="polite">Scroll to load more</span>
     </div>
   </section>
 
@@ -300,7 +302,9 @@ async function extractOnBGA() {
 const $ = id => document.getElementById(id);
 const FIELDS = ['game','logo','publisher','designer','status','projects'];
 const COLS = ['Game Name','Game Logo','Publisher','Designer','License Status','Studio Projects'];
-const state = {rows:[],date:null,search:'',publisher:'',status:'',project:'',sort:'game',dir:1,page:1,size:50};
+const state = {rows:[],date:null,search:'',publisher:'',status:'',project:'',sort:'game',dir:1};
+const BATCH_SIZE = 80;
+let matchingRows = [], renderedRows = 0, appendingRows = false, scrollCheckQueued = false;
 let database = null;
 const collation = new Intl.Collator(undefined,{numeric:true,sensitivity:'base'});
 const number = n => new Intl.NumberFormat().format(n);
@@ -437,46 +441,80 @@ function textNode(tag,value,className){
   if(className)el.className=className;
   return el;
 }
+function makeGameRow(row){
+  const tr=document.createElement('tr');
+  const game=document.createElement('td'),box=document.createElement('div');box.className='gamecell';
+  const src=safeImage(row.logo);
+  if(src){
+    const img=document.createElement('img');
+    img.className='thumb';img.src=src;img.alt='';img.loading='lazy';img.referrerPolicy='no-referrer';
+    img.onerror=()=>img.replaceWith(textNode('span','🎲','thumb no-thumb'));
+    box.append(img);
+  }else box.append(textNode('span','🎲','thumb no-thumb'));
+  box.append(textNode('span',row.game,'game-title'));game.append(box);tr.append(game);
+  tr.append(textNode('td',row.publisher||'—',row.publisher?'':'muted'));
+  tr.append(textNode('td',row.designer||'—',row.designer?'':'muted'));
+  const status=document.createElement('td');
+  status.append(textNode('span',row.status||'Unspecified','status-tag '+category(row.status)));tr.append(status);
+  tr.append(textNode('td',row.projects||'—',hasProject(row.projects)?'project':'muted'));
+  return tr;
+}
+function updateScrollCounts(){
+  const total=matchingRows.length;
+  $('countLabel').textContent=number(total)+' of '+number(state.rows.length)+' matching games';
+  $('rangeText').textContent='Displaying '+number(renderedRows)+' of '+number(total);
+  const more=renderedRows<total;
+  $('scrollSentinel').hidden=!more;
+  $('scrollStatus').textContent=more?'Scroll down for more results':'All matching results loaded';
+}
+function maybeLoadMore(){
+  const view=$('tableWrap');
+  if(renderedRows<matchingRows.length && view.scrollTop+view.clientHeight>=view.scrollHeight-320)loadMore();
+}
+function loadMore(){
+  if(appendingRows||renderedRows>=matchingRows.length)return;
+  appendingRows=true;
+  const end=Math.min(renderedRows+BATCH_SIZE,matchingRows.length);
+  const fragment=document.createDocumentFragment();
+  for(let i=renderedRows;i<end;i++)fragment.append(makeGameRow(matchingRows[i]));
+  $('rowsBody').append(fragment);
+  renderedRows=end;appendingRows=false;
+  updateScrollCounts();
+  requestAnimationFrame(maybeLoadMore);
+}
 function render(){
-  const found=filteredRows();
-  const size=state.size===Infinity?Math.max(found.length,1):state.size;
-  const pages=Math.ceil(found.length/size);
-  state.page=Math.max(1,Math.min(state.page,pages||1));
-  const begin=(state.page-1)*size;
-  const visible=found.slice(begin,begin+size);
-  const body=$('rowsBody');const frag=document.createDocumentFragment();
-  if(!found.length){
-    const tr=document.createElement('tr'),td=textNode('td',state.rows.length?'No licenses match the current filters.':'No data yet. Open the extractor above and import the BGA CSV.','empty');
-    td.colSpan=5;tr.append(td);frag.append(tr);
-  }
-  visible.forEach(row=>{
+  matchingRows=filteredRows();
+  renderedRows=0;
+  $('tableWrap').scrollTop=0;
+  const body=$('rowsBody');
+  body.replaceChildren();
+  if(matchingRows.length)loadMore();
+  else{
     const tr=document.createElement('tr');
-    const game=document.createElement('td'),box=document.createElement('div');box.className='gamecell';
-    const src=safeImage(row.logo);
-    if(src){
-      const img=document.createElement('img');img.className='thumb';img.src=src;img.alt='';img.loading='lazy';img.referrerPolicy='no-referrer';
-      img.onerror=()=>{img.replaceWith(textNode('span','🎲','thumb no-thumb'));};box.append(img);
-    }else box.append(textNode('span','🎲','thumb no-thumb'));
-    box.append(textNode('span',row.game,'game-title'));game.append(box);tr.append(game);
-    tr.append(textNode('td',row.publisher||'—',row.publisher?'':'muted'));
-    tr.append(textNode('td',row.designer||'—',row.designer?'':'muted'));
-    const status=document.createElement('td'),tag=textNode('span',row.status||'Unspecified','status-tag '+category(row.status));
-    status.append(tag);tr.append(status);
-    tr.append(textNode('td',row.projects||'—',hasProject(row.projects)?'project':'muted'));
-    frag.append(tr);
-  });
-  body.replaceChildren(frag);
-  const start=found.length?begin+1:0,end=Math.min(begin+size,found.length);
-  $('countLabel').textContent=number(found.length)+' of '+number(state.rows.length)+' games shown';
-  $('rangeText').textContent=number(start)+'–'+number(end)+' of '+number(found.length);
-  $('pageText').textContent='Page '+(pages?state.page:0)+' of '+pages;
-  $('prevBtn').disabled=state.page<=1;
-  $('nextBtn').disabled=state.page>=pages;
+    const cell=textNode('td',state.rows.length?'No licenses match the current filters.':'No data yet. Run the BGA console extractor and paste the CSV into the header.','empty');
+    cell.colSpan=5;tr.append(cell);body.append(tr);
+    updateScrollCounts();
+  }
   const labels={game:'Game',publisher:'Publisher',designer:'Designer',status:'License status',projects:'Studio projects'};
   $('sortDescription').textContent='Sort: '+labels[state.sort]+(state.dir===1?' A–Z':' Z–A');
   document.querySelectorAll('th[data-sort]').forEach(th=>{
     th.setAttribute('aria-sort',th.dataset.sort===state.sort?(state.dir===1?'ascending':'descending'):'none');
   });
+}
+function setupInfiniteScroll(){
+  const view=$('tableWrap');
+  view.addEventListener('scroll',()=>{
+    if(scrollCheckQueued)return;
+    scrollCheckQueued=true;
+    requestAnimationFrame(()=>{scrollCheckQueued=false;maybeLoadMore();});
+  },{passive:true});
+  if('IntersectionObserver' in window){
+    const observer=new IntersectionObserver(entries=>{
+      if(entries.some(entry=>entry.isIntersecting))loadMore();
+    },{root:view,rootMargin:'0px 0px 320px 0px'});
+    observer.observe($('scrollSentinel'));
+  }
+  window.addEventListener('resize',maybeLoadMore,{passive:true});
 }
 async function importText(value){
   let rows;
@@ -484,7 +522,7 @@ async function importText(value){
   try{
     const date=new Date().toISOString();
     await transaction('readwrite',store=>store.put({id:'current',date,rows}));
-    state.rows=rows;state.date=date;state.page=1;
+    state.rows=rows;state.date=date;
     drawStats();render();showNotice('Saved '+number(rows.length)+' games to IndexedDB. Your table is ready.');
     $('csvInput').value='';
   }catch(e){showNotice('Could not save: '+e.message,true);}
@@ -523,6 +561,7 @@ async function copyText(value,textarea){
 function wire(){
   const consoleScript='('+extractOnBGA.toString()+')();';
   $('scriptText').value=consoleScript;
+  setupInfiniteScroll();
   $('showScript').onclick=()=>{$('scriptPanel').open=true;$('scriptPanel').scrollIntoView({behavior:'smooth',block:'start'});};
   $('copyScript').onclick=()=>copyText(consoleScript,$('scriptText'));
   $('copyScriptDetail').onclick=()=>copyText(consoleScript,$('scriptText'));
@@ -555,26 +594,23 @@ function wire(){
     if(!confirm('Delete the locally saved BGA license snapshot? This cannot be undone.'))return;
     try{
       await transaction('readwrite',store=>store.delete('current'));
-      state.rows=[];state.date=null;state.page=1;drawStats();render();showNotice('Local snapshot deleted.');
+      state.rows=[];state.date=null;drawStats();render();showNotice('Local snapshot deleted.');
     }catch(e){showNotice('Delete failed: '+e.message,true);}
   };
   let timeout;
-  $('search').oninput=ev=>{state.search=ev.target.value;clearTimeout(timeout);timeout=setTimeout(()=>{state.page=1;render();},110);};
-  $('publisherFilter').onchange=ev=>{state.publisher=ev.target.value;state.page=1;render();};
-  $('statusFilter').onchange=ev=>{state.status=ev.target.value;state.page=1;render();};
-  $('projectFilter').onchange=ev=>{state.project=ev.target.value;state.page=1;render();};
-  $('perPage').onchange=ev=>{state.size=ev.target.value==='all'?Infinity:Number(ev.target.value);state.page=1;render();};
+  $('search').oninput=ev=>{state.search=ev.target.value;clearTimeout(timeout);timeout=setTimeout(render,110);};
+  $('publisherFilter').onchange=ev=>{state.publisher=ev.target.value;render();};
+  $('statusFilter').onchange=ev=>{state.status=ev.target.value;render();};
+  $('projectFilter').onchange=ev=>{state.project=ev.target.value;render();};
   $('resetFilters').onclick=()=>{
-    state.search=state.publisher=state.status=state.project='';state.page=1;state.sort='game';state.dir=1;
+    state.search=state.publisher=state.status=state.project='';state.sort='game';state.dir=1;
     ['search','publisherFilter','statusFilter','projectFilter'].forEach(id=>$(id).value='');
     render();
   };
   $('exportBtn').onclick=exportCsv;
-  $('prevBtn').onclick=()=>{state.page--;render();};
-  $('nextBtn').onclick=()=>{state.page++;render();};
   document.querySelectorAll('th[data-sort]').forEach(th=>{
     th.tabIndex=0;th.setAttribute('role','button');
-    const click=()=>{const key=th.dataset.sort;if(state.sort===key)state.dir*=-1;else{state.sort=key;state.dir=1;}state.page=1;render();};
+    const click=()=>{const key=th.dataset.sort;if(state.sort===key)state.dir*=-1;else{state.sort=key;state.dir=1;}render();};
     th.onclick=click;th.onkeydown=e=>{if(e.key==='Enter'||e.key===' '){e.preventDefault();click();}};
   });
 }
