@@ -311,8 +311,8 @@ async function extractOnBGA() {
 
 const $ = id => document.getElementById(id);
 const FIELDS = ['game','logo','publisher','designer','status','projects'];
-const COLS = ['Game Name','Game Logo','Publisher','Designer','License Status','Studio Projects'];
-const state = {rows:[],date:null,search:'',publisher:'',status:'',project:'',sort:'game',dir:1};
+const COLS = ['Game Name','Game Logo','Publisher','Designer','License Status','Studio Projects','BGG ID','BGG Title','BGG Year','BGG Rating','BGG Weight','BGG Rank','BGG Min Players','BGG Max Players','BGG Time','BGG URL','BGG Status'];
+const state = {rows:[],date:null,search:'',publisher:'',status:'',project:'',bggFilter:'',sort:'game',dir:1};
 const BATCH_SIZE = 80;
 let matchingRows = [], renderedRows = 0, appendingRows = false, scrollCheckQueued = false;
 let database = null;
@@ -423,6 +423,7 @@ function drawStats(){
   $('importMeta').textContent=state.date?'Last imported '+new Date(state.date).toLocaleString():'No snapshot stored';
   $('savedLabel').textContent=state.date?'Imported '+new Date(state.date).toLocaleString()+' · saved locally':'Local browser storage · no snapshot';
   $('exportBtn').disabled=!state.rows.length;
+  if(!window.bggScanActive)$('bggMatchBtn').disabled=!state.rows.length;
   const old=state.publisher;
   const publishers=[...new Set(state.rows.map(r=>r.publisher).filter(Boolean))].sort(collation.compare);
   $('publisherFilter').replaceChildren(new Option('All publishers',''),...publishers.map(s=>new Option(s,s)));
@@ -436,11 +437,20 @@ function filteredRows(){
     if(state.status&&category(row.status)!==state.status)return false;
     if(state.project==='yes'&&!hasProject(row.projects))return false;
     if(state.project==='no'&&hasProject(row.projects))return false;
-    if(q&&!FIELDS.some(k=>row[k].toLocaleLowerCase().includes(q)))return false;
+    if(state.bggFilter && (row.bgg?.status||'unchecked')!==state.bggFilter)return false;
+    if(q&&!FIELDS.some(k=>row[k].toLocaleLowerCase().includes(q))
+      &&!String(row.bgg?.detail?.name||row.bgg?.choice?.name||'').toLocaleLowerCase().includes(q)
+      &&!String(row.bgg?.id||'').includes(q))return false;
     return true;
   });
   found.sort((a,b)=>{
-    const c=collation.compare(a[state.sort]||'',b[state.sort]||'');
+    let c=0;
+    if(state.sort==='bggMatch')c=collation.compare(a.bgg?.status||'unchecked',b.bgg?.status||'unchecked');
+    else if(['bggYear','bggRating','bggWeight','bggRank'].includes(state.sort)){
+      const k={bggYear:'year',bggRating:'rating',bggWeight:'weight',bggRank:'rank'}[state.sort];
+      const x=Number(a.bgg?.detail?.[k]),y=Number(b.bgg?.detail?.[k]);
+      c=(!x&&!y)?0:!x?1:!y?-1:x-y;
+    }else c=collation.compare(a[state.sort]||'',b[state.sort]||'');
     return c*state.dir||collation.compare(a.game,b.game);
   });
   return found;
@@ -467,6 +477,7 @@ function makeGameRow(row){
   const status=document.createElement('td');
   status.append(textNode('span',row.status||'Unspecified','status-tag '+category(row.status)));tr.append(status);
   tr.append(textNode('td',row.projects||'—',hasProject(row.projects)?'project':'muted'));
+  if(typeof appendBggCells==='function')appendBggCells(tr,row);
   return tr;
 }
 function updateScrollCounts(){
@@ -502,10 +513,10 @@ function render(){
   else{
     const tr=document.createElement('tr');
     const cell=textNode('td',state.rows.length?'No licenses match the current filters.':'No data yet. Run the BGA console extractor and paste the CSV into the header.','empty');
-    cell.colSpan=5;tr.append(cell);body.append(tr);
+    cell.colSpan=12;tr.append(cell);body.append(tr);
     updateScrollCounts();
   }
-  const labels={game:'Game',publisher:'Publisher',designer:'Designer',status:'License status',projects:'Studio projects'};
+  const labels={game:'Game',publisher:'Publisher',designer:'Designer',status:'License status',projects:'Studio projects',bggMatch:'BGG match',bggYear:'Year',bggRating:'Rating',bggWeight:'Weight',bggRank:'Rank'};
   $('sortDescription').textContent='Sort: '+labels[state.sort]+(state.dir===1?' A–Z':' Z–A');
   document.querySelectorAll('th[data-sort]').forEach(th=>{
     th.setAttribute('aria-sort',th.dataset.sort===state.sort?(state.dir===1?'ascending':'descending'):'none');
@@ -532,6 +543,9 @@ async function importText(value){
   try{
     const date=new Date().toISOString();
     await transaction('readwrite',store=>store.put({id:'current',date,rows}));
+    if(typeof cancelBggJobs==='function')cancelBggJobs();
+    const previous=new Map(state.rows.filter(r=>r.bgg).map(r=>[r.game.toLocaleLowerCase(),r.bgg]));
+    rows.forEach(r=>{const old=previous.get(r.game.toLocaleLowerCase());if(old)r.bgg=old;});
     state.rows=rows;state.date=date;
     drawStats();render();showNotice('Saved '+number(rows.length)+' games to IndexedDB. Your table is ready.');
     $('csvInput').value='';
@@ -545,7 +559,12 @@ function exportCsv(){
     if(/^\s*[=+@-]/.test(s))s="'"+s;
     return '"'+s.replace(/"/g,'""')+'"';
   };
-  const csv=[COLS,...rows.map(r=>FIELDS.map(k=>r[k]))].map(r=>r.map(escapeValue).join(',')).join('\r\n');
+  const csv=[COLS,...rows.map(r=>[
+    ...FIELDS.map(k=>r[k]),r.bgg?.id||'',r.bgg?.detail?.name||r.bgg?.choice?.name||'',
+    r.bgg?.detail?.year||'',r.bgg?.detail?.rating||'',r.bgg?.detail?.weight||'',r.bgg?.detail?.rank||'',
+    r.bgg?.detail?.minPlayers||'',r.bgg?.detail?.maxPlayers||'',r.bgg?.detail?.playTime||'',
+    r.bgg?.id?'https://boardgamegeek.com/boardgame/'+r.bgg.id:'',r.bgg?.status||'unchecked'
+  ])].map(r=>r.map(escapeValue).join(',')).join('\r\n');
   const blob=new Blob(['\uFEFF',csv],{type:'text/csv;charset=utf-8;'});
   const url=URL.createObjectURL(blob),a=document.createElement('a');
   a.href=url;a.download='bga-available-licenses-filtered.csv';
@@ -612,9 +631,10 @@ function wire(){
   $('publisherFilter').onchange=ev=>{state.publisher=ev.target.value;render();};
   $('statusFilter').onchange=ev=>{state.status=ev.target.value;render();};
   $('projectFilter').onchange=ev=>{state.project=ev.target.value;render();};
+  $('bggFilter').onchange=ev=>{state.bggFilter=ev.target.value;render();};
   $('resetFilters').onclick=()=>{
-    state.search=state.publisher=state.status=state.project='';state.sort='game';state.dir=1;
-    ['search','publisherFilter','statusFilter','projectFilter'].forEach(id=>$(id).value='');
+    state.search=state.publisher=state.status=state.project=state.bggFilter='';state.sort='game';state.dir=1;
+    ['search','publisherFilter','statusFilter','projectFilter','bggFilter'].forEach(id=>$(id).value='');
     render();
   };
   $('exportBtn').onclick=exportCsv;
