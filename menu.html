@@ -222,6 +222,9 @@
           <option value="5">5 · Newspaper</option>
         </select>
       </div>
+      <button onclick="printPlayers1to8()" class="w-full bg-slate-800 hover:bg-slate-900 text-white px-6 py-3 rounded-lg font-bold transition flex items-center justify-center gap-2">
+        <i class="fa-solid fa-layer-group"></i> Print 1–8 Players (8 Sheets)
+      </button>
       <button onclick="printTop120()" class="w-full bg-green-600 hover:bg-green-700 text-white px-6 py-3 rounded-lg font-bold transition flex items-center justify-center gap-2">
         <i class="fa-solid fa-print"></i> Print Top 120
       </button>
@@ -278,6 +281,9 @@
   html, body { margin:0 !important; padding:0 !important; width:auto !important; min-height:0 !important; height:auto !important; }
   #print-output { margin:0 !important; padding:0 !important; }
   #print-output .top120-print-page { break-inside:avoid; page-break-inside:avoid; break-after:avoid; page-break-after:avoid; }
+  #print-output .player-count-sheet { break-inside:avoid; page-break-inside:avoid; }
+  #print-output .player-count-sheet:not(:last-child) { break-after:page; page-break-after:always; }
+  #print-output .player-count-sheet:last-child { break-after:auto; page-break-after:auto; }
   body > *:not(#print-output) {
     display: none !important;
   }
@@ -1633,6 +1639,73 @@ function renderGames() {
       </div>
     `;
   }).join('');
+}
+
+
+/**
+ * One print job, eight letter-size sheets (1P through 8P+).
+ * Uses the same player-count categories and Bayesian-rating tiebreaker as the
+ * existing 'Best at N Players' sort, without mutating the active filters/sort.
+ */
+function printPlayers1to8() {
+  if (!Array.isArray(allGames) || allGames.length === 0) {
+    alert('Load your BGG collection or CSV first.');
+    return;
+  }
+  const container = document.getElementById('print-output');
+  const hideExpansions = document.getElementById('ignoreExpansions').checked;
+  const showIndex = document.getElementById('printIncludeIdx')?.checked;
+  const showPrimary = document.getElementById('printIncludePrimary')?.checked;
+  const showSecondary = document.getElementById('printIncludeSecondary')?.checked;
+  const priority = {perfect: 0, best: 1, recommended: 2, supported: 3};
+  const shortLabel = {perfect:'PERF',best:'BEST',recommended:'REC',supported:'OK'};
+  const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char =>
+    ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+  const sheets = [];
+  for (let count = 1; count <= 8; count++) {
+    const eligible = allGames
+      .filter(game => !hideExpansions || game.type !== 'boardgameexpansion')
+      .map(game => ({game, category: categorizeGame(game, count)}))
+      .filter(entry => entry.category !== null)
+      .sort((a,b) => (priority[a.category] ?? 99) - (priority[b.category] ?? 99) ||
+        (+b.game.bayesaverage || 0) - (+a.game.bayesaverage || 0) ||
+        String(a.game.name || '').localeCompare(String(b.game.name || '')));
+    const totals = {perfect:0,best:0,recommended:0,supported:0};
+    eligible.forEach(entry => { if (Object.hasOwn(totals, entry.category)) totals[entry.category]++; });
+    const tiles = eligible.slice(0,120).map(({game,category}, index) => {
+      const img = escapeHtml(game.thumb || '');
+      const title = escapeHtml(game.name || '');
+      const badge = escapeHtml(shortLabel[category] || '');
+      const rank = showIndex ? '<span style="position:absolute;top:2px;left:2px;background:rgba(255,255,255,.93);color:#222;font-size:8px;padding:0 3px;border:1px solid #ddd;font-weight:700;">'+(index+1)+'</span>' : '';
+      const primary = showPrimary ? '<span style="position:absolute;bottom:2px;right:2px;background:rgba(255,255,255,.95);color:#333;font-size:7px;font-weight:700;padding:0 3px;">'+badge+'</span>' : '';
+      const secondary = showSecondary ? '<span style="position:absolute;bottom:2px;left:2px;background:rgba(255,255,255,.95);color:#555;font-size:7px;padding:0 3px;">'+(+game.bayesaverage || 0).toFixed(2)+'</span>' : '';
+      return '<div style="position:relative;aspect-ratio:1;min-width:0;overflow:hidden;background:#fff;border:1px solid #e5e7eb;">' +
+        '<img src="'+img+'" alt="'+title+'" style="width:100%;height:100%;object-fit:contain;display:block;" onerror="this.style.display=\'none\'">' +
+        rank + primary + secondary + '</div>';
+    }).join('');
+    const title = count === 8 ? '8+ PLAYER GAMES' : count + ' PLAYER GAMES';
+    const summary = totals.perfect+' Perfect &bull; '+totals.best+' Best &bull; '+
+      totals.recommended+' Recommended &bull; '+totals.supported+' Other supported';
+    sheets.push('<section class="player-count-sheet" style="width:8.4in;height:10.8in;box-sizing:border-box;padding:.26in;background:#fff;font-family:Arial,Helvetica,sans-serif;display:flex;flex-direction:column;overflow:hidden;margin:0;">' +
+      '<header style="flex-shrink:0;margin-bottom:7px;color:#232323;">' +
+      '<div style="display:flex;justify-content:space-between;align-items:flex-end;gap:12px;">' +
+      '<strong style="font-size:19px;letter-spacing:.4px;line-height:1.08;">'+title+'</strong>' +
+      '<div style="text-align:right;flex-shrink:0;"><div style="font-size:17px;font-weight:800;line-height:1;color:#555;">'+eligible.length+'</div>' +
+      '<div style="font-size:7px;letter-spacing:1.5px;color:#999;font-weight:700;margin-top:3px;">GAMES AVAILABLE</div></div></div>' +
+      '<div style="height:1.5px;background:#555;margin-top:6px;"></div>' +
+      '<div style="font-size:8px;color:#777;margin-top:4px;line-height:1.25;">'+summary+'</div></header>' +
+      '<div style="display:grid;grid-template-columns:repeat(10,minmax(0,1fr));grid-template-rows:repeat(12,minmax(0,1fr));gap:2px;flex:1;min-height:0;align-content:start;">'+tiles+'</div>' +
+      '<footer style="font-size:8px;color:#999;text-align:center;margin-top:7px;flex-shrink:0;">Top '+Math.min(120,eligible.length)+' of '+eligible.length+' available &bull; '+count+' of 8 player-count sheets</footer>' +
+      '</section>');
+  }
+  container.innerHTML = sheets.join('');
+  container.classList.remove('hidden');
+  const cleanup = () => {
+    container.classList.add('hidden');
+    window.removeEventListener('afterprint', cleanup);
+  };
+  window.addEventListener('afterprint', cleanup, {once:true});
+  setTimeout(() => window.print(), 150);
 }
 
 function printTop120() {
