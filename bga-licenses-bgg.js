@@ -4,12 +4,12 @@
 'use strict';
 const BGG_WORKERS=100, BGG_BATCH=20, BGG_IN_FLIGHT=4, BGG_GAP_MS=1400, BGG_TTL_DAYS=30;
 let bggActiveRequests=0, bggNextRequest=0, bggBackoffUntil=0;
-let bggCurrent=null, bggSaveChain=Promise.resolve(), bggLookupBusy=false;
+let bggCurrent=null, bggSaveChain=Promise.resolve(), bggLookupBusy=false, bggFatalError='';
 window.bggScanActive=false;
 const bggWait=ms=>new Promise(resolve=>setTimeout(resolve,ms));
 const bggNormalized=value=>String(value||'').normalize('NFKD').replace(/[\u0300-\u036f]/g,'')
   .toLowerCase().replace(/&/g,' and ').replace(/[^a-z0-9]+/g,' ').trim();
-const bggGameUrl=id=>'https://boardgamegeek.com/boardgame/'+encodeURIComponent(String(id));
+const bggGameUrl=(id,type='boardgame')=>'https://boardgamegeek.com/'+(type==='boardgameexpansion'?'boardgameexpansion':'boardgame')+'/'+encodeURIComponent(String(id));
 const bggStatusOf=row=>row.bgg?.status||'unchecked';
 const bggNumber=value=>{const v=Number(value);return Number.isFinite(v)&&v>0?v:null;};
 function bggProgress(label,current,total){
@@ -27,8 +27,8 @@ const bggAttr=(node,key)=>node?.getAttribute(key)||'';
 const bggName=node=>bggAttr(node.querySelector('name[type="primary"]')||node.querySelector('name'),'value');
 function parseBggSearch(xml){
   return [...bggMarkup(xml).querySelectorAll('items > item')]
-    .filter(item=>bggAttr(item,'type')==='boardgame')
-    .map(item=>({id:bggAttr(item,'id'),name:bggName(item),year:bggAttr(item.querySelector('yearpublished'),'value')}))
+    .filter(item=>['boardgame','boardgameexpansion'].includes(bggAttr(item,'type')))
+    .map(item=>({id:bggAttr(item,'id'),type:bggAttr(item,'type'),name:bggName(item),year:bggAttr(item.querySelector('yearpublished'),'value')}))
     .filter(game=>/^\d+$/.test(game.id)&&game.name);
 }
 function parseBggThings(xml){
@@ -40,12 +40,12 @@ function parseBggThings(xml){
       .map(el=>bggAttr(el,'value')).filter(Boolean).join('; ');
     const id=bggAttr(item,'id');
     return {
-      id,name:bggName(item),year:val('yearpublished'),rating:val('statistics ratings average'),
+      id,type:bggAttr(item,'type'),name:bggName(item),year:val('yearpublished'),rating:val('statistics ratings average'),
       weight:val('statistics ratings averageweight'),rank:bggNumber(bggAttr(rank,'value'))||0,
       minPlayers:val('minplayers'),maxPlayers:val('maxplayers'),playTime:val('playingtime'),
       minPlayTime:val('minplaytime'),maxPlayTime:val('maxplaytime'),
       image:safeImage(item.querySelector('thumbnail')?.textContent||item.querySelector('image')?.textContent||''),
-      designers:linked('boardgamedesigner'),publishers:linked('boardgamepublisher'),url:bggGameUrl(id)
+      designers:linked('boardgamedesigner'),publishers:linked('boardgamepublisher'),url:bggGameUrl(id,bggAttr(item,'type'))
     };
   }).filter(game=>/^\d+$/.test(game.id));
 }
@@ -71,6 +71,16 @@ async function bggRequest(endpoint,params,signal){
         if(!/^\s*(?:<\?xml[^>]*>\s*)?<items[\s>]/i.test(xml))throw new Error('BGG did not return an items XML document.');
         return xml;
       }
+      // Configuration/authentication failures cannot be repaired by retrying every title.
+      if([401,403,500].includes(response.status)){
+        const data=await response.clone().json().catch(()=>({}));
+        const reason=String(data.message||'');
+        if([401,403].includes(response.status)||/BGG_API_TOKEN|not configured|authentication failed/i.test(reason)){
+          if(bggCurrent?.controller)bggCurrent.controller.abort();
+          bggFatalError=reason||('BGG authentication failed (HTTP '+response.status+')');
+          throw new Error(bggFatalError);
+        }
+      }
       const transient=[202,429,500,502,503,504].includes(response.status);
       if(transient){
         const retry=Number(response.headers.get('retry-after'));
@@ -89,7 +99,7 @@ async function bggRequest(endpoint,params,signal){
   }
   throw new Error('BGG request failed after retries.');
 }
-const bggSearch=(title,signal,exact)=>bggRequest('search',{query:title,type:'boardgame',...(exact?{exact:'1'}:{})},signal).then(parseBggSearch);
+const bggSearch=(title,signal,exact)=>bggRequest('search',{query:title,type:'boardgame,boardgameexpansion',...(exact?{exact:'1'}:{})},signal).then(parseBggSearch);
 function bggThing(ids,signal){
   const valid=[...new Set(ids.map(String))].filter(id=>/^\d+$/.test(id));
   if(valid.length>BGG_BATCH)throw new Error('BGG thing requests must not exceed 20 IDs.');
@@ -151,7 +161,7 @@ async function runBggAll(){
     return;
   }
   const controller=new AbortController(),signal=controller.signal;
-  bggCurrent={controller};bggScanButtons(true);
+  bggFatalError='';bggCurrent={controller};bggScanButtons(true);
   let searched=0,failed=0,detailFailures=0;
   try{
     bggProgress(all.length?'Searching: 0 / '+all.length:'Reusing cached title matches; loading missing game details',0,all.length||1);
@@ -195,7 +205,8 @@ async function runBggAll(){
     bggCurrent=null;bggScanButtons(false);
     drawStats();render();
     bggProgress(stopped?'BGG matching stopped; progress saved':'BGG matching complete',1,1);
-    if(stopped)showNotice('BGG matching stopped; completed matches are saved to IndexedDB.');
+    if(bggFatalError)showNotice('BGG API configuration/authentication issue: '+bggFatalError,true);
+    else if(stopped)showNotice('BGG matching stopped; completed matches are saved to IndexedDB.');
   }
 }
 async function chooseBggGame(row,id){
@@ -215,7 +226,7 @@ function appendBggCells(tr,row){
   const record=row.bgg||{},status=bggStatusOf(row);
   const cell=document.createElement('td');cell.className='bgg-match';
   if(status==='matched'&&record.id){
-    const link=document.createElement('a');link.href=bggGameUrl(record.id);
+    const link=document.createElement('a');link.href=bggGameUrl(record.id,record.detail?.type||record.choice?.type);
     link.target='_blank';link.rel='noopener noreferrer';
     link.textContent=record.detail?.name||record.choice?.name||('#'+record.id);
     cell.append(link);cell.append(textNode('small','BGG #'+record.id));
@@ -262,7 +273,7 @@ async function lookupBggCatalog(){
         image.referrerPolicy='no-referrer';image.alt='';card.append(image);
       }
       const body=document.createElement('div'),link=document.createElement('a');
-      link.href=bggGameUrl(result.id);link.target='_blank';link.rel='noopener noreferrer';
+      link.href=bggGameUrl(result.id,detail?.type||result.type);link.target='_blank';link.rel='noopener noreferrer';
       link.textContent=result.name;body.append(link);
       body.append(textNode('small','BGG #'+result.id+' · '+(result.year||'Year ?')+
         (detail?' · Rating '+(detail.rating||'—')+' · Weight '+(detail.weight||'—')+
