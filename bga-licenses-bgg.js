@@ -127,7 +127,7 @@ function chooseCandidates(title,results){
 function bggSaveSnapshot(snapshotDate){
   const rows=state.rows.map(row=>({...row,bgg:row.bgg?{...row.bgg}:undefined}));
   bggSaveChain=bggSaveChain.catch(()=>{}).then(async()=>{
-    if(database && state.date===snapshotDate)
+    if(database && !window.bggImportPending && state.date===snapshotDate)
       await transaction('readwrite',store=>store.put({id:'current',date:snapshotDate,rows}));
   });
   return bggSaveChain;
