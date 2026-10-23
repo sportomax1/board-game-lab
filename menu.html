@@ -51,7 +51,10 @@
           <input id="username" type="text" value="sportomax" placeholder="BGG username" class="flex-1 px-4 py-2 rounded-lg border border-slate-200 focus:ring-2 focus:ring-indigo-500 outline-none text-sm">
           <button onclick="fetchCollection()" id="fetchBtn" class="bg-indigo-600 hover:bg-indigo-700 text-white px-6 py-2 rounded-lg font-bold transition">Load</button>
         </div>
-
+        <div class="mt-2 flex flex-wrap gap-2 items-center text-xs text-slate-500">
+          <button onclick="refreshCollectionUncached()" id="fullRefreshBtn" class="font-semibold text-indigo-700 hover:underline">Refresh all BGG details</button>
+          <span>Load checks collection changes; game details are cached for 24 hours.</span>
+        </div>
       </div>
       
       <!-- CSV Upload Tab -->
@@ -89,6 +92,11 @@
           <p class="text-violet-700 text-xs">Use your BGG export CSV to unlock personal rating, wishlist priority, comment, and more — combined with all BGG API fields for the most sort options possible.</p>
           <a href="https://boardgamegeek.com/geekcollection.php?action=exportcsv&subtype=boardgame&all=1" target="_blank" class="text-violet-600 hover:underline font-medium text-xs mt-1 block">Export BGG collection CSV →</a>
         </div>
+      </div>
+      <div class="mt-4 pt-3 border-t border-slate-100 flex flex-wrap items-center gap-3 text-xs">
+        <span id="menuCacheStatus" class="text-slate-500 flex-1 min-w-[160px]" role="status" aria-live="polite">Checking local cache...</span>
+        <button onclick="restoreLatestMenuSnapshot()" class="font-semibold text-indigo-700 hover:underline">Restore saved</button>
+        <button onclick="clearMenuCache()" class="font-semibold text-slate-500 hover:text-rose-600 hover:underline">Clear cache</button>
       </div>
     </div>
 
@@ -430,7 +438,115 @@ function populateSortOptions() {
     if (combinedMode) renderCombinedCriteriaList();
 }
 
-window.addEventListener('DOMContentLoaded', () => { populateSortOptions(); renderPresetList(); });
+window.addEventListener('DOMContentLoaded', () => {
+  populateSortOptions();
+  renderPresetList();
+  restoreLatestMenuSnapshot();
+});
+
+
+const MENU_DB_NAME = 'bgg-menu-local-cache';
+const MENU_THING_TTL_MS = 24 * 60 * 60 * 1000;
+let menuDbPromise = null;
+
+// IndexedDB is browser-local. The normal API path works without IndexedDB.
+function openMenuDatabase() {
+  if (!('indexedDB' in window)) return Promise.resolve(null);
+  if (!menuDbPromise) {
+    menuDbPromise = new Promise(resolve => {
+      try {
+        const req = indexedDB.open(MENU_DB_NAME, 1);
+        req.onupgradeneeded = () => {
+          const db = req.result;
+          for (const name of ['snapshots', 'batches', 'meta']) {
+            if (!db.objectStoreNames.contains(name)) db.createObjectStore(name, {keyPath: 'key'});
+          }
+        };
+        req.onsuccess = () => {
+          const db = req.result;
+          db.onversionchange = () => { db.close(); menuDbPromise = null; };
+          resolve(db);
+        };
+        req.onerror = () => { console.warn('IndexedDB unavailable:', req.error); resolve(null); };
+        req.onblocked = () => resolve(null);
+      } catch (error) { console.warn('IndexedDB unavailable:', error); resolve(null); }
+    });
+  }
+  return menuDbPromise;
+}
+async function menuDbOperation(storeName, method, value) {
+  const db = await openMenuDatabase();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const tx = db.transaction(storeName, method === 'get' ? 'readonly' : 'readwrite');
+      const store = tx.objectStore(storeName);
+      const req = method === 'get' ? store.get(value) : method === 'put' ? store.put(value) : store.clear();
+      req.onsuccess = () => resolve(method === 'get' ? req.result || null : true);
+      req.onerror = () => { console.warn('IndexedDB ' + method + ':', req.error); resolve(null); };
+      tx.onabort = () => resolve(null);
+    } catch (error) { console.warn('IndexedDB ' + method + ':', error); resolve(null); }
+  });
+}
+function menuCacheStatus(message) {
+  const el = document.getElementById('menuCacheStatus');
+  if (el) el.textContent = message;
+}
+function menuSnapshotKey(mode, username, file) {
+  const fileId = file ? [file.name, file.size, file.lastModified].join(':') : '';
+  return [mode, (username || '').trim().toLowerCase(), fileId].join('|');
+}
+async function saveMenuSnapshot(mode, username, file, expectedCount) {
+  // A partial API response must not replace a previously complete snapshot.
+  if (!allGames.length || (expectedCount != null && allGames.length < expectedCount)) {
+    menuCacheStatus('Partial load - not saved. Retry for missing games.');
+    return;
+  }
+  const snapshot = {key: menuSnapshotKey(mode, username, file), mode, username: username || '',
+    games: [...allGames], csvColumns: [...csvColumns], savedAt: Date.now()};
+  if (await menuDbOperation('snapshots', 'put', snapshot)) {
+    await menuDbOperation('meta', 'put', {key: 'lastSnapshot', value: snapshot.key});
+    menuCacheStatus('Saved locally: ' + allGames.length.toLocaleString() + ' games · ' + new Date(snapshot.savedAt).toLocaleString());
+  } else menuCacheStatus('Browser storage unavailable. Data remains usable for this session.');
+}
+async function restoreLatestMenuSnapshot() {
+  const meta = await menuDbOperation('meta', 'get', 'lastSnapshot');
+  const snapshot = meta && meta.value ? await menuDbOperation('snapshots', 'get', meta.value) : null;
+  if (!snapshot || !Array.isArray(snapshot.games) || !snapshot.games.length) {
+    menuCacheStatus('No saved collection in this browser yet.');
+    return;
+  }
+  allGames = snapshot.games;
+  displayedGames = [...allGames];
+  csvColumns = Array.isArray(snapshot.csvColumns) ? snapshot.csvColumns : [];
+  isCSVMode = snapshot.mode === 'csv';
+  isBothMode = snapshot.mode === 'both';
+  if (snapshot.username) {
+    document.getElementById('username').value = snapshot.username;
+    document.getElementById('bothUsername').value = snapshot.username;
+  }
+  switchTab(isBothMode ? 'both' : isCSVMode ? 'csv' : 'collection');
+  for (const id of ['controlsSection', 'actionButtons', 'gamesGrid', 'fetchSection']) {
+    document.getElementById(id).classList.remove('hidden');
+  }
+  document.getElementById('loadingSection').classList.add('hidden');
+  document.getElementById('gameCount').textContent = allGames.length;
+  sortGames();
+  menuCacheStatus('Restored locally: ' + allGames.length.toLocaleString() + ' games · Saved ' + new Date(snapshot.savedAt).toLocaleString());
+}
+async function clearMenuCache() {
+  if (!confirm('Delete cached collections and BGG responses in this browser? Current results and sort presets will stay.')) return;
+  await Promise.all(['snapshots', 'batches', 'meta'].map(name => menuDbOperation(name, 'clear')));
+  menuCacheStatus('Local cache cleared. Displayed games have not changed.');
+}
+async function refreshCollectionUncached() {
+  const button = document.getElementById('fullRefreshBtn');
+  if (button) button.disabled = true;
+  try {
+    await menuDbOperation('batches', 'clear');
+    await fetchCollection();
+  } finally { if (button) button.disabled = false; }
+}
 
 function switchTab(tab) {
     const panels = { collection: 'collectionTab', csv: 'csvTab', both: 'bothTab' };
