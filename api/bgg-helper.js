@@ -163,7 +163,27 @@ module.exports = async (req, res) => {
                     message: errorMsg
                 });
             }
-            bggUrl = pageUrl;
+            // This proxy attaches a private BGG bearer token to upstream requests.
+            // Never allow the generic page endpoint to forward it to arbitrary hosts.
+            let parsedPageUrl;
+            try {
+                parsedPageUrl = new URL(pageUrl);
+            } catch (_) {
+                return res.status(400).json({
+                    status: 400, error: 'Bad Request',
+                    message: 'The page URL must be a valid absolute HTTPS BoardGameGeek URL.'
+                });
+            }
+            if (parsedPageUrl.protocol !== 'https:' ||
+                !['boardgamegeek.com', 'www.boardgamegeek.com'].includes(parsedPageUrl.hostname) ||
+                parsedPageUrl.username || parsedPageUrl.password ||
+                (parsedPageUrl.port && parsedPageUrl.port !== '443')) {
+                return res.status(400).json({
+                    status: 400, error: 'Bad Request',
+                    message: 'Page URL must use HTTPS on boardgamegeek.com.'
+                });
+            }
+            bggUrl = parsedPageUrl.toString();
             break;
         default:
             const errorMsg = `E-400: Unsupported endpoint '${endpoint}'. Supported: collection, collection_v1, thing, boardgame_v1, search, user, hot, geeklist, plays, family, boardgamefamily_v1, boardgamepublisher_v1, forumlist, thread, browse, page`;
@@ -188,6 +208,8 @@ module.exports = async (req, res) => {
             
             const bggResponse = await fetch(bggUrl, {
                 method: 'GET',
+                // Reject unexpected upstream redirects for user-supplied page URLs.
+                ...(endpoint.toLowerCase() === 'page' ? { redirect: 'error' } : {}),
                 headers: {
                     'User-Agent': 'Vercel-BGG-Helper/1.0',
                     'Authorization': `Bearer ${bggToken}`,
