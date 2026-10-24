@@ -254,8 +254,7 @@ async function bggThing(ids,signal){
   const requests=[];
   const fetchIds=[];
   for(const id of outstanding){
-    if(bggPendingThing.has(id))requests.push(bggPendingThing.get(id));
-    else fetchIds.push(id);
+    if(!bggPendingThing.has(id))fetchIds.push(id);
   }
   if(fetchIds.length){
     if(signal?.aborted)throw new DOMException('Stopped','AbortError');
