@@ -15,6 +15,55 @@ const bggNormalized=value=>String(value||'').normalize('NFKD').replace(/[\u0300-
 const bggGameUrl=(id,type='boardgame')=>'https://boardgamegeek.com/'+(type==='boardgameexpansion'?'boardgameexpansion':'boardgame')+'/'+encodeURIComponent(String(id));
 const bggStatusOf=row=>row.bgg?.status||'unchecked';
 const bggNumber=value=>{const v=Number(value);return Number.isFinite(v)&&v>0?v:null;};
+
+/* Persistent IndexedDB API cache. This stores the parsed XML API2 search
+   results and individual thing records, independent of the BGA CSV snapshot.
+   Memory maps coalesce simultaneous lookups; failures are never cached. */
+const bggCacheMemorySearch=new Map();
+const bggCacheMemoryThing=new Map();
+const bggPendingSearch=new Map();
+const bggPendingThing=new Map();
+const BGG_SEARCH_TTL=30*86400000, BGG_EMPTY_TTL=7*86400000, BGG_THING_TTL=30*86400000;
+let bggSearchCacheHits=0, bggThingCacheHits=0, bggCacheNetworkSearches=0, bggCacheNetworkThings=0;
+const bggCacheApi=window.BGGApiCache;
+function bggCachedMemory(map,key){
+  const record=map.get(key);
+  if(record && record.expiresAt>Date.now())return record.data;
+  if(record)map.delete(key);
+  return null;
+}
+function bggStoreMemory(map,key,data,ttl){
+  map.set(key,{data,expiresAt:Date.now()+ttl});
+}
+async function bggCacheRefreshStats(){
+  if(!$('bggCacheStats'))return;
+  const stats=bggCacheApi ? await bggCacheApi.stats() : {available:false,search:0,things:0};
+  $('bggCacheStats').textContent=stats.available
+    ?'IndexedDB: '+number(stats.search)+' title searches · '+number(stats.things)+' game details saved'
+    :'IndexedDB cache unavailable (requests still work without it)';
+  $('bggClearCache').disabled=!stats.available||window.bggScanActive||bggLookupBusy;
+}
+function bggCacheProgressLabel(){
+  return ' · cache '+number(bggSearchCacheHits)+' searches / '+number(bggThingCacheHits)+' details';
+}
+function bggCacheExpireAndClearMemory(){
+  bggCacheMemorySearch.clear();
+  bggCacheMemoryThing.clear();
+}
+async function bggClearCachedApi(){
+  if(window.bggScanActive||bggLookupBusy){
+    showNotice('Stop the BGG scan and finish any catalog lookup before clearing the API cache.',true);return;
+  }
+  if(!confirm('Clear cached BGG search and thing API results? Your imported licenses and matched game rows will remain saved.'))return;
+  try{
+    await bggCacheApi.clear();
+    bggCacheExpireAndClearMemory();
+    bggSearchCacheHits=bggThingCacheHits=0;
+    await bggCacheRefreshStats();
+    showNotice('BGG API response cache cleared. Imported licenses and saved matches were not deleted.');
+  }catch(e){showNotice('Could not clear API cache: '+e.message,true);}
+}
+
 function bggProgress(label,current,total){
   $('bggProgress').hidden=false;
   $('bggProgressText').textContent=label;
@@ -157,14 +206,84 @@ function bggProgressStats(phase,done,total,failed,endpoint){
   bggProgress(phase+': '+done+' / '+total+' · '+bggActiveRequests+' active · cap '+
     bggEffectiveConcurrency(endpoint)+' / '+bggConfiguredConcurrency(endpoint)+
     ' · '+rate+'/s · '+bggThrottleEvents+' throttles · '+bggRequestRetries+
-    ' retries · '+failed+' errors',done,total);
+    ' retries'+bggCacheProgressLabel()+' · '+failed+' errors',done,total);
 }
-const bggSearch=(title,signal,exact)=>bggRequest('search',{query:title,type:'boardgame,boardgameexpansion',...(exact?{exact:'1'}:{})},signal).then(parseBggSearch);
-function bggThing(ids,signal){
+async function bggSearch(title,signal,exact=false){
+  const key='v2:'+bggNormalized(title)+(exact?':exact':':partial');
+  const memory=bggCachedMemory(bggCacheMemorySearch,key);
+  if(memory!==null){bggSearchCacheHits++;return memory;}
+  const pending=bggPendingSearch.get(key);
+  if(pending)return pending;
+  const job=(async()=>{
+    const stored=bggCacheApi ? await bggCacheApi.getSearch(key) : null;
+    if(stored!==null){
+      bggSearchCacheHits++;
+      bggStoreMemory(bggCacheMemorySearch,key,stored,stored.length?BGG_SEARCH_TTL:BGG_EMPTY_TTL);
+      return stored;
+    }
+    if(signal?.aborted)throw new DOMException('Stopped','AbortError');
+    const xml=await bggRequest('search',{query:title,type:'boardgame,boardgameexpansion',...(exact?{exact:'1'}:{})},signal);
+    const results=parseBggSearch(xml);
+    bggCacheNetworkSearches++;
+    bggStoreMemory(bggCacheMemorySearch,key,results,results.length?BGG_SEARCH_TTL:BGG_EMPTY_TTL);
+    if(bggCacheApi)await bggCacheApi.putSearch(key,results);
+    return results;
+  })();
+  bggPendingSearch.set(key,job);
+  try{return await job;}
+  finally{if(bggPendingSearch.get(key)===job)bggPendingSearch.delete(key);}
+}
+async function bggThing(ids,signal){
   const valid=[...new Set(ids.map(String))].filter(id=>/^\d+$/.test(id));
-  if(valid.length>BGG_BATCH)throw new Error('BGG thing requests must not exceed 20 IDs.');
-  if(!valid.length)return Promise.resolve([]);
-  return bggRequest('thing',{id:valid.join(','),stats:'1'},signal).then(parseBggThings);
+  if(valid.length>BGG_BATCH)throw new Error('BGG thing supports a maximum of 20 IDs/request.');
+  if(!valid.length)return [];
+  const found=new Map();
+  const uncached=[];
+  for(const id of valid){
+    const memory=bggCachedMemory(bggCacheMemoryThing,id);
+    if(memory!==null){found.set(id,memory);bggThingCacheHits++;}
+    else uncached.push(id);
+  }
+  const fromDb=bggCacheApi?await bggCacheApi.getThings(uncached):new Map();
+  for(const [id,detail] of fromDb){
+    found.set(String(id),detail);
+    bggThingCacheHits++;
+    bggStoreMemory(bggCacheMemoryThing,String(id),detail,BGG_THING_TTL);
+  }
+  const outstanding=valid.filter(id=>!found.has(id));
+  const requests=[];
+  const fetchIds=[];
+  for(const id of outstanding){
+    if(bggPendingThing.has(id))requests.push(bggPendingThing.get(id));
+    else fetchIds.push(id);
+  }
+  if(fetchIds.length){
+    if(signal?.aborted)throw new DOMException('Stopped','AbortError');
+    const group=(async()=>{
+      const xml=await bggRequest('thing',{id:fetchIds.join(','),stats:'1'},signal);
+      const details=parseBggThings(xml);
+      bggCacheNetworkThings++;
+      for(const detail of details)
+        bggStoreMemory(bggCacheMemoryThing,String(detail.id),detail,BGG_THING_TTL);
+      if(bggCacheApi && details.length)await bggCacheApi.putThings(details);
+      return details;
+    })();
+    for(const id of fetchIds){
+      const promise=group.then(details=>details.find(detail=>String(detail.id)===id)||null);
+      bggPendingThing.set(id,promise);
+      requests.push(promise.then(detail=>{if(detail)found.set(id,detail);}));
+      // Swallow rejections of the cleanup branch; callers still receive errors.
+      promise.then(()=>{if(bggPendingThing.get(id)===promise)bggPendingThing.delete(id);},
+                   ()=>{if(bggPendingThing.get(id)===promise)bggPendingThing.delete(id);});
+    }
+  }
+  // In-flight IDs may have been started by another concurrent batch.
+  for(const id of outstanding.filter(x=>!fetchIds.includes(x))){
+    const p=bggPendingThing.get(id);
+    if(p)requests.push(p.then(detail=>{if(detail)found.set(id,detail);}));
+  }
+  if(requests.length)await Promise.all(requests);
+  return valid.map(id=>found.get(id)).filter(Boolean);
 }
 async function bggWorkerPool(jobs,callback,signal,progress){
   let cursor=0,finished=0;
@@ -231,6 +350,8 @@ async function runBggAll(){
   try{
     bggPhaseStart=Date.now();bggPhaseStartDone=0;
     bggProgress(all.length?'Searching: 0 / '+all.length:'Reusing cached title matches; loading missing game details',0,all.length||1);
+    // Every API result is cached as soon as its request succeeds, not only
+    // when the entire 2,000+ title scan finishes.
     const memo=new Map();
     await bggWorkerPool(all,async row=>{
       try{
@@ -275,6 +396,7 @@ async function runBggAll(){
     },signal,(done,total)=>bggProgressStats('Thing batches',done,total,detailFailures,'thing'));
     if(signal.aborted||state.date!==snapshotDate)return;
     await bggSaveSnapshot(snapshotDate,true);
+    await bggCacheRefreshStats();
     showNotice('BGG matching finished: '+searched+' title searches, '+groups.length+' thing batches (up to 20 IDs each), '+(failed+detailFailures)+' request failures. Ambiguous matches remain available for manual review.');
   }catch(error){
     if(!signal.aborted)showNotice('BGG matching interrupted: '+error.message,true);
@@ -282,6 +404,7 @@ async function runBggAll(){
     await bggSaveSnapshot(snapshotDate,true).catch(()=>{});
     const stopped=signal.aborted;
     bggCurrent=null;bggScanButtons(false);
+    bggCacheRefreshStats();
     drawStats();render();
     bggProgress(stopped?'BGG matching stopped; progress saved':'BGG matching complete',1,1);
     if(bggFatalError)showNotice('BGG API configuration/authentication issue: '+bggFatalError,true);
@@ -360,11 +483,14 @@ async function lookupBggCatalog(){
       card.append(body);fragment.append(card);
     }
     $('bggLookupResults').replaceChildren(fragment);
+    bggCacheRefreshStats();
     $('bggLookupStatus').textContent=found.length+' BGG search hits; showing '+subset.length+
       ' results enriched via thing (max 20 IDs/request). Refine the title to narrow results.';
   }catch(error){$('bggLookupStatus').textContent='BGG lookup failed: '+error.message;}
   finally{bggLookupBusy=false;$('bggLookupSearch').disabled=false;}
 }
+$('bggClearCache').addEventListener('click',bggClearCachedApi);
+bggCacheRefreshStats();
 $('bggMatchBtn').addEventListener('click',()=>runBggAll());
 $('bggStopBtn').addEventListener('click',cancelBggJobs);
 $('bggLookupBtn').addEventListener('click',()=>{
