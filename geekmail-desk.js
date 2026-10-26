@@ -7,7 +7,7 @@ const clean = s => String(s ?? "").replace(/\r\n?/g,"\n").trim();
 const keyName = s => clean(s).toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
 const number = n => Number(n || 0).toLocaleString();
 const state = { rows: [], db:null, view:"all", selected:"", search:"", order:"new", visible:90, contactLimit:72, laneLimit:100, lanePerson:"", laneOrder:"old", contactSort:"recent", laneContactsLimit:12, laneExpanded:new Map(), busy:false };
-const FIELDS = ["folder","message_id","from_username","to_username","from_avatar_url","to_avatar_url","subject","message_date","body_text","body_html"];
+const FIELDS = ["folder","message_id","from_username","to_username","from_avatar_url","to_avatar_url","subject","message_date","body_text","body_html","manualGameIds","ignoredGameIds"];
 const stamp = r => r.ts || 0;
 const mailFolder = r => /outbox|sent/i.test(String(r.folder || "")) ? "Outbox" : "Inbox";
 const counterpart = r => mailFolder(r) === "Inbox" ? r.from_username : r.to_username;
@@ -131,6 +131,8 @@ function normalize(raw) {
   ts:dateObj ? dateObj.getTime() : 0,
   day:dateObj ? isoDay(dateObj) : "",
   starred:false,read:true,archived:false,
+  manualGameIds:window.GeekMailTags?.parseIds(r.manualgameids||r.manual_game_ids)||[],
+  ignoredGameIds:window.GeekMailTags?.parseIds(r.ignoredgameids||r.ignored_game_ids)||[],
   export_error:clean(r.export_error||"")
  };
 }
@@ -201,6 +203,8 @@ async function importData(textValue,replace=false) {
    const prev=before.get(row.key);
    if(prev){
     row.starred=!!prev.starred;row.read=prev.read!==false;row.archived=!!prev.archived;
+    row.manualGameIds=window.GeekMailTags?.parseIds(prev.manualGameIds)||[];
+    row.ignoredGameIds=window.GeekMailTags?.parseIds(prev.ignoredGameIds)||[];
     if(!row.body_text && prev.body_text)row.body_text=prev.body_text;
     updated++;
    }else added++;
@@ -209,6 +213,8 @@ async function importData(textValue,replace=false) {
   const combined=[...before.values()];
   await dbSave(combined,replace);
   state.rows=combined;
+  window.GeekMailTags?.cache && (window.GeekMailTags.cache=new WeakMap());
+  window.GeekMailTags?.updateStats();
   state.visible=90;state.selected="";state.laneLimit=100;state.laneExpanded.clear();state.laneContactsLimit=12;
   refresh();
   $("pasteBox").value="";
@@ -235,6 +241,7 @@ function matched(r,includeView=true) {
  const from=$("fromDate").value,to=$("toDate").value;
  if(from && (!r.day || r.day<from))return false;
  if(to && (!r.day || r.day>to))return false;
+ if(window.GeekMailTags && !window.GeekMailTags.accepts(r))return false;
  if(state.search){
   const hay=[r.subject,r.body_text,r.from_username,r.to_username,r.message_date].join(" ").toLowerCase();
   if(!hay.includes(state.search))return false;
@@ -271,7 +278,7 @@ function mailRowHtml(r){
  const isSent=mailFolder(r)==="Outbox";
  return '<div class="mail-row'+(r.key===state.selected?' selected':'')+(!r.read?' unread':'')+'" role="button" tabindex="0" data-open="'+esc(r.key)+'">'+
   avatarHtml(r)+'<div style="min-width:0"><div class="person">'+(isSent?'To: ':'From: ')+esc(who)+'</div>'+
-  '<div class="subject">'+esc(r.subject||"(no subject)")+'</div><div class="snippet">'+esc((r.body_text||"").replace(/\s+/g," ").slice(0,210))+'</div></div>'+
+  '<div class="subject">'+esc(r.subject||"(no subject)")+'</div><div class="snippet">'+esc((r.body_text||"").replace(/\s+/g," ").slice(0,210))+'</div>'+(window.GeekMailTags?.mini(r)||'')+'</div>'+
   '<div class="row-meta">'+esc(shortDate(r))+'<br><button class="star'+(r.starred?' on':'')+'" aria-label="Toggle star" title="Toggle star" data-star="'+esc(r.key)+'">'+(r.starred?'★':'☆')+'</button></div></div>';
 }
 function renderMailbox() {
@@ -299,7 +306,7 @@ function renderReader() {
  box.innerHTML='<div class="reading"><div class="reading-header"><button class="btn small" id="backToList">← Back</button><span class="muted">'+esc(mailFolder(r))+' · ID '+esc(r.message_id)+'</span><button class="star'+(r.starred?' on':'')+'" data-star="'+esc(r.key)+'" aria-label="Toggle star">'+(r.starred?'★':'☆')+'</button></div>'+
   '<h2>'+esc(r.subject||"(no subject)")+'</h2><div class="reading-person">'+avatarHtml(r)+
   '<div style="min-width:0"><b>'+esc(sent?"To: "+who:"From: "+who)+'</b><small>'+esc("From: "+r.from_username+"  ·  To: "+r.to_username)+'</small><small>'+esc(longDate(r))+'</small></div></div>'+
-  '<div class="reading-body">'+esc(r.body_text || (r.export_error?"[Body unavailable: "+r.export_error+"]":"[No body text in export]"))+'</div>'+
+  (window.GeekMailTags?.reader(r)||'')+'<div class="reading-body">'+esc(r.body_text || (r.export_error?"[Body unavailable: "+r.export_error+"]":"[No body text in export]"))+'</div>'+
   '<div class="reading-actions reading-footer"><button class="btn" data-read="'+esc(r.key)+'">'+(r.read?"Mark unread":"Mark read")+'</button><button class="btn" data-archive="'+esc(r.key)+'">'+(r.archived?"Restore":"Archive locally")+'</button><button class="btn" data-copy="'+esc(r.key)+'">Copy message</button>'+
   '<a class="btn" href="'+esc(bggLink)+'" target="_blank" rel="noopener" style="text-decoration:none">Compose on BGG ↗</a><a class="btn" href="https://boardgamegeek.com/geekmail" target="_blank" rel="noopener" style="text-decoration:none">BGG mailbox ↗</a></div></div>';
 }
@@ -322,7 +329,7 @@ function renderContacts(){
  const shown=people.slice(0,state.contactLimit);
  $("contactGrid").innerHTML=shown.length?shown.map(c=>
   '<button class="contact-card" data-person="'+esc(c.id)+'"><span class="circle">'+esc(initials(c.name))+'</span><span class="contact-info"><b>'+esc(c.name)+'</b><small>'+esc(shortDate(c.last))+'</small><p>'+number(c.in)+' received · '+number(c.out)+' sent</p>'+
-  '<small>'+(mailFolder(c.last)==="Outbox"?"Last message: sent":"Last message: received")+'</small></span></button>'
+  '<small>'+(mailFolder(c.last)==="Outbox"?"Last message: sent":"Last message: received")+'</small>'+(window.GeekMailTags?.mini(c.last)||'')+'</span></button>'
  ).join(""):emptyHtml("No contacts","Import mail or adjust your filters.");
  $("moreContacts").hidden=shown.length>=people.length;
 }
@@ -369,7 +376,7 @@ function laneEvent(r){
   '<span class="lane-event-kind">'+(inbound?'↓ IN':'↑ OUT')+'</span>'+
   '<span class="lane-event-date">'+esc(dateLabel)+'</span>'+
   (timeLabel?'<span class="lane-event-time">'+esc(timeLabel)+'</span>':'')+
-  (snippet?'<span class="lane-event-preview">'+esc(snippet)+'</span>':'')+
+  (snippet?'<span class="lane-event-preview">'+esc(snippet)+'</span>':'')+(window.GeekMailTags?.mini(r)||'')+
   '</button>';
 }
 function laneGroupHtml(person){
@@ -395,8 +402,8 @@ function laneGroupHtml(person){
   body+='<div class="subject-row">'+
    '<div class="subject-identity"><div class="eyebrow">Subject</div>'+
    '<div class="subject-title" title="'+esc(thread.subject)+'">'+esc(thread.subject)+'</div>'+
-   '<div class="subject-meta">'+number(thread.rows.length)+' messages · '+number(thread.in)+' in / '+number(thread.out)+' out</div></div>'+
-   '<div class="thread-area"><div class="thread-timeline" aria-label="Chronological messages for '+esc(thread.subject)+'">'+
+   '<div class="subject-meta">'+number(thread.rows.length)+' messages · '+number(thread.in)+' in / '+number(thread.out)+' out</div>'+(window.GeekMailTags?.subjects(thread.rows)||'')+'</div>'+
+   '<div class="thread-area"><div class="thread-timeline" data-thread="'+esc(unique)+'" aria-label="Chronological messages for '+esc(thread.subject)+'">'+
    shown.map(laneEvent).join('')+
    (sorted.length>shown.length ? '<button type="button" class="thread-load" data-thread-more="'+
       esc(unique)+'">+'+number(Math.min(24,sorted.length-shown.length))+' more →</button>' : '')+
@@ -406,6 +413,7 @@ function laneGroupHtml(person){
  return body;
 }
 function renderLanes(){
+ const offsets=new Map([...$("laneBoard").querySelectorAll(".thread-timeline[data-thread]")].map(x=>[x.dataset.thread,x.scrollLeft]));
  renderPersonSelect();
  // Explicitly exclude the signed-in BGG username from the external-contact list.
  const people=personSort(contactMap().filter(c=>c.id && c.id!=="sportomax"));
@@ -417,6 +425,7 @@ function renderLanes(){
  $("laneBoard").innerHTML=shown.length ? shown.map(laneGroupHtml).join("") :
   emptyHtml("No conversations","Choose an external username or import your Inbox and Outbox CSV.");
  $("moreLanes").hidden=!!state.lanePerson || candidates.length<=shown.length;
+ for(const el of $("laneBoard").querySelectorAll(".thread-timeline[data-thread]"))el.scrollLeft=offsets.get(el.dataset.thread)||0;
 }
 
 function render(){
@@ -474,6 +483,7 @@ async function copyExtractor(){
 }
 function openImport(){$("importDialog").showModal();$("importFeedback").textContent=""}
 function uiAction(e){
+ if(window.GeekMailTags?.click(e))return;
  const star=e.target.closest("[data-star]");
  if(star){e.stopPropagation();mutateRow(star.dataset.star,"starred");return}
  const read=e.target.closest("[data-read]");
@@ -493,7 +503,31 @@ function uiAction(e){
   else openMessage(card.dataset.open);
  }
 }
+
+/* Scroll to progressively append list pages; horizontal subject rows load on demand. */
+function autoScrollLoad(area){
+ const positions={
+  mail:[$("mailPane").querySelector(".mail-column"),$("moreMail"),$("moreMailBtn")],
+  contacts:[$("contactPane"),$("moreContacts"),$("moreContactsBtn")],
+  lanes:[$("lanePane"),$("moreLanes"),$("moreLanesBtn")]
+ };
+ const [el,wrapper,button]=positions[area];
+ if(el && !wrapper.hidden && el.scrollHeight-el.scrollTop-el.clientHeight<430)button.click();
+}
+function autoThreadLoad(event){
+ const el=event.target;
+ if(!el.classList?.contains("thread-timeline"))return;
+ if(el.scrollWidth-el.clientWidth-el.scrollLeft>150)return;
+ const button=el.querySelector("[data-thread-more]");
+ if(button)button.click();
+}
+
 function bind(){
+ $("readerDetail").addEventListener("change",e=>window.GeekMailTags?.change(e));
+ $("mailPane").querySelector(".mail-column").addEventListener("scroll",()=>autoScrollLoad("mail"),{passive:true});
+ $("contactPane").addEventListener("scroll",()=>autoScrollLoad("contacts"),{passive:true});
+ $("lanePane").addEventListener("scroll",()=>autoScrollLoad("lanes"),{passive:true});
+ $("laneBoard").addEventListener("scroll",autoThreadLoad,true);
  document.querySelectorAll("[data-view]").forEach(btn=>btn.addEventListener("click",()=>setView(btn.dataset.view)));
  $("copyScript").onclick=copyExtractor;$("copyDialogScript").onclick=copyExtractor;
  $("openImport").onclick=openImport;$("closeImport").onclick=()=>$("importDialog").close();
@@ -521,7 +555,7 @@ function bind(){
  $("mailRows").addEventListener("click",uiAction);$("readerDetail").addEventListener("click",uiAction);$("contactGrid").addEventListener("click",uiAction);$("laneBoard").addEventListener("click",uiAction);
  $("mailRows").addEventListener("keydown",e=>{if((e.key==="Enter"||e.key===" ") && e.target.hasAttribute("data-open")){e.preventDefault();openMessage(e.target.dataset.open)}});
  $("readerDetail").addEventListener("click",e=>{if(e.target.id==="backToList")$("mailSplit").classList.remove("reading-mobile")});
- $("clearAll").onclick=async()=>{if(!confirm("Permanently remove all locally saved GeekMail messages and viewer flags from this browser?"))return;try{await dbClear();state.rows=[];state.selected="";render();banner("Local GeekMail archive cleared.")}catch(e){banner(e.message,true)}};
+ $("clearAll").onclick=async()=>{if(!confirm("Permanently remove all locally saved GeekMail messages and viewer flags from this browser?"))return;try{await dbClear();state.rows=[];state.selected="";window.GeekMailTags?.updateStats();render();banner("Local GeekMail archive cleared.")}catch(e){banner(e.message,true)}};
  document.addEventListener("keydown",e=>{if(e.key==="Escape"){if($("importDialog").open)$("importDialog").close();else $("mailSplit").classList.remove("reading-mobile")}if(e.key==="/" && !["INPUT","TEXTAREA","SELECT"].includes(document.activeElement.tagName)){$("search").focus();e.preventDefault()}});
 }
 async function init(){
@@ -533,6 +567,7 @@ async function init(){
   banner("IndexedDB unavailable. Mail can be viewed during this session but cannot be saved after refresh: "+error.message,true);
  }
  render();
+ try{await window.GeekMailTags?.init({state,render,saveRows:dbSave,banner})}catch(e){console.warn("Game enrichment unavailable",e)}
  if(!state.rows.length)openImport();
 }
 init();
