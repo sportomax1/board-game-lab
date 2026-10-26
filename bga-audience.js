@@ -470,18 +470,12 @@ function saveRows(rows,deleteMonths=[]){
  if(!state.db)return Promise.resolve();
  return new Promise((resolve,reject)=>{
   const tx=state.db.transaction("rows","readwrite"),store=tx.objectStore("rows");
+  // Queue deletions before new puts, without a competing cursor.
+  // IndexedDB keeps the transaction alive while the getAllKeys request runs.
   if(deleteMonths.length){
-   const set=new Set(deleteMonths),cur=store.openCursor();
-   cur.onsuccess=()=>{const c=cur.result;if(c){if(set.has(c.value.month))c.delete();c.continue()}};
-  }
-  // All requests must execute in the same transaction. Delete+put on the
-  // same imported month is sequenced using a cursor first, then fresh puts
-  // once traversal completes.
-  if(deleteMonths.length){
-   const keys=store.getAllKeys();
+   const keys=store.getAllKeys(),allowed=new Set(deleteMonths);
    keys.onsuccess=()=>{
-    const allowed=new Set(deleteMonths);
-    for(const key of keys.result){const month=String(key).slice(0,7);if(allowed.has(month))store.delete(key)}
+    for(const key of keys.result)if(allowed.has(String(key).slice(0,7)))store.delete(key);
     for(const row of rows)store.put(row);
    };
   }else for(const row of rows)store.put(row);
