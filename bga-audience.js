@@ -460,7 +460,9 @@ function makeMatrixData(rows,months){
   }
   return (isNumber(b.plays)?b.plays:-Infinity)-(isNumber(a.plays)?a.plays:-Infinity)||a.game.localeCompare(b.game);
  });
- return {months:ordered,games,allRows:rows,monthly:monthlyMap(rows),allTotal:sum(rows,"played_total")};
+ const visibleIds=new Set(games.map(g=>g.id));
+ const included=rows.filter(r=>visibleIds.has(gameId(r)));
+ return {months:ordered,games,allRows:included,monthly:monthlyMap(included),allTotal:sum(included,"played_total")};
 }
 function matrixRowHtml(g,months){
  const byMonth=new Map(g.rows.map(r=>[r.month,r]));
@@ -545,7 +547,7 @@ function renderOverview(rows,months){
  $("modeChart").innerHTML=stackedBars(monthly);
  const games=byGame(rows).sort((a,b)=>(b.plays||-1)-(a.plays||-1)).slice(0,8);
  $("topGames").innerHTML=games.length?games.map((g,i)=>
-  '<div class="mini-line"><span class="mini-rank">'+(i+1)+'</span><span class="mini-name" title="'+esc(g.game)+'">'+esc(g.game)+'</span><span class="mini-value">'+int(g.plays)+'</span></div>').join(""):svgEmpty("No games in this filter.");
+  '<div class="mini-line"><span class="mini-rank">'+(i+1)+'</span>'+(thumbHtml(g.game,true)||'')+'<span class="mini-name" title="'+esc(g.game)+'">'+esc(g.game)+'</span><span class="mini-value">'+int(g.plays)+'</span></div>').join(""):svgEmpty("No games in this filter.");
  $("moversPeriod").textContent=suffix+" · games appearing in both months";
  if(pair){
   const beforeRows=monthly.find(x=>x.month===pair[0]).rows,afterRows=monthly.find(x=>x.month===pair[1]).rows;
@@ -608,7 +610,7 @@ function renderGames(rows){
  $("gamesCount").textContent=games.length+" games";
  const shown=games.slice(0,state.gamesVisible);
  $("gameRows").innerHTML=shown.map(g=>
-  '<tr data-game="'+esc(g.id)+'"><td><strong>'+esc(g.game)+'</strong><small>'+esc(g.game_id?"BGA game #"+g.game_id:"Name-based key")+' · '+esc(monthLabel(g.latest))+'</small></td>'+
+  '<tr data-game="'+esc(g.id)+'"><td><div class="inline-game">'+(thumbHtml(g.game,true)||'')+'<span><strong>'+esc(g.game)+'</strong><small>'+esc(g.game_id?"BGA game #"+g.game_id:"Name-based key")+' · '+esc(monthLabel(g.latest))+'</small></span></div></td>'+
   '<td class="num">'+int(g.months)+'</td><td class="num">'+int(g.rt)+'</td><td class="num">'+int(g.tb)+'</td><td class="num"><b>'+int(g.plays)+'</b></td>'+
   '<td class="num">'+dec(g.hours)+'</td><td class="num">'+dec(g.premium)+'</td><td class="num">'+pctRatio(g.ratio)+'</td>'+
   '<td class="num">'+percent(g.audienceAvg)+'</td><td class="num">'+signed(g.change)+'</td></tr>'
@@ -637,7 +639,7 @@ function renderCompare(rows,months){
  ],{metric:state.metric});
  $("compareCards").innerHTML=[a,b].map((g,i)=>'<div class="card pad" style="margin-top:12px"><div class="eyebrow">Game '+(i?"B":"A")+'</div><h3>'+esc(g.game)+'</h3><div class="muted small">'+g.months+' observed months · '+int(g.plays)+' plays · '+dec(g.hours)+' hours · '+pctRatio(g.ratio)+' premium hour share</div></div>').join("");
 }
-function renderGameDetail(id){
+function renderGameDetail(id,focusedMonth=null){
  const rows=selectedRows(),games=byGame(rows);
  const g=games.find(x=>x.id===id);if(!g)return;
  state.detailGame=id;
@@ -654,10 +656,11 @@ function renderGameDetail(id){
  $("detailRows").innerHTML=months.slice().reverse().map(month=>{
   const r=data.get(month);
   if(!r)return '<tr><td>'+esc(monthLabel(month))+'</td><td colspan="8" class="muted">Not present in export</td></tr>';
-  return '<tr><td>'+esc(monthLabel(month))+'</td><td class="num">'+int(r.played_total)+'</td><td class="num">'+int(r.played_realtime)+'</td><td class="num">'+int(r.played_turnbased)+'</td><td class="num">'+dec(r.time_spent_hr)+'</td><td class="num">'+dec(r.premium_time_spent_hr)+'</td><td class="num">'+percent(r.audience_share_pct)+'</td><td class="num">'+percent(r.premium_audience_share_pct)+'</td><td class="num">'+dec(r.average_duration_min)+'</td></tr>';
+  return '<tr'+(month===focusedMonth?' style="background:#e8f1f6"':'')+' data-detail-month="'+esc(month)+'"><td>'+esc(monthLabel(month))+'</td><td class="num">'+int(r.played_total)+'</td><td class="num">'+int(r.played_realtime)+'</td><td class="num">'+int(r.played_turnbased)+'</td><td class="num">'+dec(r.time_spent_hr)+'</td><td class="num">'+dec(r.premium_time_spent_hr)+'</td><td class="num">'+percent(r.audience_share_pct)+'</td><td class="num">'+percent(r.premium_audience_share_pct)+'</td><td class="num">'+dec(r.average_duration_min)+'</td></tr>';
  }).join("");
  $("detailLink").innerHTML=g.url?'<a class="btn" href="'+esc(g.url)+'" target="_blank" rel="noopener">Open on BGA ↗</a>':'<span class="small muted">No BGA game URL in imported rows.</span>';
  $("gameDialog").showModal();
+ if(focusedMonth){const row=[...$("detailRows").querySelectorAll("[data-detail-month]")].find(x=>x.dataset.detailMonth===focusedMonth);row?.scrollIntoView({block:"nearest"})}
 }
 function renderPeriodOptions() {
  const months=allMonths(state.rows);
