@@ -6,7 +6,7 @@ const esc = value => String(value ?? "").replace(/[&<>"']/g, c => ({"&":"&amp;",
 const clean = s => String(s ?? "").replace(/\r\n?/g,"\n").trim();
 const keyName = s => clean(s).toLowerCase().replace(/[^a-z0-9]+/g,"_").replace(/^_|_$/g,"");
 const number = n => Number(n || 0).toLocaleString();
-const state = { rows: [], db:null, view:"all", selected:"", search:"", order:"new", visible:90, contactLimit:72, laneLimit:100, lanePerson:"", laneOrder:"old", contactSort:"recent", busy:false };
+const state = { rows: [], db:null, view:"all", selected:"", search:"", order:"new", visible:90, contactLimit:72, laneLimit:100, lanePerson:"", laneOrder:"old", contactSort:"recent", laneContactsLimit:12, laneExpanded:new Map(), busy:false };
 const FIELDS = ["folder","message_id","from_username","to_username","from_avatar_url","to_avatar_url","subject","message_date","body_text","body_html"];
 const stamp = r => r.ts || 0;
 const mailFolder = r => /outbox|sent/i.test(String(r.folder || "")) ? "Outbox" : "Inbox";
@@ -209,7 +209,7 @@ async function importData(textValue,replace=false) {
   const combined=[...before.values()];
   await dbSave(combined,replace);
   state.rows=combined;
-  state.visible=90;state.selected="";state.laneLimit=100;
+  state.visible=90;state.selected="";state.laneLimit=100;state.laneExpanded.clear();state.laneContactsLimit=12;
   refresh();
   $("pasteBox").value="";
   $("importFeedback").textContent=number(added)+" new, "+number(updated)+" updated; "+number(combined.length)+" messages stored.";
@@ -327,36 +327,98 @@ function renderContacts(){
  $("moreContacts").hidden=shown.length>=people.length;
 }
 function renderPersonSelect(){
- const people=contactMap().sort((a,b)=>a.name.localeCompare(b.name));
+ const people=contactMap().filter(c=>c.id && c.id!=="sportomax").sort((a,b)=>a.name.localeCompare(b.name));
  const select=$("contactSelect"),old=state.lanePerson;
  select.innerHTML='<option value="">All contacts</option>'+people.map(c=>'<option value="'+esc(c.id)+'">'+esc(c.name)+' ('+c.rows.length+')</option>').join("");
  if(people.some(c=>c.id===old))select.value=old;else {state.lanePerson="";select.value=""}
 }
-function laneMessage(r){
- return '<button class="lane-mail'+(mailFolder(r)==="Outbox"?' sent':'')+'" data-lane-open="'+esc(r.key)+'" title="Open full message"><b>'+esc(r.subject||"(no subject)")+'</b><span>'+esc((r.body_text||"").replace(/\s+/g," ").slice(0,170))+'</span></button>';
+/* A row represents an external BGG username + one distinct subject.
+   Replies and forwarded subjects collapse into their base subject. */
+function laneSubject(raw){
+ const subject=clean(raw).replace(/^(?:(?:re|fw|fwd)\s*:\s*)+/gi,"").replace(/\s+/g," ").trim();
+ return subject || "(no subject)";
 }
-function laneGroupHtml(c){
- const rows=c.rows.slice().sort((a,b)=>state.laneOrder==="old"?stamp(a)-stamp(b):stamp(b)-stamp(a));
- const shown=rows.slice(0,state.laneLimit);
- let body='<div class="lane-title"><b>'+esc(c.name)+'</b><small>'+c.in+' received · '+c.out+' sent · '+rows.length+' total</small></div>'+
-  '<div class="lanes"><div class="lane-head">↓ Incoming</div><div class="lane-head center">Date</div><div class="lane-head" style="text-align:right">Outgoing ↑</div>';
- for(const r of shown){
-  const recv=mailFolder(r)==="Inbox";
-  body+='<div class="lane-cell">'+(recv?laneMessage(r):'')+'</div><div class="lane-cell date">'+esc(shortDate(r))+'</div><div class="lane-cell">'+(!recv?laneMessage(r):'')+'</div>';
+function laneThreads(person){
+ const groups=new Map();
+ for(const r of person.rows){
+  const subject=laneSubject(r.subject);
+  const id=subject.toLocaleLowerCase();
+  if(!groups.has(id))groups.set(id,{id,subject,rows:[],in:0,out:0,latest:0,earliest:Infinity});
+  const g=groups.get(id);
+  g.rows.push(r);
+  if(mailFolder(r)==="Inbox")g.in++;else g.out++;
+  g.latest=Math.max(g.latest,stamp(r));
+  g.earliest=Math.min(g.earliest,stamp(r));
  }
- body+='</div>';
- if(rows.length>shown.length)body+='<div class="show-more"><button class="btn small" data-lane-more>Show next '+Math.min(100,rows.length-shown.length)+' messages</button></div>';
- return '<section class="lane-group">'+body+'</section>';
+ return [...groups.values()].sort((a,b)=>
+  (b.latest-a.latest) || a.subject.localeCompare(b.subject)
+ );
+}
+function laneEvent(r){
+ const inbound=mailFolder(r)==="Inbox";
+ const direction=inbound ? "Inbound" : "Outbound";
+ const dateLabel=r.ts
+  ? new Date(r.ts).toLocaleDateString(undefined,{month:"short",day:"numeric",year:"numeric"})
+  : (r.message_date || "Date unknown");
+ const timeLabel=r.ts
+  ? new Date(r.ts).toLocaleTimeString(undefined,{hour:"numeric",minute:"2-digit"})
+  : "";
+ const snippet=clean(r.body_text).replace(/\s+/g," ").slice(0,95);
+ return '<button type="button" class="lane-event '+(inbound?'inbound':'outbound')+
+  '" data-lane-open="'+esc(r.key)+'" title="'+esc(direction+" · "+longDate(r)+" · "+r.subject)+'">'+
+  '<span class="lane-event-kind">'+(inbound?'↓ IN':'↑ OUT')+'</span>'+
+  '<span class="lane-event-date">'+esc(dateLabel)+'</span>'+
+  (timeLabel?'<span class="lane-event-time">'+esc(timeLabel)+'</span>':'')+
+  (snippet?'<span class="lane-event-preview">'+esc(snippet)+'</span>':'')+
+  '</button>';
+}
+function laneGroupHtml(person){
+ const subjects=laneThreads(person);
+ const total=person.rows.length;
+ const isLastSent=mailFolder(person.last)==="Outbox";
+ let body='<section class="lane-group" aria-label="Messages with '+esc(person.name)+'">'+
+  '<div class="lane-title"><div class="lane-person">'+
+  '<span class="circle">'+esc(initials(person.name))+'</span><div>'+
+  '<b>'+esc(person.name)+'</b><small>'+subjects.length+' subject'+(subjects.length===1?'':'s')+
+  ' · '+number(total)+' messages'+(isLastSent?' · Last: sent':' · Last: received')+'</small>'+
+  '</div></div><div class="lane-stat"><span class="lane-summary-in">'+number(person.in)+' IN</span>'+
+  '<span class="lane-summary-out">'+number(person.out)+' OUT</span></div></div>';
+ body+='<div class="subject-rows">';
+ for(const thread of subjects){
+  const sorted=thread.rows.slice().sort((a,b)=>
+   (state.laneOrder==="old" ? stamp(a)-stamp(b) : stamp(b)-stamp(a)) ||
+   a.key.localeCompare(b.key)
+  );
+  const unique=person.id+"::"+thread.id;
+  const cap=state.laneExpanded.get(unique)||24;
+  const shown=sorted.slice(0,cap);
+  body+='<div class="subject-row">'+
+   '<div class="subject-identity"><div class="eyebrow">Subject</div>'+
+   '<div class="subject-title" title="'+esc(thread.subject)+'">'+esc(thread.subject)+'</div>'+
+   '<div class="subject-meta">'+number(thread.rows.length)+' messages · '+number(thread.in)+' in / '+number(thread.out)+' out</div></div>'+
+   '<div class="thread-area"><div class="thread-timeline" aria-label="Chronological messages for '+esc(thread.subject)+'">'+
+   shown.map(laneEvent).join('')+
+   (sorted.length>shown.length ? '<button type="button" class="thread-load" data-thread-more="'+
+      esc(unique)+'">+'+number(Math.min(24,sorted.length-shown.length))+' more →</button>' : '')+
+   '</div></div></div>';
+ }
+ body+='</div></section>';
+ return body;
 }
 function renderLanes(){
  renderPersonSelect();
- const people=personSort(contactMap());
+ // Explicitly exclude the signed-in BGG username from the external-contact list.
+ const people=personSort(contactMap().filter(c=>c.id && c.id!=="sportomax"));
  const candidates=state.lanePerson ? people.filter(c=>c.id===state.lanePerson) : people;
- const shown=candidates.slice(0,state.lanePerson?candidates.length:Math.max(1,Math.floor(state.laneLimit/25)));
- $("laneCaption").textContent=number(candidates.length)+" contact"+(candidates.length===1?"":"s");
- $("laneBoard").innerHTML=shown.length?shown.map(laneGroupHtml).join(""):emptyHtml("No conversations","Choose another username or import messages.");
+ const shown=candidates.slice(0,state.lanePerson ? candidates.length : state.laneContactsLimit);
+ const subjects=shown.reduce((n,c)=>n+laneThreads(c).length,0);
+ $("laneCaption").textContent=number(candidates.length)+" external users · "+
+  number(subjects)+" visible subject lanes";
+ $("laneBoard").innerHTML=shown.length ? shown.map(laneGroupHtml).join("") :
+  emptyHtml("No conversations","Choose an external username or import your Inbox and Outbox CSV.");
  $("moreLanes").hidden=!!state.lanePerson || candidates.length<=shown.length;
 }
+
 function render(){
  refreshStats();
  $("viewTitle").textContent=titleFor[state.view]||"Mail";
@@ -423,8 +485,8 @@ function uiAction(e){
  if(e.target.closest("[data-import]")){openImport();return}
  const person=e.target.closest("[data-person]");
  if(person){state.lanePerson=person.dataset.person;setView("lanes");return}
- const more=e.target.closest("[data-lane-more]");
- if(more){state.laneLimit+=100;renderLanes();return}
+ const more=e.target.closest("[data-thread-more]");
+ if(more){const id=more.dataset.threadMore;state.laneExpanded.set(id,(state.laneExpanded.get(id)||24)+24);renderLanes();return}
  const card=e.target.closest("[data-open],[data-lane-open]");
  if(card){
   if(card.hasAttribute("data-lane-open")){state.view="all";state.search="";$("search").value="";$("fromDate").value="";$("toDate").value="";state.selected=card.dataset.laneOpen;render();$("mailSplit").classList.add("reading-mobile")}
@@ -452,7 +514,7 @@ function bind(){
  $("exportCsv").onclick=()=>{const rows=filteredMail();if(!rows.length)return toast("No messages to export.");download(toCSV(rows),"geekmail-desk-"+new Date().toISOString().slice(0,10)+".csv");toast(number(rows.length)+" messages exported")};
  $("moreMailBtn").onclick=()=>{state.visible+=90;renderMailbox()};
  $("moreContactsBtn").onclick=()=>{state.contactLimit+=72;renderContacts()};
- $("moreLanesBtn").onclick=()=>{state.laneLimit+=100;renderLanes()};
+ $("moreLanesBtn").onclick=()=>{state.laneContactsLimit+=12;renderLanes()};
  $("contactSort").onchange=e=>{state.contactSort=e.target.value;renderContacts()};
  $("contactSelect").onchange=e=>{state.lanePerson=e.target.value;state.laneLimit=100;renderLanes()};
  $("laneOrder").onchange=e=>{state.laneOrder=e.target.value;renderLanes()};
