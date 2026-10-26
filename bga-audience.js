@@ -418,6 +418,7 @@ async function loadCollection(force=false){
   finally{clearTimeout(timer)}
   if(id!==state.collectionRequest)return;
   const body=await response.text();
+  if(response.status===202)throw Error("BGG is preparing the collection (202). Try Load collection again.");
   if(!response.ok){
    let err="";
    try{err=JSON.parse(body).message||""}catch(_){}
