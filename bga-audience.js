@@ -136,9 +136,11 @@ function weightedDuration(rows) {
 function aggregate(rows) {
  const rt=sum(rows,"played_realtime"),tb=sum(rows,"played_turnbased"),
   plays=sum(rows,"played_total"),hours=sum(rows,"time_spent_hr"),premium=sum(rows,"premium_time_spent_hr");
+ const paired=rows.filter(r=>isNumber(r.time_spent_hr)&&isNumber(r.premium_time_spent_hr));
+ const pairedHours=sum(paired,"time_spent_hr"),pairedPremium=sum(paired,"premium_time_spent_hr");
  return {
   rt,tb,plays,hours,premium,
-  ratio:isNumber(hours)&&hours>0&&isNumber(premium)?premium/hours:null,
+  ratio:isNumber(pairedHours)&&pairedHours>0&&isNumber(pairedPremium)?pairedPremium/pairedHours:null,
   averageDuration:weightedDuration(rows),
   audienceAvg:average(rows,"audience_share_pct"),
   premiumAudienceAvg:average(rows,"premium_audience_share_pct"),
@@ -293,7 +295,7 @@ function renderOverview(rows,months){
   kpi("Real-time plays",fmtKpi(stats.rt),"Across selected months"),
   kpi("Turn-based plays",fmtKpi(stats.tb),"Across selected months"),
   kpi("Time spent",fmtKpi(stats.hours)+" hr","Sum of available time"),
-  kpi("Premium time",fmtKpi(stats.premium)+" hr",pctRatio(stats.ratio)+" of measured time")
+  kpi("Premium time",fmtKpi(stats.premium)+" hr",pctRatio(stats.ratio)+" of paired hours")
  ].join("");
  $("trendHeading").textContent=metrics[state.metric]+" trend";
  $("trendRange").textContent=months.length?monthLabel(months[0])+" – "+monthLabel(months[months.length-1]):"No dates";
@@ -489,7 +491,16 @@ async function importCsv(textValue,replaceMonths=false){
   const imported=parsed.rows,months=[...new Set(imported.map(r=>r.month))];
   const map=new Map((replaceMonths?state.rows.filter(r=>!months.includes(r.month)):state.rows).map(r=>[r.key,r]));
   let added=0,updated=0;
-  for(const row of imported){if(map.has(row.key))updated++;else added++;map.set(row.key,row)}
+  for(const row of imported){
+   const prev=map.get(row.key);
+   if(prev){
+    updated++;
+    for(const col of numericCols)if(row[col]===null && isNumber(prev[col]))row[col]=prev[col];
+    if(!row.model)row.model=prev.model;
+    if(!row.game_url)row.game_url=prev.game_url;
+   }else added++;
+   map.set(row.key,row)
+  }
   await saveRows(imported,replaceMonths?months:[]);
   state.rows=[...map.values()];
   state.importStats=parsed;
@@ -506,6 +517,21 @@ async function importCsv(textValue,replaceMonths=false){
   return false;
  }
 }
+function downloadMergedCSV(){
+ if(!state.rows.length)return alertBox("No rows to export yet.","warn");
+ const quote=value=>{
+  let s=value==null?"":String(value);
+  if(/^\s*[=+@-]/.test(s))s="'"+s;
+  return '"'+s.replace(/"/g,'""')+'"';
+ };
+ const rows=state.rows.slice().sort((a,b)=>a.month.localeCompare(b.month)||a.game.localeCompare(b.game));
+ const csv=[EXPECTED.join(","),...rows.map(r=>EXPECTED.map(k=>quote(r[k])).join(","))].join("\r\n");
+ const blob=new Blob(["\uFEFF",csv],{type:"text/csv;charset=utf-8"}),url=URL.createObjectURL(blob);
+ const link=document.createElement("a");link.href=url;link.download="bga_audience_merged_"+new Date().toISOString().slice(0,10)+".csv";
+ document.body.appendChild(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),8000);
+ alertBox("Downloaded "+int(rows.length)+" merged audience rows.");
+}
+
 async function copyExtractor(){
  try{
   const res=await fetch("bga-audience-export.js",{cache:"no-store"});
@@ -519,7 +545,7 @@ async function copyExtractor(){
  }catch(e){alertBox(e.message,"error")}
 }
 function bind(){
- $("copyExtractor").onclick=copyExtractor;$("setupCopy").onclick=copyExtractor;
+ $("copyExtractor").onclick=copyExtractor;$("setupCopy").onclick=copyExtractor;$("exportMerged").onclick=downloadMergedCSV;
  $("openImport").onclick=showImport;$("setupImport").onclick=showImport;
  $("closeImport").onclick=()=>$("importDialog").close();
  $("commitImport").onclick=()=>importCsv($("importText").value,$("replaceImport").checked);
