@@ -11,7 +11,7 @@ const metrics={
  time_spent_hr:"Time spent (hr)",premium_time_spent_hr:"Premium time spent (hr)"
 };
 const EXPECTED=["month","game_id","game","audience_share_pct","premium_audience_share_pct","played_realtime","played_turnbased","played_total","average_duration_min","time_spent_hr","premium_time_spent_hr","model","game_url"];
-const state={db:null,rows:[],view:"overview",from:"",to:"",search:"",metric:"played_total",gameSort:"plays",gamesVisible:75,detailGame:null,detailMonth:null,importStats:null,error:"",copied:false};
+const state={db:null,rows:[],view:"overview",from:"",to:"",search:"",metric:"played_total",gameSort:"plays",gamesVisible:75,detailGame:null,detailMonth:null,importStats:null,error:"",copied:false,matrixSort:"total",matrixOnlyMatches:false,matrixVisible:90,matrixCache:null,collectionUser:"sportomax",collectionGames:[],collectionIndex:new Map(),collectionDB:null,collectionBusy:false,collectionRequest:0,collectionStatus:""};
 const numericCols=EXPECTED.filter(c=>["game_id","game","month","model","game_url"].indexOf(c)<0);
 const isNumber=v=>typeof v==="number"&&Number.isFinite(v);
 const clean=v=>String(v??"").trim();
@@ -283,6 +283,248 @@ function kpi(label,value,detail,change){
  return '<div class="card kpi"><div class="label">'+esc(label)+'</div><div class="value">'+esc(value)+'</div><div class="sub">'+esc(detail||"")+'</div>'+
  (change?'<div class="change">'+change+'</div>':"")+'</div>';
 }
+
+/* BGG collection thumbnails. Strict/normalized name matching avoids incorrect artwork. */
+function normalizeTitle(value){
+ return clean(value).normalize("NFKD").replace(/[\u0300-\u036f]/g,"")
+   .toLowerCase().replace(/&/g," and ").replace(/['’]/g,"")
+   .replace(/[^a-z0-9]+/g," ").replace(/\s+/g," ").trim();
+}
+function safeImage(url){
+ try{
+  const u=new URL(clean(url));
+  return u.protocol==="https:" &&
+    /(^|\.)geekdo-images\.com$|(^|\.)geekdo-static\.com$|(^|\.)boardgamegeek\.com$/i.test(u.hostname) ? u.href : "";
+ }catch{return ""}
+}
+function collectionFromXml(text){
+ const dom=new DOMParser().parseFromString(text,"application/xml");
+ if(dom.querySelector("parsererror"))throw Error("BGG returned invalid collection XML.");
+ if(dom.documentElement?.nodeName!=="items"){
+  const message=dom.querySelector("message")?.textContent;
+  throw Error(clean(message)||"BGG did not return a game collection.");
+ }
+ const map=new Map();
+ for(const item of dom.querySelectorAll("items > item")){
+  const id=clean(item.getAttribute("objectid")),name=clean(item.querySelector("name")?.textContent);
+  if(!id || !name)continue;
+  const game={
+   id,name,
+   thumbnail:safeImage(item.querySelector("thumbnail")?.textContent),
+   image:safeImage(item.querySelector("image")?.textContent)
+  };
+  if(!map.has(id))map.set(id,game);
+ }
+ return [...map.values()].sort((a,b)=>a.name.localeCompare(b.name));
+}
+function indexCollection(games){
+ const index=new Map(),candidates=new Map();
+ for(const g of games){
+  const key=normalizeTitle(g.name);
+  if(!key)continue;
+  const existing=index.get(key);
+  if(!existing || (!existing.thumbnail && g.thumbnail))index.set(key,g);
+  const alias=key.replace(/^the /,"");
+  if(alias && alias!==key){
+   if(!candidates.has(alias))candidates.set(alias,new Set());
+   candidates.get(alias).add(key);
+  }
+ }
+ // Only allow articles to be optional when there is an unambiguous full title.
+ for(const [alias,keys] of candidates){
+  if(keys.size===1 && !index.has(alias))index.set(alias,index.get([...keys][0]));
+ }
+ state.collectionGames=games;state.collectionIndex=index;
+ updateCollectionStatus();
+}
+function gameArtwork(gameName){return state.collectionIndex.get(normalizeTitle(gameName))||null}
+function thumbHtml(name,small=false){
+ const game=gameArtwork(name);
+ const url=game?.thumbnail||game?.image;
+ if(!url)return small?"":'<span class="game-placeholder" aria-hidden="true">♟</span>';
+ if(small)return '<img class="bgg-thumb-mini" src="'+esc(url)+'" alt="" title="'+esc(game.name)+'" loading="lazy" decoding="async">';
+ return '<img class="game-image" src="'+esc(url)+'" alt="'+esc(game.name)+' cover" loading="lazy" decoding="async" referrerpolicy="no-referrer">';
+}
+function updateCollectionStatus(status="",error=false){
+ if(status!==undefined && status!=="")state.collectionStatus=status;
+ const matched=new Set(state.rows.map(r=>r.game).filter(name=>!!gameArtwork(name)));
+ $("collectionCount").textContent=state.collectionGames.length ? int(state.collectionGames.length)+" collection games · "+int(matched.size)+" matches" : "No collection loaded";
+ const info=$("collectionFeedback");
+ if(info){
+  info.textContent=state.collectionStatus || "Click Load collection to find game artwork.";
+  info.classList.toggle("error",!!error);
+ }
+}
+async function openCollectionDB(){
+ if(!window.indexedDB)return null;
+ return new Promise((resolve,reject)=>{
+  const req=indexedDB.open("bga-audience-bgg-collection",1);
+  req.onupgradeneeded=()=>{if(!req.result.objectStoreNames.contains("collections"))req.result.createObjectStore("collections",{keyPath:"username"})};
+  req.onsuccess=()=>resolve(req.result);
+  req.onerror=()=>reject(req.error||Error("Collection cache unavailable"));
+ });
+}
+async function getCollectionCache(user){
+ if(!state.collectionDB)return null;
+ return new Promise((resolve,reject)=>{
+  const req=state.collectionDB.transaction("collections","readonly").objectStore("collections").get(user.toLowerCase());
+  req.onsuccess=()=>resolve(req.result||null);
+  req.onerror=()=>reject(req.error);
+ });
+}
+async function saveCollectionCache(user,games){
+ if(!state.collectionDB)return;
+ return new Promise((resolve,reject)=>{
+  const tx=state.collectionDB.transaction("collections","readwrite");
+  tx.objectStore("collections").put({username:user.toLowerCase(),games,savedAt:Date.now()});
+  tx.oncomplete=resolve;
+  tx.onerror=()=>reject(tx.error||Error("Collection cache save failed"));
+ });
+}
+function applyCollection(games,message){
+ indexCollection(games);
+ updateCollectionStatus(message);
+ if(state.rows.length)render();
+}
+async function loadCollection(force=false){
+ const username=clean($("collectionUser").value).replace(/^@/,"");
+ if(!/^[a-z0-9][a-z0-9_.-]{1,59}$/i.test(username)){
+  updateCollectionStatus("Enter a valid BGG username.",true);return;
+ }
+ const switched=username.toLowerCase()!==state.collectionUser.toLowerCase();
+ state.collectionUser=username;
+ try{localStorage.setItem("bga-audience-collection-user",username)}catch(_){}
+ const id=++state.collectionRequest;
+ if(switched){indexCollection([]);if(state.rows.length)render()}
+ if(!force){
+  try{
+   const cached=await getCollectionCache(username);
+   if(id!==state.collectionRequest)return;
+   if(cached?.games?.length){
+    applyCollection(cached.games,"Cached "+username+" collection · "+new Date(cached.savedAt).toLocaleDateString());
+    return;
+   }
+  }catch(_){}
+ }
+ if(id!==state.collectionRequest)return;
+ state.collectionBusy=true;
+ $("loadCollection").disabled=true;$("loadCollection").textContent="Loading…";
+ updateCollectionStatus("Fetching "+username+"'s collection from BGG…");
+ try{
+  const q=new URLSearchParams({endpoint:"collection",username,stats:"1"});
+  const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),65000);
+  let response;
+  try{response=await fetch("/api/bgg-helper?"+q,{cache:"no-store",signal:controller.signal,headers:{"Accept":"text/xml,application/xml"}})}
+  finally{clearTimeout(timer)}
+  if(id!==state.collectionRequest)return;
+  const body=await response.text();
+  if(!response.ok){
+   let err="";
+   try{err=JSON.parse(body).message||""}catch(_){}
+   throw Error("BGG "+response.status+(err?" · "+err:""));
+  }
+  if(!body.trim().startsWith("<"))throw Error("BGG returned a non-XML response.");
+  const games=collectionFromXml(body);
+  if(!games.length)throw Error("No visible games were returned; verify the username and public collection access.");
+  await saveCollectionCache(username,games).catch(()=>{});
+  if(id!==state.collectionRequest)return;
+  applyCollection(games,"Loaded "+username+" · "+new Date().toLocaleTimeString());
+ }catch(error){
+  if(id!==state.collectionRequest)return;
+  updateCollectionStatus("Collection unavailable: "+(error.name==="AbortError"?"request timed out":error.message)+". Retry Load collection.",true);
+ }finally{
+  if(id===state.collectionRequest){state.collectionBusy=false;$("loadCollection").disabled=false;$("loadCollection").textContent="Load collection"}
+ }
+}
+async function initializeCollection(){
+ try{state.collectionDB=await openCollectionDB()}catch(_){}
+ try{state.collectionUser=localStorage.getItem("bga-audience-collection-user")||"sportomax"}catch(_){}
+ $("collectionUser").value=state.collectionUser;
+ await loadCollection(false);
+}
+/* Monthly matrix. Blank months are missing observations, NOT inferred zeroes. */
+function makeMatrixData(rows,months){
+ const ordered=months.slice().reverse();
+ let games=byGame(rows);
+ if(state.matrixOnlyMatches)games=games.filter(g=>!!gameArtwork(g.game));
+ const recent=ordered[0];
+ games.sort((a,b)=>{
+  if(state.matrixSort==="name")return a.game.localeCompare(b.game);
+  if(state.matrixSort==="months")return b.months-a.months||a.game.localeCompare(b.game);
+  if(state.matrixSort==="latest"){
+   const val=g=>{
+    const r=g.rows.find(x=>x.month===recent);
+    return isNumber(r?.played_total)?r.played_total:-Infinity;
+   };
+   return val(b)-val(a)||a.game.localeCompare(b.game);
+  }
+  return (isNumber(b.plays)?b.plays:-Infinity)-(isNumber(a.plays)?a.plays:-Infinity)||a.game.localeCompare(b.game);
+ });
+ return {months:ordered,games,allRows:rows,monthly:monthlyMap(rows),allTotal:sum(rows,"played_total")};
+}
+function matrixRowHtml(g,months){
+ const byMonth=new Map(g.rows.map(r=>[r.month,r]));
+ const max=Math.max(0,...g.rows.map(r=>isNumber(r.played_total)?r.played_total:0));
+ const cells=months.map(month=>{
+  const row=byMonth.get(month);
+  if(!row)return '<td class="month-col"><span class="missing" title="No exported observation for this game/month">—</span></td>';
+  if(!isNumber(row.played_total))return '<td class="month-col"><span class="metric-unknown" title="Game exists in export but play count is missing">N/A</span></td>';
+  const p=max>0?row.played_total/max:0;
+  const alpha=(.06+.30*p).toFixed(3);
+  return '<td class="month-col"><button class="month-value" style="background:rgba(66,116,145,'+alpha+')" type="button" data-cell-game="'+esc(g.id)+'" data-cell-month="'+esc(month)+'" title="'+esc(g.game+" · "+monthLabel(month)+": "+int(row.played_total)+" plays")+'">'+int(row.played_total)+'</button></td>';
+ }).join("");
+ return '<tr><td class="name-cell"><div class="game-item">'+thumbHtml(g.game)+
+  '<div class="game-meta"><button type="button" class="game-name" data-matrix-game="'+esc(g.id)+'">'+esc(g.game)+'</button>'+
+  '<span class="game-sub">'+g.months+' months observed'+(gameArtwork(g.game)?' · cover matched':'')+'</span></div></div></td>'+
+  '<td class="total-cell"><b>'+int(g.plays)+'</b></td>'+cells+'</tr>';
+}
+function matrixTotalHtml(data){
+ return '<tr class="matrix-total-row"><td class="name-cell"><b>Monthly totals</b><small style="display:block;color:#8296a1;font-size:10px">Available observations</small></td>'+
+ '<td class="total-cell">'+int(data.allTotal)+'</td>'+
+ data.months.map(month=>{
+  const observations=data.monthly.get(month);
+  return '<td class="month-col">'+(observations?int(sum(observations,"played_total")):"—")+'</td>';
+ }).join("")+'</tr>';
+}
+function updateMatrixProgress(){
+ const data=state.matrixCache;
+ if(!data)return;
+ const shown=Math.min(data.games.length,state.matrixVisible);
+ $("matrixProgress").textContent=shown+" of "+data.games.length+" games displayed · Scroll to load more";
+ $("matrixProgress").hidden=shown===data.games.length;
+}
+function appendMatrixRows(){
+ const data=state.matrixCache;if(!data)return;
+ const start=state.matrixVisible;
+ const end=Math.min(data.games.length,start+65);
+ if(end<=start)return;
+ $("matrixRows").insertAdjacentHTML("beforeend",data.games.slice(start,end).map(g=>matrixRowHtml(g,data.months)).join(""));
+ state.matrixVisible=end;
+ updateMatrixProgress();
+}
+function maybeAppendMatrix(){
+ const root=$("matrixScroll");
+ if(state.view!=="matrix" || !state.matrixCache || state.matrixVisible>=state.matrixCache.games.length)return;
+ if(root.scrollTop+root.clientHeight>=root.scrollHeight-360)appendMatrixRows();
+}
+function renderMatrix(rows,months){
+ const view=$("matrixScroll");
+ const left=view.scrollLeft;
+ const data=makeMatrixData(rows,months);
+ state.matrixCache=data;
+ const header='<tr><th class="name-head">Game</th><th class="total-head">Total</th>'+
+  data.months.map(m=>'<th class="month-col">'+esc(monthMini(m))+'</th>').join("")+'</tr>';
+ $("matrixHead").innerHTML=header;
+ const shown=data.games.slice(0,state.matrixVisible);
+ const only=state.matrixOnlyMatches?" · collection matches only":"";
+ $("matrixSummary").textContent=data.games.length+" games × "+data.months.length+" months"+only;
+ $("matrixRows").innerHTML=matrixTotalHtml(data)+(
+  shown.length ? shown.map(g=>matrixRowHtml(g,data.months)).join("") :
+  '<tr><td colspan="'+(data.months.length+2)+'" class="muted" style="padding:20px;text-align:center">No games match these filters'+(state.matrixOnlyMatches?" and the current BGG collection":"")+'.</td></tr>');
+ view.scrollLeft=left;
+ updateMatrixProgress();
+}
+
 function renderOverview(rows,months){
  const stats=aggregate(rows),monthly=summaries(rows,months);
  const pair=latestPair(monthly.filter(x=>x.present).map(x=>x.month));
@@ -438,10 +680,11 @@ function render(){
  const rows=selectedRows(),months=periodsSelected();
  $("filterStatus").textContent=int(rows.length)+" rows · "+byGame(rows).length+" games";
  document.querySelectorAll(".tab[data-tab]").forEach(b=>b.classList.toggle("active",b.dataset.tab===state.view));
- for(const name of ["overview","monthly","games","compare"])$("tab-"+name).hidden=name!==state.view;
+ for(const name of ["overview","monthly","games","matrix","compare"])$("tab-"+name).hidden=name!==state.view;
  if(state.view==="overview")renderOverview(rows,months);
  else if(state.view==="monthly")renderMonthly(rows,months);
  else if(state.view==="games")renderGames(rows);
+ else if(state.view==="matrix")renderMatrix(rows,months);
  else if(state.view==="compare")renderCompare(rows,months);
 }
 function alertBox(message,type=""){
@@ -504,7 +747,7 @@ async function importCsv(textValue,replaceMonths=false){
   await saveRows(imported,replaceMonths?months:[]);
   state.rows=[...map.values()];
   state.importStats=parsed;
-  state.gamesVisible=75;
+  state.gamesVisible=75;state.matrixVisible=90;
   $("importText").value="";
   $("importDialog").close();
   render();
@@ -545,6 +788,13 @@ async function copyExtractor(){
  }catch(e){alertBox(e.message,"error")}
 }
 function bind(){
+ $("loadCollection").onclick=()=>loadCollection(true);
+ $("collectionUser").addEventListener("keydown",event=>{if(event.key==="Enter"){event.preventDefault();loadCollection(false)}});
+ $("collectionUser").addEventListener("change",()=>loadCollection(false));
+ $("matrixSort").addEventListener("change",event=>{state.matrixSort=event.target.value;state.matrixVisible=90;$("matrixScroll").scrollTop=0;render()});
+ $("matrixOnlyMatches").addEventListener("change",event=>{state.matrixOnlyMatches=event.target.checked;state.matrixVisible=90;$("matrixScroll").scrollTop=0;render()});
+ $("matrixScroll").addEventListener("scroll",maybeAppendMatrix,{passive:true});
+ $("matrixRows").addEventListener("click",e=>{const c=e.target.closest("[data-cell-game]");if(c){renderGameDetail(c.dataset.cellGame,c.dataset.cellMonth);return}const g=e.target.closest("[data-matrix-game]");if(g)renderGameDetail(g.dataset.matrixGame)});
  $("copyExtractor").onclick=copyExtractor;$("setupCopy").onclick=copyExtractor;$("exportMerged").onclick=downloadMergedCSV;
  $("openImport").onclick=showImport;$("setupImport").onclick=showImport;
  $("closeImport").onclick=()=>$("importDialog").close();
@@ -555,12 +805,12 @@ function bind(){
   if(!files.length)return;
   for(const file of files){const ok=await importCsv(await file.text(),$("replaceImport").checked);if(!ok)break}
  };
- for(const tab of document.querySelectorAll("[data-tab]"))tab.onclick=()=>{state.view=tab.dataset.tab;render()};
+ for(const tab of document.querySelectorAll("[data-tab]"))tab.onclick=()=>{state.view=tab.dataset.tab;if(state.view==="matrix")state.matrixVisible=90;render()};
  $("fromMonth").onchange=e=>{state.from=e.target.value;render()};
  $("toMonth").onchange=e=>{state.to=e.target.value;render()};
  $("metric").onchange=e=>{state.metric=e.target.value;render()};
- $("gameSearch").oninput=e=>{state.search=e.target.value.trim().toLowerCase();state.gamesVisible=75;render()};
- $("clearFilters").onclick=()=>{state.from="";state.to="";state.search="";state.metric="played_total";state.gamesVisible=75;$("gameSearch").value="";$("metric").value=state.metric;render()};
+ $("gameSearch").oninput=e=>{state.search=e.target.value.trim().toLowerCase();state.gamesVisible=75;state.matrixVisible=90;render()};
+ $("clearFilters").onclick=()=>{state.from="";state.to="";state.search="";state.metric="played_total";state.gamesVisible=75;state.matrixVisible=90;$("gameSearch").value="";$("metric").value=state.metric;render()};
  $("gameSort").onchange=e=>{state.gameSort=e.target.value;state.gamesVisible=75;render()};
  $("loadMoreGames").onclick=()=>{state.gamesVisible+=75;renderGames(selectedRows())};
  $("monthRows").onclick=e=>{const tr=e.target.closest("[data-month]");if(tr){monthlyDetails(tr.dataset.month,selectedRows());$("monthDetails").scrollIntoView({behavior:"smooth",block:"nearest"})}};
@@ -579,6 +829,7 @@ async function init(){
   state.rows=(await fetchSaved()).map(cleanRow).filter(Boolean);
  }catch(e){alertBox("Browser persistence unavailable; imports can be viewed in this tab but may not survive refresh. "+e.message,"warn")}
  render();
+ initializeCollection().catch(e=>updateCollectionStatus("Collection initialization failed: "+e.message,true));
 }
 init();
 })();
