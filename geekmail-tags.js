@@ -185,10 +185,11 @@ class Tags {
  async changeUser(){
   const username=clean($("collectionUsername").value)||"sportomax";
   if(username.toLowerCase()===this.username.toLowerCase())return;
-  this.username=username;this.version++;
+  this.username=username;const current=++this.version;
   this.filterId="";this.installGames([]);
   try{localStorage.setItem("geekmail-desk-collection-user",username)}catch(_){}
   const cached=await this.fromCache(username).catch(()=>null);
+  if(current!==this.version)return;
   if(cached?.games?.length){
    this.installGames(cached.games);this.updateStats("Cached collection · "+new Date(cached.saved).toLocaleDateString());
   }else this.updateStats("Click Load collection for "+username);
@@ -198,13 +199,14 @@ class Tags {
   if(!/^[a-z0-9][a-z0-9_.-]{1,59}$/i.test(username)){
    this.updateStats("Please enter a valid BGG username.");$("collectionStatus").classList.add("error");return;
   }
+  if(username.toLowerCase()!==this.username.toLowerCase()){this.filterId="";this.installGames([])}
   this.username=username;
   try{localStorage.setItem("geekmail-desk-collection-user",username)}catch(_){}
   const request=++this.version;
   this.pending=true;$("loadCollection").disabled=true;$("loadCollection").textContent="Loading…";
   $("collectionStatus").classList.remove("error");this.updateStats("Fetching "+username+"'s BGG owned collection…");
   try{
-   const params=new URLSearchParams({endpoint:"collection",username,own:"1",stats:"1",subtype:"boardgame"});
+   const params=new URLSearchParams({endpoint:"collection",username,own:"1",stats:"1"});
    const controller=new AbortController(),timeout=setTimeout(()=>controller.abort(),70000);
    let response;
    try{response=await fetch("/api/bgg-helper?"+params,{cache:"no-store",signal:controller.signal,headers:{"Accept":"text/xml,application/xml"}})}
@@ -218,7 +220,7 @@ class Tags {
    }
    if(!xml.trim().startsWith("<"))throw Error("BGG returned a non-XML response.");
    const games=readCollection(xml);
-   if(!games.length)throw Error("No publicly accessible owned board games found.");
+   if(!games.length)throw Error("No publicly accessible owned games found.");
    await this.saveCache(username,games).catch(()=>{});
    if(request!==this.version)return;
    this.installGames(games);this.updateStats("Loaded "+username+" · "+new Date().toLocaleTimeString());
