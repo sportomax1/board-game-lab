@@ -423,7 +423,13 @@
       const close = node('button','', '×');
       close.type = 'button';
       close.setAttribute('aria-label','Remove ' + chip.value + ' filter');
-      close.addEventListener('click', () => removeChip(index));
+      close.addEventListener('click', event => {
+        event.preventDefault();
+        event.stopPropagation();
+        // Resolve the current chip by identity rather than a potentially stale index.
+        const currentIndex = state.chips.findIndex(item => chipKey(item) === chipKey(chip));
+        if (currentIndex !== -1) removeChip(currentIndex);
+      });
       wrap.append(close);
       host.append(wrap);
     });
