@@ -277,6 +277,11 @@ async function cacheGet(id){
  if(!$("useCache").checked)return null;
  try{var db=await dbOpen();return await new Promise(function(ok){var r=db.transaction(DB_STORE,"readonly").objectStore(DB_STORE).get(id);r.onsuccess=function(){var v=r.result;ok(v&&Date.now()-v.ts<14*86400000?v:null);};r.onerror=function(){ok(null);};});}catch(e){return null;}
 }
+async function cacheGetMany(ids){
+ var out=new Map();if(!$("useCache").checked||!ids.length)return out;
+ try{var db=await dbOpen();return await new Promise(function(ok){var tx=db.transaction(DB_STORE,"readonly"),store=tx.objectStore(DB_STORE),cut=Date.now()-14*86400000;
+  ids.forEach(function(id){var req=store.get(id);req.onsuccess=function(){if(req.result&&req.result.ts>cut)out.set(id,req.result);};});tx.oncomplete=function(){ok(out);};tx.onerror=function(){ok(out);};});}catch(e){return out;}
+}
 async function cachePutMany(rows){
  try{var db=await dbOpen();await new Promise(function(ok){var tx=db.transaction(DB_STORE,"readwrite"),store=tx.objectStore(DB_STORE);rows.forEach(function(r){store.put(r);});tx.oncomplete=ok;tx.onerror=ok;});}catch(e){}
 }
@@ -369,7 +374,8 @@ async function loadCollection(){
   var coll=await fetchXml("collection",{username:user,own:"1"},ctrl.signal),base=readCollection(coll);
   if(!base.size)throw Error("No owned games were returned. Check username and public collection visibility.");
   var ids=Array.from(base.keys()),cached=0,missing=[];
-  for(var i=0;i<ids.length;i++){var data=await cacheGet(ids[i]);if(data){base.set(ids[i],Object.assign({},base.get(ids[i]),data));cached++;}else missing.push(ids[i]);}
+  var saved=await cacheGetMany(ids);
+  for(var i=0;i<ids.length;i++){var data=saved.get(ids[i]);if(data){base.set(ids[i],Object.assign({},base.get(ids[i]),data));cached++;}else missing.push(ids[i]);}
   tell("Found "+ids.length+" games · "+cached+" cached · "+missing.length+" needing Thing metadata.",12);
   var batches=[];for(var k=0;k<missing.length;k+=18)batches.push(missing.slice(k,k+18));
   var done=0,next=0,fail=0;
@@ -384,7 +390,7 @@ async function loadCollection(){
   await Promise.all(Array.from({length:Math.min(3,batches.length)},function(){return worker();}));
   state.failed=fail;state.games=Array.from(base.values()).sort(function(a,b){return a.name.localeCompare(b.name);});
   tell("Loaded "+state.games.length+" games. "+(fail?fail+" API batches could not be retrieved; retry Load to fetch them.":"Ready to optimize.") ,100);
-  updateAll();await runOptimization();
+  state.loading=false;updateAll();await runOptimization();
  }catch(e){tell("Load failed: "+e.message);console.error(e);}
  finally{state.loading=false;$("load").disabled=false;}
 }
