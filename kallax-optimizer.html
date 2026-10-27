@@ -428,7 +428,7 @@ function updateMetrics(){
  var p=state.plan,games=gamesReady(),missing=games.filter(function(g){return !g.dims;}).length;
  $("mMissing").textContent=missing;$("invCount").textContent="("+state.games.length+")";
  $("mGames").textContent=p?p.count:0;$("mCubes").textContent=p?p.cubes.length:0;
- var cfg=settings(),units=p?(p.mixed?new Set(p.cubes.map(function(c){return c.shelfType+":"+c.unitIndex;})).size:Math.ceil(p.cubes.length/cfg.slots)):0;
+ var cfg=settings(),units=p?(p.mixed?new Set(p.cubes.map(function(c){return (c.shelfId||c.shelfType)+":"+c.unitIndex;})).size:Math.ceil(p.cubes.length/cfg.slots)):0;
  $("mUnits").textContent=p?units:"—";$("mCost").textContent=p?(p.mixed?"$0 owned":"$"+Math.round(units*(cfg.price+(cfg.topper&&cfg.furniture!=="kallax"?cfg.topPrice:0))).toLocaleString()):"—";
  if(p&&p.cubes.length){var opt=settings();
   $("mArea").textContent=(p.area/p.cubes.reduce(function(sum,c){var d=c.dims||opt;return sum+d.w*d.h;},0)*100).toFixed(1)+"%";
@@ -453,7 +453,7 @@ function renderPlan(){
   var heading=document.createElement("div");heading.className="cube-head";
   var familyHits=new Map();c.boxes.forEach(function(b){var g=byId.get(b.id);(g.families||[]).forEach(function(f){familyHits.set(f.name,(familyHits.get(f.name)||0)+1);});});
   var topFamily=Array.from(familyHits.entries()).sort(function(a,b){return b[1]-a[1];})[0];
-  heading.innerHTML="<b>"+(p.mixed?c.shelfType+" "+c.unitIndex+" · level "+c.level:(opt.furniture==="kallax"?"Cube "+(i+1):"Bookcase "+(Math.floor(i/opt.slots)+1)+" · level "+((i%opt.slots)+1)))+"</b><span>"+c.boxes.length+" games</span>";card.appendChild(heading);
+  heading.innerHTML="<b>"+(p.mixed?c.shelfType+" "+c.unitIndex+" · "+(c.top?"height extension":"compartment "+c.level):(opt.furniture==="kallax"?"Cube "+(i+1):"Bookcase "+(Math.floor(i/opt.slots)+1)+" · level "+((i%opt.slots)+1)))+"</b><span>"+c.boxes.length+" games</span>";card.appendChild(heading);
   var face=document.createElement("div");face.className="cube-face";c.boxes.forEach(function(b){face.appendChild(makeBox(b,c.dims||opt,byId.get(b.id)));});card.appendChild(face);
   var foot=document.createElement("div");foot.className="cube-foot";
   var dims=c.dims||opt,occ=c.boxes.reduce(function(s,b){return s+b.w*b.h;},0)/(dims.w*dims.h);
@@ -593,33 +593,49 @@ function furnitureConfig(){
  return types;
 }
 async function mixedOptimization(){
- var opt=settings(),types=furnitureConfig(),games=gamesReady(),validGames=games.filter(function(g){return g.dims;}),remaining=validGames.slice(),allCubes=[],packed=0,totalArea=0,totalVolume=0,chosen=[],byId=new Map(validGames.map(function(g){return[g.id,g];}));
- if(!types.length){state.plan=null;updateAll();tell("Enter at least one existing shelving unit for this mode.");return;}
+ var opt=settings(),types=furnitureConfig(),games=gamesReady(),validGames=games.filter(function(g){return g.dims;}),byId=new Map(validGames.map(function(g){return[g.id,g];}));
+ if(!types.length){state.plan=null;updateAll();tell("Step 2: enter a quantity greater than zero for at least one shelf model.");return;}
+ if(types.reduce(function(sum,t){return sum+t.count;},0)>500){state.plan=null;updateAll();tell("Your setup exceeds 500 compartments. Reduce quantities or use fewer shelf entries for manageable optimization.");return;}
  // Different compartment geometries are solved independently; the residual inventory is passed to the next furniture type.
  // Evaluate several type orders and retain the plan that houses the most games in existing furniture.
  var sequences=[types.slice(),types.slice().reverse(),types.slice().sort(function(a,b){return b.w*b.h-a.w*a.h;}),types.slice().sort(function(a,b){return a.w*a.h-b.w*b.h;})],bestGlobal=null;
- for(var z=0;z<sequences.length;z++){
+ for(var z=0;z<sequences.length;z++){if(state.cancel)break;
   var rest=validGames.slice(),pieces=[],volume=0,area=0;
-  for(var t=0;t<sequences[z].length;t++){
+  for(var t=0;t<sequences[z].length;t++){if(state.cancel)break;
    var unit=sequences[z][t],local=Object.assign({},opt,{w:unit.w,h:unit.h,d:unit.d,maxCubes:unit.count}),fits=rest.filter(function(g){return KallaxCore.rotate(g,local).length;}),map=new Map(fits.map(function(g){return[g.id,g];})),best=null;
-   for(var j=0;j<Math.min(opt.rounds,12);j++){var p=KallaxCore.attempt(fits,local,j+z*3,map);if(KallaxCore.better(p,best,local))best=p;}
+   for(var j=0;j<Math.min(opt.rounds,12);j++){if(state.cancel)break;var p=KallaxCore.attempt(fits,local,j+z*3,map);if(KallaxCore.better(p,best,local))best=p;}
    if(best){
-    best.cubes.forEach(function(c,i){var actualUnit=Math.min(unit.units||Math.ceil(unit.count/unit.perUnit),Math.floor(i/unit.perUnit)+1),level=i%unit.perUnit+1;if(unit.tops&&i>=unit.units*unit.levels){actualUnit=i-unit.units*unit.levels+1;level=unit.levels+1;}pieces.push({boxes:c.boxes,shelfType:unit.type,unitIndex:actualUnit,level:level,dims:{w:unit.w,h:unit.h,d:unit.d}});});
+    best.cubes.forEach(function(c,i){
+     var actualUnit=unit.top?i+1:Math.floor(i/unit.perUnit)+1,
+         level=unit.top?unit.levels+1:i%unit.perUnit+1;
+     pieces.push({boxes:c.boxes,shelfType:unit.type,shelfId:unit.rowId,unitIndex:actualUnit,level:level,top:Boolean(unit.top),
+       dims:{w:unit.w,h:unit.h,d:unit.d}});
+    });
     var used=new Set(best.cubes.flatMap(function(c){return c.boxes.map(function(b){return b.id;});}));rest=rest.filter(function(g){return!used.has(g.id);});volume+=best.volume;area+=best.area;
    }
   }
-  var candidate={cubes:pieces,count:validGames.length-rest.length,overflow:rest.map(function(g){return g.id;}),volume:volume,area:area,family:KallaxCore.familyPairs(pieces,byId),mixed:true};
-  if(!bestGlobal||candidate.count>bestGlobal.count||(candidate.count===bestGlobal.count&&candidate.cubes.length<bestGlobal.cubes.length))bestGlobal=candidate;
+  pieces.sort(function(a,b){
+   var ia=shelfRecords.findIndex(function(r){return r.id===a.shelfId;}),ib=shelfRecords.findIndex(function(r){return r.id===b.shelfId;});
+   return ia-ib||a.unitIndex-b.unitIndex||a.level-b.level;
+  });
+  var distinctUnits=new Set(pieces.map(function(c){return c.shelfId+":"+c.unitIndex;})).size;
+  var candidate={cubes:pieces,count:validGames.length-rest.length,overflow:rest.map(function(g){return g.id;}),volume:volume,area:area,
+   family:KallaxCore.familyPairs(pieces,byId),mixed:true,unitCount:distinctUnits};
+  if(!bestGlobal||candidate.count>bestGlobal.count
+   ||candidate.count===bestGlobal.count&&(candidate.unitCount<bestGlobal.unitCount
+      ||candidate.unitCount===bestGlobal.unitCount&&candidate.cubes.length<bestGlobal.cubes.length))bestGlobal=candidate;
   tell("Evaluating existing furniture layouts "+(z+1)+"/"+sequences.length,30+(z+1)*16);await sleep(0);
  }
- state.plan=bestGlobal;state.impossible=[];state.mixedTypes=types;
- tell(bestGlobal.count+" games fit into "+bestGlobal.cubes.length+" existing compartments. "+bestGlobal.overflow.length+" remain unplaced.",100);updateAll();
+ if(!bestGlobal){tell("Optimization cancelled before any layout was generated.");return;}state.plan=bestGlobal;state.impossible=[];state.mixedTypes=types;
+ tell(bestGlobal.count+" games fit in "+bestGlobal.cubes.length+" compartments across "+bestGlobal.unitCount+" furniture units. "+bestGlobal.overflow.length+" remain unplaced.",100);updateAll();
 }
 async function runOptimization(){
  if(state.loading||state.optimizing)return;
  if(!state.games.length){tell("1 · Enter your BGG username and click Use collection first.");return;}
  var opt;try{opt=settings();}catch(e){tell(e.message);return;}
- if($("layoutMode").value){saveSettings();state.optimizing=true;state.cancel=false;$("optimize").disabled=true;try{await mixedOptimization();}catch(e){tell("Mixed packing error: "+e.message);console.error(e);}finally{state.optimizing=false;$("optimize").disabled=false;}return;}
+ if($("layoutMode").value){saveSettings();state.optimizing=true;state.cancel=false;$("optimize").disabled=true;$("cancel").classList.remove("hide");
+  try{await mixedOptimization();}catch(e){tell("Packing error: "+e.message);console.error(e);}
+  finally{state.optimizing=false;$("optimize").disabled=false;$("cancel").classList.add("hide");}return;}
  saveSettings();state.optimizing=true;state.cancel=false;$("optimize").disabled=true;$("cancel").classList.remove("hide");
  try{
   var input=gamesReady(),missing=input.filter(function(g){return !g.dims;});
