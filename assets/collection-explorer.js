@@ -423,13 +423,22 @@
       const close = node('button','', '×');
       close.type = 'button';
       close.setAttribute('aria-label','Remove ' + chip.value + ' filter');
-      close.addEventListener('click', event => {
+      // Handle touch on pointerdown: iOS can cancel the synthesized click when
+      // the search field/keyboard or a nearby overlay changes during a tap.
+      let removed = false;
+      const dismiss = event => {
         event.preventDefault();
         event.stopPropagation();
-        // Resolve the current chip by identity rather than a potentially stale index.
+        if (removed) return;
         const currentIndex = state.chips.findIndex(item => chipKey(item) === chipKey(chip));
-        if (currentIndex !== -1) removeChip(currentIndex);
+        if (currentIndex === -1) return;
+        removed = true;
+        removeChip(currentIndex);
+      };
+      close.addEventListener('pointerdown', event => {
+        if (event.pointerType === 'touch' || event.pointerType === 'pen') dismiss(event);
       });
+      close.addEventListener('click', dismiss);
       wrap.append(close);
       host.append(wrap);
     });
