@@ -392,7 +392,7 @@ function sample(){
 async function loadCollection(force){
  if(state.loading||state.optimizing)return;
  var user=$("username").value.trim();if(!user){tell("Enter a BGG username.");return;}
- state.username=user;state.demo=false;loadEdits();if(!force&&await restoreCollection(user)){await runOptimization();return;}state.loading=true;state.plan=null;state.failed=0;$("load").disabled=true;
+ state.username=user;state.demo=false;loadEdits();if(!force&&await restoreCollection(user)){await runOptimization();return;}state.loading=true;state.plan=null;state.failed=0;$("load").disabled=true;$("refresh").disabled=true;
  var ctrl=new AbortController();state.loadAbort=ctrl;
  try{
   tell("Loading owned games for "+user+"…",3);
@@ -417,7 +417,7 @@ async function loadCollection(force){
   tell("Loaded "+state.games.length+" games. "+(fail?fail+" API batches could not be retrieved; retry Load to fetch them.":"Ready to optimize.") ,100);
   await saveCollectionSnapshot(user,state.games);state.loading=false;updateAll();await runOptimization();
  }catch(e){tell("Load failed: "+e.message);console.error(e);}
- finally{state.loading=false;$("load").disabled=false;}
+ finally{state.loading=false;$("load").disabled=false;$("refresh").disabled=false;}
 }
 function planCounts(){
  var placed=new Set();if(state.plan)state.plan.cubes.forEach(function(c){c.boxes.forEach(function(b){placed.add(b.id);});});
@@ -427,7 +427,7 @@ function updateMetrics(){
  var p=state.plan,games=gamesReady(),missing=games.filter(function(g){return !g.dims;}).length;
  $("mMissing").textContent=missing;$("invCount").textContent="("+state.games.length+")";
  $("mGames").textContent=p?p.count:0;$("mCubes").textContent=p?p.cubes.length:0;
- var cfg=settings(),units=p?(p.mixed?(state.mixedTypes||[]).reduce(function(sum,t){return sum+(t.units||Math.ceil(t.count/t.perUnit));},0):Math.ceil(p.cubes.length/cfg.slots)):0;
+ var cfg=settings(),units=p?(p.mixed?new Set(p.cubes.map(function(c){return c.shelfType+":"+c.unitIndex;})).size:Math.ceil(p.cubes.length/cfg.slots)):0;
  $("mUnits").textContent=p?units:"—";$("mCost").textContent=p?(p.mixed?"$0 owned":"$"+Math.round(units*(cfg.price+(cfg.topper&&cfg.furniture!=="kallax"?cfg.topPrice:0))).toLocaleString()):"—";
  if(p&&p.cubes.length){var opt=settings();
   $("mArea").textContent=(p.area/p.cubes.reduce(function(sum,c){var d=c.dims||opt;return sum+d.w*d.h;},0)*100).toFixed(1)+"%";
@@ -536,17 +536,17 @@ function furnitureConfig(){
 }
 async function mixedOptimization(){
  var opt=settings(),types=furnitureConfig(),games=gamesReady(),validGames=games.filter(function(g){return g.dims;}),remaining=validGames.slice(),allCubes=[],packed=0,totalArea=0,totalVolume=0,chosen=[],byId=new Map(validGames.map(function(g){return[g.id,g];}));
- if(!types.length){tell("Enter at least one existing shelving unit for this mode.");return;}
+ if(!types.length){state.plan=null;updateAll();tell("Enter at least one existing shelving unit for this mode.");return;}
  // Different compartment geometries are solved independently; the residual inventory is passed to the next furniture type.
  // Evaluate several type orders and retain the plan that houses the most games in existing furniture.
- var sequences=[types.slice(),types.slice().reverse(),types.slice().sort(function(a,b){return b.w*b.h-a.w*a.h;}),types.slice().sort(function(a,b){return a.w*b.h-b.w*a.h;})],bestGlobal=null;
+ var sequences=[types.slice(),types.slice().reverse(),types.slice().sort(function(a,b){return b.w*b.h-a.w*a.h;}),types.slice().sort(function(a,b){return a.w*a.h-b.w*b.h;})],bestGlobal=null;
  for(var z=0;z<sequences.length;z++){
   var rest=validGames.slice(),pieces=[],volume=0,area=0;
   for(var t=0;t<sequences[z].length;t++){
    var unit=sequences[z][t],local=Object.assign({},opt,{w:unit.w,h:unit.h,d:unit.d,maxCubes:unit.count}),fits=rest.filter(function(g){return KallaxCore.rotate(g,local).length;}),map=new Map(fits.map(function(g){return[g.id,g];})),best=null;
    for(var j=0;j<Math.min(opt.rounds,12);j++){var p=KallaxCore.attempt(fits,local,j+z*3,map);if(KallaxCore.better(p,best,local))best=p;}
    if(best){
-    best.cubes.forEach(function(c,i){pieces.push({boxes:c.boxes,shelfType:unit.type,unitIndex:Math.floor(i/unit.perUnit)+1,level:i%unit.perUnit+1,dims:{w:unit.w,h:unit.h,d:unit.d}});});
+    best.cubes.forEach(function(c,i){var actualUnit=Math.min(unit.units||Math.ceil(unit.count/unit.perUnit),Math.floor(i/unit.perUnit)+1),level=i%unit.perUnit+1;if(unit.tops&&i>=unit.units*unit.levels){actualUnit=i-unit.units*unit.levels+1;level=unit.levels+1;}pieces.push({boxes:c.boxes,shelfType:unit.type,unitIndex:actualUnit,level:level,dims:{w:unit.w,h:unit.h,d:unit.d}});});
     var used=new Set(best.cubes.flatMap(function(c){return c.boxes.map(function(b){return b.id;});}));rest=rest.filter(function(g){return!used.has(g.id);});volume+=best.volume;area+=best.area;
    }
   }
@@ -559,7 +559,7 @@ async function mixedOptimization(){
 }
 async function runOptimization(){
  if(state.loading||state.optimizing)return;
- if(!state.games.length){tell("Load a collection first.");return;}
+ if(!state.games.length){tell("1 · Enter your BGG username and click Use collection first.");return;}
  var opt;try{opt=settings();}catch(e){tell(e.message);return;}
  if($("layoutMode").value){saveSettings();state.optimizing=true;state.cancel=false;$("optimize").disabled=true;try{await mixedOptimization();}catch(e){tell("Mixed packing error: "+e.message);console.error(e);}finally{state.optimizing=false;$("optimize").disabled=false;}return;}
  saveSettings();state.optimizing=true;state.cancel=false;$("optimize").disabled=true;$("cancel").classList.remove("hide");
@@ -651,7 +651,7 @@ restoreSettings();$("billyOpts").classList.toggle("hide",$("furniture").value===
 var userSaved=localStorage.getItem("kallax-lab-last-user");if(userSaved)$("username").value=userSaved;
 if(userSaved){restoreCollection(userSaved).then(function(restored){if(restored)runOptimization();});}
 on("load",function(){try{localStorage.setItem("kallax-lab-last-user",$("username").value.trim());}catch(e){}loadCollection(false);});
-on("refresh",function(){loadCollection(true);});
+on("refresh",function(){if(confirm("Refresh your BGG collection and re-fetch all edition / family data? Existing saved snapshots remain available if this fails."))loadCollection(true);});
 on("demo",sample);on("optimize",runOptimization);on("compare",compareFurniture);$("furniture").addEventListener("change",furnitureChanged);on("cancel",function(){state.cancel=true;});
 on("exportCsv",function(){exportPlan("csv");});on("exportJson",function(){exportPlan("json");});on("print",function(){if(!state.plan){tell("Create a plan first.");return;}switchTab("plan");window.print();});
 on("resetEdits",function(){if(!state.games.length)return;if(!confirm("Reset manual dimensions, editions, and exclusions for this collection?"))return;state.edits={};saveEdits();runOptimization();});
