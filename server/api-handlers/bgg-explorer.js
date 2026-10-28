@@ -7,7 +7,7 @@ const TYPES=Object.freeze({
  designer:{objecttype:'person',linkdata_index:'boardgamedesigner',subtype:'boardgame',path:'boardgamedesigner'},
  developer:{objecttype:'person',linkdata_index:'boardgamedeveloper',subtype:'boardgame',path:'boardgamedesigner'},
  artist:{objecttype:'person',linkdata_index:'boardgameartist',subtype:'boardgame',path:'boardgameartist'},
- mechanic:{objecttype:'property',linkdata_index:'boardgamemechanic',subtype:'boardgame',path:'boardgamemechanic'},
+ mechanic:{objecttype:'property',linkdata_index:'boardgame',subtype:'boardgamemechanic',path:'boardgamemechanic'},
  category:{objecttype:'property',linkdata_index:'boardgamecategory',subtype:'boardgame',path:'boardgamecategory'}
 });
 const num=(x)=>Number(x)||0;
@@ -100,10 +100,15 @@ module.exports=async(req,res)=>{
    return res.status(502).json({error:'Unexpected linkeditems response. This entity type may not be supported.',type});
   }
   const total=Number(data.config.numitems);
+  // BGG includes the current property label in linkeditems config.filters.
+  // This is a useful, HAR-verified fallback when the public page title cannot be read.
+  const propertyFilters=type==='mechanic'||type==='category'?(data.config.filters||[]):[];
+  const entityName=propertyFilters.flatMap(f=>Array.isArray(f.options)?f.options:[])
+   .find(o=>Number(o.objectid)===id)?.name||'';
   const games=data.items.map(normalize).filter(g=>g.id);
   res.setHeader('Cache-Control','public, s-maxage=900, stale-while-revalidate=3600');
   return res.status(200).json({type,id,page,pageSize:25,total:Number.isFinite(total)&&total>=0?total:games.length,
-   games,hasMore:Number.isFinite(total)&&total>=0?page*25<total:games.length===25,
+   games,entityName,hasMore:Number.isFinite(total)&&total>=0?page*25<total:games.length===25,
    source:'BGG linkeditems'});
  }catch(e){
   console.error('BGG Explorer',type,id,kind,page,e.message);
