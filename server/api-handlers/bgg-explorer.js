@@ -153,7 +153,7 @@ function parseBrowse(html,kind,page){
  const highest=Math.max(page,...linkedPageNumbers,lastFromNav);
  const htmlTitle=html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]||'';
  return {items:[...ids.values()],page,totalPages:highest,
-  hasMore:page<highest||((ids.size>=75)&&!lastFromNav),
+  hasMore:page<highest||/Next\s*(?:»|&raquo;|&#187;|›)/i.test(html),
   source:kind==='developer'?'BGG designer directory (developer candidates)':'BGG public browse directory',
   note:kind==='developer'?'BGG does not expose a verified independent developer directory; entries are designer candidates, not confirmed developer credits.':'',
   browseUrl:'https://boardgamegeek.com/browse/'+path+'/page/'+page,
