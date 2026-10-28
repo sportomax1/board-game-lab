@@ -22,7 +22,7 @@ function xmlDecode(v){
   return {'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'",'&AMP;':'&'}[whole]||whole;
  });
 }
-function cleanHtml(v){return xmlDecode(String(v||'').replace(/<br\s*\/?>/gi,'\n').replace(/<\/p>/gi,'\n').replace(/<[^>]*>/g,'')).trim();}
+function cleanHtml(v){return xmlDecode(xmlDecode(String(v||''))).replace(/<br\s*\/?>/gi,'\n').replace(/<\/p>/gi,'\n').replace(/<[^>]*>/g,'').trim();}
 function parseXmlFamily(xml,id){
  const item=xml.match(/<item\b([^>]*)>([\s\S]*?)<\/item>/i);
  if(!item || Number(item[1].match(/\bid=["'](\d+)["']/)?.[1])!==id)return null;
