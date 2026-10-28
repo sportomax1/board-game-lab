@@ -184,6 +184,8 @@ function setData(items,meta={},complete=false){
   ui.title.textContent=meta.name ? `${meta.name} Explorer` : 'GeekPreview Explorer';
   ui.event.textContent=[meta.location,meta.startDate,meta.endDate && meta.endDate!==meta.startDate ? `to ${meta.endDate}` : ''].filter(Boolean).join(' · ') || 'BoardGameGeek convention previews';
   ui.sourceLink.href=safeUrl(meta.originalUrl)||`https://boardgamegeek.com/geekpreview/${state.previewId}`;
+  if(state.complete&&state.items.length){state.counts[String(state.previewId)]={count:state.items.length,when:Date.now()};localWrite(CATALOG_COUNT_KEY,state.counts)}
+  if(state.catalog.length)renderCatalog();
   ui.statItems.textContent=num(state.items.length);
   ui.statUnique.textContent=num(unique(state.items.map(x=>x.bggId)).length);
   ui.statPublishers.textContent=num(unique(state.items.flatMap(x=>x.publishers)).length);
@@ -285,6 +287,7 @@ async function live(){
 async function initialize(force=false){
   if(state.loading)return;
   const id=Number(ui.previewId.value);if(!Number.isInteger(id)||id<1||id>9999){status('Preview ID must be between 1 and 9999.','error');return;}
+  if(state.previewId!==id){state.previewId=id;state.items=[];state.meta=null;state.complete=false;setData([],{},false);}
   state.previewId=id;history.replaceState(null,'',`${location.pathname}?preview=${id}`);
   ui.query.value='';ui.publisher.value='';ui.type.value='all';ui.availability.value='all';state.visible=48;
   if(!force){const cached=await cacheGet(id);if(cached?.items?.length){setData(cached.items,cached.meta||{},!!cached.complete);state.cacheTime=cached.when||0;status(`Loaded ${num(cached.items.length)} listings from browser cache (${new Date(cached.when).toLocaleString()}). Use Refresh live to update.`,'good');if(cached.complete&&Date.now()-cached.when<24*60*60*1000)return;}}
@@ -319,6 +322,18 @@ async function importFile(file){if(!file)return;
 }
 function exportCSV(){const keys=['previewItemId','bggId','name','year','publishers','designers','artists','location','availability','playersMin','playersMax','playtimeMin','playtimeMax','minAge','rating','ratingCount','rank','thumbs','mustHave','interested','undecided','price','currency','expansion','bggUrl','previewUrl','description'];const rows=[keys,...state.filtered.map(g=>keys.map(k=>k==='price'?g.price?.amount||'':k==='currency'?g.price?.currency||'':k==='expansion'?g.subtypes.includes('boardgameexpansion'):Array.isArray(g[k])?g[k].join(' | '):g[k]??''))];const csv=rows.map(row=>row.map(v=>`"${String(v).replace(/"/g,'""')}"`).join(',')).join('\r\n');download('\uFEFF'+csv,fileName('csv'),'text/csv;charset=utf-8');}
 function exportJSON(){download(JSON.stringify({previewId:state.previewId,meta:state.meta,items:state.items,complete:state.complete,exportedAt:new Date().toISOString()},null,2),fileName('json'),'application/json');}
+ui.showCatalog.addEventListener('click',()=>setCatalogVisible(ui.catalogPanel.hidden));
+ui.hideCatalog.addEventListener('click',()=>setCatalogVisible(false));
+ui.catalogQuery.addEventListener('input',renderCatalog);
+ui.catalogYear.addEventListener('change',renderCatalog);
+ui.refreshCatalog.addEventListener('click',()=>loadCatalog(true));
+ui.fetchCounts.addEventListener('click',loadCatalogCounts);
+ui.catalogGrid.addEventListener('click',event=>{
+ const target=event.target.closest('[data-preview-open]');if(!target)return;
+ const id=Number(target.dataset.previewOpen);if(!Number.isSafeInteger(id)||id<1||id>9999)return;
+ if(state.loading){status('Stop the current preview load before switching.','error');return;}
+ ui.previewId.value=id;setCatalogVisible(false);initialize(false);
+});
 ui.load.addEventListener('click',()=>initialize(false));ui.refresh.addEventListener('click',()=>initialize(true));ui.cancel.addEventListener('click',()=>state.controller?.abort());ui.previewId.addEventListener('keydown',e=>{if(e.key==='Enter')initialize(false)});
 for(const id of ['query','publisher','type','availability','sort'])ui[id].addEventListener(id==='query'?'input':'change',()=>{state.visible=48;applyFilters()});
 ui.clearFilters.addEventListener('click',()=>{ui.query.value='';ui.publisher.value='';ui.type.value='all';ui.availability.value='all';ui.sort.value='hot';state.visible=48;applyFilters()});
@@ -329,6 +344,7 @@ ui.closeDetail.addEventListener('click',()=>ui.detail.close());ui.detail.addEven
 ui.exportJson.addEventListener('click',exportJSON);ui.exportCsv.addEventListener('click',exportCSV);ui.fileInput.addEventListener('change',e=>importFile(e.target.files[0]));
 const initialId=Number(new URLSearchParams(location.search).get('preview'));if(Number.isInteger(initialId)&&initialId>0&&initialId<=9999)ui.previewId.value=initialId;
 initialize(false);
+loadCatalog(false);
 </script>
 </body>
 </html>
