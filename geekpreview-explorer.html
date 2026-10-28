@@ -28,6 +28,9 @@ dialog{border:0;border-radius:16px;padding:0;width:min(690px,calc(100vw - 24px))
 @media(max-width:600px){.brandlock strong{font-size:14px}.brandlock .overline{font-size:8px}.topnav .navlink{display:none}.topnav .btn{min-height:35px;padding:7px 10px;font-size:12px}.event-hero{min-height:216px;border-radius:15px;padding:23px 19px}.event-hero h1{font-size:32px}.hero-bottom{margin-top:21px;align-items:end}.hero-controls .btn{padding:7px 10px;font-size:11px}.metrics{grid-template-columns:repeat(2,minmax(0,1fr));margin:12px 0 24px}.metric{padding:14px}.metric .value{font-size:24px}.section-intro h2{font-size:20px}.data-actions{width:100%;display:grid;grid-template-columns:repeat(3,minmax(0,1fr))}.data-actions .btn{padding:8px 5px;font-size:11px;min-width:0}.filterbar{padding:11px}.search-row{grid-template-columns:minmax(0,1fr)}.view-toggle{justify-content:stretch;height:40px}.view-toggle button{flex:1;height:33px}.filter-grid{grid-template-columns:repeat(2,minmax(0,1fr));gap:8px}.cards{grid-template-columns:repeat(2,minmax(0,1fr));gap:9px}.art{height:130px;padding:6px}.game-body{padding:10px;gap:7px}.game-title{font-size:13px}.game-meta{font-size:11px}.game-desc{display:none}.tag{font-size:9px}.game-footer{padding-top:8px;flex-wrap:wrap}.game-footer .btn{min-height:30px;width:100%}.detail-grid{grid-template-columns:repeat(2,minmax(0,1fr))}.dialog-content{padding:15px}.dialog-head{padding:11px 15px}}
 @media(max-width:360px){.cards{grid-template-columns:1fr}.art{height:200px}.game-footer .btn{width:auto}}
 
+.sr-only{position:absolute!important;width:1px;height:1px;padding:0;margin:-1px;overflow:hidden;clip:rect(0,0,0,0);white-space:nowrap;border:0}
+.workspace.sidebar-collapsed{grid-template-columns:minmax(0,1fr)}
+@media(max-width:880px){.workspace.sidebar-collapsed{display:block}}
 </style>
 </head>
 <body>
@@ -161,7 +164,7 @@ const state = {previewId:93,meta:null,items:[],filtered:[],view:'cards',visible:
       const url=safeUrl(item.url)||`https://boardgamegeek.com/geekpreview/${item.id}`;
       const saved=state.counts[String(item.id)];
       const count=saved&&Number.isFinite(Number(saved.count))?num(saved.count)+' listings':'Count not loaded';
-      return `<article class="catalog-item${current?' current':''}" role="listitem">
+      return `<article class="catalog-item${current?' current':''}" role="listitem" data-preview-open="${item.id}" tabindex="0" aria-label="Open ${esc(item.name)}">
         <div><div class="catalog-title">${esc(item.name||'Preview #'+item.id)}</div>
         <div class="catalog-muted">${esc(catalogDate(item))}${item.location?' · '+esc(item.location):''} · #${item.id}</div></div>
         <div class="catalog-foot"><span class="catalog-count">${esc(count)}</span>
@@ -228,8 +231,13 @@ const state = {previewId:93,meta:null,items:[],filtered:[],view:'cards',visible:
     }
   }
   function setCatalogVisible(open){
-    ui.catalogPanel.hidden=!open;ui.showCatalog.setAttribute('aria-expanded',String(open));
-    if(open)ui.catalogQuery.focus();
+    const mobile=window.matchMedia('(max-width:880px)').matches;
+    ui.catalogPanel.hidden=!open;
+    document.querySelector('.workspace').classList.toggle('sidebar-collapsed',!open);
+    document.body.classList.toggle('drawer-open',open&&mobile);
+    ui.showCatalog.setAttribute('aria-expanded',String(open));
+    if(open&&mobile)ui.catalogQuery.focus();
+    else if(!open&&mobile)ui.showCatalog.focus();
   }
 
 function normalize(raw) {
@@ -401,15 +409,28 @@ function exportCSV(){const keys=['previewItemId','bggId','name','year','publishe
 function exportJSON(){download(JSON.stringify({previewId:state.previewId,meta:state.meta,items:state.items,complete:state.complete,exportedAt:new Date().toISOString()},null,2),fileName('json'),'application/json');}
 ui.showCatalog.addEventListener('click',()=>setCatalogVisible(ui.catalogPanel.hidden));
 ui.hideCatalog.addEventListener('click',()=>setCatalogVisible(false));
+$('drawerBackdrop').addEventListener('click',()=>setCatalogVisible(false));
+window.addEventListener('keydown',e=>{if(e.key==='Escape'&&document.body.classList.contains('drawer-open'))setCatalogVisible(false);});
+window.addEventListener('resize',()=>{
+  document.body.classList.toggle('drawer-open',!ui.catalogPanel.hidden&&window.matchMedia('(max-width:880px)').matches);
+});
 ui.catalogQuery.addEventListener('input',renderCatalog);
 ui.catalogYear.addEventListener('change',renderCatalog);
 ui.refreshCatalog.addEventListener('click',()=>loadCatalog(true));
 ui.fetchCounts.addEventListener('click',loadCatalogCounts);
 ui.catalogGrid.addEventListener('click',event=>{
+ if(event.target.closest('a'))return;
  const target=event.target.closest('[data-preview-open]');if(!target)return;
  const id=Number(target.dataset.previewOpen);if(!Number.isSafeInteger(id)||id<1||id>9999)return;
  if(state.loading){status('Stop the current preview load before switching.','error');return;}
- ui.previewId.value=id;setCatalogVisible(false);initialize(false);
+ ui.previewId.value=id;
+ if(window.matchMedia('(max-width:880px)').matches)setCatalogVisible(false);
+ initialize(false);
+});
+ui.catalogGrid.addEventListener('keydown',event=>{
+ if((event.key==='Enter'||event.key===' ')&&event.target.classList.contains('catalog-item')){
+  event.preventDefault();event.target.click();
+ }
 });
 ui.load.addEventListener('click',()=>initialize(false));ui.refresh.addEventListener('click',()=>initialize(true));ui.cancel.addEventListener('click',()=>state.controller?.abort());ui.previewId.addEventListener('keydown',e=>{if(e.key==='Enter')initialize(false)});
 for(const id of ['query','publisher','type','availability','sort'])ui[id].addEventListener(id==='query'?'input':'change',()=>{state.visible=48;applyFilters()});
@@ -420,6 +441,7 @@ for(const el of [ui.cards,ui.table])el.addEventListener('click',event=>{const ta
 ui.closeDetail.addEventListener('click',()=>ui.detail.close());ui.detail.addEventListener('click',event=>{if(event.target===ui.detail)ui.detail.close()});
 ui.exportJson.addEventListener('click',exportJSON);ui.exportCsv.addEventListener('click',exportCSV);ui.fileInput.addEventListener('change',e=>importFile(e.target.files[0]));
 const initialId=Number(new URLSearchParams(location.search).get('preview'));if(Number.isInteger(initialId)&&initialId>0&&initialId<=9999)ui.previewId.value=initialId;
+if(window.matchMedia('(max-width:880px)').matches)setCatalogVisible(false);
 initialize(false);
 loadCatalog(false);
 </script>
