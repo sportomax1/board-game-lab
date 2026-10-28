@@ -15,12 +15,61 @@ function normalize(row){
   image:{src:img}
  };
 }
+
+function xmlDecode(v){
+ return String(v||'').replace(/&(?:#x([0-9a-f]+)|#(\d+)|amp|lt|gt|quot|apos);/gi,(whole,hex,dec)=>{
+  if(hex||dec){const code=parseInt(hex||dec,hex?16:10);return code>0&&code<=0x10ffff?String.fromCodePoint(code):whole;}
+  return {'&amp;':'&','&lt;':'<','&gt;':'>','&quot;':'"','&apos;':"'",'&AMP;':'&'}[whole]||whole;
+ });
+}
+function cleanHtml(v){return xmlDecode(String(v||'').replace(/<br\s*\/?>/gi,'\n').replace(/<\/p>/gi,'\n').replace(/<[^>]*>/g,'')).trim();}
+function parseXmlFamily(xml,id){
+ const item=xml.match(/<item\b([^>]*)>([\s\S]*?)<\/item>/i);
+ if(!item || Number(item[1].match(/\bid=["'](\d+)["']/)?.[1])!==id)return null;
+ const body=item[2];
+ const primary=body.match(/<name\b[^>]*\bvalue=(["'])(.*?)\1[^>]*\/?>/i);
+ const desc=body.match(/<description>([\s\S]*?)<\/description>/i);
+ const name=primary?xmlDecode(primary[2]).trim():'';
+ const description=desc?cleanHtml(desc[1]).slice(0,5000):'';
+ return name?{id,name,description,available:true,source:'BGG XML API2'}:null;
+}
+async function familyMeta(id){
+ let firstError='';
+ try{
+  const r=await fetch('https://boardgamegeek.com/xmlapi2/family?id='+id+'&type=boardgamefamily',
+   {headers:{Accept:'application/xml,text/xml'},signal:AbortSignal.timeout(10000)});
+  if(r.ok){
+   const parsed=parseXmlFamily(await r.text(),id);
+   if(parsed)return parsed;
+   firstError='XML API returned no family metadata';
+  }else firstError='XML API HTTP '+r.status;
+ }catch(e){firstError='XML API: '+e.message}
+ try{
+  const r=await fetch('https://boardgamegeek.com/boardgamefamily/'+id,
+   {headers:{Accept:'text/html'},signal:AbortSignal.timeout(10000)});
+  if(r.ok){
+   const html=await r.text();
+   const title=html.match(/<meta\b[^>]*\bproperty=["']og:title["'][^>]*\bcontent=(["'])(.*?)\1/i)?.[2]
+     ||html.match(/<title>([^<]*)<\/title>/i)?.[1]||'';
+   const name=xmlDecode(title).replace(/\s*\|\s*BoardGameGeek.*$/i,'').trim();
+   if(name && !/^(boardgamegeek|just a moment|access denied)/i.test(name))
+    return {id,name,description:'',available:true,source:'BGG page title'};
+  }
+ }catch(e){}
+ return {id,name:'',description:'',available:false,reason:firstError||'Family information unavailable'};
+}
+
 module.exports=async(req,res)=>{
  res.setHeader('Content-Type','application/json; charset=utf-8');
  if(req.method!=='GET'){res.setHeader('Allow','GET');return res.status(405).json({error:'Only GET supported'});}
  const id=int(req.query.familyid,1,9999999);
  const page=int(req.query.page,1,250);
  if(id===null||page===null)return res.status(400).json({error:'Invalid familyid or page'});
+ if(req.query.kind==='meta'){
+  const data=await familyMeta(id);
+  res.setHeader('Cache-Control',data.available?'public, s-maxage=86400, stale-while-revalidate=604800':'public, s-maxage=180');
+  return res.status(200).json(data);
+ }
  const q=new URLSearchParams({
   ajax:'1',linkdata_index:'boardgame',nosession:'1',
   objectid:String(id),objecttype:'family',pageid:String(page),
