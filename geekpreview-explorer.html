@@ -64,6 +64,97 @@ const API = '/api/geekpreview';
 const CACHE_VERSION = 2;
 const state = {previewId:93,meta:null,items:[],filtered:[],view:'cards',visible:48,loading:false,controller:null,cacheTime:0,complete:false,catalog:[],catalogMeta:null,catalogLoading:false,countLoading:false,counts:{}};
 
+
+  const CATALOG_CACHE_KEY='bgl:geekpreview:catalog:v1';
+  const CATALOG_COUNT_KEY='bgl:geekpreview:counts:v1';
+  function localRead(key){try{return JSON.parse(localStorage.getItem(key)||'null')}catch{return null}}
+  function localWrite(key,value){try{localStorage.setItem(key,JSON.stringify(value))}catch{}}
+  state.counts=localRead(CATALOG_COUNT_KEY)||{};
+  function catalogDate(item){
+    const date=String(item.startDate||'');
+    if(/^\d{4}-\d{2}-\d{2}$/.test(date))return new Date(date+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
+    return 'Date not available';
+  }
+  function renderCatalog(){
+    const q=ui.catalogQuery.value.toLocaleLowerCase().trim(),year=ui.catalogYear.value;
+    const matches=state.catalog.filter(item=>(!year||String(item.startDate||'').startsWith(year))&&
+      (!q||[item.name,item.location,item.startDate,item.id].join(' ').toLocaleLowerCase().includes(q)));
+    ui.catalogGrid.innerHTML=matches.map(item=>{
+      const current=item.id===state.previewId;
+      const url=safeUrl(item.url)||`https://boardgamegeek.com/geekpreview/${item.id}`;
+      const saved=state.counts[String(item.id)];
+      const count=saved&&Number.isFinite(Number(saved.count))?num(saved.count)+' listings':'Count not loaded';
+      return `<article class="catalog-item${current?' current':''}" role="listitem">
+        <div><div class="catalog-title">${esc(item.name||'Preview #'+item.id)}</div>
+        <div class="catalog-muted">${esc(catalogDate(item))}${item.location?' · '+esc(item.location):''} · #${item.id}</div></div>
+        <div class="catalog-foot"><span class="catalog-count">${esc(count)}</span>
+          <div class="catalog-links"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">BGG ↗</a>
+          <button type="button" class="btn primary" data-preview-open="${item.id}" ${state.loading?'disabled':''}>${current?'Reload':'Open preview'}</button></div></div>
+      </article>`;
+    }).join('')||'<div class="empty" style="grid-column:1/-1">No preview titles match your search.</div>';
+    const label=state.catalogMeta?.complete?'BGG directory':'Verified preview subset';
+    ui.catalogInfo.textContent=`${num(matches.length)} matching · ${num(state.catalog.length)} listed · ${label}. ${state.catalogMeta?.note||''}`;
+    ui.fetchCounts.disabled=state.countLoading||!matches.length;
+    ui.fetchCounts.textContent=state.countLoading?'Loading counts…':'Get listing counts';
+  }
+  async function loadCatalog(force=false){
+    if(state.catalogLoading)return;
+    state.catalogLoading=true;ui.refreshCatalog.disabled=true;
+    ui.catalogInfo.textContent='Loading BGG preview directory…';
+    try{
+      let payload;const saved=localRead(CATALOG_CACHE_KEY);
+      if(!force&&saved?.previews?.length&&Date.now()-(saved.when||0)<(saved.complete?12*3600e3:3600e3))payload=saved;
+      else{payload=await getJson(`${API}?kind=catalog${force?'&refresh=1':''}`);localWrite(CATALOG_CACHE_KEY,{...payload,when:Date.now()});}
+      state.catalog=payload.previews.filter(x=>Number.isSafeInteger(Number(x.id))&&x.name).map(x=>({...x,id:Number(x.id)}));
+      state.catalogMeta=payload;
+      const years=unique(state.catalog.map(x=>String(x.startDate||'').slice(0,4)).filter(x=>/^\d{4}$/.test(x))).sort((a,b)=>b.localeCompare(a));
+      const prevYear=ui.catalogYear.value;
+      ui.catalogYear.replaceChildren(new Option('All years',''),...years.map(y=>new Option(y,y)));
+      if(years.includes(prevYear))ui.catalogYear.value=prevYear;
+      renderCatalog();
+    }catch(err){
+      const backup=localRead(CATALOG_CACHE_KEY);
+      if(backup?.previews?.length){state.catalog=backup.previews;state.catalogMeta={...backup,complete:false,note:'Using last saved directory: '+err.message};}
+      else{state.catalog=[{id:93,name:'SPIEL Essen 2026',startDate:'2026-10-22',location:'Essen, Germany'}];state.catalogMeta={complete:false,note:'Directory unavailable: '+err.message+'. Enter another BGG preview ID manually or retry.'};}
+      renderCatalog();
+    }finally{state.catalogLoading=false;ui.refreshCatalog.disabled=false;}
+  }
+  async function loadCatalogCounts(){
+    if(state.countLoading)return;
+    const q=ui.catalogQuery.value.toLocaleLowerCase().trim(),year=ui.catalogYear.value;
+    const targets=state.catalog.filter(x=>(!year||String(x.startDate||'').startsWith(year))&&
+      (!q||[x.name,x.location,x.startDate,x.id].join(' ').toLocaleLowerCase().includes(q)))
+      .filter(x=>!state.counts[String(x.id)]||Date.now()-Number(state.counts[String(x.id)].when||0)>24*3600e3);
+    if(!targets.length){ui.catalogInfo.textContent='All matching preview counts are cached from the last 24 hours.';return;}
+    state.countLoading=true;ui.fetchCounts.disabled=true;
+    let next=0,done=0,failed=0;
+    const worker=async()=>{
+      while(next<targets.length){
+        const item=targets[next++];
+        try{
+          const meta=await getJson(`${API}?${params({kind:'meta',previewid:item.id})}`);
+          if(!Number.isFinite(Number(meta.totalItems)))throw Error('Missing count');
+          state.counts[String(item.id)]={count:Number(meta.totalItems),when:Date.now()};
+          if(meta.startDate)item.startDate=meta.startDate;
+          if(meta.location)item.location=meta.location;
+          if(meta.name)item.name=meta.name;
+          localWrite(CATALOG_COUNT_KEY,state.counts);
+        }catch(e){failed++;}
+        done++;renderCatalog();
+        ui.catalogInfo.textContent=`Fetching counts ${done}/${targets.length} · ${failed} unavailable (not estimated).`;
+        await new Promise(resolve=>setTimeout(resolve,550));
+      }
+    };
+    try{await Promise.all([worker(),worker()]);}finally{
+      state.countLoading=false;renderCatalog();
+      if(failed)ui.catalogInfo.textContent+=` · ${failed} count(s) unavailable from BGG.`;
+    }
+  }
+  function setCatalogVisible(open){
+    ui.catalogPanel.hidden=!open;ui.showCatalog.setAttribute('aria-expanded',String(open));
+    if(open)ui.catalogQuery.focus();
+  }
+
 function normalize(raw) {
   const game = raw.geekitem?.item || {};
   const links = game.links || {};
