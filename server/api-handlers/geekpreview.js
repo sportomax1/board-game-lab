@@ -28,12 +28,76 @@ async function request(path){
  if(!response.ok){const e=new Error('Geekdo returned HTTP '+response.status);e.status=response.status;throw e}
  return response.json();
 }
+
+// The BGG /previews directory is the authoritative discovery source when available.
+// Keep known, verified preview IDs for periods when the site blocks automated reads.
+const CATALOG_SEEDS = [
+ {id:94,name:'PAX Unplugged 2026 Preview',startDate:'2026-12-04',location:'Philadelphia, PA'},
+ {id:93,name:'SPIEL Essen 2026',startDate:'2026-10-22',location:'Essen, Germany'},
+ {id:92,name:'Gen Con 2026 Preview',startDate:'2026-07-30',location:'Indianapolis, IN'},
+ {id:91,name:'Origins Game Fair 2026 Preview',startDate:'2026-06-17',location:'Columbus, OH'},
+ {id:87,name:'Game Market 2026 Spring Preview',startDate:'2026-05-23',location:'Chiba, Japan'},
+ {id:86,name:'UK Games Expo',startDate:'2026-05-29',location:'Birmingham, UK'},
+ {id:81,name:'2025 BoardGameGeek Holiday Gift Guide',startDate:'2025-11-25',location:'Everywhere'},
+ {id:78,name:'SPIEL Essen 25 Preview',startDate:'2025-10-23',location:'Essen, Germany'},
+ {id:77,name:'Gen Con 2025 Preview',startDate:'2025-07-31',location:'Indianapolis, IN'},
+ {id:75,name:'Game Market 2025 Spring Preview',startDate:'2025-05-17',location:'Chiba, Japan'},
+ {id:68,name:'SPIEL Essen 24 Preview',startDate:'2024-10-03',location:'Essen, Germany'}
+];
+const unescapeHtml = v => String(v||'').replace(/&(#x[0-9a-f]+|#\d+|amp|quot|apos|lt|gt|nbsp);/gi,(whole,key)=>{
+ const known={amp:'&',quot:'"',apos:"'",lt:'<',gt:'>',nbsp:' '};
+ const lower=key.toLowerCase();
+ if(known[lower])return known[lower];
+ const value=lower.startsWith('#x')?parseInt(lower.slice(2),16):parseInt(lower.slice(1),10);
+ return Number.isInteger(value)&&value>0&&value<=0x10ffff?String.fromCodePoint(value):whole;
+});
+const textOnly = html => unescapeHtml(String(html||'').replace(/<[^>]*>/g,' ').replace(/\s+/g,' ').trim());
+function catalogFromHtml(html){
+ const items=new Map();
+ // SSR links for https://boardgamegeek.com/previews.
+ const anchor=/<a\b[^>]*\bhref\s*=\s*(["'])([^"']*\/geekpreview\/(\d+)(?:\/[^"']*)?)\1[^>]*>([\s\S]*?)<\/a\s*>/gi;
+ for(const m of html.matchAll(anchor)){
+  const id=Number(m[3]);
+  if(!Number.isSafeInteger(id)||id<1||id>9999)continue;
+  const heading=m[4].match(/<h[1-6]\b[^>]*>([\s\S]*?)<\/h[1-6]>/i);
+  const name=textOnly(heading?heading[1]:m[4]).slice(0,170);
+  if(!name||/^(view|read|learn|image|preview)$/i.test(name))continue;
+  const url='https://boardgamegeek.com'+new URL(m[2],'https://boardgamegeek.com').pathname;
+  const old=items.get(id);
+  if(!old||name.length<old.name.length)items.set(id,{id,name,url});
+ }
+ return [...items.values()];
+}
+async function previewCatalog(){
+ const fallback=CATALOG_SEEDS.map(e=>({...e,url:'https://boardgamegeek.com/geekpreview/'+e.id}));
+ try{
+  const r=await fetch('https://boardgamegeek.com/previews',{
+   headers:{Accept:'text/html','User-Agent':'Mozilla/5.0 (compatible; BoardGameLabPreviewDirectory/1.0)'},
+   signal:AbortSignal.timeout(11000)
+  });
+  if(!r.ok)throw Error('BGG directory HTTP '+r.status);
+  const html=await r.text();
+  const discovered=catalogFromHtml(html);
+  if(discovered.length<8)throw Error('Could not extract preview links from directory');
+  const all=new Map(fallback.map(e=>[e.id,e]));
+  for(const item of discovered)all.set(item.id,{...all.get(item.id),...item});
+  return {previews:[...all.values()].sort((a,b)=>b.id-a.id),complete:true,
+   source:'BGG /previews directory',discovered:discovered.length,
+   note:'Live directory titles; listing counts can be fetched separately.'};
+ }catch(error){
+  return {previews:fallback.sort((a,b)=>b.id-a.id),complete:false,
+   source:'Verified saved selections',discovered:0,
+   note:'BGG directory could not be read ('+error.message+'). Showing verified previews only. Other previews can still be opened by entering their BGG preview ID.'};
+ }
+}
+
 module.exports=async(req,res)=>{
  res.setHeader('Content-Type','application/json; charset=utf-8');
  if(req.method!=='GET'){res.setHeader('Allow','GET');return res.status(405).json({error:'Only GET supported'})}
  const previewId=integer(req.query.previewid,93,1,9999),kind=String(req.query.kind||'meta');
  res.setHeader('Cache-Control','public, s-maxage=600, stale-while-revalidate=1200');
  try{
+  if(kind==='catalog')return res.status(200).json(await previewCatalog());
   if(kind==='meta'){
    const m=await request('/api/preview/'+previewId);
    const totalItems=Number(m.config?.numitems)||0;
