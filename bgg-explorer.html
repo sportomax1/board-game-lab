@@ -484,6 +484,7 @@ async function discover(id){
 }
 
 function start(force){
+ dir.token++;dir.indexing=false;ui.directoryWorkspace.hidden=true;ui.resultsWorkspace.hidden=false;
  const requestedAuto=ui.typeSelect.value==='auto';
  let parsed;
  try{parsed=detect(ui.entityInput.value,ui.typeSelect.value)}catch(err){setStatus(err.message,'error');return}
@@ -512,8 +513,8 @@ function exportCsv(){
  const url=URL.createObjectURL(blob),a=document.createElement('a');
  a.href=url;a.download='bgg-'+state.type+'-'+state.id+'-games.csv';a.click();setTimeout(()=>URL.revokeObjectURL(url),2000);
 }
-ui.typeNav.addEventListener('click',e=>{const b=e.target.closest('[data-type]');if(!b)return;selectType(b.dataset.type,true);});
-ui.typeSelect.addEventListener('change',()=>selectType(ui.typeSelect.value,true));
+ui.typeNav.addEventListener('click',e=>{const b=e.target.closest('[data-type]');if(!b)return;if(b.dataset.type==='auto'){ui.typeSelect.value='auto';start();}else openDirectory(b.dataset.type);});
+ui.typeSelect.addEventListener('change',()=>{if(ui.typeSelect.value==='auto')start();else openDirectory(ui.typeSelect.value);});
 ui.entityInput.addEventListener('input',()=>{
  const text=ui.entityInput.value,route=text.match(/boardgame(?:family|publisher|designer|developer|artist|mechanic|category)|geekpreview/i);
  if(!route)return;
@@ -535,10 +536,43 @@ for(const view of ['cards','table'])ui[view==='cards'?'gridBtn':'tableBtn'].addE
  ui.gridBtn.setAttribute('aria-pressed',String(view==='cards'));ui.tableBtn.setAttribute('aria-pressed',String(view==='table'));render();
 });
 ui.matchButtons.addEventListener('click',e=>{const b=e.target.closest('[data-match-type]');if(!b)return;const type=b.dataset.matchType;if(!TYPES[type])return;const wasAuto=ui.typeSelect.value==='auto';ui.typeSelect.value=type;ui.entityInput.value=String(state.matchedId);start();if(wasAuto){ui.typeSelect.value='auto';for(const n of ui.typeNav.querySelectorAll('[data-type]'))n.classList.toggle('active',n.dataset.type==='auto');}renderMatches(true);});
+ui.browseDirectoryBtn.addEventListener('click',()=>openDirectory(ui.typeSelect.value==='auto'?'family':ui.typeSelect.value));
+ui.directoryBack.addEventListener('click',()=>{dir.token++;dir.indexing=false;ui.directoryWorkspace.hidden=true;ui.resultsWorkspace.hidden=false;});
+ui.directoryRefresh.addEventListener('click',()=>{
+ const type=dir.type;
+ try{for(let page=1;page<=Math.max(dir.page,1);page++)localStorage.removeItem(directoryCacheKey(type,page))}catch{}
+ openDirectory(type);
+});
+ui.directoryType.addEventListener('change',()=>openDirectory(ui.directoryType.value));
+ui.directorySearch.addEventListener('input',()=>{dir.visible=90;renderDirectory()});
+ui.directoryIndexAll.addEventListener('click',indexEntireDirectory);
+ui.directoryNext.addEventListener('click',nextDirectory);
+ui.directoryAZ.addEventListener('click',e=>{
+ const button=e.target.closest('[data-letter]');if(!button)return;
+ dir.letter=button.dataset.letter;dir.visible=90;renderDirectory();
+});
+ui.directoryItems.addEventListener('click',e=>{
+ const button=e.target.closest('[data-dir-id]');if(!button)return;
+ const item=dir.items.find(x=>x.id===Number(button.dataset.dirId));if(!item)return;
+ const type=dir.type,id=item.id;
+ ui.typeSelect.value=type;ui.entityInput.value=String(id);
+ start();
+ ui.entityName.textContent=item.name;
+ state.name=item.name;
+});
 ui.loadMore.addEventListener('click',fetchPage);
 if(window.IntersectionObserver){
  const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))fetchPage()}, {rootMargin:'450px'});
  observer.observe(ui.sentinel);
+ const dirObserver=new IntersectionObserver(entries=>{
+  if(!entries.some(e=>e.isIntersecting)||ui.directoryWorkspace.hidden||dir.busy||dir.indexing)return;
+  const q=ui.directorySearch.value.trim().toLocaleLowerCase();
+  const available=dir.items.filter(x=>(!q||x.name.toLocaleLowerCase().includes(q)||String(x.id).includes(q))&&
+   (!dir.letter||(dir.letter==='#'?!/^[A-Z]/i.test(x.name):x.name.toLocaleUpperCase().startsWith(dir.letter)))).length;
+  if(dir.visible<available){dir.visible+=90;renderDirectory()}
+  else if(dir.hasMore)nextDirectory();
+ },{rootMargin:'550px'});
+ dirObserver.observe(ui.directorySentinel);
 }
 for(const target of [ui.cards,ui.table])target.addEventListener('click',e=>{const b=e.target.closest('[data-details]');if(b)showDetails(b.dataset.details)});
 ui.closeDetail.addEventListener('click',()=>ui.detail.close());
