@@ -188,8 +188,32 @@ module.exports=async(req,res)=>{
  const kind=String(req.query.kind||'games');
  try{
   if(kind==='directory'){
-   const result=await browseDirectory(type,page);
-   res.setHeader('Cache-Control','public, s-maxage=86400, stale-while-revalidate=604800');
+   let result;
+   try{result=await browseDirectory(type,page);}
+   catch(browseError){
+    // The linkeditems response includes real BGG category/mechanic IDs in
+    // config.filters, even if the public browse HTML is blocked on Vercel.
+    if(page!==1||!['mechanic','category'].includes(type))throw browseError;
+    const q=new URLSearchParams({
+     ajax:'1',linkdata_index:'boardgame',nosession:'1',objectid:'1030',
+     objecttype:'property',pageid:'1',showcount:'25',
+     sort:'name',subtype:'boardgamecategory'
+    });
+    const data=await getJson('https://api.geekdo.com/api/geekitem/linkeditems?'+q);
+    const filterName=type==='mechanic'?'mechanicfilter':'categoryfilter';
+    const raw=(data.config?.filters||[]).find(x=>x.key===filterName)?.options||[];
+    const map=new Map();
+    for(const item of raw){
+     const key=Number(item.objectid),name=String(item.name||'').trim();
+     if(key>0&&name)map.set(key,{id:key,name,url:'https://boardgamegeek.com/'+cfg.path+'/'+key});
+    }
+    if(!map.size)throw browseError;
+    result={page:1,items:[...map.values()],totalPages:1,hasMore:false,
+     source:'BGG linkeditems filter catalog (fallback)',
+     note:'BGG alphabetical browse was unavailable. These are real BGG IDs present in a broad category filter, but some uncommon entries may be missing.',
+     browseUrl:'https://boardgamegeek.com/browse/'+cfg.path};
+   }
+   res.setHeader('Cache-Control',result.source.includes('fallback')?'public, s-maxage=1200':'public, s-maxage=86400, stale-while-revalidate=604800');
    return res.status(200).json(result);
   }
   if(kind==='meta'){
