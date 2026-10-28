@@ -34,7 +34,14 @@ module.exports = async (req, res) => {
 
   let handler;
   try {
-    handler = require(handlerPath);
+    // Use a literal require for GeekPreview so Vercel's dependency tracer
+    // bundles this handler with the consolidated serverless function.
+    // The older routes keep their existing lazy-loading behavior.
+    if (route === 'geekpreview') {
+      handler = require('../server/api-handlers/geekpreview');
+    } else {
+      handler = require(handlerPath);
+    }
   } catch (error) {
     console.error(`Failed to load API handler "${route}":`, error);
     return res.status(500).json({
