@@ -244,6 +244,151 @@ async function fetchPage(){
   if(token===state.token){setBusy(false);render();}
  }
 }
+
+const dir={
+ type:'family',items:[],page:0,lastPage:0,totalPages:0,hasMore:true,busy:false,indexing:false,
+ token:0,loadedPages:new Set(),visible:90,letter:'',query:'',source:'',error:''
+};
+const DIRECTORY_TYPES=['family','publisher','designer','developer','artist','mechanic','category','preview'];
+const DIRECTORY_TTL=7*86400000;
+const directoryCacheKey=(type,page)=>'bgg-atlas-directory-v1:'+type+':'+page;
+function directoryCacheRead(type,page){
+ try{const j=JSON.parse(localStorage.getItem(directoryCacheKey(type,page))||'null');
+  return j&&Date.now()-j.savedAt<DIRECTORY_TTL?j.data:null;
+ }catch{return null}
+}
+function directoryCacheWrite(type,page,data){
+ try{localStorage.setItem(directoryCacheKey(type,page),JSON.stringify({savedAt:Date.now(),data}))}catch{}
+}
+function dirStatus(textValue,error=false){
+ ui.directoryStatus.textContent=textValue;
+ ui.directoryStatus.style.color=error?'#ad4e4e':'#718695';
+}
+function directoryRoute(type){
+ const useType=type==='developer'?'designer':type;
+ return 'https://boardgamegeek.com/browse/'+TYPES[useType].path;
+}
+function renderDirectory(){
+ const q=ui.directorySearch.value.trim().toLocaleLowerCase(),letter=dir.letter;
+ const filtered=dir.items.filter(x=>(!q||x.name.toLocaleLowerCase().includes(q)||String(x.id).includes(q))
+  &&(!letter||(letter==='#'? !/^[A-Z]/i.test(x.name):x.name.toLocaleUpperCase().startsWith(letter))));
+ filtered.sort((a,b)=>a.name.localeCompare(b.name,undefined,{sensitivity:'base'})||a.id-b.id);
+ const shown=filtered.slice(0,dir.visible);
+ ui.directoryItems.innerHTML=shown.map(x=>
+  '<button class="directory-entry" data-dir-id="'+x.id+'" title="Open '+escapeHtml(x.name)+' games">'+
+  '<strong>'+escapeHtml(x.name)+'</strong><small>#'+x.id+' ↗</small></button>'
+ ).join('')||(dir.busy?'<span style="color:#8da0ab;font-size:12px">Loading directory…</span>':
+ '<span style="color:#8093a0;font-size:12px">No matching indexed entries. Load more directory pages or clear filters.</span>');
+ const partial=dir.hasMore||dir.indexing;
+ ui.directoryCounts.textContent=fmt(dir.items.length)+' indexed names · '+dir.loadedPages.size+
+  (dir.totalPages?' / '+dir.totalPages:'')+' BGG pages'+(partial?' · partial':' · complete');
+ ui.directorySentinel.hidden=dir.busy||(!partial&&shown.length>=filtered.length);
+ ui.directoryNext.hidden=dir.busy||!dir.hasMore;
+ ui.directoryIndexAll.hidden=dir.type==='preview'||!dir.hasMore&&!dir.indexing;
+ ui.directoryIndexAll.disabled=dir.busy;
+ ui.directoryIndexAll.textContent=dir.indexing?'Stop indexing':'Index all pages';
+ ui.directoryOriginal.href=directoryRoute(dir.type);
+ ui.directoryAZ.querySelectorAll('[data-letter]').forEach(b=>b.classList.toggle('active',b.dataset.letter===dir.letter));
+}
+function addDirectoryPage(data,page){
+ if(!Array.isArray(data.items))throw Error('BGG directory response contained no entries');
+ const map=new Map(dir.items.map(item=>[item.id,item]));
+ for(const raw of data.items){
+  const id=Number(raw.id),name=String(raw.name||'').trim();
+  if(Number.isSafeInteger(id)&&id>0&&name)map.set(id,{id,name});
+ }
+ dir.items=[...map.values()];
+ dir.loadedPages.add(page);
+ dir.page=Math.max(dir.page,page);
+ dir.totalPages=Math.max(dir.totalPages,Number(data.totalPages)||0);
+ dir.hasMore=!!data.hasMore;
+ dir.source=String(data.source||'BGG browse pages');
+ if(data.note)ui.directoryDescription.textContent=data.note;
+ else ui.directoryDescription.textContent='Select any entry to open its linked games. Alphabetical pages load from BoardGameGeek.';
+}
+async function fetchDirectoryPage(page=dir.page+1,force=false,token=dir.token){
+ if(token!==dir.token||dir.loadedPages.has(page)&&!force)return;
+ const type=dir.type;
+ let data=!force?directoryCacheRead(type,page):null;
+ if(!data){
+  if(type==='preview'){
+   const raw=await getJson('/api/geekpreview?kind=catalog');
+   data={items:(raw.previews||[]).map(e=>({id:Number(e.id),name:String(e.name||'')})),
+    hasMore:false,totalPages:1,source:'Known GeekPreview catalog',
+    note:raw.complete?'Public GeekPreview directory.':'Available GeekPreview entries; BGG may have additional older events.'};
+  }else{
+   data=await getJson('/api/bgg-explorer?kind=directory&type='+encodeURIComponent(type)+'&id=1&page='+page);
+  }
+  directoryCacheWrite(type,page,data);
+ }
+ if(token!==dir.token)return;
+ addDirectoryPage(data,page);
+ renderDirectory();
+}
+async function nextDirectory(){
+ if(dir.busy||!dir.hasMore||dir.indexing)return;
+ dir.busy=true;dirStatus('Retrieving directory page '+(dir.page+1)+'…');
+ renderDirectory();
+ try{
+  await fetchDirectoryPage(dir.page+1,false,dir.token);
+  dirStatus(dir.hasMore?'Loaded '+fmt(dir.items.length)+' names. Scroll for more.':
+   'Complete directory loaded: '+fmt(dir.items.length)+' names.');
+  ui.directoryError.hidden=true;
+ }catch(e){
+  dir.hasMore=false;ui.directoryError.hidden=false;
+  ui.directoryError.textContent='BGG browse request failed: '+e.message+
+   '. The original BGG directory link below may still work. Indexed entries remain available.';
+  dirStatus('Could not load directory page '+(dir.page+1),true);
+ }finally{dir.busy=false;renderDirectory()}
+}
+function openDirectory(type){
+ if(!DIRECTORY_TYPES.includes(type))type='family';
+ dir.token++;dir.type=type;dir.items=[];dir.page=0;dir.totalPages=0;dir.hasMore=true;dir.busy=false;
+ dir.indexing=false;dir.visible=90;dir.letter='';dir.loadedPages=new Set();
+ ui.directorySearch.value='';ui.directoryType.value=type;
+ ui.directoryTitle.textContent='Browse '+(type==='family'?'game families':
+  type==='preview'?'event previews':type==='category'?'categories':
+  type==='mechanic'?'mechanics':type==='developer'?'developer candidates':
+  type+'s');
+ ui.directoryDescription.textContent=type==='developer'?
+  'BGG does not publish a separate verified developer directory here. Browse designer people and inspect developer credits for each.':
+  'Select an entry to see its games; this uses BGG’s alphabetical directory.';
+ ui.directoryError.hidden=true;
+ ui.directoryWorkspace.hidden=false;ui.resultsWorkspace.hidden=true;
+ ui.typeSelect.value=type;for(const b of ui.typeNav.querySelectorAll('[data-type]'))b.classList.toggle('active',b.dataset.type===type);
+ ui.directoryAZ.innerHTML=['','A','B','C','D','E','F','G','H','I','J','K','L','M','N','O','P','Q','R','S','T','U','V','W','X','Y','Z','#']
+  .map(letter=>'<button type="button" data-letter="'+letter+'" class="'+(letter===dir.letter?'active':'')+
+   '" title="Filter indexed names by initial">'+(letter||'All')+'</button>').join('');
+ renderDirectory();
+ nextDirectory();
+}
+async function indexEntireDirectory(){
+ if(dir.indexing){dir.indexing=false;dir.token++;dirStatus('Indexing stopped. '+dir.items.length+' names remain available.');renderDirectory();return}
+ if(!dir.hasMore)return;
+ dir.indexing=true;const token=dir.token;dirStatus('Indexing complete directory…');renderDirectory();
+ let errors=0;
+ // Bounded concurrency, only for a deliberate user action. Every page is cached.
+ while(dir.indexing&&token===dir.token&&dir.hasMore&&dir.page<300){
+  const page=dir.page+1;
+  dir.busy=true;
+  try{
+   await fetchDirectoryPage(page,false,token);
+   if(token!==dir.token)return;
+   dirStatus('Indexed '+fmt(dir.items.length)+' entries · page '+dir.page+
+    (dir.totalPages?' of '+dir.totalPages:'')+'…');
+  }catch(e){
+   errors++;dirStatus('Indexing stopped on page '+page+': '+e.message,true);
+   ui.directoryError.hidden=false;ui.directoryError.textContent='BGG stopped responding on page '+page+
+    '. You can retry from the last indexed page. '+e.message;break;
+  }finally{dir.busy=false;renderDirectory()}
+  if(page%15===0)await new Promise(resolve=>setTimeout(resolve,600));
+ }
+ if(token!==dir.token)return;
+ dir.indexing=false;
+ if(!errors)dirStatus(dir.hasMore?'Reached directory indexing limit (300 pages).':'Entire directory indexed · '+fmt(dir.items.length)+' entries.');
+ renderDirectory();
+}
+
 function selectType(type,loadNow){
  if(!TYPES[type])return;
  state.type=type;ui.typeSelect.value=type;
