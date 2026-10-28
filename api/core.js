@@ -8,6 +8,7 @@
 const handlerPaths = {
   'bgg-lab': '../server/api-handlers/bgg-lab',
   'geekpreview': '../server/api-handlers/geekpreview',
+  'bgg-family': '../server/api-handlers/bgg-family',
   'bgg-max-scan': '../server/api-handlers/bgg-max-scan',
   'bgg-prices': '../server/api-handlers/bgg-prices',
   'cardboard-proxy': '../server/api-handlers/cardboard-proxy',
@@ -39,6 +40,9 @@ module.exports = async (req, res) => {
     // The older routes keep their existing lazy-loading behavior.
     if (route === 'geekpreview') {
       handler = require('../server/api-handlers/geekpreview');
+    } else if (route === 'bgg-family') {
+      // Explicit require ensures Vercel bundles the family handler.
+      handler = require('../server/api-handlers/bgg-family');
     } else {
       handler = require(handlerPath);
     }
