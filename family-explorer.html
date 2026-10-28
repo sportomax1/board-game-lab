@@ -117,6 +117,49 @@ function hideHelp(){el.loadHelp.hidden=true;el.collectorPanel.open=false;}
 function openOnBGG(id){window.open(`https://boardgamegeek.com/boardgamefamily/${id}`,'_blank','noopener,noreferrer');}
 function saveLocal(){try{localStorage.setItem('bgg-family-explorer:'+state.id,JSON.stringify({id:state.id,title:state.title,description:state.metadata?.id===state.id?state.metadata.description:'',expected:state.expected,games:state.games,complete:state.complete,source:state.source,savedAt:Date.now()}));}catch{}}
 function loadLocal(id){try{const a=JSON.parse(localStorage.getItem('bgg-family-explorer:'+id)||'null');return a?.games?.length?a:null;}catch{return null}}
+
+const METADATA_TTL=7*86400000;
+function renderFamilyMeta(){
+ const m=state.metadata?.id===state.id?state.metadata:null;
+ if(m?.name){state.title=m.name;el.familyTitle.textContent=m.name;}
+ else el.familyTitle.textContent=state.title||('BGG family #'+state.id);
+ el.familyIdSmall.textContent='#'+state.id;
+ const desc=String(m?.description||'').trim();
+ el.familySubtitle.textContent=desc||(
+  m?.pending?'Retrieving the family name and description from BGG…':
+  m?.available?'BGG did not provide a description for this family.':
+  'Family description unavailable from BGG. View the original family page for details.'
+ );
+ el.familyDescriptionToggle.hidden=desc.length<170;
+}
+async function loadFamilyMetadata(id){
+ let cached=null;
+ try{cached=JSON.parse(localStorage.getItem('bgg-family-meta:'+id)||'null');}catch{}
+ if(state.id!==id)return;
+ if(cached?.available&&Date.now()-Number(cached.when||0)<METADATA_TTL){
+  state.metadata={...cached,id,pending:false};
+  renderFamilyMeta();
+  return;
+ }
+ state.metadata={id,pending:true,available:false};
+ renderFamilyMeta();
+ try{
+  const response=await fetch('/api/bgg-family?'+new URLSearchParams({kind:'meta',familyid:String(id),page:'1'}),{headers:{Accept:'application/json'}});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok)throw Error(data.error||'Metadata request failed');
+  if(state.id!==id)return;
+  state.metadata={id,name:String(data.name||''),description:String(data.description||''),available:!!data.available,pending:false,source:data.source||''};
+  if(state.metadata.available){
+   try{localStorage.setItem('bgg-family-meta:'+id,JSON.stringify({...state.metadata,when:Date.now()}));}catch{}
+   if(state.games.length)saveLocal();
+  }
+  renderFamilyMeta();
+ }catch(error){
+  if(state.id!==id)return;
+  state.metadata=cached?.available?{...cached,id,pending:false}:{id,pending:false,available:false,reason:error.message};
+  renderFamilyMeta();
+ }
+}
 function activateData({id,title,expected,games,complete=false,source='Imported data'},store=true){
  const sameFamily=state.id===Number(id);state.id=Number(id)||state.id;state.title=String(state.metadata?.id===state.id&&state.metadata.name||title|| (sameFamily?state.title:'') ||`BGG family #${state.id}`);state.games=uniqueGames(games);state.expected=Number.isFinite(Number(expected))&&Number(expected)>0?Number(expected):state.games.length;
  state.complete=!!complete&&state.games.length>=state.expected;state.source=source;state.visible=sameFamily&&state.visible?state.visible:24;
@@ -225,8 +268,19 @@ async function directLoad(id){if(state.loading)return;const controller=new Abort
 async function loadFamily(){
  let id;try{id=parseFamilyInput(el.familyInput.value)}catch(e){status(e.message,'error');return}
  if(state.loading)return;
+ if(state.id!==id){
+  state.metadata=null;
+  const hero=document.querySelector('.hero');
+  hero.classList.remove('expanded');
+  el.familyDescriptionToggle.setAttribute('aria-expanded','false');
+  el.familyDescriptionToggle.textContent='Read full description ↓';
+ }
  updateCollector();hideHelp();
  const cached=loadLocal(id);
+ if(cached?.description && !state.metadata)state.metadata={id,name:cached.title,description:cached.description,available:true,pending:false};
+ // Start metadata independently of paginated game loading.
+ const metadataPromise=loadFamilyMetadata(id);
+
  if(cached){activateData({...cached,source:'Saved browser dataset'});status(`Showing ${state.games.length} cached games for family ${id}. Checking BGG for current data…`,'success')}
  else if(id===6480){activateData({...STARTER,title:STARTER.familyName,source:'HAR sample'},false);status('Showing six sample camel games. Checking BGG for additional games…')}
  else if(state.id!==id||!state.games.length){
@@ -235,6 +289,7 @@ async function loadFamily(){
  }
  // Load through the Vercel proxy. Keep the local HAR fallback when the upstream API blocks the request.
  await directLoad(id);
+ await metadataPromise;
 }
 function linkedItemToRec(row){
  const image=row.images?.previewthumb||row.images?.thumb||row.images?.original||'';
