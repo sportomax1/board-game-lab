@@ -20,10 +20,10 @@ function normalize(row){
   previewUrl:row.href?'https://boardgamegeek.com'+row.href:''
  };
 }
-async function request(path){
+async function request(path, timeoutMs=14000){
  const response=await fetch('https://api.geekdo.com'+path,{
   headers:{'Accept':'application/json','Referer':'https://boardgamegeek.com/','User-Agent':'BoardGameLab/1.0 (public GeekPreview listings)'},
-  signal:AbortSignal.timeout(14000)
+  signal:AbortSignal.timeout(timeoutMs)
  });
  if(!response.ok){const e=new Error('Geekdo returned HTTP '+response.status);e.status=response.status;throw e}
  return response.json();
@@ -98,6 +98,43 @@ module.exports=async(req,res)=>{
  res.setHeader('Cache-Control','public, s-maxage=600, stale-while-revalidate=1200');
  try{
   if(kind==='catalog')return res.status(200).json(await previewCatalog());
+  if(kind==='scan'){
+   // Discover public previews by actual metadata ID, not by guessed titles.
+   // Limited to 8 IDs per request to avoid long serverless executions.
+   const start=integer(req.query.start,100,1,150);
+   const count=integer(req.query.count,8,1,8);
+   const ids=Array.from({length:Math.min(count,start)},(_,i)=>start-i);
+   const results=new Array(ids.length);
+   let cursor=0;
+   const worker=async()=>{
+    while(cursor<ids.length){
+     const index=cursor++,id=ids[index];
+     try{
+      const m=await request('/api/preview/'+id,7000);
+      if(!m || !m.name || m.hidden===true){
+       results[index]={id,kind:'missing'};
+       continue;
+      }
+      results[index]={id,kind:'found',item:{
+       id,name:String(m.name),location:String(m.location||''),
+       startDate:String(m.startDate||''),endDate:String(m.endDate||''),
+       totalItems:Number.isFinite(Number(m.config?.numitems))?Number(m.config.numitems):null,
+       url:'https://boardgamegeek.com'+(String(m.href||'/geekpreview/'+id).startsWith('/')?String(m.href||'/geekpreview/'+id):'/geekpreview/'+id)
+      }};
+     }catch(e){
+      results[index]={id,kind:e.status===404?'missing':'failed',status:e.status||null};
+     }
+    }
+   };
+   await Promise.all(Array.from({length:4},worker));
+   const failed=results.filter(r=>r.kind==='failed').map(r=>r.id);
+   res.setHeader('Cache-Control',failed.length?'public, s-maxage=90':'public, s-maxage=86400, stale-while-revalidate=604800');
+   return res.status(200).json({
+    start,scanned:ids.length,items:results.filter(r=>r.kind==='found').map(r=>r.item),
+    missing:results.filter(r=>r.kind==='missing').map(r=>r.id),failed,
+    complete:failed.length===0
+   });
+  }
   if(kind==='meta'){
    const m=await request('/api/preview/'+previewId);
    const totalItems=Number(m.config?.numitems)||0;
