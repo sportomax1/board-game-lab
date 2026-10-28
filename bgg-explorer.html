@@ -223,9 +223,86 @@ function selectType(type,loadNow){
   start();
  }
 }
+
+const AUTO_TYPES=['family','publisher','designer','developer','artist','mechanic','category','preview'];
+function renderMatches(done=false,checked=0,failures=0){
+ const matches=state.matchedTypes||[];
+ ui.matchesPanel.hidden=!state.probeRunning&&!matches.length;
+ ui.matchesHeading.textContent='Entity matches for BGG #'+state.matchedId;
+ ui.matchesStatus.textContent=state.probeRunning?
+  'Checking '+checked+'/'+AUTO_TYPES.length+' entity types'+(failures?' · '+failures+' unavailable':''):
+  matches.length?matches.length+' match'+(matches.length===1?'':'es')+' found'+(failures?' · '+failures+' checks unavailable':''):
+  'No confirmed matches'+(failures?' · '+failures+' checks unavailable':'');
+ ui.matchButtons.innerHTML=matches.map(m=>
+  '<button type="button" data-match-type="'+escapeHtml(m.type)+'" class="'+(state.type===m.type?'active':'')+
+  '" title="Explore '+escapeHtml(TYPES[m.type].label)+' #'+state.matchedId+'">'+
+  '<b>'+escapeHtml(m.name||TYPES[m.type].label)+'</b><small>'+fmt(m.total)+' games · '+escapeHtml(TYPES[m.type].label)+'</small></button>'
+ ).join('')||(state.probeRunning?'<span style="color:#91a1ad;font-size:11px">Looking for associated game lists…</span>':
+ '<span style="color:#8a9aa5;font-size:11px">Try selecting a type manually or paste an exact BGG entity URL.</span>');
+}
+async function discover(id){
+ state.token++;state.controller?.abort();state.metaController?.abort();
+ const token=state.token,ctrl=new AbortController();state.controller=ctrl;
+ state.matchedId=id;state.matchedTypes=[];state.probeRunning=true;
+ state.type='family';state.id=id;state.slug='';
+ resetUI();
+ ui.typeSelect.value='auto';
+ for(const b of ui.typeNav.querySelectorAll('[data-type]'))b.classList.toggle('active',b.dataset.type==='auto');
+ ui.entityName.textContent='Finding entity #'+id+'…';
+ ui.entityDesc.textContent='Checking families, people, publishers, categories, mechanics and event previews.';
+ ui.entitySource.textContent='Multiple BGG ID namespaces';
+ ui.entityLink.href=ui.external.href='https://boardgamegeek.com/search/boardgame?q='+encodeURIComponent(id);
+ history.replaceState(null,'',location.pathname+'?type=auto&id='+id);
+ let next=0,checked=0,failed=0;
+ renderMatches(false,checked,failed);
+ setStatus('Searching BGG entity types…');
+ const worker=async()=>{
+  while(next<AUTO_TYPES.length){
+   const type=AUTO_TYPES[next++];
+   try{
+    const api=type==='preview'?
+     '/api/geekpreview?kind=meta&previewid='+id:
+     '/api/bgg-explorer?kind=probe&type='+type+'&id='+id+'&page=1';
+    const result=await getJson(api,ctrl.signal);
+    if(token!==state.token)return;
+    const count=type==='preview'?Number(result.totalItems):Number(result.total);
+    const match=type==='preview'?!!result.name&&Number.isFinite(count)&&count>=0:!!result.match;
+    if(match){
+     state.matchedTypes.push({type,total:Number.isFinite(count)?count:0,
+      name:String(result.entityName||result.name||'')});
+     state.matchedTypes.sort((a,b)=>AUTO_TYPES.indexOf(a.type)-AUTO_TYPES.indexOf(b.type));
+    }
+   }catch(e){if(token!==state.token)return;failed++;}
+   checked++;if(token!==state.token)return;
+   renderMatches(false,checked,failed);
+   setStatus('Checking BGG entity types '+checked+'/'+AUTO_TYPES.length+'…');
+  }
+ };
+ await Promise.all([worker(),worker(),worker()]);
+ if(token!==state.token)return;
+ state.probeRunning=false;
+ renderMatches(true,checked,failed);
+ if(!state.matchedTypes.length){
+  ui.entityName.textContent='No verified entity matches for #'+id;
+  ui.entityDesc.textContent='The ID may be unused, inaccessible, or BGG may have rejected one or more checks. Try a specific type.';
+  ui.entitySource.textContent=failed?failed+' entity checks unavailable':'No linked game lists found';
+  state.done=true;render();setStatus('No confirmed matches found','error');
+  return;
+ }
+ const winner=state.matchedTypes[0];
+ ui.typeSelect.value=winner.type;
+ ui.entityInput.value=String(id);
+ start();
+ state.matchedId=id;
+ renderMatches(true,checked,failed);
+ setStatus('Matched '+state.matchedTypes.length+' entity type(s) for #'+id+'. Viewing '+TYPES[winner.type].label+'.','ok');
+}
+
 function start(force){
  let parsed;
  try{parsed=detect(ui.entityInput.value,ui.typeSelect.value)}catch(err){setStatus(err.message,'error');return}
+ if(parsed.type==='auto'){discover(parsed.id);return;}
+ if(state.matchedId!==parsed.id){state.matchedTypes=[];state.matchedId=0;state.probeRunning=false;ui.matchesPanel.hidden=true;}
  state.token++;state.controller?.abort();state.metaController?.abort();
  state.type=parsed.type;state.id=parsed.id;state.slug=parsed.slug;
  state.name=parsed.slug||'';ui.typeSelect.value=parsed.type;
@@ -270,6 +347,7 @@ for(const view of ['cards','table'])ui[view==='cards'?'gridBtn':'tableBtn'].addE
  state.view=view;ui.gridBtn.classList.toggle('active',view==='cards');ui.tableBtn.classList.toggle('active',view==='table');
  ui.gridBtn.setAttribute('aria-pressed',String(view==='cards'));ui.tableBtn.setAttribute('aria-pressed',String(view==='table'));render();
 });
+ui.matchButtons.addEventListener('click',e=>{const b=e.target.closest('[data-match-type]');if(!b)return;const type=b.dataset.matchType;if(!TYPES[type])return;ui.typeSelect.value=type;ui.entityInput.value=String(state.matchedId);start();renderMatches(true);});
 ui.loadMore.addEventListener('click',fetchPage);
 if(window.IntersectionObserver){
  const observer=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting))fetchPage()}, {rootMargin:'450px'});
