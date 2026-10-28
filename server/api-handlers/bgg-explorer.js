@@ -3,12 +3,12 @@
 // BGG's internal website JSON interface is undocumented and may change.
 const TYPES=Object.freeze({
  family:{objecttype:'family',linkdata_index:'boardgame',subtype:'boardgamefamily',path:'boardgamefamily'},
- publisher:{objecttype:'company',linkdata_index:'boardgamepublisher',subtype:'boardgame',path:'boardgamepublisher'},
+ publisher:{objecttype:'company',linkdata_index:'boardgame',subtype:'boardgamepublisher',path:'boardgamepublisher'},
  designer:{objecttype:'person',linkdata_index:'boardgamedesigner',subtype:'boardgame',path:'boardgamedesigner'},
  developer:{objecttype:'person',linkdata_index:'boardgamedeveloper',subtype:'boardgame',path:'boardgamedesigner'},
  artist:{objecttype:'person',linkdata_index:'boardgameartist',subtype:'boardgame',path:'boardgameartist'},
  mechanic:{objecttype:'property',linkdata_index:'boardgame',subtype:'boardgamemechanic',path:'boardgamemechanic'},
- category:{objecttype:'property',linkdata_index:'boardgamecategory',subtype:'boardgame',path:'boardgamecategory'}
+ category:{objecttype:'property',linkdata_index:'boardgame',subtype:'boardgamecategory',path:'boardgamecategory'}
 });
 const num=(x)=>Number(x)||0;
 const validInt=(x,min,max)=>{const n=Number(x);return Number.isSafeInteger(n)&&n>=min&&n<=max?n:null};
@@ -39,6 +39,25 @@ async function getJson(url){
  return r.json();
 }
 function htmlToText(s){return decode(decode(String(s||''))).replace(/<br\s*\/?>/gi,'\n').replace(/<\/p>/gi,'\n').replace(/<[^>]+>/g,'').replace(/\n{3,}/g,'\n\n').trim().slice(0,7000)}
+
+function metaField(html,key,value){
+ for(const t of html.match(/<meta\b[^>]*>/gi)||[]){
+  const attrs=Object.fromEntries([...t.matchAll(/([\w:-]+)\s*=\s*(["'])(.*?)\2/g)].map(m=>[m[1].toLowerCase(),m[3]]));
+  if(attrs[key]===value&&attrs.content)return decode(attrs.content).trim();
+ }
+ return '';
+}
+function descriptionFromHtml(html,name){
+ const wiki=html.match(/Community Wiki<\/h[1-6]>[\s\S]{0,650}?(?:<p\b[^>]*>([\s\S]{20,4500}?)<\/p>|<div\b[^>]*>([\s\S]{20,4000}?)<\/div>)/i);
+ const candidates=[wiki?.[1]||wiki?.[2],metaField(html,'property','og:description'),metaField(html,'name','description'),metaField(html,'name','twitter:description')];
+ for(const c of candidates){
+  const d=htmlToText(c||'').slice(0,2400);
+  if(d.length<18||d===name||/^(boardgamegeek is |welcome to boardgamegeek|buy and sell board games)/i.test(d))continue;
+  return d;
+ }
+ return '';
+}
+
 async function metadata(type,id,cfg){
  let name='',description='',source='',error='';
  if(type==='family'){
@@ -63,16 +82,16 @@ async function metadata(type,id,cfg){
     headers:{Accept:'text/html'},signal:AbortSignal.timeout(9000)});
    if(r.ok){
     const html=await r.text();
-    const tag=html.match(/<meta\s+[^>]*property=["']og:title["'][^>]*>/i)?.[0]||'';
-    const title=tag.match(/content=(["'])(.*?)\1/i)?.[2]||html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]||'';
+    const title=metaField(html,'property','og:title')||html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]||'';
     const clean=decode(title).replace(/\s*[\|–-]\s*BoardGameGeek.*$/i,'').trim();
     if(clean&&!/^(boardgamegeek|just a moment|access denied)/i.test(clean)){
-     name=clean;source='BGG public page title';
+     name=clean;source='BGG public page';
     }
+    description=description||descriptionFromHtml(html,name);
    }else error='BGG page HTTP '+r.status;
   }catch(e){error=e.message;}
  }
- return {type,id,name,description,source,available:!!name,error:!name?error||'Title unavailable':'',
+ return {type,id,name,description,source,available:!!name,error:!name?error||'Title unavailable':'',descriptionAvailable:!!description,
   url:'https://boardgamegeek.com/'+cfg.path+'/'+id};
 }
 module.exports=async(req,res)=>{
@@ -88,7 +107,7 @@ module.exports=async(req,res)=>{
    res.setHeader('Cache-Control',m.available?'public, s-maxage=86400, stale-while-revalidate=604800':'public, s-maxage=120');
    return res.status(200).json(m);
   }
-  if(kind!=='games')return res.status(400).json({error:'Invalid kind'});
+  if(kind!=='games'&&kind!=='probe')return res.status(400).json({error:'Invalid kind'});
   const q=new URLSearchParams({
    ajax:'1',linkdata_index:cfg.linkdata_index,nosession:'1',
    objectid:String(id),objecttype:cfg.objecttype,pageid:String(page),
@@ -105,6 +124,14 @@ module.exports=async(req,res)=>{
   const propertyFilters=type==='mechanic'||type==='category'?(data.config.filters||[]):[];
   const entityName=propertyFilters.flatMap(f=>Array.isArray(f.options)?f.options:[])
    .find(o=>Number(o.objectid)===id)?.name||'';
+  const correctProperty=!!entityName;
+  const count=Number.isFinite(total)&&total>=0?total:0;
+  if(kind==='probe'){
+   res.setHeader('Cache-Control','public, s-maxage=900');
+   return res.status(200).json({type,id,total:count,entityName,
+    match:count>0&&(type!=='mechanic'&&type!=='category'||correctProperty),
+    confidence:correctProperty?'verified-property':'linked-records'});
+  }
   const games=data.items.map(normalize).filter(g=>g.id);
   res.setHeader('Cache-Control','public, s-maxage=900, stale-while-revalidate=3600');
   return res.status(200).json({type,id,page,pageSize:25,total:Number.isFinite(total)&&total>=0?total:games.length,
