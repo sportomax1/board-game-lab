@@ -7,6 +7,7 @@
 // routes before the requested route gets a chance to run.
 const handlerPaths = {
   'bgg-lab': '../server/api-handlers/bgg-lab',
+  'geekpreview': '../server/api-handlers/geekpreview',
   'bgg-max-scan': '../server/api-handlers/bgg-max-scan',
   'bgg-prices': '../server/api-handlers/bgg-prices',
   'cardboard-proxy': '../server/api-handlers/cardboard-proxy',
