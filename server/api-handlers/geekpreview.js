@@ -81,9 +81,9 @@ async function previewCatalog(){
   if(discovered.length<8)throw Error('Could not extract preview links from directory');
   const all=new Map(fallback.map(e=>[e.id,e]));
   for(const item of discovered)all.set(item.id,{...all.get(item.id),...item});
-  return {previews:[...all.values()].sort((a,b)=>b.id-a.id),complete:true,
+  return {previews:[...all.values()].sort((a,b)=>b.id-a.id),complete:discovered.length>=30,
    source:'BGG /previews directory',discovered:discovered.length,
-   note:'Live directory titles; listing counts can be fetched separately.'};
+   note:(discovered.length>=30?'BGG directory titles retrieved.':'BGG returned only part of its directory.')+' Listing counts can be fetched separately.'};
  }catch(error){
   return {previews:fallback.sort((a,b)=>b.id-a.id),complete:false,
    source:'Verified saved selections',discovered:0,
