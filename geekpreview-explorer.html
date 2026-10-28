@@ -146,89 +146,173 @@ const CACHE_VERSION = 2;
 const state = {previewId:93,meta:null,items:[],filtered:[],view:'cards',visible:48,loading:false,controller:null,cacheTime:0,complete:false,catalog:[],catalogMeta:null,catalogLoading:false,countLoading:false,counts:{}};
 
 
-  const CATALOG_CACHE_KEY='bgl:geekpreview:catalog:v1';
+  
+  const CATALOG_CACHE_KEY='bgl:geekpreview:catalog:v3';
   const CATALOG_COUNT_KEY='bgl:geekpreview:counts:v1';
+  const CATALOG_SCAN_KEY='bgl:geekpreview:discovery:v3';
+  const SCAN_TTL=7*24*60*60*1000;
+  const CATALOG_TTL=12*60*60*1000;
   function localRead(key){try{return JSON.parse(localStorage.getItem(key)||'null')}catch{return null}}
   function localWrite(key,value){try{localStorage.setItem(key,JSON.stringify(value))}catch{}}
   state.counts=localRead(CATALOG_COUNT_KEY)||{};
-  function catalogDate(item){
-    const date=String(item.startDate||'');
-    if(/^\d{4}-\d{2}-\d{2}$/.test(date))return new Date(date+'T12:00:00').toLocaleDateString(undefined,{month:'short',day:'numeric',year:'numeric'});
-    return 'Date not available';
+  state.scanRunning=false;
+  state.scanStats={done:0,total:0,failed:0};
+  function yearOf(item){
+    const fromDate=String(item.startDate||'').slice(0,4);
+    return /^\d{4}$/.test(fromDate)?fromDate:String(item.name||'').match(/(?:19|20)\d{2}/)?.[0]||'';
+  }
+  function matchingPreviews(){
+    const q=ui.catalogQuery.value.trim().toLocaleLowerCase(),year=ui.catalogYear.value;
+    return state.catalog.filter(p=>(!year||yearOf(p)===year) &&
+      (!q||[p.name,p.location,p.startDate,p.id].join(' ').toLocaleLowerCase().includes(q)));
+  }
+  function applyCatalogYears(){
+    const chosen=ui.catalogYear.value;
+    const years=unique(state.catalog.map(yearOf)).filter(x=>/^\d{4}$/.test(x)).sort((a,b)=>b.localeCompare(a));
+    ui.catalogYear.replaceChildren(new Option('All years',''),...years.map(x=>new Option(x,x)));
+    if(years.includes(chosen))ui.catalogYear.value=chosen;
+  }
+  function mergeCatalog(list){
+    const map=new Map(state.catalog.map(x=>[Number(x.id),x]));
+    for(const item of list){
+      const id=Number(item?.id);
+      if(!Number.isSafeInteger(id)||id<1||id>9999||!item.name)continue;
+      const existing=map.get(id)||{};
+      const merged={...existing,...item,id};
+      for(const key of ['name','location','startDate','endDate','url']){
+        if(!item[key]&&existing[key])merged[key]=existing[key];
+      }
+      map.set(id,merged);
+      const value=Number(item.totalItems);
+      if(item.totalItems!==null&&item.totalItems!==undefined&&Number.isFinite(value)&&value>=0){
+        state.counts[String(id)]={count:value,when:Date.now()};
+      }
+    }
+    state.catalog=[...map.values()].sort((a,b)=>b.id-a.id);
+    localWrite(CATALOG_COUNT_KEY,state.counts);
+    applyCatalogYears();
+    renderCatalog();
   }
   function renderCatalog(){
-    const q=ui.catalogQuery.value.toLocaleLowerCase().trim(),year=ui.catalogYear.value;
-    const matches=state.catalog.filter(item=>(!year||(String(item.startDate||'').startsWith(year)||String(item.name||'').includes(year)))&&
-      (!q||[item.name,item.location,item.startDate,item.id].join(' ').toLocaleLowerCase().includes(q)));
-    ui.catalogGrid.innerHTML=matches.map(item=>{
-      const current=item.id===state.previewId;
-      const url=safeUrl(item.url)||`https://boardgamegeek.com/geekpreview/${item.id}`;
+    const matching=matchingPreviews();
+    const countOf=item=>{
       const saved=state.counts[String(item.id)];
-      const count=saved&&Number.isFinite(Number(saved.count))?num(saved.count)+' listings':'Count not loaded';
-      return `<article class="catalog-item${current?' current':''}" role="listitem" data-preview-open="${item.id}" tabindex="0" aria-label="Open ${esc(item.name)}">
-        <div><div class="catalog-title">${esc(item.name||'Preview #'+item.id)}</div>
-        <div class="catalog-muted">${esc(catalogDate(item))}${item.location?' · '+esc(item.location):''} · #${item.id}</div></div>
-        <div class="catalog-foot"><span class="catalog-count">${esc(count)}</span>
-          <div class="catalog-links"><a href="${esc(url)}" target="_blank" rel="noopener noreferrer">BGG ↗</a>
-          <button type="button" class="btn primary" data-preview-open="${item.id}" ${state.loading?'disabled':''}>${current?'Reload':'Open preview'}</button></div></div>
-      </article>`;
-    }).join('')||'<div class="empty" style="grid-column:1/-1">No preview titles match your search.</div>';
-    const label=state.catalogMeta?.complete?'BGG directory':'Verified preview subset';
-    ui.catalogInfo.textContent=`${num(matches.length)} matching · ${num(state.catalog.length)} listed · ${label}. ${state.catalogMeta?.note||''}`;
-    ui.fetchCounts.disabled=state.countLoading||!matches.length;
-    ui.fetchCounts.textContent=state.countLoading?'Loading counts…':'Get listing counts';
+      return saved&&Number.isFinite(Number(saved.count))?Number(saved.count):null;
+    };
+    ui.catalogGrid.innerHTML=matching.map(item=>{
+      const active=item.id===state.previewId;
+      const count=countOf(item);
+      return `<div class="catalog-item${active?' current':''}" role="listitem"
+           data-preview-open="${item.id}" tabindex="0" aria-label="${esc(item.name)}, ${count===null?'count unavailable':num(count)+' listings'}"
+           title="${esc(item.name)} · ${count===null?'Count not available':num(count)+' game listings'}" ${active?'aria-current="true"':''}>
+         <span class="catalog-title">${esc(item.name)}</span>
+         <span class="catalog-count${count===null?' pending':''}">${count===null?'—':num(count)}</span>
+       </div>`;
+    }).join('')||'<div class="catalog-no-match">No matching events. Try another title or year.</div>';
+    const known=state.catalog.filter(x=>countOf(x)!==null).length;
+    ui.catalogHeading.textContent=ui.catalogQuery.value||ui.catalogYear.value?'MATCHING EVENTS':'ALL EVENTS';
+    ui.catalogTallies.textContent=matching.length===state.catalog.length?num(state.catalog.length):num(matching.length)+' / '+num(state.catalog.length);
+    const ss=state.scanStats;
+    let message=`${num(known)} / ${num(state.catalog.length)} counts available`;
+    if(state.scanRunning)message+=` · discovering ${ss.done}/${ss.total} IDs`;
+    else if(ss.failed)message+=` · ${ss.failed} IDs couldn't be checked`;
+    else if(state.catalogMeta?.complete)message+=' · full directory loaded';
+    else if(state.catalogMeta)message+=' · catalog may be incomplete';
+    ui.catalogInfo.textContent=message;
+    ui.catalogScanBar.hidden=!state.scanRunning;
+    ui.catalogScanFill.style.width=ss.total?`${Math.min(100,Math.round(100*ss.done/ss.total))}%`:'0%';
+    ui.fetchCounts.disabled=state.countLoading||state.scanRunning||!matching.length;
   }
   async function loadCatalog(force=false){
     if(state.catalogLoading)return;
     state.catalogLoading=true;ui.refreshCatalog.disabled=true;
-    ui.catalogInfo.textContent='Loading BGG preview directory…';
+    ui.catalogInfo.textContent='Loading convention index…';
     try{
-      let payload;const saved=localRead(CATALOG_CACHE_KEY);
-      if(!force&&saved?.previews?.length&&Date.now()-(saved.when||0)<(saved.complete?12*3600e3:3600e3))payload=saved;
-      else{payload=await getJson(`${API}?kind=catalog${force?'&refresh=1':''}`);localWrite(CATALOG_CACHE_KEY,{...payload,when:Date.now()});}
-      state.catalog=payload.previews.filter(x=>Number.isSafeInteger(Number(x.id))&&x.name).map(x=>({...x,id:Number(x.id)}));
+      const cached=localRead(CATALOG_CACHE_KEY);
+      let payload;
+      if(!force&&cached?.previews?.length&&Date.now()-(cached.when||0)<CATALOG_TTL)payload=cached;
+      else{
+        payload=await getJson(`${API}?kind=catalog${force?'&refresh=1':''}`);
+        localWrite(CATALOG_CACHE_KEY,{...payload,when:Date.now()});
+      }
       state.catalogMeta=payload;
-      const years=unique(state.catalog.map(x=>String(x.startDate||'').slice(0,4)||String(x.name||'').match(/(?:19|20)\d{2}/)?.[0]||'').filter(x=>/^\d{4}$/.test(x))).sort((a,b)=>b.localeCompare(a));
-      const prevYear=ui.catalogYear.value;
-      ui.catalogYear.replaceChildren(new Option('All years',''),...years.map(y=>new Option(y,y)));
-      if(years.includes(prevYear))ui.catalogYear.value=prevYear;
-      renderCatalog();
-    }catch(err){
-      const backup=localRead(CATALOG_CACHE_KEY);
-      if(backup?.previews?.length){state.catalog=backup.previews;state.catalogMeta={...backup,complete:false,note:'Using last saved directory: '+err.message};}
-      else{state.catalog=[{id:93,name:'SPIEL Essen 2026',startDate:'2026-10-22',location:'Essen, Germany'}];state.catalogMeta={complete:false,note:'Directory unavailable: '+err.message+'. Enter another BGG preview ID manually or retry.'};}
-      renderCatalog();
-    }finally{state.catalogLoading=false;ui.refreshCatalog.disabled=false;}
+      mergeCatalog(payload.previews||[]);
+    }catch(error){
+      const fallback=localRead(CATALOG_CACHE_KEY);
+      state.catalogMeta={complete:false,note:'Directory unavailable: '+error.message};
+      if(fallback?.previews?.length)mergeCatalog(fallback.previews);
+      else if(!state.catalog.length)mergeCatalog([{id:93,name:'SPIEL Essen 2026',startDate:'2026-10-22',location:'Essen, Germany'}]);
+    }finally{
+      state.catalogLoading=false;ui.refreshCatalog.disabled=false;
+      const scan=localRead(CATALOG_SCAN_KEY);
+      if(scan?.items?.length)mergeCatalog(scan.items);
+      scanAllPreviews().catch(error=>{console.warn('Preview discovery stopped',error);state.scanRunning=false;renderCatalog()});
+    }
   }
-  async function loadCatalogCounts(){
-    if(state.countLoading)return;
-    const q=ui.catalogQuery.value.toLocaleLowerCase().trim(),year=ui.catalogYear.value;
-    const targets=state.catalog.filter(x=>(!year||(String(x.startDate||'').startsWith(year)||String(x.name||'').includes(year)))&&
-      (!q||[x.name,x.location,x.startDate,x.id].join(' ').toLocaleLowerCase().includes(q)))
-      .filter(x=>!state.counts[String(x.id)]||Date.now()-Number(state.counts[String(x.id)].when||0)>24*3600e3);
-    if(!targets.length){ui.catalogInfo.textContent='All matching preview counts are cached from the last 24 hours.';return;}
-    state.countLoading=true;ui.fetchCounts.disabled=true;
-    let next=0,done=0,failed=0;
+  async function scanAllPreviews(){
+    if(state.scanRunning||!state.catalog.length)return;
+    const highest=Math.min(150,Math.max(100,...state.catalog.map(x=>x.id))+8);
+    const saved=localRead(CATALOG_SCAN_KEY);
+    const recent=saved&&Date.now()-(saved.when||0)<SCAN_TTL;
+    const checked=new Set(recent?(saved.checked||[]):[]);
+    const allIds=Array.from({length:highest},(_,i)=>highest-i);
+    const pending=allIds.filter(id=>!checked.has(id));
+    state.scanStats={done:allIds.length-pending.length,total:allIds.length,failed:0};
+    if(!pending.length){state.scanRunning=false;renderCatalog();return;}
+    state.scanRunning=true;renderCatalog();
+    const batches=[];
+    for(let start=highest;start>=1;start-=8){
+      const count=Math.min(8,start);
+      if(Array.from({length:count},(_,i)=>start-i).some(id=>!checked.has(id)))batches.push({start,count});
+    }
+    let cursor=0;
+    const found=new Map((recent?saved.items:[]||[]).map(x=>[x.id,x]));
     const worker=async()=>{
-      while(next<targets.length){
-        const item=targets[next++];
+      while(cursor<batches.length){
+        const {start,count}=batches[cursor++];
         try{
-          const meta=await getJson(`${API}?${params({kind:'meta',previewid:item.id})}`);
-          if(!Number.isFinite(Number(meta.totalItems)))throw Error('Missing count');
-          state.counts[String(item.id)]={count:Number(meta.totalItems),when:Date.now()};
-          if(meta.startDate)item.startDate=meta.startDate;
-          if(meta.location)item.location=meta.location;
-          if(meta.name)item.name=meta.name;
-          localWrite(CATALOG_COUNT_KEY,state.counts);
-        }catch(e){failed++;}
-        done++;renderCatalog();
-        ui.catalogInfo.textContent=`Fetching counts ${done}/${targets.length} · ${failed} unavailable (not estimated).`;
-        await new Promise(resolve=>setTimeout(resolve,550));
+          const response=await getJson(`${API}?${params({kind:'scan',start,count})}`);
+          for(const item of response.items||[])found.set(item.id,item);
+          for(const item of response.items||[])checked.add(Number(item.id));
+          for(const id of response.missing||[])checked.add(Number(id));
+          state.scanStats.failed+=(response.failed||[]).length;
+          mergeCatalog(response.items||[]);
+          localWrite(CATALOG_SCAN_KEY,{when:Date.now(),checked:[...checked],items:[...found.values()]});
+        }catch(error){state.scanStats.failed+=count;console.warn('Preview batch scan failed',start,error);}
+        state.scanStats.done=checked.size;
+        renderCatalog();
+        await new Promise(resolve=>setTimeout(resolve,250));
       }
     };
-    try{await Promise.all([worker(),worker()]);}finally{
+    try{await Promise.all([worker(),worker()]);}
+    finally{
+      state.scanRunning=false;
+      const complete=checked.size===allIds.length;
+      state.catalogMeta={...(state.catalogMeta||{}),complete:complete||!!state.catalogMeta?.complete};
+      renderCatalog();
+      if(!complete)console.warn('BGG discovery incomplete; unverified IDs were not counted as missing.');
+    }
+  }
+  async function loadCatalogCounts(){
+    if(state.countLoading||state.scanRunning)return;
+    const selected=matchingPreviews();
+    if(!selected.length)return;
+    state.countLoading=true;ui.fetchCounts.disabled=true;
+    let cursor=0,failed=0;
+    const worker=async()=>{
+      while(cursor<selected.length){
+        const entry=selected[cursor++];
+        try{
+          const meta=await getJson(`${API}?${params({kind:'meta',previewid:entry.id})}`);
+          mergeCatalog([{id:entry.id,name:meta.name||entry.name,location:meta.location,
+            startDate:meta.startDate,totalItems:meta.totalItems,url:meta.originalUrl}]);
+        }catch(error){failed++}
+      }
+    };
+    try{await Promise.all([worker(),worker()]);}
+    finally{
       state.countLoading=false;renderCatalog();
-      if(failed)ui.catalogInfo.textContent+=` · ${failed} count(s) unavailable from BGG.`;
+      if(failed)ui.catalogInfo.textContent+=` · ${failed} counts unavailable`;
     }
   }
   function setCatalogVisible(open){
