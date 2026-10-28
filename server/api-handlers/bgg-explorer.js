@@ -118,6 +118,67 @@ async function metadata(type,id,cfg){
  return {type,id,name,description,source,available:!!name,error:!name?error||'Title unavailable':'',descriptionAvailable:!!description,
   url:'https://boardgamegeek.com/'+cfg.path+'/'+id};
 }
+
+// BGG's public alphabetical /browse/{type}/page/{page} directories.
+// The developer role has no independently verified browse directory;
+// show designer people as candidates, clearly marked as such.
+const BROWSE_PATHS=Object.freeze({
+ family:'boardgamefamily',publisher:'boardgamepublisher',
+ designer:'boardgamedesigner',developer:'boardgamedesigner',
+ artist:'boardgameartist',mechanic:'boardgamemechanic',
+ category:'boardgamecategory'
+});
+function parseBrowse(html,kind,page){
+ const path=BROWSE_PATHS[kind];
+ const ids=new Map();
+ for(const a of html.matchAll(/<a\b([^>]*?)>([\s\S]*?)<\/a\s*>/gi)){
+  const attrs=a[1];
+  const m=attrs.match(/\bhref\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s>]+))/i);
+  if(!m)continue;
+  const rawHref=decode(m[1]||m[2]||m[3]||'');
+  let url;try{url=new URL(rawHref,'https://boardgamegeek.com')}catch{continue}
+  if(!['boardgamegeek.com','www.boardgamegeek.com'].includes(url.hostname))continue;
+  const r=url.pathname.match(/^\/(boardgamefamily|boardgamepublisher|boardgamedesigner|boardgameartist|boardgamemechanic|boardgamecategory)\/(\d+)(?:\/|$)/i);
+  if(!r||r[1]!==path)continue;
+  const id=Number(r[2]);
+  if(!Number.isSafeInteger(id)||id<1)continue;
+  const name=htmlToText(a[2]).replace(/\s+/g,' ').trim().slice(0,160);
+  if(!name)continue;
+  ids.set(id,{id,name,type:kind,url:'https://boardgamegeek.com'+url.pathname});
+ }
+ const linkedPageNumbers=[...html.matchAll(/\/browse\/(?:boardgamefamily|boardgamepublisher|boardgamedesigner|boardgameartist|boardgamemechanic|boardgamecategory)\/page\/(\d+)/gi)]
+  .map(m=>Number(m[1])).filter(n=>n>0&&n<3000);
+ const navLast=html.match(/(?:<[^>]+>\s*)?\[\s*(\d{1,4})\s*\](?:\s*<[^>]+>)?/);
+ const lastFromNav=Number(navLast?.[1]||0);
+ const highest=Math.max(page,...linkedPageNumbers,lastFromNav);
+ const htmlTitle=html.match(/<title[^>]*>([\s\S]*?)<\/title>/i)?.[1]||'';
+ return {items:[...ids.values()],page,totalPages:highest,
+  hasMore:page<highest||((ids.size>=75)&&!lastFromNav),
+  source:kind==='developer'?'BGG designer directory (developer candidates)':'BGG public browse directory',
+  note:kind==='developer'?'BGG does not expose a verified independent developer directory; entries are designer candidates, not confirmed developer credits.':'',
+  browseUrl:'https://boardgamegeek.com/browse/'+path+'/page/'+page,
+  htmlTitle:htmlToText(htmlTitle).slice(0,100)
+ };
+}
+async function browseDirectory(type,page){
+ const path=BROWSE_PATHS[type];
+ if(!path)throw Error('No BGG browse directory for this type');
+ const url='https://boardgamegeek.com/browse/'+path+'/page/'+page;
+ const response=await fetch(url,{headers:{
+  Accept:'text/html,application/xhtml+xml',
+  'User-Agent':'Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0 Safari/537.36',
+  Referer:'https://boardgamegeek.com/'
+ },signal:AbortSignal.timeout(12500)});
+ if(!response.ok){const e=new Error('BGG browse directory HTTP '+response.status);e.status=response.status;throw e}
+ const html=await response.text();
+ const parsed=parseBrowse(html,type,page);
+ if(!parsed.items.length){
+  const err=new Error('No directory entries could be parsed from BGG. The page may be restricted or its layout changed.');
+  err.status=502;throw err;
+ }
+ return parsed;
+}
+
 module.exports=async(req,res)=>{
  res.setHeader('Content-Type','application/json; charset=utf-8');
  if(req.method!=='GET'){res.setHeader('Allow','GET');return res.status(405).json({error:'GET only'})}
@@ -126,6 +187,11 @@ module.exports=async(req,res)=>{
  if(!cfg||id===null||page===null)return res.status(400).json({error:'Invalid entity type, ID, or page'});
  const kind=String(req.query.kind||'games');
  try{
+  if(kind==='directory'){
+   const result=await browseDirectory(type,page);
+   res.setHeader('Cache-Control','public, s-maxage=86400, stale-while-revalidate=604800');
+   return res.status(200).json(result);
+  }
   if(kind==='meta'){
    const m=await metadata(type,id,cfg);
    res.setHeader('Cache-Control',m.available?'public, s-maxage=86400, stale-while-revalidate=604800':'public, s-maxage=120');
