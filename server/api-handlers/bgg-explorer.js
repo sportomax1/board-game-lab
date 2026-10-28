@@ -100,7 +100,7 @@ async function metadata(type,id,cfg){
    }else error='XML API HTTP '+r.status;
   }catch(e){error=e.message;}
  }
- if(!name){
+ if(!name||!description){
   try{
    const r=await fetch('https://boardgamegeek.com/'+cfg.path+'/'+id,{
     headers:{Accept:'text/html'},signal:AbortSignal.timeout(9000)});
@@ -109,7 +109,7 @@ async function metadata(type,id,cfg){
     const title=metaField(html,'property','og:title')||html.match(/<title>([\s\S]*?)<\/title>/i)?.[1]||'';
     const clean=decode(title).replace(/\s*[\|–-]\s*BoardGameGeek.*$/i,'').trim();
     if(clean&&!/^(boardgamegeek|just a moment|access denied)/i.test(clean)){
-     name=clean;source='BGG public page';
+     if(!name){name=clean;source='BGG public page';}
     }
     description=description||descriptionFromHtml(html,name);
    }else error='BGG page HTTP '+r.status;
