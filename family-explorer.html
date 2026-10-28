@@ -69,7 +69,7 @@ const el=Object.fromEntries(['familyInput','loadBtn','liveBtn','copyCollector','
 const escapeHTML=s=>String(s??'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const numeric=n=>Number(n||0).toLocaleString('en-US');
 const safeImage=s=>{try{const u=new URL(String(s));return u.protocol==='https:' && (u.hostname==='cf.geekdo-images.com'||u.hostname==='geekdo-images.com'||u.hostname.endsWith('.geekdo-images.com'))?u.href:'';}catch{return '';}};
-const api=(id,page)=>'/api/bgg-family?'+new URLSearchParams({familyid:String(id),page:String(page)});
+const api=(id,page)=>'/api/bgg-family?'+new URLSearchParams({familyid:String(id),page:String(page),mode:'all-v2'});
 const STARTER=JSON.parse($('embeddedSample').textContent);
 const state={id:6480,title:'Animals: Camels',expected:93,games:[],filtered:[],complete:false,source:'HAR sample',visible:48,view:'grid',loading:false,controller:null};
 function normalize(raw){
@@ -140,38 +140,46 @@ function details(id){const g=state.games.find(x=>x.id===id);if(!g)return;
  el.gameDialog.showModal();
 }
 function parseFamilyInput(value){const text=value.trim();const m=text.match(/(?:boardgamefamily\/|family\/)(\d{1,7})/i)||text.match(/^(\d{1,7})$/);const id=m?Number(m[1]):0;if(!Number.isSafeInteger(id)||id<1||id>9999999)throw Error('Enter a valid family ID or a BoardGameGeek boardgamefamily URL.');return id;}
-function collectorScript(id){return `(async () => {
-  const familyId = ${id};
-  const base = 'https://api.geekdo.com/api/geekitem/recs/boardgamefamily';
-  const games = [], seen = new Set();
-  let expected = 0;
-  for (let page = 1; page <= 250; page++) {
-    const url = base + '?' + new URLSearchParams({ajax:'1',linkdata_index:'boardgame',objectid:String(familyId),objecttype:'family',pageid:String(page)});
-    const response = await fetch(url, {headers:{Accept:'application/json'}});
-    if (!response.ok) throw new Error('BGG page ' + page + ': HTTP ' + response.status);
-    const data = await response.json();
-    if (page === 1) expected = Number(data.numrecs) || 0;
-    if (!Array.isArray(data.recs) || !data.recs.length) break;
-    let added = 0;
-    for (const rec of data.recs) {
-      const id = String(rec?.item?.id || '');
-      if (id && !seen.has(id)) {seen.add(id);games.push(rec);added++;}
-    }
-    console.log('Family ' + familyId + ': ' + games.length + ' / ' + expected + ' games after page ' + page);
-    if (expected && games.length >= expected) break;
-    if (!added) {console.warn('Repeated page encountered; stopping.');break;}
-    await new Promise(resolve => setTimeout(resolve, 350));
-  }
-  const result = {type:'bgg-family-export',familyId,expected,complete:games.length===expected,games,exportedAt:new Date().toISOString()};
-  const url = URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));
-  const a=document.createElement('a');a.href=url;a.download='bgg-family-'+familyId+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);
-  console.log('Saved '+games.length+' of '+expected+' games. Import that JSON in the Family Explorer.');
-})();`;}
+function collectorScript(id){
+ const lines=[
+ "(async () => {",
+ " const familyId = "+Number(id)+";",
+ " const endpoint = 'https://api.geekdo.com/api/geekitem/linkeditems';",
+ " const games = [], seen = new Set();",
+ " let expected = 0;",
+ " for (let page = 1; page <= 250; page++) {",
+ "   const url = endpoint + '?' + new URLSearchParams({ajax:'1',linkdata_index:'boardgame',nosession:'1',objectid:String(familyId),objecttype:'family',pageid:String(page),showcount:'25',sort:'name',subtype:'boardgamefamily'});",
+ "   const response = await fetch(url, {headers:{Accept:'application/json'}});",
+ "   if(!response.ok)throw Error('BGG page '+page+': HTTP '+response.status);",
+ "   const data = await response.json();",
+ "   if(page===1)expected=Number(data.config?.numitems)||0;",
+ "   if(!Array.isArray(data.items)||!data.items.length)break;",
+ "   let added=0;",
+ "   for(const row of data.items) {",
+ "     const id=String(row.objectid||'');",
+ "     if(!id||seen.has(id))continue;",
+ "     seen.add(id);added++;",
+ "     const image=row.images?.previewthumb||row.images?.thumb||'';",
+ "     games.push({item:{id,name:row.name,href:row.href,imageSets:{mediacard:{src:image}}},image:{src:image},yearpublished:row.yearpublished,rating:Number(row.average)||0,rank:Number(row.rank)||0,numvoters:Number(row.usersrated)||0,numfans:0,description:''});",
+ "   }",
+ "   console.log('Family '+familyId+': '+games.length+' / '+expected+' after page '+page);",
+ "   if(expected&&games.length>=expected)break;",
+ "   if(!added){console.warn('No new games on page '+page);break;}",
+ "   await new Promise(resolve=>setTimeout(resolve,350));",
+ " }",
+ " const result={type:'bgg-family-export',familyId,expected,complete:expected>0&&games.length===expected,games,exportedAt:new Date().toISOString()};",
+ " const url=URL.createObjectURL(new Blob([JSON.stringify(result,null,2)],{type:'application/json'}));",
+ " const a=document.createElement('a');a.href=url;a.download='bgg-family-'+familyId+'.json';document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),3000);",
+ " console.log('Saved '+games.length+' of '+expected+' games. Import the JSON in Family Explorer.');",
+ "})();"
+ ];
+ return lines.join('\\n');
+}
 function updateCollector(){let id;try{id=parseFamilyInput(el.familyInput.value);}catch{id=state.id;}el.collectorCode.value=collectorScript(id);}
 async function copyText(text){try{if(navigator.clipboard&&window.isSecureContext){await navigator.clipboard.writeText(text);return true;}}catch{}const t=el.collectorCode;t.value=text;t.focus();t.select();try{return document.execCommand('copy');}catch{return false;}}
 async function copyCollector(){updateCollector();const ok=await copyText(el.collectorCode.value);el.collectorPanel.open=true;status(ok?'Collector copied. Open the BGG family page and paste it into DevTools → Console.':'Select and copy the script below, then run it in BGG’s Console.',ok?'success':'warn');}
 async function directLoad(id){if(state.loading)return;const controller=new AbortController();state.controller=controller;setLoading(true);el.progressFill.style.width='0%';try{
- status('Loading BGG family games via Board Game Lab API…');const recs=[];let expected=0;
+ status('Loading the complete linked-game list through Board Game Lab…');const recs=[];let expected=0;
  for(let page=1;page<=250;page++){
    const response=await fetch(api(id,page),{signal:controller.signal,headers:{Accept:'application/json'}});
    const data=await response.json().catch(()=>({}));
@@ -181,13 +189,13 @@ async function directLoad(id){if(state.loading)return;const controller=new Abort
    const before=recs.length;const ids=new Set(recs.map(x=>String(x.item?.id||'')));
    for(const rec of data.recs){const recId=String(rec.item?.id||'');if(recId&&!ids.has(recId)){ids.add(recId);recs.push(rec)}}
    if(expected)el.progressFill.style.width=`${Math.min(100,recs.length*100/expected)}%`;
-   status(`Retrieved ${recs.length} of ${expected||'?'} games from BGG.`);
+   status(`Loading full family · page ${page} · ${recs.length} of ${expected||'?'} linked games…`);
    if(recs.length>=expected||recs.length===before)break;
    await new Promise(r=>setTimeout(r,350));
  }
  if(!recs.length)throw Error('No family games returned');
- activateData({id,expected,games:recs,complete:recs.length===expected,source:'Vercel Geekdo API'});
- hideHelp();status(`Live API returned ${state.games.length} games. Saved locally.`, 'success');
+ activateData({id,expected,games:recs,complete:recs.length===expected,source:'BGG linked-items API'});
+ hideHelp();status(state.complete?`Loaded all ${state.games.length} linked games from BGG (${Math.ceil(state.games.length/25)} pages). Saved locally.`:`Loaded ${state.games.length} of ${state.expected} linked games. Some pages may be missing.`,state.complete?'success':'warn');
  }catch(e){status(e.name==='AbortError'?'Fetch cancelled':`Unable to retrieve family ${id}: ${e.message}. If Geekdo blocks the proxy, import a collector JSON file instead.`,e.name==='AbortError'?'warn':'error');if(e.name!=='AbortError')showHelp(id,e.message);
  }finally{setLoading(false);state.controller=null;}
 }
@@ -205,18 +213,41 @@ async function loadFamily(){
  // Load through the Vercel proxy. Keep the local HAR fallback when the upstream API blocks the request.
  await directLoad(id);
 }
-function extractHarPayload(har,id){const pages=new Map();let count=0;
- for(const entry of har.log.entries){const url=entry.request?.url||'';let u;try{u=new URL(url);}catch{continue}
-  if(u.hostname!=='api.geekdo.com'||u.pathname!=='/api/geekitem/recs/boardgamefamily'||Number(u.searchParams.get('objectid'))!==id)continue;
-  const body=entry.response?.content||{};let text=body.text||'';if(body.encoding==='base64'){try{text=atob(text)}catch{continue}}
-  if(!text)continue;let j;try{j=JSON.parse(text)}catch{continue};const page=Number(u.searchParams.get('pageid'))||1;
-  if(!Array.isArray(j.recs))continue;pages.set(page,j.recs);count=Number(j.numrecs)||count;
+function linkedItemToRec(row){
+ const image=row.images?.previewthumb||row.images?.thumb||row.images?.original||'';
+ return {item:{id:String(row.objectid||''),name:row.name||'Untitled game',href:row.href||'',imageSets:{mediacard:{src:image}}},
+  image:{src:image},yearpublished:row.yearpublished,rating:Number(row.average)||0,
+  rank:Number(row.rank)||0,numvoters:Number(row.usersrated)||0,numfans:0,description:''};
+}
+function extractHarPayload(har,id){
+ const linkedPages=new Map(),featuredPages=new Map();let linkedExpected=0,featuredExpected=0;
+ for(const entry of har.log.entries){
+  const rawUrl=entry.request?.url||'';
+  let u;try{u=new URL(rawUrl)}catch{continue}
+  if(u.hostname!=='api.geekdo.com'||Number(u.searchParams.get('objectid'))!==id)continue;
+  const linked=u.pathname==='/api/geekitem/linkeditems';
+  const featured=u.pathname==='/api/geekitem/recs/boardgamefamily';
+  if(!linked&&!featured)continue;
+  const body=entry.response?.content||{};let content=body.text||'';
+  if(body.encoding==='base64'){try{content=atob(content)}catch{continue}}
+  if(!content)continue;
+  let j;try{j=JSON.parse(content)}catch{continue}
+  const page=Number(u.searchParams.get('pageid'))||1;
+  if(linked&&Array.isArray(j.items)){
+   linkedPages.set(page,j.items.map(linkedItemToRec));
+   linkedExpected=Number(j.config?.numitems)||linkedExpected;
+  }else if(featured&&Array.isArray(j.recs)){
+   featuredPages.set(page,j.recs);featuredExpected=Number(j.numrecs)||featuredExpected;
+  }
  }
- return {pages,expected:count};}
+ // A BGG HAR may contain both endpoints. Membership always takes precedence over featured recommendations.
+ return linkedPages.size?{pages:linkedPages,expected:linkedExpected,source:'Imported linked-items HAR'}:
+  {pages:featuredPages,expected:featuredExpected,source:'Imported featured-only HAR'};
+}
 async function importData(file){if(!file)return;try{
  status(`Reading ${file.name} locally…`);const raw=JSON.parse(await file.text());let id=Number(raw.familyId)||parseFamilyInput(el.familyInput.value),expected=raw.expected||raw.numrecs||0,items=[],source='Imported JSON';
  if(Array.isArray(raw.log?.entries)){
-  const found=extractHarPayload(raw,id);items=[...found.pages.entries()].sort((a,b)=>a[0]-b[0]).flatMap(([k,rows])=>rows);expected=found.expected||expected;source='Imported HAR';
+  const found=extractHarPayload(raw,id);items=[...found.pages.entries()].sort((a,b)=>a[0]-b[0]).flatMap(([k,rows])=>rows);expected=found.expected||expected;source=found.source;
  }else if(Array.isArray(raw.games))items=raw.games;
  else if(Array.isArray(raw.recs))items=raw.recs;
  else throw Error('This file is not a supported BGG family HAR or JSON export.');
