@@ -58,8 +58,32 @@ function descriptionFromHtml(html,name){
  return '';
 }
 
+
+async function geekItemMetadata(type,id,cfg){
+ try{
+  const r=await fetch('https://api.geekdo.com/api/geekitems?'+new URLSearchParams({
+   objecttype:cfg.objecttype,objectid:String(id)
+  }),{headers:{Accept:'application/json',Referer:'https://boardgamegeek.com/'},
+   signal:AbortSignal.timeout(6500)});
+  if(!r.ok)return null;
+  const data=await r.json();
+  const arr=Array.isArray(data)?data:Array.isArray(data.items)?data.items:
+   data.item?[data.item]:[data];
+  const match=arr.map(x=>x?.item||x?.geekitem?.item||x)
+   .find(x=>x&&(!x.id&&!x.objectid||Number(x.id||x.objectid)===id));
+  if(!match)return null;
+  const name=String(match.primaryname?.name||match.primaryname||match.name?.name||match.name||'').trim();
+  const description=htmlToText(match.description||match.short_description||match.shortdescription||'');
+  return name||description?{name,description}:null;
+ }catch(e){return null;}
+}
+
 async function metadata(type,id,cfg){
  let name='',description='',source='',error='';
+ if(type!=='family'){
+  const fromGeekdo=await geekItemMetadata(type,id,cfg);
+  if(fromGeekdo){name=fromGeekdo.name;description=fromGeekdo.description;source='BGG Geekdo metadata';}
+ }
  if(type==='family'){
   try{
    const r=await fetch('https://boardgamegeek.com/xmlapi2/family?id='+id+'&type=boardgamefamily',{
