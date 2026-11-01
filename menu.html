@@ -1451,8 +1451,7 @@ function renderPresetList() {
 function getNumericFieldValue(game, field) {
   if (field.startsWith('bestAt')) {
     const pc = field === 'bestAt8' ? 8 : parseInt(field.replace('bestAt', ''));
-    const ord = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4, null: 999 };
-    return ord[categorizeGame(game, pc)] ?? 999;
+    return getPlayerCountScore(game, pc);
   }
   let v = game[field];
   if (typeof v === 'string' && v !== '' && !isNaN(v)) v = parseFloat(v);
@@ -1475,7 +1474,16 @@ function rankAverageSort(games, criteria) {
         const sb = String(games[j][field] ?? '');
         return asc ? sa.localeCompare(sb) : sb.localeCompare(sa);
       }
+      if (field.startsWith('bestAt')) {
+
+        if (a === null && b !== null) return 1;
+
+        if (b === null && a !== null) return -1;
+
+      }
+
       const na = a ?? 0, nb = b ?? 0;
+
       return asc ? (na - nb) : (nb - na);
     });
     // Assign average rank within tied groups, scaled by weight
@@ -1525,8 +1533,9 @@ function sortGames() {
     if (ignoreZeroValues && combinedCriteria.length > 0) {
       gamesToDisplay = gamesToDisplay.filter(g =>
         combinedCriteria.some(c => {
-          const v = g[c.field];
-          return v !== 0 && v !== '0' && v !== '' && v != null;
+          const isPlayerScore = c.field.startsWith('bestAt');
+          const v = isPlayerScore ? getNumericFieldValue(g, c.field) : g[c.field];
+          return isPlayerScore ? v !== null : (v !== 0 && v !== '0' && v !== '' && v != null);
         })
       );
     }
@@ -1543,8 +1552,7 @@ function sortGames() {
   if (sortBy.startsWith('bestAt')) {
       const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
       gamesToDisplay = gamesToDisplay.filter(g => {
-          const category = categorizeGame(g, playerCount);
-          return category !== null; // Only keep games that support this player count
+          return getPlayerVoteStats(g, playerCount) !== null; // Supports the player count
       });
   } else if (ignoreZeroValues) {
       gamesToDisplay = gamesToDisplay.filter(g => {
@@ -1564,23 +1572,7 @@ function sortGames() {
     // Handle player count sorting (bestAt1, bestAt2, etc.)
     if (sortBy.startsWith('bestAt')) {
       const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
-      const categoryA = categorizeGame(a, playerCount);
-      const categoryB = categorizeGame(b, playerCount);
-      
-      const categoryOrder = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4 };
-      
-      // Sort by category priority first
-      if (categoryOrder[categoryA] !== categoryOrder[categoryB]) {
-        res = categoryOrder[categoryA] - categoryOrder[categoryB];
-      } else {
-        // If same category, sort by bayesaverage descending
-        const bayesA = a.bayesaverage || 0;
-        const bayesB = b.bayesaverage || 0;
-        res = bayesB - bayesA;
-      }
-      
-      if (sortAsc) res = -res;
-      return res; // Skip tiebreaker for player count sorts
+      return comparePlayerCountScores(a, b, playerCount, sortAsc); // Numerical vote score.
     } else {
       // Try to parse as numbers if they're strings
       if (typeof valA === 'string' && !isNaN(valA) && valA !== '') {
@@ -1606,13 +1598,10 @@ function sortGames() {
         let tieValA = a[tiebreakerSortBy];
         let tieValB = b[tiebreakerSortBy];
         
-        // Handle player count sorting in tiebreaker
-        if (tiebreakerSortBy.startsWith('bestAt')) {
-          const playerCount = tiebreakerSortBy === 'bestAt8' ? 8 : parseInt(tiebreakerSortBy.replace('bestAt', ''));
-          tieValA = getPlayerCountScore(a, playerCount);
-          tieValB = getPlayerCountScore(b, playerCount);
-          // Already includes bayesaverage, sort descending
-          res = tieValB - tieValA;
+        const playerTiebreaker = tiebreakerSortBy.startsWith('bestAt');
+        if (playerTiebreaker) {
+          const playerCount = parseInt(tiebreakerSortBy.replace('bestAt', ''), 10);
+          res = comparePlayerCountScores(a, b, playerCount, tiebreakerSortAsc);
         } else {
           // Try to parse as numbers
           if (typeof tieValA === 'string' && !isNaN(tieValA) && tieValA !== '') {
@@ -1631,7 +1620,7 @@ function sortGames() {
               res = tieValB - tieValA;
           }
         }
-        if (tiebreakerSortAsc) res = -res;
+        if (tiebreakerSortAsc && !playerTiebreaker) res = -res;
     }
     
     return res;
@@ -1700,7 +1689,7 @@ function renderGames() {
         let val = g[c.field];
         if (c.field.startsWith('bestAt')) {
           const pc = c.field === 'bestAt8' ? 8 : parseInt(c.field.replace('bestAt', ''));
-          val = { 'perfect': 'Perfect', 'best': 'Best', 'recommended': 'Rec.', 'supported': 'OK', null: 'N/A' }[categorizeGame(g, pc)] || 'N/A';
+          val = formatPlayerCountScore(g, pc);
         } else if (typeof val === 'string' && !isNaN(val) && val !== '') {
           val = parseFloat(val).toFixed(2).replace(/\.00$/, '');
         } else if (typeof val === 'number') {
@@ -1733,7 +1722,7 @@ function renderGames() {
   const primaryRankMap = computeFieldRanks(displayedGames, sortBy, sortAsc);
   const tieRankMap = computeFieldRanks(displayedGames, tieBy, tiebreakerSortAsc);
 
-  // For bestAt sorts: competition-rank positions (same category = same position, next group skips)
+  // Equal numerical scores share their competition rank.
   let competitionPositions = null;
   if (sortBy.startsWith('bestAt')) {
     const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
@@ -1741,9 +1730,9 @@ function renderGames() {
     let pos = 1;
     let i = 0;
     while (i < displayedGames.length) {
-      const cat = categorizeGame(displayedGames[i], playerCount);
+      const score = getPlayerCountScore(displayedGames[i], playerCount);
       let j = i;
-      while (j < displayedGames.length && categorizeGame(displayedGames[j], playerCount) === cat) j++;
+      while (j < displayedGames.length && getPlayerCountScore(displayedGames[j], playerCount) === score) j++;
       for (let k = i; k < j; k++) competitionPositions.push(pos);
       pos += (j - i);
       i = j;
@@ -1757,9 +1746,7 @@ function renderGames() {
     // Handle player count display
     if (sortBy.startsWith('bestAt')) {
       const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
-      const category = categorizeGame(g, playerCount);
-      const categoryLabels = { 'perfect': 'Perfect', 'best': 'Best', 'recommended': 'Rec.', 'supported': 'OK', null: 'N/A' };
-      displayValue = categoryLabels[category] || 'N/A';
+      displayValue = formatPlayerCountScore(g, playerCount);
     } else if (typeof sortValue === 'number') {
         displayValue = sortValue.toFixed(2).replace(/\.00$/, '');
     } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
@@ -1774,9 +1761,7 @@ function renderGames() {
     
     if (tieBy.startsWith('bestAt')) {
       const playerCount = tieBy === 'bestAt8' ? 8 : parseInt(tieBy.replace('bestAt', ''));
-      const category = categorizeGame(g, playerCount);
-      const categoryLabels = { 'perfect': 'Perfect', 'best': 'Best', 'recommended': 'Rec.', 'supported': 'OK', null: 'N/A' };
-      displayTie = categoryLabels[category] || 'N/A';
+      displayTie = formatPlayerCountScore(g, playerCount);
     } else {
       if (typeof tieValue === 'string' && !isNaN(tieValue) && tieValue !== '') tieValue = parseFloat(tieValue);
       if (typeof tieValue === 'number') {
