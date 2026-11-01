@@ -1392,6 +1392,8 @@ function toggleCombinedDir(idx) {
 
 function updateCombinedField(idx, newField) {
   combinedCriteria[idx].field = newField;
+  if (newField.startsWith('bestAt')) combinedCriteria[idx].asc = false;
+  renderCombinedCriteriaList();
   sortGames();
 }
 
@@ -1650,6 +1652,10 @@ function computeFieldRanks(games, field, asc) {
       const sb = String(b.g[field] ?? '');
       return asc ? sa.localeCompare(sb) : sb.localeCompare(sa);
     }
+    if (field.startsWith('bestAt')) {
+      if (va === null && vb !== null) return 1;
+      if (vb === null && va !== null) return -1;
+    }
     const na = va ?? 0, nb = vb ?? 0;
     return asc ? (na - nb) : (nb - na);
   });
@@ -1809,8 +1815,7 @@ function printPlayers1to8() {
   const showIndex = document.getElementById('printIncludeIdx')?.checked;
   const showPrimary = document.getElementById('printIncludePrimary')?.checked;
   const showSecondary = document.getElementById('printIncludeSecondary')?.checked;
-  const priority = {perfect: 0, best: 1, recommended: 2, supported: 3};
-  const shortLabel = {perfect:'PERF',best:'BEST',recommended:'REC',supported:'OK'};
+  // Descriptive groupings remain in the print header, but ranking is numerical.
   const escapeHtml = value => String(value ?? '').replace(/[&<>"']/g, char =>
     ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
   const sheets = [];
@@ -1819,15 +1824,14 @@ function printPlayers1to8() {
       .filter(game => !hideExpansions || game.type !== 'boardgameexpansion')
       .map(game => ({game, category: categorizeGame(game, count)}))
       .filter(entry => entry.category !== null)
-      .sort((a,b) => (priority[a.category] ?? 99) - (priority[b.category] ?? 99) ||
-        (+b.game.bayesaverage || 0) - (+a.game.bayesaverage || 0) ||
+      .sort((a,b) => comparePlayerCountScores(a.game, b.game, count) ||
         String(a.game.name || '').localeCompare(String(b.game.name || '')));
     const totals = {perfect:0,best:0,recommended:0,supported:0};
     eligible.forEach(entry => { if (Object.hasOwn(totals, entry.category)) totals[entry.category]++; });
     const tiles = eligible.slice(0,120).map(({game,category}, index) => {
       const img = escapeHtml(game.thumb || '');
       const title = escapeHtml(game.name || '');
-      const badge = escapeHtml(shortLabel[category] || '');
+      const badge = escapeHtml(formatPlayerCountScore(game, count, 1));
       const rank = showIndex ? '<span style="position:absolute;top:2px;left:2px;background:rgba(255,255,255,.93);color:#222;font-size:8px;padding:0 3px;border:1px solid #ddd;font-weight:700;">'+(index+1)+'</span>' : '';
       const primary = showPrimary ? '<span style="position:absolute;bottom:2px;right:2px;background:rgba(255,255,255,.95);color:#333;font-size:7px;font-weight:700;padding:0 3px;">'+badge+'</span>' : '';
       const secondary = showSecondary ? '<span style="position:absolute;bottom:2px;left:2px;background:rgba(255,255,255,.95);color:#555;font-size:7px;padding:0 3px;">'+(+game.bayesaverage || 0).toFixed(2)+'</span>' : '';
@@ -1879,8 +1883,7 @@ function printTop120() {
         let displayValue = '';
         if (sortBy.startsWith('bestAt')) {
           const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
-          const category = categorizeGame(game, playerCount);
-          displayValue = { 'perfect': 'Perf', 'best': 'Best', 'recommended': 'Rec', 'supported': 'OK', null: '—' }[category] || '—';
+          displayValue = formatPlayerCountScore(game, playerCount, 1);
         } else if (typeof sortValue === 'number') {
             displayValue = sortValue.toFixed(1).replace(/\.0$/, '');
         } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
@@ -1894,8 +1897,7 @@ function printTop120() {
           let tieValue = game[tieBy];
           if (tieBy.startsWith('bestAt')) {
             const playerCount = tieBy === 'bestAt8' ? 8 : parseInt(tieBy.replace('bestAt', ''));
-            const category = categorizeGame(game, playerCount);
-            displayTie = { 'perfect': 'Perf', 'best': 'Best', 'recommended': 'Rec', 'supported': 'OK', null: '—' }[category] || '—';
+            displayTie = formatPlayerCountScore(game, playerCount, 1);
           } else {
             if (typeof tieValue === 'string' && !isNaN(tieValue) && tieValue !== '') tieValue = parseFloat(tieValue);
             if (typeof tieValue === 'number') displayTie = tieValue.toFixed(1).replace(/\.0$/, '');
@@ -1955,8 +1957,7 @@ function printAllOnePage() {
       let displayValue = '';
       if (sortBy.startsWith('bestAt')) {
         const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
-        const category = categorizeGame(game, playerCount);
-        displayValue = { 'perfect': 'P', 'best': 'B', 'recommended': 'R', 'supported': 'O', null: '-' }[category] || '-';
+        displayValue = formatPlayerCountScore(game, playerCount, 0);
       } else if (typeof sortValue === 'number') {
           displayValue = sortValue.toFixed(0);
       } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
@@ -2022,8 +2023,7 @@ function printAll120PerPage() {
         let displayValue = '';
         if (sortBy.startsWith('bestAt')) {
           const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
-          const category = categorizeGame(game, playerCount);
-          displayValue = { 'perfect': 'Perf', 'best': 'Best', 'recommended': 'Rec', 'supported': 'OK', null: '—' }[category] || '—';
+          displayValue = formatPlayerCountScore(game, playerCount, 1);
         } else if (typeof sortValue === 'number') {
             displayValue = sortValue.toFixed(1).replace(/\.0$/, '');
         } else if (typeof sortValue === 'string' && !isNaN(sortValue) && sortValue !== '') {
@@ -2037,8 +2037,7 @@ function printAll120PerPage() {
           let tieValue = game[tieBy];
           if (tieBy.startsWith('bestAt')) {
             const playerCount = tieBy === 'bestAt8' ? 8 : parseInt(tieBy.replace('bestAt', ''));
-            const category = categorizeGame(game, playerCount);
-            displayTie = { 'perfect': 'Perf', 'best': 'Best', 'recommended': 'Rec', 'supported': 'OK', null: '—' }[category] || '—';
+            displayTie = formatPlayerCountScore(game, playerCount, 1);
           } else {
             if (typeof tieValue === 'string' && !isNaN(tieValue) && tieValue !== '') tieValue = parseFloat(tieValue);
             if (typeof tieValue === 'number') displayTie = tieValue.toFixed(1).replace(/\.0$/, '');
