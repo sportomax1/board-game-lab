@@ -321,6 +321,20 @@
             <span class="text-xs font-semibold text-slate-700">Include Secondary in Print</span>
           </label>
         </div>
+<div class="border-t pt-2 mt-2">
+  <div class="text-xs font-bold uppercase text-slate-600 mb-1">Printed artwork — four corner labels</div>
+  <div class="grid grid-cols-2 md:grid-cols-4 gap-2">
+    <label class="text-xs text-slate-600">Top left<select id="printCornerTL" onchange="savePrintCornerSettings()" class="w-full border rounded px-2 py-1 bg-white"></select></label>
+    <label class="text-xs text-slate-600">Top right<select id="printCornerTR" onchange="savePrintCornerSettings()" class="w-full border rounded px-2 py-1 bg-white"></select></label>
+    <label class="text-xs text-slate-600">Bottom left<select id="printCornerBL" onchange="savePrintCornerSettings()" class="w-full border rounded px-2 py-1 bg-white"></select></label>
+    <label class="text-xs text-slate-600">Bottom right<select id="printCornerBR" onchange="savePrintCornerSettings()" class="w-full border rounded px-2 py-1 bg-white"></select></label>
+  </div>
+  <div class="flex flex-wrap gap-2 items-center mt-2">
+    <label class="text-xs">Label size <select id="printCornerSize" onchange="savePrintCornerSettings()" class="border rounded px-1 py-1"><option value="small">Small</option><option value="medium">Medium</option><option value="large">Large</option></select></label>
+    <label class="text-xs">Background <select id="printCornerBg" onchange="savePrintCornerSettings()" class="border rounded px-1 py-1"><option value="white">White</option><option value="dark">Dark</option><option value="clear">Transparent</option></select></label>
+    <button type="button" class="text-xs border rounded px-2 py-1" onclick="resetPrintCornerSettings()">Reset</button>
+  </div>
+</div>
       </details>
     </div>
 
@@ -613,6 +627,7 @@ window.addEventListener('DOMContentLoaded', () => {
   renderPresetList();
   restorePlayerFormula();
   restorePlayerRanking();
+  loadPrintCornerSettings();
   restoreLatestMenuSnapshot();
 });
 
@@ -1942,6 +1957,89 @@ function renderGames() {
  * Uses the configurable weighted BGG poll score from Best at N Players
  * without mutating the active filters or sorting.
  */
+const PRINT_CORNER_OPTIONS = [['none','Blank'],['rank','Rank'],['primary','Primary sort / vote score'],['secondary','Tiebreaker'],['bayes','Bayesian average'],['bggRating','BGG rating'],['players','Player range'],['min','Minimum players'],['max','Maximum players'],['year','Year'],['bucket','ONLY / BEST / REC bucket'],['voteTriplet','B-R-NR vote counts (X-Y-Z)'],['B','Best votes'],['R','Recommended votes'],['NR','Not Recommended votes'],['votes','Total votes'],['name','Game title']];
+const PRINT_CORNER_DEFAULT = {TL:'rank',TR:'players',BL:'bayes',BR:'primary',size:'small',bg:'white'};
+let printCornerSettings = {...PRINT_CORNER_DEFAULT};
+function loadPrintCornerSettings() {
+ try {
+  const saved = JSON.parse(localStorage.getItem('menuPrintCornerSettingsV1') || 'null');
+  if (saved) {
+   for (const key of ['TL','TR','BL','BR'])
+    if (PRINT_CORNER_OPTIONS.some(option => option[0] === saved[key])) printCornerSettings[key] = saved[key];
+   if (['small','medium','large'].includes(saved.size)) printCornerSettings.size=saved.size;
+   if (['white','dark','clear'].includes(saved.bg)) printCornerSettings.bg=saved.bg;
+  }
+ } catch(error) { console.warn('Print settings could not be loaded',error); }
+ for (const key of ['TL','TR','BL','BR']) {
+  const el=document.getElementById('printCorner'+key);
+  if (!el) continue;
+  el.innerHTML=PRINT_CORNER_OPTIONS.map(([value,label])=>'<option value="'+value+'">'+label+'</option>').join('');
+  el.value=printCornerSettings[key];
+ }
+ const size=document.getElementById('printCornerSize'),bg=document.getElementById('printCornerBg');
+ if(size) size.value=printCornerSettings.size;
+ if(bg) bg.value=printCornerSettings.bg;
+}
+function savePrintCornerSettings() {
+ for(const key of ['TL','TR','BL','BR']){
+  const value=document.getElementById('printCorner'+key)?.value;
+  if(PRINT_CORNER_OPTIONS.some(option=>option[0]===value))printCornerSettings[key]=value;
+ }
+ printCornerSettings.size=document.getElementById('printCornerSize')?.value||'small';
+ printCornerSettings.bg=document.getElementById('printCornerBg')?.value||'white';
+ try{localStorage.setItem('menuPrintCornerSettingsV1',JSON.stringify(printCornerSettings))}catch(error){console.warn(error)}
+}
+function resetPrintCornerSettings(){
+ printCornerSettings={...PRINT_CORNER_DEFAULT};
+ try{localStorage.setItem('menuPrintCornerSettingsV1',JSON.stringify(printCornerSettings))}catch(error){console.warn(error)}
+ loadPrintCornerSettings();
+}
+function escapeCornerText(value) {
+ return String(value??'').replace(/[&<>"']/g, char=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[char]));
+}
+function printCornerValue(key,game,context) {
+ const pc=context.playerCount||(/bestAt\d+/.test(context.primaryField||'')?Number(context.primaryField.slice(6)):0)||
+ (/bestAt\d+/.test(context.secondaryField||'')?Number(context.secondaryField.slice(6)):0);
+ const vote=pc?getPlayerVoteStats(game,pc):null;
+ const min=getGamePlayerCount(game,'min'),max=getGamePlayerCount(game,'max');
+ const fmt=val=>(Number.isFinite(Number(val))&&val!==''&&val!=null)?Number(val).toFixed(2).replace(/\.00$/,''):String(val??'');
+ const field=field=>field?.startsWith('bestAt')?formatPlayerCountScore(game,Number(field.slice(6)),1):fmt(game[field]);
+ switch(key) {
+  case 'none':return '';
+  case 'rank':return '#'+context.rank;
+  case 'primary':return context.playerCount?formatPlayerCountScore(game,pc,1):field(context.primaryField);
+  case 'secondary':return context.playerCount?fmt(+game.bayesaverage||0):field(context.secondaryField);
+  case 'bayes':return 'Bayes '+fmt(+game.bayesaverage||0);
+  case 'bggRating':return 'BGG '+fmt(+game.bggRating||0);
+  case 'players':return min&&max?(min===max?min+'P':min+'–'+max+'P'):'—';
+  case 'min':return min?min+'P':'—';
+  case 'max':return max?max+'P':'—';
+  case 'year':return game.year||'';
+  case 'bucket':return pc?({only:'ONLY',best:'BEST',recommended:'REC',other:'OTHER'}[playerBucket(game,pc)]||''):'';
+  case 'voteTriplet':return vote?(vote.best+'-'+vote.recommended+'-'+vote.notRecommended):'';
+  case 'B':return vote?'B '+vote.best:'';
+  case 'R':return vote?'R '+vote.recommended:'';
+  case 'NR':return vote?'NR '+vote.notRecommended:'';
+  case 'votes':return vote?'Votes '+vote.total:'';
+  case 'name':return game.name||'';
+  default:return '';
+ }
+}
+function renderPrintCorners(game,context) {
+ const positions={TL:'top:2px;left:2px;',TR:'top:2px;right:2px;',BL:'bottom:2px;left:2px;',BR:'bottom:2px;right:2px;'};
+ const font={small:6,medium:8,large:10}[printCornerSettings.size]||6;
+ const style=printCornerSettings.bg==='dark'?'background:rgba(15,23,42,.88);color:white;':
+  printCornerSettings.bg==='clear'?'background:transparent;color:#111;text-shadow:0 0 2px white;':'background:rgba(255,255,255,.93);color:#111;';
+ return Object.entries(positions).map(([corner,position])=>{
+  const value=printCornerValue(printCornerSettings[corner],game,context);
+  if(value===''||value==null)return '';
+  return '<span style="position:absolute;z-index:2;'+position+style+
+    'font-family:Arial,sans-serif;font-size:'+font+'px;font-weight:bold;line-height:1.1;padding:1px 2px;'+
+    'border-radius:2px;max-width:90%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis;">'+escapeCornerText(value)+'</span>';
+ }).join('');
+}
+
+
 function printPlayers1to8() {
   if (!Array.isArray(allGames) || allGames.length === 0) {
     alert('Load your BGG collection or CSV first.');
@@ -1974,7 +2072,7 @@ function printPlayers1to8() {
       const secondary = showSecondary ? '<span style="position:absolute;bottom:2px;left:2px;background:rgba(255,255,255,.95);color:#555;font-size:7px;padding:0 3px;">'+(+game.bayesaverage || 0).toFixed(2)+'</span>' : '';
       return '<div style="position:relative;aspect-ratio:1;min-width:0;overflow:hidden;background:#fff;border:1px solid #e5e7eb;">' +
         '<img src="'+img+'" alt="'+title+'" style="width:100%;height:100%;object-fit:contain;display:block;" onerror="this.style.display=\'none\'">' +
-        rank + primary + secondary + '</div>';
+        renderPrintCorners(game,{rank:index+1,playerCount:count}) + '</div>';
     }).join('');
     const title = count === 8 ? '8+ PLAYER GAMES' : count + ' PLAYER GAMES';
     const summary = totals.only+' Only &bull; '+totals.best+' Best &bull; '+
@@ -2045,9 +2143,10 @@ function printTop120() {
         return `
             <div style="position: relative; aspect-ratio: 1 / 1; border: 1px solid #eee; overflow: hidden; background: #fff;">
                 <img src="${game.thumb}" alt="${game.name}" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; display: block;" onerror="this.style.display='none'">
-                ${showIdx ? `<div style="position: absolute; top: 2px; left: 2px; background: rgba(255,255,255,0.9); color: #000; font-size: 8px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(0,0,0,0.1); font-weight: 700; z-index: 2;">${index + 1}</div>` : ''}
-                ${showPrimary ? `<div style="position: absolute; bottom: 2px; right: 2px; background: rgba(238,242,255,0.9); color: #3730a3; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(55,48,163,0.2); font-weight: 700; z-index: 2;">${displayValue}</div>` : ''}
-                ${showSecondary ? `<div style="position: absolute; bottom: 2px; left: 2px; background: rgba(241,245,249,0.9); color: #0f172a; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(15,23,42,0.2); font-weight: 700; z-index: 2;">${displayTie}</div>` : ''}
+                ${false && showIdx ? `<div style="position: absolute; top: 2px; left: 2px; background: rgba(255,255,255,0.9); color: #000; font-size: 8px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(0,0,0,0.1); font-weight: 700; z-index: 2;">${index + 1}</div>` : ''}
+                ${false && showPrimary ? `<div style="position: absolute; bottom: 2px; right: 2px; background: rgba(238,242,255,0.9); color: #3730a3; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(55,48,163,0.2); font-weight: 700; z-index: 2;">${displayValue}</div>` : ''}
+                ${false && showSecondary ? `<div style="position: absolute; bottom: 2px; left: 2px; background: rgba(241,245,249,0.9); color: #0f172a; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(15,23,42,0.2); font-weight: 700; z-index: 2;">${displayTie}</div>` : ''}
+            ${renderPrintCorners(game,{rank:index+1,primaryField:sortBy,secondaryField:tieBy})}
             </div>
         `;
     }).join('');
@@ -2106,9 +2205,10 @@ function printAllOnePage() {
       return `
           <div style="position: relative; aspect-ratio: 1 / 1; border: 0.5px solid #eee; overflow: hidden; background: #fff;">
               <img src="${game.thumb}" alt="${game.name}" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; display: block;" onerror="this.style.display='none'">
-              ${showIdx ? `<div style="position: absolute; top: 1px; left: 1px; background: rgba(255,255,255,0.8); font-size: 5px; font-weight: bold; z-index: 2; padding: 0 1px;">${index + 1}</div>` : ''}
-              ${showPrimary ? `<div style="position: absolute; bottom: 1px; right: 1px; background: rgba(255,255,255,0.8); font-size: 5px; font-weight: bold; z-index: 2; padding: 0 1px;">${displayValue}</div>` : ''}
-          </div>
+              ${false && showIdx ? `<div style="position: absolute; top: 1px; left: 1px; background: rgba(255,255,255,0.8); font-size: 5px; font-weight: bold; z-index: 2; padding: 0 1px;">${index + 1}</div>` : ''}
+              ${false && showPrimary ? `<div style="position: absolute; bottom: 1px; right: 1px; background: rgba(255,255,255,0.8); font-size: 5px; font-weight: bold; z-index: 2; padding: 0 1px;">${displayValue}</div>` : ''}
+          ${renderPrintCorners(game,{rank:index+1,primaryField:sortBy})}
+            </div>
       `;
   }).join('');
 
@@ -2185,9 +2285,10 @@ function printAll120PerPage() {
         return `
             <div style="position: relative; aspect-ratio: 1 / 1; border: 1px solid #eee; overflow: hidden; background: #fff;">
                 <img src="${game.thumb}" alt="${game.name}" style="position: absolute; left: 0; top: 0; width: 100%; height: 100%; object-fit: contain; display: block;" onerror="this.style.display='none'">
-                ${showIdx ? `<div style="position: absolute; top: 2px; left: 2px; background: rgba(255,255,255,0.9); color: #000; font-size: 8px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(0,0,0,0.1); font-weight: 700; z-index: 2;">${startIdx + index + 1}</div>` : ''}
-                ${showPrimary ? `<div style="position: absolute; bottom: 2px; right: 2px; background: rgba(238,242,255,0.9); color: #3730a3; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(55,48,163,0.2); font-weight: 700; z-index: 2;">${displayValue}</div>` : ''}
-                ${showSecondary ? `<div style="position: absolute; bottom: 2px; left: 2px; background: rgba(241,245,249,0.9); color: #0f172a; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(15,23,42,0.2); font-weight: 700; z-index: 2;">${displayTie}</div>` : ''}
+                ${false && showIdx ? `<div style="position: absolute; top: 2px; left: 2px; background: rgba(255,255,255,0.9); color: #000; font-size: 8px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(0,0,0,0.1); font-weight: 700; z-index: 2;">${startIdx + index + 1}</div>` : ''}
+                ${false && showPrimary ? `<div style="position: absolute; bottom: 2px; right: 2px; background: rgba(238,242,255,0.9); color: #3730a3; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(55,48,163,0.2); font-weight: 700; z-index: 2;">${displayValue}</div>` : ''}
+                ${false && showSecondary ? `<div style="position: absolute; bottom: 2px; left: 2px; background: rgba(241,245,249,0.9); color: #0f172a; font-size: 7px; padding: 0px 3px; border-radius: 2px; border: 1px solid rgba(15,23,42,0.2); font-weight: 700; z-index: 2;">${displayTie}</div>` : ''}
+            ${renderPrintCorners(game,{rank:startIdx+index+1,primaryField:sortBy,secondaryField:tieBy})}
             </div>
         `;
     }).join('');
