@@ -204,6 +204,32 @@
           <span id="playerFilterCount" class="hidden ml-auto text-xs font-semibold text-indigo-700" role="status" aria-live="polite"></span>
         </div>
         </div>
+        <details id="playerFormulaSettings" class="border-t border-slate-100 pt-1">
+          <summary class="cursor-pointer text-xs font-bold text-indigo-700 py-1">⚙ Best at X formula <span class="text-slate-500 font-normal" id="playerFormulaSummary">(+2 Best +1 Recommended −1 Not Recommended) × Bayes</span></summary>
+          <div class="flex flex-wrap items-end gap-2 pt-2">
+            <label class="text-xs font-semibold text-slate-600">Best vote
+              <input id="voteWeightBest" aria-label="Best vote weight" type="number" min="-10" max="10" step="0.5" value="2" onchange="updatePlayerFormula()" class="block w-20 rounded border border-slate-200 px-2 py-1 text-sm">
+            </label>
+            <label class="text-xs font-semibold text-slate-600">Recommended
+              <input id="voteWeightRecommended" aria-label="Recommended vote weight" type="number" min="-10" max="10" step="0.5" value="1" onchange="updatePlayerFormula()" class="block w-20 rounded border border-slate-200 px-2 py-1 text-sm">
+            </label>
+            <label class="text-xs font-semibold text-slate-600">Not Recommended
+              <input id="voteWeightNotRecommended" aria-label="Not Recommended vote weight" type="number" min="-10" max="10" step="0.5" value="-1" onchange="updatePlayerFormula()" class="block w-20 rounded border border-slate-200 px-2 py-1 text-sm">
+            </label>
+            <label class="text-xs font-semibold text-slate-600">Vote aggregation
+              <select id="voteAggregation" onchange="updatePlayerFormula()" class="block rounded border border-slate-200 px-2 py-1 text-sm bg-white">
+                <option value="sum">Weighted vote total</option>
+                <option value="average">Weighted average per vote</option>
+              </select>
+            </label>
+            <label class="flex items-center gap-1 text-xs font-semibold text-slate-600 py-1.5">
+              <input id="voteMultiplyBayes" type="checkbox" onchange="updatePlayerFormula()" checked>
+              × Bayesian average rating
+            </label>
+            <button type="button" onclick="resetPlayerFormula()" class="rounded border border-slate-200 px-2 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100">Reset defaults</button>
+          </div>
+          <p id="playerFormulaExplain" class="mt-1 text-xs text-slate-500">Each BGG vote is weighted, then the total is multiplied by Bayesian average. A vote-total formula favors games with more votes; choose per-vote average to reduce that effect. Games with no votes sort last.</p>
+        </details>
     </div>
 
     <!-- Action Buttons -->
@@ -342,6 +368,9 @@ let sortAsc = false;
 let tiebreakerSortAsc = false;
 let combinedMode = false;
 let combinedCriteria = []; // [{ field: string, asc: boolean }, ...]
+const PLAYER_FORMULA_DEFAULTS = Object.freeze({best: 2, recommended: 1, notRecommended: -1, aggregation: 'sum', multiplyBayes: true});
+const PLAYER_FORMULA_STORAGE_KEY = 'menuPlayerVoteFormulaV1';
+let playerFormula = {...PLAYER_FORMULA_DEFAULTS};
 let filterMaxPlayers = 0; // 0 = no filter; N = show only games where maxPlayers equals N (8 = 8+)
 let filterMinPlayers = 0; // 0 = no filter; N = show only games where minPlayers equals N (8 = 8+)
 
@@ -472,6 +501,7 @@ function populateSortOptions() {
 window.addEventListener('DOMContentLoaded', () => {
   populateSortOptions();
   renderPresetList();
+  restorePlayerFormula();
   restoreLatestMenuSnapshot();
 });
 
@@ -1123,62 +1153,132 @@ async function batchFetchWithLimitCSV(batches, csvData, maxConcurrent = 100) {
   });
 }
 
-function categorizeGame(game, targetPlayerCount) {
-    if (!game.playerCountData) return 'supported';
-    
-    // Handle 8+ special case - check for both '8' and '8+' in the data
-    let playerKey = targetPlayerCount.toString();
-    let playerData = game.playerCountData[playerKey];
-    
-    // For 8 players, also try '8+' key
-    if (!playerData && targetPlayerCount >= 8) {
-        playerData = game.playerCountData['8+'];
-        if (!playerData) playerData = game.playerCountData['8'];
+// BGG's "suggested_numplayers" poll contains raw Best, Recommended and
+// Not Recommended vote counts for each player count. 8P+ uses the 8 and 8+
+// buckets when both exist; a single bucket is never counted twice.
+function getPlayerVoteStats(game, targetPlayerCount) {
+  const min = getGamePlayerCount(game, 'min');
+  const max = getGamePlayerCount(game, 'max');
+  const supported = min > 0 && max >= min && targetPlayerCount >= min && targetPlayerCount <= max;
+  if (!supported) return null;
+  const votes = game.playerCountData || {};
+  const keys = targetPlayerCount === 8 ? ['8', '8+'] : [String(targetPlayerCount)];
+  const result = {best: 0, recommended: 0, notRecommended: 0, total: 0};
+  for (const key of keys) {
+    const bucket = votes[key];
+    if (!bucket) continue;
+    for (const name of ['best','recommended','notRecommended']) {
+      const value = Number(bucket[name]);
+      if (Number.isFinite(value) && value > 0) result[name] += value;
     }
-    
-    if (!playerData) {
-        // Check if game supports this player count within min/max range
-        if (targetPlayerCount >= game.minPlayers && targetPlayerCount <= game.maxPlayers) {
-            return 'supported';
-        }
-        return null; // Doesn't support this player count
-    }
-    
-    // Check if min players equals max players and matches target
-    if (game.minPlayers === game.maxPlayers && game.minPlayers === targetPlayerCount) {
-        return 'perfect';
-    }
-    
-    // Determine category based on voting
-    const bestVotes = playerData.best;
-    const recommendedVotes = playerData.recommended;
-    const notRecommendedVotes = playerData.notRecommended;
-    const totalVotes = playerData.total;
-    
-    if (totalVotes < 3) {
-        // Not enough votes, just check if it supports the count
-        return 'supported';
-    }
-    
-    // Calculate percentages
-    const bestPercent = (bestVotes / totalVotes) * 100;
-    const recommendedPercent = (recommendedVotes / totalVotes) * 100;
-    
-    if (bestPercent >= 50 || (bestVotes > recommendedVotes && bestVotes > notRecommendedVotes)) {
-        return 'best';
-    } else if ((bestPercent + recommendedPercent) >= 50 || recommendedVotes > notRecommendedVotes) {
-        return 'recommended';
-    } else {
-        return 'supported';
-    }
+  }
+  result.total = result.best + result.recommended + result.notRecommended;
+  return result;
 }
 
 function getPlayerCountScore(game, targetPlayerCount) {
-    const category = categorizeGame(game, targetPlayerCount);
-    const categoryOrder = { 'perfect': 1, 'best': 2, 'recommended': 3, 'supported': 4, null: 999 };
-    const priority = categoryOrder[category] || 999;
-    const bayesAvg = game.bayesaverage || 0;
-    return -(priority * 1000 - bayesAvg);
+  const v = getPlayerVoteStats(game, targetPlayerCount);
+  if (!v || v.total === 0) return null; // No votes is not a measured recommendation.
+  let score = v.best * playerFormula.best
+    + v.recommended * playerFormula.recommended
+    + v.notRecommended * playerFormula.notRecommended;
+  if (playerFormula.aggregation === 'average') score /= v.total;
+  if (playerFormula.multiplyBayes) {
+    const bayes = Number(game.bayesaverage);
+    score *= Number.isFinite(bayes) && bayes > 0 ? bayes : 0;
+  }
+  return score;
+}
+
+function formatPlayerCountScore(game, targetPlayerCount, digits = 2) {
+  const value = getPlayerCountScore(game, targetPlayerCount);
+  return value === null ? 'No votes' : value.toLocaleString('en-US', {maximumFractionDigits:digits});
+}
+
+// Retain descriptive groupings for printable category summaries, separate from
+// the actual numerical ranking. No votes are "Supported", not "Best".
+function categorizeGame(game, targetPlayerCount) {
+  const v = getPlayerVoteStats(game, targetPlayerCount);
+  if (!v) return null;
+  if (v.total < 3) return 'supported';
+  if (getGamePlayerCount(game, 'min') === targetPlayerCount &&
+      getGamePlayerCount(game, 'max') === targetPlayerCount) return 'perfect';
+  const bestPercent = (v.best / v.total) * 100;
+  const recommendedPercent = (v.recommended / v.total) * 100;
+  if (bestPercent >= 50 || (v.best > v.recommended && v.best > v.notRecommended)) return 'best';
+  if (bestPercent + recommendedPercent >= 50 || v.recommended > v.notRecommended) return 'recommended';
+  return 'supported';
+}
+
+function comparePlayerCountScores(a, b, playerCount, ascending = false) {
+  const aScore = getPlayerCountScore(a, playerCount);
+  const bScore = getPlayerCountScore(b, playerCount);
+  // Unsupported/missing polls must never outrank actual voter evidence,
+  // even when every received recommendation is negative.
+  if (aScore === null || bScore === null) {
+    if (aScore === null && bScore === null) return (+b.bayesaverage || 0) - (+a.bayesaverage || 0);
+    return aScore === null ? 1 : -1;
+  }
+  const difference = ascending ? aScore - bScore : bScore - aScore;
+  return difference || (+b.bayesaverage || 0) - (+a.bayesaverage || 0);
+}
+
+function restorePlayerFormula() {
+  try {
+    const raw = JSON.parse(localStorage.getItem(PLAYER_FORMULA_STORAGE_KEY) || '{}');
+    if (raw && typeof raw === 'object') {
+      for (const name of ['best','recommended','notRecommended']) {
+        if (raw[name] !== undefined && raw[name] !== '' && Number.isFinite(Number(raw[name])))
+          playerFormula[name] = Math.max(-10, Math.min(10, Number(raw[name])));
+      }
+      if (raw.aggregation === 'sum' || raw.aggregation === 'average') playerFormula.aggregation = raw.aggregation;
+      if (typeof raw.multiplyBayes === 'boolean') playerFormula.multiplyBayes = raw.multiplyBayes;
+    }
+  } catch (error) { console.warn('Could not restore player vote formula:', error); }
+  syncPlayerFormulaInputs();
+}
+
+function syncPlayerFormulaInputs() {
+  for (const [id, name] of [['voteWeightBest','best'], ['voteWeightRecommended','recommended'], ['voteWeightNotRecommended','notRecommended']]) {
+    const input = document.getElementById(id);
+    if (input) input.value = playerFormula[name];
+  }
+  const mode = document.getElementById('voteAggregation');
+  if (mode) mode.value = playerFormula.aggregation;
+  const multiply = document.getElementById('voteMultiplyBayes');
+  if (multiply) multiply.checked = playerFormula.multiplyBayes;
+  const summary = document.getElementById('playerFormulaSummary');
+  if (summary) summary.textContent = '(' + playerFormula.best + ' Best, ' +
+    playerFormula.recommended + ' Rec, ' + playerFormula.notRecommended + ' Not Rec)' +
+    (playerFormula.aggregation === 'average' ? ' ÷ votes' : '') +
+    (playerFormula.multiplyBayes ? ' × Bayes' : '');
+}
+
+function updatePlayerFormula() {
+  for (const [id, name] of [['voteWeightBest','best'], ['voteWeightRecommended','recommended'], ['voteWeightNotRecommended','notRecommended']]) {
+    const input = document.getElementById(id);
+    const number = Number(input.value);
+    // Reject blank / non-finite entries; don't silently turn them into 0.
+    if (!input.value.trim() || !Number.isFinite(number) || number < -10 || number > 10) {
+      input.value = playerFormula[name];
+      continue;
+    }
+    playerFormula[name] = number;
+  }
+  playerFormula.aggregation = document.getElementById('voteAggregation').value;
+  playerFormula.multiplyBayes = document.getElementById('voteMultiplyBayes').checked;
+  syncPlayerFormulaInputs();
+  try { localStorage.setItem(PLAYER_FORMULA_STORAGE_KEY, JSON.stringify(playerFormula)); }
+  catch (error) { console.warn('Could not save player vote formula:', error); }
+  sortGames();
+}
+
+function resetPlayerFormula() {
+  playerFormula = {...PLAYER_FORMULA_DEFAULTS};
+  syncPlayerFormulaInputs();
+  try { localStorage.setItem(PLAYER_FORMULA_STORAGE_KEY, JSON.stringify(playerFormula)); }
+  catch (error) { console.warn('Could not save player vote formula:', error); }
+  sortGames();
 }
 
 // Normalize player counts from BGG XML, exported CSV, and older IndexedDB snapshots.
