@@ -183,7 +183,7 @@
 
         <!-- Max Player Count filter -->
         <div class="flex items-center gap-2 flex-wrap pt-1 border-t border-slate-100">
-          <span class="text-xs font-bold text-slate-500 uppercase tracking-wide">Max Players:</span>
+          <span class="text-xs font-bold text-slate-500 uppercase tracking-wide" title="Exact published maximum player count; 8+ means eight or more">Max Players:</span>
           <button id="maxP-clear" onclick="setMaxPlayerFilter(0)" class="max-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-indigo-600 text-white transition" data-n="0">Any</button>
           <button onclick="setMaxPlayerFilter(1)" class="max-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="1">1</button>
           <button onclick="setMaxPlayerFilter(2)" class="max-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="2">2</button>
@@ -197,7 +197,7 @@
 
         <!-- Min Player Count filter -->
         <div class="flex items-center gap-2 flex-wrap pt-1 border-t border-slate-100">
-          <span class="text-xs font-bold text-slate-500 uppercase tracking-wide">Min Players:</span>
+          <span class="text-xs font-bold text-slate-500 uppercase tracking-wide" title="Exact published minimum player count; 8+ means eight or more">Min Players:</span>
           <button id="minP-clear" onclick="setMinPlayerFilter(0)" class="min-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-indigo-600 text-white transition" data-n="0">Any</button>
           <button onclick="setMinPlayerFilter(1)" class="min-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="1">1</button>
           <button onclick="setMinPlayerFilter(2)" class="min-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="2">2</button>
@@ -207,6 +207,7 @@
           <button onclick="setMinPlayerFilter(6)" class="min-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="6">6</button>
           <button onclick="setMinPlayerFilter(7)" class="min-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="7">7</button>
           <button onclick="setMinPlayerFilter(8)" class="min-player-btn px-2.5 py-1 text-xs font-bold rounded-full bg-slate-100 text-slate-600 hover:bg-slate-200 transition" data-n="8">8+</button>
+          <span id="playerFilterCount" class="ml-auto text-xs font-semibold text-indigo-700" role="status" aria-live="polite"></span>
         </div>
     </div>
 
@@ -321,7 +322,7 @@ let tiebreakerSortAsc = false;
 let combinedMode = false;
 let combinedCriteria = []; // [{ field: string, asc: boolean }, ...]
 let filterMaxPlayers = 0; // 0 = no filter; N = show only games where maxPlayers equals N (8 = 8+)
-let filterMinPlayers = 0; // 0 = no filter; N = show only games where minPlayers equals N
+let filterMinPlayers = 0; // 0 = no filter; N = show only games where minPlayers equals N (8 = 8+)
 
 const collectionSortFields = [
     { value: 'name', label: 'Name' },
@@ -1054,19 +1055,21 @@ async function batchFetchWithLimitCSV(batches, csvData, maxConcurrent = 100) {
             const rawType = (csvRow.objecttype || csvRow.objectType || csvRow.itemtype || typeFromApi || '') + '';
             const lowerType = rawType.toLowerCase();
             const typeNormalized = lowerType.includes('expansion') ? 'boardgameexpansion' : (typeFromApi || 'boardgame');
-            const minPlayers = parseInt(csvRow.minplayers || csvRow.minPlayers || '0') || 0;
-            const maxPlayers = parseInt(csvRow.maxplayers || csvRow.maxPlayers || '0') || 0;
+            const minPlayers = normalizePlayerCount(csvRow.minPlayers) || normalizePlayerCount(csvRow.minplayers)
+              || normalizePlayerCount(item.querySelector('minplayers')?.getAttribute('value'));
+            const maxPlayers = normalizePlayerCount(csvRow.maxPlayers) || normalizePlayerCount(csvRow.maxplayers)
+              || normalizePlayerCount(item.querySelector('maxplayers')?.getAttribute('value'));
 
             const gameData = {
+              // Keep CSV columns for sorting/searching, without overriding normalized counts.
+              ...csvRow,
               id,
               name,
               thumb,
               year,
               type: typeNormalized,
               minPlayers,
-              maxPlayers,
-              // Keep CSV columns available for sorting/searching
-              ...csvRow
+              maxPlayers
             };
             allGames.push(gameData);
           }
@@ -1156,6 +1159,31 @@ function getPlayerCountScore(game, targetPlayerCount) {
     return -(priority * 1000 - bayesAvg);
 }
 
+// Normalize player counts from BGG XML, exported CSV, and older IndexedDB snapshots.
+// CSV camelCase fields may be strings; never compare them directly with button numbers.
+function normalizePlayerCount(value) {
+  if (typeof value === 'string') value = value.trim().replace(/\+$/, '');
+  const number = Number(value);
+  return Number.isSafeInteger(number) && number > 0 ? number : 0;
+}
+
+function getGamePlayerCount(game, boundary) {
+  const names = boundary === 'min'
+    ? ['minPlayers', 'minplayers', 'MinPlayers']
+    : ['maxPlayers', 'maxplayers', 'MaxPlayers'];
+  for (const name of names) {
+    const count = normalizePlayerCount(game?.[name]);
+    if (count > 0) return count;
+  }
+  return 0; // Unknown / missing count is never an exact match.
+}
+
+function matchesPlayerFilter(game, boundary, selected) {
+  if (!selected) return true;
+  const count = getGamePlayerCount(game, boundary);
+  return selected === 8 ? count >= 8 : count === selected;
+}
+
 // ── Combined (rank-average) sort ─────────────────────────────────
 function setMaxPlayerFilter(n) {
   filterMaxPlayers = n;
@@ -1164,6 +1192,7 @@ function setMaxPlayerFilter(n) {
     btn.className = `max-player-btn px-2.5 py-1 text-xs font-bold rounded-full transition ${
       isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
     }`;
+    btn.setAttribute('aria-pressed', String(isActive));
   });
   sortGames();
 }
@@ -1175,6 +1204,7 @@ function setMinPlayerFilter(n) {
     btn.className = `min-player-btn px-2.5 py-1 text-xs font-bold rounded-full transition ${
       isActive ? 'bg-indigo-600 text-white' : 'bg-slate-100 text-slate-600 hover:bg-slate-200'
     }`;
+    btn.setAttribute('aria-pressed', String(isActive));
   });
   sortGames();
 }
@@ -1359,18 +1389,13 @@ function sortGames() {
     gamesToDisplay = gamesToDisplay.filter(g => g.type !== 'boardgameexpansion');
   }
 
-  // Max player count filter — match games whose maxPlayers equals the selected value (8 means 8+)
+  // Filters use the game's listed endpoints, not its full supported-player range.
+  // Both choices combine with AND and apply before sequential or combined sorting.
   if (filterMaxPlayers > 0) {
-    gamesToDisplay = gamesToDisplay.filter(g =>
-      filterMaxPlayers === 8 ? (g.maxPlayers || 0) >= 8 : (g.maxPlayers || 0) === filterMaxPlayers
-    );
+    gamesToDisplay = gamesToDisplay.filter(g => matchesPlayerFilter(g, 'max', filterMaxPlayers));
   }
-
-  // Min player count filter — match games whose minPlayers equals the selected value (8 means 8+)
   if (filterMinPlayers > 0) {
-    gamesToDisplay = gamesToDisplay.filter(g =>
-      filterMinPlayers === 8 ? (g.minPlayers || 0) >= 8 : (g.minPlayers || 0) === filterMinPlayers
-    );
+    gamesToDisplay = gamesToDisplay.filter(g => matchesPlayerFilter(g, 'min', filterMinPlayers));
   }
 
   // ── Combined mode: rank-average ──────────────────────────────
@@ -1525,6 +1550,12 @@ function computeFieldRanks(games, field, asc) {
 function renderGames() {
   const container = document.getElementById('gamesGrid');
   const emptyState = document.getElementById('emptyState');
+  const filterStatus = document.getElementById('playerFilterCount');
+  if (filterStatus) {
+    filterStatus.textContent = filterMaxPlayers || filterMinPlayers
+      ? displayedGames.length.toLocaleString() + ' matching games'
+      : '';
+  }
   const showIdx = document.getElementById('printIncludeIdx')?.checked;
   const showPrimary = document.getElementById('printIncludePrimary')?.checked;
   const showSecondary = document.getElementById('printIncludeSecondary')?.checked;
@@ -2450,14 +2481,16 @@ async function batchFetchWithLimitCSV(batches, csvData, maxConcurrent = 100) {
           if (csvRow) {
             const rawType = (csvRow.objecttype || csvRow.objectType || csvRow.itemtype || typeFromApi || '') + '';
             const typeNormalized = rawType.toLowerCase().includes('expansion') ? 'boardgameexpansion' : (typeFromApi || 'boardgame');
-            const minPlayers = parseInt(csvRow.minplayers || csvRow.minPlayers || '0') || 0;
-            const maxPlayers = parseInt(csvRow.maxplayers || csvRow.maxPlayers || '0') || 0;
+            const minPlayers = normalizePlayerCount(csvRow.minPlayers) || normalizePlayerCount(csvRow.minplayers)
+              || normalizePlayerCount(item.querySelector('minplayers')?.getAttribute('value'));
+            const maxPlayers = normalizePlayerCount(csvRow.maxPlayers) || normalizePlayerCount(csvRow.maxplayers)
+              || normalizePlayerCount(item.querySelector('maxplayers')?.getAttribute('value'));
 
             const gameData = {
+              ...csvRow,
               id, name, thumb, year,
               type: typeNormalized,
-              minPlayers, maxPlayers,
-              ...csvRow
+              minPlayers, maxPlayers
             };
             allGames.push(gameData);
           }
