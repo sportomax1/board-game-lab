@@ -837,6 +837,21 @@ body {
 }
 
 
+.collection-meta {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 9px;
+  flex-wrap: wrap;
+  min-width: 0;
+}
+.cache-status {
+  color: var(--muted);
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 1.4;
+}
+
 /* Compact, uncropped cover cards. Auto-fill uses the full available width. */
 .grid-wrap {
   width: 100%;
@@ -1198,7 +1213,7 @@ body {
           <option value="name">Name A–Z</option>
         </select>
       </div>
-      <span id="metaCount" class="meta-count">—</span>
+      <div class="collection-meta"><span id="metaCount" class="meta-count">—</span><span id="cacheStatus" class="cache-status" role="status" aria-live="polite"></span></div>
     </div>
 
     <div id="wpChips" class="wp-chips filter-strip"></div>
@@ -1213,20 +1228,137 @@ body {
 let currentFlags  = [];
 let currentWpFilter = null;
 const WP_LABELS = { 1:'Must Have', 2:'Love to Have', 3:'Nice to Have', 4:'Maybe', 5:'Someday' };
+const CACHE_DB_NAME = 'board-game-lab-wanted';
+const CACHE_STORE = 'collections';
+const CACHE_FRESH_MS = 6 * 60 * 60 * 1000;
+let cacheDbPromise = null;
+let loadSequence = 0;
+let activeUsername = '';
+let activeRequest = null;
+let toastTimeout = null;
+
+function cacheAge(timestamp) {
+  const mins = Math.max(0, Math.floor((Date.now() - timestamp) / 60000));
+  if (mins < 1) return 'just now';
+  if (mins < 60) return `${mins}m ago`;
+  const hours = Math.floor(mins / 60);
+  if (hours < 24) return `${hours}h ago`;
+  return `${Math.floor(hours / 24)}d ago`;
+}
+
+function setCacheStatus(message) {
+  document.getElementById('cacheStatus').textContent = message;
+}
+
+// Use IndexedDB for collection data; if blocked or unsupported, network loading still works.
+function openCacheDb() {
+  if (!('indexedDB' in window)) return Promise.resolve(null);
+  if (!cacheDbPromise) {
+    cacheDbPromise = new Promise(resolve => {
+      let req;
+      try { req = indexedDB.open(CACHE_DB_NAME, 1); }
+      catch (err) { console.warn('[wanted.html] IndexedDB unavailable:', err); resolve(null); return; }
+      req.onupgradeneeded = () => {
+        if (!req.result.objectStoreNames.contains(CACHE_STORE)) {
+          req.result.createObjectStore(CACHE_STORE, { keyPath: 'username' });
+        }
+      };
+      req.onsuccess = () => {
+        const db = req.result;
+        db.onversionchange = () => { db.close(); cacheDbPromise = null; };
+        resolve(db);
+      };
+      req.onerror = () => {
+        console.warn('[wanted.html] IndexedDB open failed:', req.error);
+        resolve(null);
+      };
+      req.onblocked = () => {
+        console.warn('[wanted.html] IndexedDB upgrade blocked');
+        resolve(null);
+      };
+    });
+  }
+  return cacheDbPromise;
+}
+
+async function getSavedCollection(username) {
+  const db = await openCacheDb();
+  if (!db) return null;
+  return new Promise(resolve => {
+    try {
+      const req = db.transaction(CACHE_STORE, 'readonly').objectStore(CACHE_STORE).get(username);
+      req.onsuccess = () => {
+        const saved = req.result;
+        resolve(saved && Array.isArray(saved.games) && Number.isFinite(saved.savedAt) ? saved : null);
+      };
+      req.onerror = () => { console.warn('[wanted.html] Cache read failed:', req.error); resolve(null); };
+    } catch (err) { console.warn('[wanted.html] Cache read unavailable:', err); resolve(null); }
+  });
+}
+
+async function saveCollection(username, games) {
+  const db = await openCacheDb();
+  if (!db) return false;
+  return new Promise(resolve => {
+    try {
+      const tx = db.transaction(CACHE_STORE, 'readwrite');
+      tx.oncomplete = () => resolve(true);
+      tx.onerror = () => { console.warn('[wanted.html] Cache save failed:', tx.error); resolve(false); };
+      tx.onabort = () => resolve(false);
+      tx.objectStore(CACHE_STORE).put({ username, savedAt: Date.now(), games });
+    } catch (err) { console.warn('[wanted.html] Cache write unavailable:', err); resolve(false); }
+  });
+}
+
+function delay(ms, signal) {
+  return new Promise((resolve, reject) => {
+    if (signal.aborted) { reject(new DOMException('Aborted', 'AbortError')); return; }
+    const timer = setTimeout(() => { signal.removeEventListener('abort', abort); resolve(); }, ms);
+    function abort() {
+      clearTimeout(timer);
+      signal.removeEventListener('abort', abort);
+      reject(new DOMException('Aborted', 'AbortError'));
+    }
+    signal.addEventListener('abort', abort, { once: true });
+  });
+}
 
 // ── Toast ─────────────────────────────────────────────────────
 function toast(msg, dur = 2800) {
   const el = document.getElementById('toast');
   el.textContent = msg;
   el.classList.add('show');
-  setTimeout(() => el.classList.remove('show'), dur);
+  clearTimeout(toastTimeout);
+  toastTimeout = setTimeout(() => el.classList.remove('show'), dur);
 }
 
 // ── Fetch ─────────────────────────────────────────────────────
-async function fetchCollection(username) {
-  const r = await fetch(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`);
-  const txt = await r.text();
-  return new DOMParser().parseFromString(txt, 'text/xml');
+async function fetchCollection(username, signal) {
+  const url = `/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(username)}&stats=1`;
+  for (let attempt = 0; attempt <= 5; attempt++) {
+    const response = await fetch(url, { signal, cache: 'no-store' });
+    if (response.status === 202) {
+      if (attempt === 5) throw new Error('BGG is still preparing the collection. Please try again.');
+      console.warn('[wanted.html] BGG returned 202, retrying:', attempt + 1);
+      await delay(3000, signal);
+      continue;
+    }
+    if (!response.ok) throw new Error(`BGG request failed (HTTP ${response.status})`);
+    const xml = new DOMParser().parseFromString(await response.text(), 'text/xml');
+    if (xml.querySelector('parsererror')) throw new Error('Invalid XML from BGG');
+    if (xml.documentElement?.localName?.toLowerCase() !== 'items') {
+      const detail = xml.documentElement?.textContent?.trim().slice(0, 120);
+      throw new Error(detail || 'BGG returned an unexpected response');
+    }
+    const count = xml.querySelectorAll('item').length;
+    const reportedTotal = Number(xml.documentElement.getAttribute('total'));
+    if (count === 0 && reportedTotal > 0) {
+      throw new Error('BGG returned an incomplete collection. Saved data was preserved.');
+    }
+    console.log('[wanted.html] BGG collection received:', username, count);
+    return xml;
+  }
+  throw new Error('Unable to load collection');
 }
 
 // ── Parse ─────────────────────────────────────────────────────
@@ -1270,13 +1402,15 @@ const FLAG_DEFS = [
   { key:'prevowned',  label:'Prev Owned'},
 ];
 
-function buildTabs(flags) {
+function buildTabs(flags, preferredKey = null) {
   currentFlags = flags;
+  const activeIndex = Math.max(0, flags.findIndex(f => f.key === preferredKey));
   const tabsEl = document.getElementById('tabs');
   tabsEl.innerHTML = '';
   flags.forEach((f, i) => {
     const b = document.createElement('button');
-    b.className = 'tab' + (i === 0 ? ' active' : '');
+    b.className = 'tab' + (i === activeIndex ? ' active' : '');
+    b.dataset.key = f.key;
     b.innerHTML = `${f.label} <span class="cnt">(${f.items.length})</span>`;
     b.addEventListener('click', () => {
       document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -1292,6 +1426,7 @@ function buildTabs(flags) {
     const idx = active ? [...document.querySelectorAll('.tab')].indexOf(active) : 0;
     renderGrid((currentFlags[idx] || currentFlags[0])?.items || []);
   };
+  return flags[activeIndex]?.items || [];
 }
 
 // ── WP Chips ──────────────────────────────────────────────────
@@ -1380,25 +1515,88 @@ function collectFlags(games) {
   })).filter(f => f.items.length > 0);
 }
 
-// ── Load ──────────────────────────────────────────────────────
-document.getElementById('start').onclick = async () => {
-  const u = document.getElementById('username').value.trim() || 'sportomax';
-  document.getElementById('metaCount').textContent = 'Loading…';
-  document.getElementById('grid').innerHTML = '<div class="empty-state">Connecting to BGG…</div>';
-  toast('Connecting to BGG…', 60000);
-  try {
-    const doc   = await fetchCollection(u);
-    const games = parseCollection(doc);
-    const flags = collectFlags(games);
-    if (!flags.length) { toast('No flagged items found'); document.getElementById('metaCount').textContent = '0 games'; return; }
-    buildTabs(flags);
+// ── Load saved results immediately; revalidate only when stale ─────────
+function showCollection(games, preserveView = false) {
+  const currentKey = preserveView ? document.querySelector('.tab.active')?.dataset.key : null;
+  const flags = collectFlags(games);
+  const items = buildTabs(flags, currentKey);
+  if (!preserveView || !flags.some(f => f.key === currentKey)) currentWpFilter = null;
+  if (!flags.length) {
     currentWpFilter = null;
-    renderGrid(flags[0].items);
-    toast(`Loaded ${games.length} items`);
-  } catch (e) { toast('Error: ' + e.message); document.getElementById('metaCount').textContent = 'Error'; }
-};
+    document.getElementById('wpChips').innerHTML = '';
+    document.getElementById('metaCount').textContent = '0 games';
+    document.getElementById('grid').innerHTML = '<div class="empty-state">No flagged games found in this collection.</div>';
+    return;
+  }
+  renderGrid(items);
+}
 
-document.getElementById('username').addEventListener('keypress', e => { if (e.key === 'Enter') document.getElementById('start').click(); });
+async function loadCollection(forceRefresh = false) {
+  const username = (document.getElementById('username').value.trim() || 'sportomax').toLowerCase();
+  const sequence = ++loadSequence;
+  if (activeRequest) { activeRequest.abort(); activeRequest = null; }
+  const sameUser = username === activeUsername;
+  activeUsername = username;
+  if (!sameUser) {
+    currentWpFilter = null;
+    currentFlags = [];
+    document.getElementById('tabs').innerHTML = '';
+    document.getElementById('wpChips').innerHTML = '';
+    document.getElementById('metaCount').textContent = 'Loading…';
+    document.getElementById('grid').innerHTML = '<div class="empty-state">Checking saved collection…</div>';
+  }
+  setCacheStatus('Checking local cache…');
+
+  const saved = await getSavedCollection(username);
+  if (sequence !== loadSequence) return;
+  const hasCache = !!saved;
+  if (hasCache) {
+    showCollection(saved.games, sameUser);
+    setCacheStatus(`Saved locally · ${cacheAge(saved.savedAt)}`);
+  }
+
+  // A fresh collection does not need another API call on every page visit.
+  if (!forceRefresh && hasCache && Date.now() - saved.savedAt < CACHE_FRESH_MS) return;
+
+  const controller = new AbortController();
+  activeRequest = controller;
+  if (!hasCache) {
+    document.getElementById('metaCount').textContent = 'Loading…';
+    document.getElementById('grid').innerHTML = '<div class="empty-state">Connecting to BGG…</div>';
+  }
+  setCacheStatus(hasCache ? `Saved ${cacheAge(saved.savedAt)} · refreshing…` : 'Loading from BGG…');
+  try {
+    const doc = await fetchCollection(username, controller.signal);
+    if (sequence !== loadSequence) return;
+    const games = parseCollection(doc);
+    // Preserve tab and wishlist filters when refreshing the same collection.
+    showCollection(games, hasCache || sameUser);
+    const stored = await saveCollection(username, games);
+    if (sequence !== loadSequence) return;
+    setCacheStatus(stored ? 'Updated just now · saved locally' : 'Updated just now · local storage unavailable');
+    toast(`Loaded ${games.length} games from BGG`);
+  } catch (err) {
+    if (sequence !== loadSequence || err.name === 'AbortError') return;
+    console.warn('[wanted.html] Collection refresh failed:', err);
+    if (hasCache) {
+      setCacheStatus(`Using saved collection · ${cacheAge(saved.savedAt)}`);
+      toast('BGG unavailable. Showing saved games.');
+    } else {
+      document.getElementById('metaCount').textContent = 'Error';
+      document.getElementById('grid').innerHTML = '<div class="empty-state">Could not load the collection from BGG. Click Load to retry.</div>';
+      setCacheStatus('Not cached · BGG unavailable');
+      toast('Error: ' + err.message);
+    }
+  } finally {
+    if (sequence === loadSequence) activeRequest = null;
+  }
+}
+
+document.getElementById('start').onclick = () => loadCollection(true);
+document.getElementById('username').addEventListener('keydown', e => {
+  if (e.key === 'Enter') loadCollection(true);
+});
+loadCollection(false);
 
 function escHtml(s) { return String(s||'').replace(/[&<>"']/g, c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]); }
 function escAttr(s) { return String(s||'').replace(/"/g,'&quot;').replace(/'/g,'&#39;'); }
