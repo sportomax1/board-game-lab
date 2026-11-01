@@ -205,7 +205,23 @@
         </div>
         </div>
         <details id="playerFormulaSettings" class="border-t border-slate-100 pt-1">
-          <summary class="cursor-pointer text-xs font-bold text-indigo-700 py-1">⚙ Best at X formula <span class="text-slate-500 font-normal" id="playerFormulaSummary">(+2 Best +1 Recommended −1 Not Recommended) × Bayes</span></summary>
+          <summary class="cursor-pointer text-xs font-bold text-indigo-700 py-1">⚙ Player Count Ranking <span class="text-slate-500 font-normal">Buckets first · configurable score within each bucket</span></summary>
+          <div class="pt-2 space-y-2">
+            <p class="text-xs text-slate-500">Enable and reorder buckets with ↑ ↓. All rankings and the eight Top 120 print sheets use this order.</p>
+            <div id="playerBucketOrder" class="flex flex-wrap gap-2"></div>
+            <div class="flex flex-wrap gap-2 items-end">
+              <label class="text-xs">Minimum votes<input id="rankMinVotes" type="number" min="0" max="100" value="3" onchange="updatePlayerRanking()" class="block w-20 border rounded px-2 py-1"></label>
+              <label class="text-xs">BEST % ≥<input id="rankBestThreshold" type="number" min="0" max="100" value="50" onchange="updatePlayerRanking()" class="block w-20 border rounded px-2 py-1"></label>
+              <label class="text-xs">Positive votes % ≥<input id="rankRecThreshold" type="number" min="0" max="100" value="50" onchange="updatePlayerRanking()" class="block w-20 border rounded px-2 py-1"></label>
+              <label class="text-xs">Smoothing votes<input id="rankSmoothing" type="number" min="0" max="200" step="1" value="10" onchange="updatePlayerRanking()" class="block w-20 border rounded px-2 py-1"></label>
+              <label class="text-xs">Bayes exponent<input id="rankBayesPower" type="number" min="0" max="3" step="0.25" value="1" onchange="updatePlayerRanking()" class="block w-20 border rounded px-2 py-1"></label>
+              <label class="text-xs">ONLY bucket sorting<select id="rankOnlySort" onchange="updatePlayerRanking()" class="block border rounded px-2 py-1"><option value="bayes">Bayesian rating</option><option value="formula">Vote formula</option></select></label>
+              <button type="button" onclick="resetPlayerRanking()" class="px-2 py-1 border rounded text-xs">Reset buckets</button>
+            </div>
+          </div>
+          <details class="mt-2">
+          <summary class="cursor-pointer text-xs font-semibold text-slate-600">Advanced vote formula <span id="playerFormulaSummary"></span></summary>
+          <div class="text-xs text-slate-500">Weights for Best, Recommended and Not Recommended votes</div>
           <div class="flex flex-wrap items-end gap-2 pt-2">
             <label class="text-xs font-semibold text-slate-600">Best vote
               <input id="voteWeightBest" aria-label="Best vote weight" type="number" min="-10" max="10" step="0.5" value="2" onchange="updatePlayerFormula()" class="block w-20 rounded border border-slate-200 px-2 py-1 text-sm">
@@ -229,6 +245,7 @@
             <button type="button" onclick="resetPlayerFormula()" class="rounded border border-slate-200 px-2 py-1 text-xs font-bold text-slate-600 hover:bg-slate-100">Reset defaults</button>
           </div>
           <p id="playerFormulaExplain" class="mt-1 text-xs text-slate-500">Each BGG vote is weighted, then the total is multiplied by Bayesian average. A vote-total formula favors games with more votes; choose per-vote average to reduce that effect. Games with no votes sort last.</p>
+          </details>
         </details>
     </div>
 
@@ -371,6 +388,99 @@ let combinedCriteria = []; // [{ field: string, asc: boolean }, ...]
 const PLAYER_FORMULA_DEFAULTS = Object.freeze({best: 2, recommended: 1, notRecommended: -1, aggregation: 'sum', multiplyBayes: true});
 const PLAYER_FORMULA_STORAGE_KEY = 'menuPlayerVoteFormulaV1';
 let playerFormula = {...PLAYER_FORMULA_DEFAULTS};
+const PLAYER_RANKING_DEFAULTS = Object.freeze({
+  order: ['only','best','recommended','other'],
+  enabled: {only:true,best:true,recommended:true,other:false},
+  minVotes:3, bestThreshold:50, recommendedThreshold:50,
+  smoothing:10, bayesPower:1, onlySort:'bayes'
+});
+let playerRanking = JSON.parse(JSON.stringify(PLAYER_RANKING_DEFAULTS));
+function rankConfig() { return playerRanking; }
+function playerBucket(game, count) {
+  const vote = getPlayerVoteStats(game,count);
+  if (!vote) return null;
+  const cfg=rankConfig();
+  const min=getGamePlayerCount(game,'min'), max=getGamePlayerCount(game,'max');
+  const only=count===8 ? min>=8 && min===max : min===count && max===count;
+  if(only) return 'only';
+  if(vote.total<cfg.minVotes) return 'other';
+  const best=vote.best / vote.total*100, positive=(vote.best+vote.recommended)/vote.total*100;
+  if(best>=cfg.bestThreshold) return 'best';
+  if(positive>=cfg.recommendedThreshold) return 'recommended';
+  return 'other';
+}
+function getBucketRank(game,count) {
+  const bucket=playerBucket(game,count);
+  if(bucket===null || !playerRanking.enabled[bucket])return null;
+  return playerRanking.order.indexOf(bucket);
+}
+function compareBucketGames(a,b,count,ascending=false) {
+  const ba=getBucketRank(a,count),bb=getBucketRank(b,count);
+  if(ba===null || bb===null) return ba===null ? (bb===null?0:1) : -1;
+  if(ba!==bb) return ba-bb; // Bucket priority is never reversed.
+  const bayesA=Number(a.bayesaverage)||0, bayesB=Number(b.bayesaverage)||0;
+  const bucket=playerBucket(a,count);
+  if(bucket==='only' && playerRanking.onlySort==='bayes')return (bayesB-bayesA)||String(a.name||'').localeCompare(String(b.name||''));
+  const va=getPlayerCountScore(a,count),vb=getPlayerCountScore(b,count);
+  if(va===null || vb===null) return va===null?(vb===null ? (bayesB-bayesA):1):-1;
+  const difference=ascending?va-vb:vb-va;
+  return difference || (bayesB-bayesA) || String(a.name||'').localeCompare(String(b.name||''));
+}
+function renderPlayerBuckets() {
+ const el=document.getElementById('playerBucketOrder');
+ if(!el)return;
+ el.innerHTML=playerRanking.order.map((bucket,i)=>{
+  const labels={only:'ONLY',best:'BEST',recommended:'RECOMMENDED',other:'OTHER'};
+  return '<div class="flex items-center gap-1 bg-slate-50 rounded px-2 py-1 border border-slate-200">'+
+    '<label class="flex gap-1 items-center text-xs font-bold"><input type="checkbox" '+(playerRanking.enabled[bucket]?'checked':'')+
+    ' onchange="togglePlayerBucket(\''+bucket+'\',this.checked)">'+labels[bucket]+'</label>'+
+    '<button type="button" class="text-xs px-1" aria-label="Move '+labels[bucket]+' up" '+(i===0?'disabled':'')+' onclick="movePlayerBucket(\''+bucket+'\',-1)">↑</button>'+
+    '<button type="button" class="text-xs px-1" aria-label="Move '+labels[bucket]+' down" '+(i===3?'disabled':'')+' onclick="movePlayerBucket(\''+bucket+'\',1)">↓</button></div>';
+ }).join('');
+ for(const [id,key] of [['rankMinVotes','minVotes'],['rankBestThreshold','bestThreshold'],['rankRecThreshold','recommendedThreshold'],['rankSmoothing','smoothing'],['rankBayesPower','bayesPower']]){
+  const input=document.getElementById(id);if(input)input.value=playerRanking[key];
+ }
+ const only=document.getElementById('rankOnlySort');if(only)only.value=playerRanking.onlySort;
+}
+function savePlayerRanking(){
+ try{localStorage.setItem('menuPlayerBucketRankingV1',JSON.stringify(playerRanking))}catch(e){console.warn('Could not save buckets',e)}
+ renderPlayerBuckets();sortGames();
+}
+function movePlayerBucket(bucket,step){
+ const i=playerRanking.order.indexOf(bucket),j=i+step;
+ if(i<0||j<0||j>=playerRanking.order.length)return;
+ [playerRanking.order[i],playerRanking.order[j]]=[playerRanking.order[j],playerRanking.order[i]];
+ savePlayerRanking();
+}
+function togglePlayerBucket(bucket,enabled){playerRanking.enabled[bucket]=enabled;savePlayerRanking()}
+function updatePlayerRanking(){
+ const schema={rankMinVotes:['minVotes',0,100],rankBestThreshold:['bestThreshold',0,100],rankRecThreshold:['recommendedThreshold',0,100],rankSmoothing:['smoothing',0,200],rankBayesPower:['bayesPower',0,3]};
+ for(const [id,[key,min,max]] of Object.entries(schema)){
+  const value=Number(document.getElementById(id)?.value);
+  if(Number.isFinite(value)&&value>=min&&value<=max)playerRanking[key]=value;
+ }
+ playerRanking.onlySort=document.getElementById('rankOnlySort').value==='formula'?'formula':'bayes';
+ savePlayerRanking();
+}
+function restorePlayerRanking(){
+ try{
+  const stored=JSON.parse(localStorage.getItem('menuPlayerBucketRankingV1')||'null');
+  if(stored && Array.isArray(stored.order)&&stored.order.length===4 &&
+  new Set(stored.order).size===4 && ['only','best','recommended','other'].every(b=>stored.order.includes(b))){
+   playerRanking.order=stored.order;
+   for(const bucket of playerRanking.order)if(typeof stored.enabled?.[bucket]==='boolean')playerRanking.enabled[bucket]=stored.enabled[bucket];
+   for(const [key,min,max] of [['minVotes',0,100],['bestThreshold',0,100],['recommendedThreshold',0,100],['smoothing',0,200],['bayesPower',0,3]]){
+    if(typeof stored[key]==='number'&&Number.isFinite(stored[key])&&stored[key]>=min&&stored[key]<=max)playerRanking[key]=stored[key];
+   }
+   if(['bayes','formula'].includes(stored.onlySort))playerRanking.onlySort=stored.onlySort;
+  }
+ }catch(e){console.warn('Could not restore player buckets',e)}
+ renderPlayerBuckets();
+}
+function resetPlayerRanking(){
+ playerRanking=JSON.parse(JSON.stringify(PLAYER_RANKING_DEFAULTS));savePlayerRanking();
+}
+
 let filterMaxPlayers = 0; // 0 = no filter; N = show only games where maxPlayers equals N (8 = 8+)
 let filterMinPlayers = 0; // 0 = no filter; N = show only games where minPlayers equals N (8 = 8+)
 
@@ -502,6 +612,7 @@ window.addEventListener('DOMContentLoaded', () => {
   populateSortOptions();
   renderPresetList();
   restorePlayerFormula();
+  restorePlayerRanking();
   restoreLatestMenuSnapshot();
 });
 
@@ -1183,10 +1294,11 @@ function getPlayerCountScore(game, targetPlayerCount) {
   let score = v.best * playerFormula.best
     + v.recommended * playerFormula.recommended
     + v.notRecommended * playerFormula.notRecommended;
-  if (playerFormula.aggregation === 'average') score /= v.total;
+  const smoothing=playerRanking.smoothing;
+  if (playerFormula.aggregation === 'average') score = (score + smoothing * ((playerFormula.best+playerFormula.recommended+playerFormula.notRecommended)/3)) / (v.total+smoothing);
   if (playerFormula.multiplyBayes) {
     const bayes = Number(game.bayesaverage);
-    score *= Number.isFinite(bayes) && bayes > 0 ? bayes : 0;
+    score *= Math.pow(Number.isFinite(bayes) && bayes > 0 ? bayes : 0,playerRanking.bayesPower);
   }
   return score;
 }
@@ -1212,6 +1324,7 @@ function categorizeGame(game, targetPlayerCount) {
 }
 
 function comparePlayerCountScores(a, b, playerCount, ascending = false) {
+  return compareBucketGames(a,b,playerCount,ascending);
   const aScore = getPlayerCountScore(a, playerCount);
   const bScore = getPlayerCountScore(b, playerCount);
   // Unsupported/missing polls must never outrank actual voter evidence,
@@ -1555,7 +1668,7 @@ function sortGames() {
   if (sortBy.startsWith('bestAt')) {
       const playerCount = sortBy === 'bestAt8' ? 8 : parseInt(sortBy.replace('bestAt', ''));
       gamesToDisplay = gamesToDisplay.filter(g => {
-          return getPlayerVoteStats(g, playerCount) !== null; // Supports the player count
+          return getBucketRank(g,playerCount)!==null;
       });
   } else if (ignoreZeroValues) {
       gamesToDisplay = gamesToDisplay.filter(g => {
@@ -1837,8 +1950,8 @@ function printPlayers1to8() {
     const eligible = allGames
       .filter(game => !hideExpansions || game.type !== 'boardgameexpansion')
       .map(game => ({game, category: categorizeGame(game, count)}))
-      .filter(entry => entry.category !== null)
-      .sort((a,b) => comparePlayerCountScores(a.game, b.game, count) ||
+      .filter(entry => getBucketRank(entry.game,count)!==null)
+      .sort((a,b) => compareBucketGames(a.game, b.game, count) ||
         String(a.game.name || '').localeCompare(String(b.game.name || '')));
     const totals = {perfect:0,best:0,recommended:0,supported:0};
     eligible.forEach(entry => { if (Object.hasOwn(totals, entry.category)) totals[entry.category]++; });
