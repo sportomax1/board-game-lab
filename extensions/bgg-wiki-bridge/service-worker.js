@@ -45,17 +45,22 @@ function waitLoaded(tabId,limit=17000){
   });
 }
 async function readTab(tabId,id){
-  let lastError='';
+  let lastFailure={ok:false,code:'NO_READER_RESPONSE',error:'The BGG reader did not respond.'};
   for(let tries=0;tries<3;tries++){
     try{
       const data=await chrome.tabs.sendMessage(tabId,{type:'EXTRACT_WIKI',gameId:id});
       if(data?.ok && typeof data.html==='string' && data.html.length>50)return data;
       if(data?.restricted)return data;
-      lastError=data?.error||'BGG returned no article.';
-    }catch(err){lastError=err.message||'BGG reader is not ready.';}
+      lastFailure={ok:false,code:data?.code||'ARTICLE_NOT_FOUND',
+        error:data?.error||'BGG returned no readable Community Wiki article.'};
+      if(data?.code==='WRONG_PAGE')return lastFailure;
+    }catch(err){
+      lastFailure={ok:false,code:'READER_NOT_AVAILABLE',
+        error:'Could not communicate with the BGG content reader: '+(err.message||err)};
+    }
     if(tries<2)await delay(700);
   }
-  return {ok:false,error:lastError||'No Community Wiki content was found.'};
+  return lastFailure;
 }
 async function loadWiki(id){
   const tabs=await chrome.tabs.query({url:['https://boardgamegeek.com/*','https://www.boardgamegeek.com/*']});
@@ -71,6 +76,14 @@ async function loadWiki(id){
   try{
     tab=await chrome.tabs.create({url:WIKI_PREFIX+encodeURIComponent('thing:'+id+':moreinfo'),active:false});
     await waitLoaded(tab.id);
+    const loaded=await chrome.tabs.get(tab.id);
+    if(!matchesWiki(loaded.url||'',id)){
+      const path=(()=>{try{return new URL(loaded.url||'').pathname;}catch(_){return '';}})();
+      return {ok:false,code:'BGG_REDIRECTED',
+        error:/login|signin|sign-in|auth/i.test(path)
+          ?'BGG redirected the wiki page to its sign-in screen. Sign into BGG in the same Chrome profile and retry.'
+          :'BGG redirected to a different page instead of the Community Wiki. The article was not retrieved.'};
+    }
     return await readTab(tab.id,id);
   }catch(err){
     return {ok:false,error:'Unable to load BGG Community Wiki in an inactive tab: '+(err.message||err)};
