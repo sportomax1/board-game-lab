@@ -70,8 +70,8 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
         <h2 id="gameTitle"></h2>
         <div class="meta" id="gameMeta"></div>
         <div class="btn-row">
-          <a class="btn primary" id="wikiLink" href="#" target="_blank" rel="noopener noreferrer">Open Community Wiki ↗</a>
-          <a class="btn" id="gameLink" href="#" target="_blank" rel="noopener noreferrer">BGG game ↗</a>
+          <button class="btn primary" id="wikiLink" type="button">Reload Wiki in app</button>
+          <button class="btn" id="showImport" type="button">Import Wiki</button>
           <button type="button" class="btn" id="copyShare">Copy app link</button>
         </div>
         <div class="source-line" id="wikiSource">No Community Wiki content loaded</div>
@@ -88,7 +88,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
         <section id="tab-wiki">
           <div class="toolbar">
             <div class="toolbar-left"><h2 class="content-title">Community Wiki</h2></div>
-            <div class="toolbar-right"><button class="btn" id="retryWiki" type="button">Try loading wiki</button><button class="btn" id="copyWiki" type="button" disabled>Copy text</button></div>
+            <div class="toolbar-right"><button class="btn" id="retryWiki" type="button">Reload inline</button><button class="btn" id="copyWiki" type="button" disabled>Copy text</button></div>
           </div>
           <div id="wikiNotice" class="callout" hidden></div>
           <article id="wikiContent" class="wiki-content" aria-label="Community Wiki page"></article>
@@ -106,7 +106,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
         <section id="tab-import" hidden>
           <div class="import-area">
             <h3>Save a Community Wiki copy</h3>
-            <p class="hint">BGG does not offer an official Community Wiki XML API endpoint. If direct retrieval fails, open the wiki, copy its article (not the surrounding menus), paste here, and save. Plain text and pasted HTML are supported.</p>
+            <p class="hint">Automatic retrieval is attempted when you select a game. If BGG restricts live wiki access, you can paste a saved wiki article or upload an HTML/text file right here without leaving this SPA.</p>
             <textarea id="importText" spellcheck="false" placeholder="Paste Community Wiki text, HTML, or copied article content here…"></textarea>
             <div class="btn-row">
               <button class="btn primary" id="saveImport" type="button">Save pasted wiki</button>
@@ -118,7 +118,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
             </div>
           </div>
           <div class="divider"></div>
-          <div class="callout"><strong>Source / rights</strong><p>BGG is the source of the game metadata and linked Community Wiki. The app makes a single, user-triggered attempt to load the public wiki page through the existing BGG helper; it does not use undocumented BGG JSON APIs, bypass authentication, or crawl the site. Imported material stays on your device. Respect BGG and contributors' rights before distributing any copies.</p><a id="importWikiLink" href="#" target="_blank" rel="noopener noreferrer">View original Community Wiki ↗</a></div>
+          <div class="callout"><strong>Source / rights</strong><p>BGG is the source of game metadata and Community Wiki. Wiki retrieval is attempted through a separate public-page reader, without using your private XML API token. If BGG blocks automated page access, the app respects that response and allows imports directly on this screen. Imported material stays on your device. Respect BGG and contributors' rights before distributing copies.</p></div>
         </section>
       </div>
     </section>
@@ -151,6 +151,22 @@ async function requestBg(endpoint,params,timeout=25000){
     return body;
   }catch(e){if(e.name==='AbortError')throw new Error('BGG request timed out. Try again later.');throw e}
   finally{clearTimeout(timer);}
+}
+async function requestWikiPage(id){
+ const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
+ try{
+   const response=await fetch('/api/community-wiki?id='+encodeURIComponent(id),{
+     signal:controller.signal,headers:{Accept:'application/json'}
+   });
+   let data;
+   try{data=await response.json();}catch(_){throw new Error('The wiki reader did not return valid JSON.');}
+   if(!response.ok)throw new Error(data.message||data.error||'Wiki request returned HTTP '+response.status+'.');
+   if(typeof data.html!=='string'||!data.html.trim())throw new Error('BGG returned an empty wiki document.');
+   return data.html;
+ }catch(e){
+   if(e.name==='AbortError')throw new Error('Wiki reader timed out.');
+   throw e;
+ }finally{clearTimeout(timer);}
 }
 function parseSearch(xml){
   return [...parseXml(xml).querySelectorAll('item')].filter(n=>['boardgame','boardgameexpansion'].includes(n.getAttribute('type')))
@@ -233,14 +249,21 @@ function extractWikiPage(raw){
 }
 function wikiText(html){
  const doc=new DOMParser().parseFromString('<main>'+html+'</main>','text/html');
- return doc.body.innerText||doc.body.textContent||'';
+ for(const br of [...doc.body.querySelectorAll('br')])br.replaceWith('\n');
+ for(const node of [...doc.body.querySelectorAll('p,div,h1,h2,h3,h4,h5,h6,li,tr,dt,dd,blockquote')])node.appendChild(doc.createTextNode('\n'));
+ return (doc.body.textContent||'').replace(/\n[ \t]*\n[ \t]*\n/g,'\n\n').trim();
 }
 function setTab(name){
  tab=name;document.querySelectorAll('[data-tab]').forEach(b=>{const active=b.dataset.tab===name;b.classList.toggle('active',active);b.setAttribute('aria-selected',String(active));});
  for(const t of ['wiki','components','details','import'])$('tab-'+t).hidden=t!==name;
 }
 function showNotice(message){
- const n=$('wikiNotice');n.hidden=!message;n.replaceChildren();if(message){const p=document.createElement('p');p.textContent=message;n.append(p);const a=document.createElement('a');a.href=wikiUrl(selected.id);a.target='_blank';a.rel='noopener noreferrer';a.textContent='Open the Community Wiki on BGG ↗';n.append(a);}}
+ const n=$('wikiNotice');n.hidden=!message;n.replaceChildren();
+ if(!message)return;
+ const p=document.createElement('p');p.textContent=message;n.append(p);
+ const b=document.createElement('button');b.type='button';b.className='btn compact';b.textContent='Import wiki right here';
+ b.addEventListener('click',()=>{setTab('import');$('importText').focus();});n.append(b);
+}
 function setWiki(row){
  wiki=row;const has=!!row?.html;
  $('wikiContent').innerHTML=has?row.html:'';
@@ -250,16 +273,34 @@ function setWiki(row){
  updateComponents();
 }
 function updateComponents(){
- const box=$('componentContent');box.replaceChildren();if(!wiki?.html){box.textContent='No Community Wiki page saved for this game.';return;}
+ const box=$('componentContent');box.replaceChildren();
+ if(!wiki?.html){box.textContent='No Community Wiki page saved for this game.';return;}
  const doc=new DOMParser().parseFromString('<div>'+wiki.html+'</div>','text/html');
- const nodes=[...doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6')];
- const matching=nodes.filter(n=>/\b(components?|contents?|inventory|what.s in the box|game materials|equipment)\b/i.test(n.textContent||''));
- if(!matching.length){const d=document.createElement('div');d.className='callout';d.textContent='The wiki has no obvious components heading. Check the full Community Wiki tab for other information.';box.append(d);return;}
- for(const head of matching){
-  const wrap=document.createElement('div');wrap.appendChild(sanitizeNode(head));let next=head.nextElementSibling,steps=0;
-  while(next&&steps<60&&!/^H[1-6]$/.test(next.tagName)){wrap.appendChild(sanitizeNode(next));next=next.nextElementSibling;steps++;}
-  box.append(wrap);
+ const headings=[...doc.body.querySelectorAll('h1,h2,h3,h4,h5,h6')];
+ const matching=headings.filter(n=>/\\b(components?|contents?|inventory|what.s in the box|game materials|equipment)\\b/i.test(n.textContent||''));
+ if(matching.length){
+   for(const head of matching){
+     const wrap=document.createElement('div');wrap.appendChild(sanitizeNode(head));let next=head.nextElementSibling,steps=0;
+     while(next&&steps<60&&!/^H[1-6]$/.test(next.tagName)){wrap.appendChild(sanitizeNode(next));next=next.nextElementSibling;steps++;}
+     box.append(wrap);
+   }
+   return;
  }
+ // BGG often labels "Components:" inside plain text instead of semantic headings.
+ const plain=wikiText(wiki.html),index=plain.search(/(?:^|\\n)\\s*(?:Components?|Contents|Box contents|Game materials)\\s*:/im);
+ if(index>=0){
+   const content=plain.slice(index).split('\\n');
+   const output=[];
+   for(let i=0;i<content.length&&i<150;i++){
+     const line=content[i];
+     if(i>4&&/^(?:Online Play|Suggested Background Music|Links|Credits|Additional Information|Review):?\\s*$/i.test(line.trim()))break;
+     output.push(line);
+   }
+   const pre=document.createElement('div');pre.className='plain';pre.textContent=output.join('\\n').trim();box.append(pre);return;
+ }
+ const d=document.createElement('div');d.className='callout';
+ d.textContent='No clearly labeled components section was found. View the complete Community Wiki tab for other information.';
+ box.append(d);
 }
 function safeImage(src){try{const u=new URL(src);return u.protocol==='https:'&&['cf.geekdo-images.com','boardgamegeek.com','www.boardgamegeek.com'].includes(u.hostname)?u.href:'';}catch(_){return '';}}
 function renderDetails(){
@@ -277,7 +318,7 @@ function renderHero(){
  $('welcome').hidden=true;$('gameHero').hidden=false;$('workspace').hidden=false;
  $('gameTitle').textContent=selected.name||'Game '+selected.id;$('gameIdLabel').textContent='· #'+selected.id;
  const img=safeImage(detail?.image||'');$('cover').hidden=!img;if(img)$('cover').src=img;$('cover').alt=selected.name+' cover';
- $('wikiLink').href=$('importWikiLink').href=wikiUrl(selected.id);$('gameLink').href=gameUrl(selected.id);
+ $('wikiLink').disabled=false;
  $('gameMeta').replaceChildren();for(const value of [detail?.year,detail?.minplayers?(detail.minplayers+'–'+detail.maxplayers+' players'):null,detail?.playingtime?(detail.playingtime+' min'):null]){if(!value)continue;const el=document.createElement('span');el.className='pill';el.textContent=value;$('gameMeta').append(el);}
  const url=new URL(location.href);url.searchParams.set('id',selected.id);history.replaceState(null,'',url);
  renderDetails();
@@ -302,14 +343,14 @@ async function loadWiki(seq,force){
  if(wiki&&!force){setWiki(wiki);return;}
  $('retryWiki').disabled=true;status('Trying to retrieve public Community Wiki page for #'+selected.id+'…','wait');
  try{
-  const raw=await requestBg('page',{url:wikiUrl(selected.id)},22000);
+  const raw=await requestWikiPage(selected.id);
   if(seq!==requestSequence)return;
   const html=extractWikiPage(raw);
   if(!wikiText(html).trim())throw new Error('The returned wiki article is empty.');
   const record={id:selected.id,name:selected.name,html,source:'bgg-page',savedAt:Date.now()};
   await putSaved('wiki',record);if(seq!==requestSequence)return;
   setWiki(record);await refreshSaved();status('Community Wiki loaded and saved locally.','ok');
- }catch(e){if(seq===requestSequence){status('Could not load wiki automatically: '+e.message,'error');showNotice('Automatic Community Wiki retrieval is unavailable for this game. Use Open Community Wiki, then Import / manage to paste its article.');}}
+ }catch(e){if(seq===requestSequence){status('Could not load wiki automatically: '+e.message,'error');showNotice('Live wiki content is unavailable through BGG for this game. You can import saved HTML or text without leaving this app.');}}
  finally{if(seq===requestSequence)$('retryWiki').disabled=false;}
 }
 function fileDownload(filename,text,mime){const blob=new Blob([text],{type:mime}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),600);}
@@ -329,6 +370,8 @@ $('searchForm').addEventListener('submit',e=>{e.preventDefault();performSearch()
 document.querySelectorAll('[data-pick]').forEach(b=>b.addEventListener('click',()=>{ $('gameSearch').value=b.dataset.name;chooseGame(b.dataset.pick,b.dataset.name);}));
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 $('retryWiki').addEventListener('click',()=>{if(selected)loadWiki(requestSequence,true);});
+$('wikiLink').addEventListener('click',()=>{if(selected){setTab('wiki');loadWiki(requestSequence,true);}});
+$('showImport').addEventListener('click',()=>{if(selected){setTab('import');$('importText').focus();}});
 $('copyShare').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(location.href);status('App link copied.','ok');}catch(_){status('Clipboard unavailable. Copy the browser URL instead.','error');}});
 $('copyWiki').addEventListener('click',async()=>{if(!wiki)return;try{await navigator.clipboard.writeText(wikiText(wiki.html));status('Community Wiki text copied.','ok');}catch(_){status('Could not access clipboard.','error');}});
 $('saveImport').addEventListener('click',async()=>{
