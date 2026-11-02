@@ -189,6 +189,17 @@
 .back-option button[data-delete]{position:absolute;top:5px;right:5px;z-index:1;padding:0;width:25px;min-height:25px;background:#653538;color:white;border:1px solid #dca2a2}
 #backPhotoStatus{font-size:12px;color:#b7d0ea}
 .back-photo-widget{display:flex;align-items:center;gap:8px}.back-photo-widget small{color:var(--muted);overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+</style><style id="jacket-scroll-photo-extensions">
+#more[hidden],#moreBackPhotos[hidden]{display:none!important}
+.photo-gallery-info{margin:7px 0;color:#bfd0de;font-size:12px;font-weight:600}
+.photo-load-more{padding:15px 0;color:#cbd8e5;text-align:center;font-size:12px}
+#backPhotoGrid{align-content:start}
+.back-option .photo-language{color:#aebed3;padding:0 4px 3px;font-size:9px;line-height:1.2}
+.back-option>button[data-pick]{height:174px;gap:3px}
+.back-option img{height:122px;flex:none}
+.back-option span{flex:none}
+#backPhotoGrid img{content-visibility:auto}
+#gallery .game{content-visibility:auto;contain-intrinsic-size:190px}
 </style></head>
 <body>
 <header><div><h1>Board Game Lab / Jacket Designer</h1><p>4 × 6 in photo keeper jackets · Back / Spine / Front</p></div><a href="index.html">← App index</a></header>
@@ -233,10 +244,10 @@
 <dialog id="backPhotoDialog" aria-labelledby="backPhotoTitle">
  <div class="photo-head"><h2 id="backPhotoTitle">Choose back cover image</h2><button type="button" id="backPhotoClose">Close</button></div>
  <div class="photo-body">
- <p class="photo-desc">Browse the game's BGG gallery, filter to <b>Box Back</b> or <b>Components</b>, then right-click an image and select <b>Copy image address</b>. Paste that direct image URL below, or upload a photo from your device. Your choice affects only the back cover.</p>
+ <p class="photo-desc">BGG edition cover artwork appears below automatically via the official Thing API. Choose any image for the back; the front remains unchanged. BGG user-uploaded box-back and component gallery photos are not part of the XML API, but you can add those using a direct image URL or upload.</p>
  <div class="photo-actions"><a id="backPhotoGalleryLink" target="_blank" rel="noopener noreferrer" href="https://boardgamegeek.com/images/boardgame/all">Browse game images on BGG</a><button type="button" id="backPhotoUpload">Upload photo</button><input id="backPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden></div>
  <div class="photo-link-input"><input type="url" id="backPhotoUrl" placeholder="Direct HTTPS image URL" aria-label="Direct back photo image URL"><button id="backPhotoAdd" type="button">Add image</button></div>
- <div id="backPhotoGrid" role="group" aria-label="Saved back photo options"></div><p id="backPhotoStatus" aria-live="polite"></p>
+ <div class="photo-gallery-info" id="editionPhotoInfo">Loading BGG edition cover options…</div><div id="backPhotoGrid" role="group" aria-label="Back photo options including BGG edition covers"></div><div id="moreBackPhotos" class="photo-load-more" hidden>Scroll for more images…</div><p id="backPhotoStatus" aria-live="polite"></p>
  </div>
 </dialog>
 <script>
@@ -282,11 +293,11 @@ async function sharedShelfMeasurements(username){
  finally{db.close()}
  return count
 }
-function applyRichRecord(g,data){if(!g||!data)return;const existing=g.versions;if(Array.isArray(data.versions)){const versions=data.versions.map(normalizeVersion).filter(validVersion);if(versions.length||!existing?.length)g.versions=versions}if(typeof data.description==='string')g.description=data.description;if(data.metadata&&typeof data.metadata==='object')g.metadata=data.metadata;for(const key of ['minPlayers','maxPlayers','playTime','weight'])if(data[key]!=null)g[key]=data[key];g._richLoaded=Boolean(data.metadata)}
+function applyRichRecord(g,data){if(!g||!data)return;const existing=g.versions;if(Array.isArray(data.editionPhotos))g.editionPhotos=data.editionPhotos;if(Array.isArray(data.versions)){const versions=data.versions.map(normalizeVersion).filter(validVersion);if(versions.length||!existing?.length)g.versions=versions}if(typeof data.description==='string')g.description=data.description;if(data.metadata&&typeof data.metadata==='object')g.metadata=data.metadata;for(const key of ['minPlayers','maxPlayers','playTime','weight'])if(data[key]!=null)g[key]=data[key];g._richLoaded=Boolean(data.metadata)}
 async function hydrateRichCache(){const db=await openDb();if(!db||!state.games.length)return;const records=new Map(state.games.map(g=>[g.id,g]));await new Promise(resolve=>{try{const tx=db.transaction(STORE,'readonly'),os=tx.objectStore(STORE);for(const g of state.games){const req=os.get('rich:'+g.id);req.onsuccess=()=>{const d=req.result;if(d?.at&&Date.now()-d.at<30*86400000)applyRichRecord(g,d.data)}}tx.oncomplete=resolve;tx.onerror=resolve}catch{resolve()}})}
 async function ensureGameDetails(games){
  const pending=[];
- for(const g of games){if(g._richLoaded&&g.metadata)continue;const cached=await dbGet('rich:'+g.id);if(cached?.at&&Date.now()-cached.at<30*86400000&&cached.data?.metadata){applyRichRecord(g,cached.data)}else pending.push(g)}
+ for(const g of games){if(g._richLoaded&&g.metadata&&Array.isArray(g.editionPhotos))continue;const cached=await dbGet('rich:'+g.id);if(cached?.at&&Date.now()-cached.at<30*86400000&&cached.data?.metadata&&Array.isArray(cached.data.editionPhotos)){applyRichRecord(g,cached.data)}else pending.push(g)}
  for(let offset=0;offset<pending.length;offset+=18){
   const chunk=pending.slice(offset,offset+18),params=new URLSearchParams({endpoint:'thing',id:chunk.map(g=>g.id).join(','),stats:'1',versions:'1'});
   let success=false;
@@ -300,23 +311,32 @@ async function ensureGameDetails(games){
     const parents=new Map(),versionParents=new Map(),raw=[];
     for(const el of xml.querySelectorAll('items > item[type="boardgame"],items > item[type="boardgameexpansion"]')){
      const id=el.getAttribute('id');if(!id)continue;parents.set(id,el);for(const l of el.querySelectorAll('link[type="boardgameversion"]'))versionParents.set(l.getAttribute('id'),id)}
-    const versionMap=new Map();
+    const versionMap=new Map(),editionImageMap=new Map();
     for(const el of xml.querySelectorAll('items > item[type="boardgameversion"], items > item > versions > item[type="boardgameversion"], items > item > versions > item')){
      const id=el.querySelector('link[type="boardgameversion"][inbound="true"]')?.getAttribute('id')||versionParents.get(el.getAttribute('id'))||el.closest('versions')?.parentElement?.getAttribute('id');if(!id)continue;
      const at=key=>Number(el.querySelector(':scope > '+key)?.getAttribute('value'))||0;
-     const v={id:el.getAttribute('id'),name:el.querySelector('name[type="primary"]')?.getAttribute('value')||el.querySelector('name')?.getAttribute('value')||'Edition',w:at('width'),h:at('length'),d:at('depth'),languages:[...el.querySelectorAll('link[type="language"]')].map(x=>x.getAttribute('value')||'')};
+     const name=el.querySelector('name[type="primary"]')?.getAttribute('value')||el.querySelector('name')?.getAttribute('value')||'Edition';
+     const languages=[...el.querySelectorAll('link[type="language"]')].map(x=>x.getAttribute('value')||'');
+     const v={id:el.getAttribute('id'),name,w:at('width'),h:at('length'),d:at('depth'),languages};
      if(validVersion(v)){if(!versionMap.has(id))versionMap.set(id,[]);versionMap.get(id).push(v)}
+     // Edition art exists even when box measurements are absent. Keep it independent
+     // of size eligibility and always prefer the full-size image over the thumbnail.
+     const image=safeUrl(el.querySelector(':scope > image')?.textContent?.trim()||''),thumb=safeUrl(el.querySelector(':scope > thumbnail')?.textContent?.trim()||'');
+     if(image||thumb){
+      if(!editionImageMap.has(id))editionImageMap.set(id,[]);
+      editionImageMap.get(id).push({id:String(v.id||''),name,languages,year:at('yearpublished'),image:image||thumb,thumbnail:thumb||image});
+     }
     }
     for(const g of chunk){const el=parents.get(g.id);if(!el)continue;const at=key=>Number(el.querySelector(':scope > '+key)?.getAttribute('value'))||null;
      const metadataTypes={publisher:'boardgamepublisher',designers:'boardgamedesigner',artists:'boardgameartist',mechanics:'boardgamemechanic',families:'boardgamefamily',categories:'boardgamecategory'};const metadata={};for(const [field,type] of Object.entries(metadataTypes)){const found=[...el.querySelectorAll(':scope > link[type="'+type+'"]')].map(node=>node.getAttribute('value')||'').map(v=>v.trim()).filter(Boolean);metadata[field]=[...new Set(found)]}
-     const data={metadata,description:plainText(el.querySelector(':scope > description')?.textContent||''),versions:versionMap.get(g.id)||[],minPlayers:at('minplayers')||g.minPlayers,maxPlayers:at('maxplayers')||g.maxPlayers,playTime:at('playingtime')||g.playTime,weight:Number(el.querySelector('statistics > ratings > averageweight')?.getAttribute('value'))||g.weight||null};
+     const data={metadata,description:plainText(el.querySelector(':scope > description')?.textContent||''),versions:versionMap.get(g.id)||[],editionPhotos:editionImageMap.get(g.id)||[],minPlayers:at('minplayers')||g.minPlayers,maxPlayers:at('maxplayers')||g.maxPlayers,playTime:at('playingtime')||g.playTime,weight:Number(el.querySelector('statistics > ratings > averageweight')?.getAttribute('value'))||g.weight||null};
      applyRichRecord(g,data);raw.push(dbPut('rich:'+g.id,{at:Date.now(),data}));
     }
     await Promise.all(raw);success=true;
    }catch(error){if(attempt===4)console.warn('BGG game metadata unavailable',error);else await wait(1000+attempt*950)}
   }
  }
- if(games.some(g=>g.id===state.active))refreshActiveDescription();
+ if(games.some(g=>g.id===state.active))refreshActiveDescription();if(photoDialogID&&games.some(g=>g.id===photoDialogID)){const photoGame=games.find(g=>g.id===photoDialogID);if(photoGame)renderBackPhotos(photoGame)}
 }
 async function scanAllSizes(){
  if(scanInProgress||!state.games.length)return;
