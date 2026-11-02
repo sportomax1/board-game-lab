@@ -410,14 +410,87 @@ async function loadBackPhoto(g){
  photoPending.set(g.id,promise);return promise
 }
 async function saveBackPhoto(g){await dbPut(backPhotoKey(g),backPhotoEntry(g))}
+
+const PHOTO_CHUNK=24;let photoShown=PHOTO_CHUNK;let photoScrollObserver=null,galleryScrollObserver=null,galleryScrollBusy=false;
+function editionPhotoCatalog(g){
+ const seen=new Set(),result=[];
+ for(const entry of g.editionPhotos||[]){
+  const image=safeUrl(entry.image||entry.thumbnail||''),thumb=safeUrl(entry.thumbnail||entry.image||'');
+  if(!image)continue;
+  // BGG versions often reuse the exact same cover in many languages. Dedupe
+  // per actual photo rather than treating identical resized URLs as new art.
+  const photoID=image.match(/\/pic(\d+)\.(?:jpg|jpeg|png|webp)/i)?.[1];
+  const key=photoID?'pic:'+photoID:image;
+  if(seen.has(key))continue;seen.add(key);
+  result.push({name:String(entry.name||'Edition cover'),image,thumbnail:thumb||image,
+    languages:Array.isArray(entry.languages)?entry.languages:[],id:entry.id||''});
+ }
+ return result.sort((a,b)=>Number(b.languages.some(x=>/english/i.test(x)))-Number(a.languages.some(x=>/english/i.test(x)))||a.name.localeCompare(b.name));
+}
+function watchBackPhotoScroll(){
+ photoScrollObserver?.disconnect();photoScrollObserver=null;
+ const more=$('moreBackPhotos'),dialog=$('backPhotoDialog');
+ if(more.hidden||!dialog.open)return;
+ if('IntersectionObserver' in window){
+  photoScrollObserver=new IntersectionObserver(entries=>{if(entries.some(e=>e.isIntersecting)&&photoDialogID){
+   const g=state.games.find(x=>x.id===photoDialogID);if(!g||more.hidden)return;
+   photoShown+=PHOTO_CHUNK;renderBackPhotos(g)
+  }},{root:dialog,rootMargin:'350px 0px',threshold:0.01});
+  photoScrollObserver.observe(more);
+ }
+}
+function advanceBackPhotosOnScroll(){
+ if('IntersectionObserver' in window)return;
+ const el=$('backPhotoDialog'),g=state.games.find(x=>x.id===photoDialogID);
+ if(g&&!$('moreBackPhotos').hidden&&el.scrollTop+el.clientHeight>=el.scrollHeight-450){
+  photoShown+=PHOTO_CHUNK;renderBackPhotos(g)
+ }
+}
+function startJacketInfiniteScroll(){
+ galleryScrollObserver?.disconnect();
+ const more=$('more');
+ if('IntersectionObserver' in window){
+  galleryScrollObserver=new IntersectionObserver(entries=>{
+   if(!entries.some(entry=>entry.isIntersecting)||galleryScrollBusy||more.hidden||state.loading)return;
+   galleryScrollBusy=true;
+   requestAnimationFrame(()=>{if(!more.hidden){state.shown+=80;draw()}galleryScrollBusy=false})
+  },{root:null,rootMargin:'650px 0px',threshold:0.01});
+  galleryScrollObserver.observe(more)
+ }
+}
+function fallbackJacketScroll(){
+ if('IntersectionObserver' in window||galleryScrollBusy||$('more').hidden)return;
+ const el=$('more');if(el.getBoundingClientRect().top<=innerHeight+550){
+  galleryScrollBusy=true;requestAnimationFrame(()=>{state.shown+=80;draw();galleryScrollBusy=false})
+ }
+}
 function renderBackPhotos(g){
- if(!g)return;$('backPhotoTitle').textContent='Back image · '+g.name;
+ if(!g||photoDialogID!==g.id)return;
+ $('backPhotoTitle').textContent='Back image · '+g.name;
  $('backPhotoGalleryLink').href='https://boardgamegeek.com/boardgame/'+encodeURIComponent(g.id)+'/images';
- const e=backPhotoEntry(g),all=[{url:g.image||g.thumb||'',name:'Front cover'},...e.items];
- $('backPhotoGrid').innerHTML=all.map((x,i)=>{
-  const n=i-1,on=n===e.choice;
-  return '<div class="back-option"><button type="button" data-pick="'+n+'" aria-pressed="'+on+'">'+(x.url?'<img loading="lazy" alt="'+safe(x.name)+'" src="'+safe(x.url)+'">':'')+'<span>'+safe(x.name)+(on?' ✓':'')+'</span></button>'+(n>=0?'<button type="button" data-delete="'+n+'" aria-label="Remove image">×</button>':'')+'</div>'
- }).join('')
+ const e=backPhotoEntry(g),front={url:g.image||g.thumb||'',name:'Front cover'};
+ const saved=[front,...e.items],editions=editionPhotoCatalog(g);
+ const row=(x,i,kind)=>{
+  const isSaved=kind==='saved',index=isSaved?i-1:i,selected=isSaved&&e.choice===index;
+  const target=isSaved?'data-pick="'+index+'"':'data-edition-pick="'+index+'"';
+  const thumb=x.thumbnail||x.url||x.image||'',title=x.name||'Edition art',
+        languages=kind==='edition'&&x.languages?.length?x.languages.join(', '):'';
+  return '<div class="back-option"><button type="button" '+target+' aria-pressed="'+selected+'">'+
+   (thumb?'<img loading="lazy" decoding="async" alt="'+safe(title)+'" src="'+safe(thumb)+'">':'')+
+   '<span>'+safe(title)+(selected?' ✓':'')+'</span>'+
+   (languages?'<small class="photo-language">'+safe(languages)+'</small>':'')+'</button>'+
+   (isSaved&&i>0?'<button type="button" data-delete="'+index+'" aria-label="Remove saved image">×</button>':'')+'</div>'
+ };
+ $('backPhotoGrid').innerHTML=
+  saved.map((x,i)=>row(x,i,'saved')).join('')+
+  editions.slice(0,photoShown).map((x,i)=>row(x,i,'edition')).join('');
+ const count=editions.length;
+ $('editionPhotoInfo').textContent=
+  (g._richLoaded?'BGG Thing API: '+count+' unique edition cover'+(count===1?'':'s')+' · '+saved.length+' saved/default option'+(saved.length===1?'':'s'):'Loading BGG edition covers…')+
+  '. Choose any image for the back.';
+ $('moreBackPhotos').hidden=photoShown>=count;
+ $('moreBackPhotos').textContent='Scroll to load more edition covers · '+Math.min(photoShown,count)+' / '+count;
+ watchBackPhotoScroll()
 }
 async function chooseBackPhoto(g,index){
  const e=backPhotoEntry(g);if(index!==-1&&!e.items[index])return;
@@ -693,6 +766,9 @@ $('gallery').addEventListener('change',e=>{const cb=e.target.closest('input[data
 $('gallery').addEventListener('click',e=>{if(e.target.closest('.tilecheck'))return;const el=e.target.closest('.game');if(!el)return;const g=state.games.find(x=>x.id===el.dataset.id);if(g){activate(g);$('gallery').querySelectorAll('.game.active').forEach(x=>x.classList.remove('active'));el.classList.add('active')}});
 $('gallery').addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('input')){const el=e.target.closest('.game');if(el){e.preventDefault();el.click()}}});
 $('more').onclick=()=>{state.shown+=80;draw()};
+startJacketInfiniteScroll();
+$('backPhotoDialog').addEventListener('scroll',advanceBackPhotosOnScroll,{passive:true});
+window.addEventListener('scroll',fallbackJacketScroll,{passive:true});
 $('scanSizes').onclick=()=>void scanAllSizes();
 $('cancelScan').onclick=()=>{scanSerial++;scanInProgress=false;$('scanSizes').disabled=false;$('cancelScan').hidden=true;reportSizes('scan stopped');draw()};
 $('load').onclick=()=>load(false);$('refresh').onclick=()=>load(true);$('username').addEventListener('keydown',e=>{if(e.key==='Enter')load(false)});
@@ -701,16 +777,19 @@ $('selectFiltered').onclick=()=>{filtered().forEach(g=>state.selected.add(g.id))
 $('clearSelected').onclick=()=>{state.selected.clear();persistSelected();draw()};
 
 $('backPhotoOpen').onclick=async()=>{
- const g=activeGame();if(!g)return;photoDialogID=g.id;$('backPhotoStatus').textContent='Loading saved images…';$('backPhotoDialog').showModal();
+ const g=activeGame();if(!g)return;photoDialogID=g.id;photoShown=PHOTO_CHUNK;$('backPhotoStatus').textContent='Loading BGG edition artwork…';$('backPhotoDialog').showModal();
  await loadBackPhoto(g);if(photoDialogID!==g.id)return;renderBackPhotos(g);
- $('backPhotoStatus').textContent='Browse BGG, copy an image address and paste it, or upload a photo.'
+ if(!g._richLoaded||!Array.isArray(g.editionPhotos))await ensureGameDetails([g]);
+ if(photoDialogID!==g.id)return;renderBackPhotos(g);
+ $('backPhotoStatus').textContent='Select an edition image above, upload a photo, or paste a direct BGG image link. Full BGG user photo gallery is not exposed by the XML API.'
 };
 $('backPhotoClose').onclick=()=>$('backPhotoDialog').close();
-$('backPhotoDialog').addEventListener('close',()=>{photoDialogID=null;$('backPhotoUrl').value='';$('backPhotoFile').value=''});
+$('backPhotoDialog').addEventListener('close',()=>{photoDialogID=null;photoScrollObserver?.disconnect();$('backPhotoUrl').value='';$('backPhotoFile').value=''});
 $('backPhotoGrid').addEventListener('click',async ev=>{
  const g=state.games.find(x=>x.id===photoDialogID);if(!g)return;
  const del=ev.target.closest('[data-delete]');
  if(del){const ix=Number(del.dataset.delete),e=backPhotoEntry(g);if(!e.items[ix])return;e.items.splice(ix,1);if(e.choice===ix)e.choice=-1;else if(e.choice>ix)e.choice--;state.backPhotos.set(g.id,e);await saveBackPhoto(g);updateBackName(g);drawPreview();renderBackPhotos(g);return}
+ const edition=ev.target.closest('[data-edition-pick]');if(edition){const item=editionPhotoCatalog(g)[Number(edition.dataset.editionPick)];if(item)await addBackPhoto(g,item.image,'BGG: '+item.name);return}
  const b=ev.target.closest('[data-pick]');if(b)await chooseBackPhoto(g,Number(b.dataset.pick))
 });
 $('backPhotoAdd').onclick=async()=>{
