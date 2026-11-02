@@ -1,25 +1,28 @@
-# BGG Community Wiki Bridge for Board Game Lab
+# BGG Community Wiki Bridge (Chrome / Edge) — v1.1
 
-This Chrome/Edge Manifest V3 extension lets the Board Game Lab Community Wiki SPA read the rendered Community Wiki using the BGG session already active in the same browser profile.
+Reads the BoardGameGeek Community Wiki page for a selected game into the Board Game Lab Community Wiki Explorer, using the same browser profile as your BGG login.
 
-## Install
-1. Download **bgg-wiki-bridge.zip** from the Board Game Lab Community Wiki app.
-2. Extract the ZIP to a permanent folder.
-3. Open \`chrome://extensions\` (or \`edge://extensions\`), enable **Developer mode**, select **Load unpacked**, and select the extracted folder containing \`manifest.json\`.
-4. Sign in normally at boardgamegeek.com in the same browser profile.
-5. Refresh the Board Game Lab Community Wiki page and select a game.
+## Install or update
 
-## How it works
-- The app sends a game ID to a content script running only on approved Board Game Lab domains.
-- The extension checks for an existing BGG Community Wiki tab for that ID. If none exists, it opens a temporary **inactive** BGG tab and closes it after reading the page. It never switches your active tab.
-- A BGG content script extracts the rendered Community Wiki DOM and returns only article HTML to the app; the SPA sanitizes and displays it and stores it in IndexedDB.
-- **No passwords, cookies, tokens, or localStorage data are read or sent to the app.**
-- It does not bypass access restrictions, CAPTCHAs, 403s, or login requirements. BGG may still restrict access or change its markup.
-- Extension access is limited to the BGG site and the three explicit Board Game Lab deployment hosts in \`manifest.json\`.
+1. Download `bgg-wiki-bridge.zip` from the Community Wiki Explorer.
+2. Extract it. The extracted folder must directly contain **manifest.json**, **service-worker.js**, **page-bridge.js** and **bgg-reader.js**.
+3. Go to `chrome://extensions` (or `edge://extensions`) and enable **Developer mode**.
+4. Click **Load unpacked** and select that folder.
+5. If you already have an earlier version installed, replace the old extracted files with the new ones and click **Reload** on its extension card. Avoid installing two copies.
+6. Sign in at boardgamegeek.com in the **same browser profile**, then refresh the Board Game Lab Community Wiki Explorer.
+7. The app should display **Connected (v1.1.0)**. Choose a game, or click **Reload from BGG session**.
+
+The app uses a normal BGG wiki tab, or creates a temporary **inactive** BGG tab, reads its rendered article, and closes it. Your active Board Game Lab tab does not change.
 
 ### Troubleshooting
-- The extension must be installed in the **same browser profile** used for the BGG session.
-- Reload Board Game Lab after installation so the content script is injected.
-- A BGG login in Incognito or another Chrome profile does not carry into your current profile.
-- If the page is blocked even in a regular BGG tab, the extension cannot retrieve it.
-- When the UI says no article was recognized, use the Import tab; you can also provide the HTML capture for an extractor update.
+
+- **Extension not detected:** reload the extension and the app; verify the extracted folder contains manifest.json at its top level and the app is on https://board-game-lab-one-phi-42.vercel.app.
+- **Outdated extension:** reinstall/update the extracted files and click Reload in chrome://extensions.
+- **BGG redirected:** check whether BGG is signed in within this Chrome profile, not a separate Incognito session.
+- **BGG restricted:** visit the wiki normally and see whether BGG presents an access challenge. The extension will not defeat an access restriction.
+- **Article not found:** BGG's markup may have changed or the wiki may be blank. The app reports the extension's extraction code; use the Import tab if necessary.
+- **Response timeout:** see `chrome://extensions` > BGG Community Wiki Bridge > Service worker > Inspect for worker errors.
+
+The extension does not read or transmit cookies, login tokens, passwords or localStorage data. Only article markup is sent to the current app tab, which sanitizes the content and stores a local copy in IndexedDB. No BGG data is transmitted to an additional server by the extension.
+
+This is not an official BGG API integration and may stop working if BGG changes access controls or page structure. Respect BGG and contributor permissions.
