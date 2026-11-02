@@ -59,6 +59,13 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
   </aside>
   <div class="work">
     <div id="status" class="status" role="status" aria-live="polite"></div>
+    <section id="bridgeCard" class="panel" style="padding:12px 15px">
+      <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
+        <div><strong style="font-size:13px">Chrome session bridge</strong><div id="bridgeStatus" class="small muted" role="status">Checking for extension…</div></div>
+        <div class="btn-row"><a class="btn primary" id="extensionDownload" href="./bgg-wiki-bridge.zip" download>Download extension ZIP</a><button class="btn" id="checkExtension" type="button">Check connection</button></div>
+      </div>
+      <p class="hint" id="bridgeGuide">Setup: download ZIP → unzip → open chrome://extensions → Developer mode → Load unpacked → select extracted folder. Sign in to BGG using the same browser profile, then refresh this app.</p>
+    </section>
     <section id="welcome" class="intro panel">
       <h2>Select a game to start</h2>
       <p>Get BGG game details, open its Community Wiki, and keep a readable local copy. Community Wiki content is separate from the XML API game description.</p>
@@ -70,7 +77,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
         <h2 id="gameTitle"></h2>
         <div class="meta" id="gameMeta"></div>
         <div class="btn-row">
-          <button class="btn primary" id="wikiLink" type="button">Reload Wiki in app</button>
+          <button class="btn primary" id="wikiLink" type="button">Load from my BGG session</button>
           <button class="btn" id="showImport" type="button">Import Wiki</button>
           <button type="button" class="btn" id="copyShare">Copy app link</button>
         </div>
@@ -88,7 +95,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
         <section id="tab-wiki">
           <div class="toolbar">
             <div class="toolbar-left"><h2 class="content-title">Community Wiki</h2></div>
-            <div class="toolbar-right"><button class="btn" id="retryWiki" type="button">Reload inline</button><button class="btn" id="copyWiki" type="button" disabled>Copy text</button></div>
+            <div class="toolbar-right"><button class="btn" id="retryWiki" type="button">Reload from BGG session</button><button class="btn" id="copyWiki" type="button" disabled>Copy text</button></div>
           </div>
           <div id="wikiNotice" class="callout" hidden></div>
           <article id="wikiContent" class="wiki-content" aria-label="Community Wiki page"></article>
@@ -106,7 +113,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
         <section id="tab-import" hidden>
           <div class="import-area">
             <h3>Save a Community Wiki copy</h3>
-            <p class="hint">Automatic retrieval is attempted when you select a game. If BGG restricts live wiki access, you can paste a saved wiki article or upload an HTML/text file right here without leaving this SPA.</p>
+            <p class="hint">With the Chrome extension connected, choosing a game automatically retrieves its Community Wiki through your signed-in BGG browser session. If BGG restricts access, you can paste or upload an article here.</p>
             <textarea id="importText" spellcheck="false" placeholder="Paste Community Wiki text, HTML, or copied article content here…"></textarea>
             <div class="btn-row">
               <button class="btn primary" id="saveImport" type="button">Save pasted wiki</button>
@@ -118,7 +125,7 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
             </div>
           </div>
           <div class="divider"></div>
-          <div class="callout"><strong>Source / rights</strong><p>BGG is the source of game metadata and Community Wiki. Wiki retrieval is attempted through a separate public-page reader, without using your private XML API token. If BGG blocks automated page access, the app respects that response and allows imports directly on this screen. Imported material stays on your device. Respect BGG and contributors' rights before distributing copies.</p></div>
+          <div class="callout"><strong>Source / rights</strong><p>Game metadata uses BGG XML API2. The Chrome extension reads Community Wiki pages using the browser where you are signed into BGG. It may briefly open and close an inactive tab but never switches away from this app. Cookies and credentials are not sent to Board Game Lab. BGG access restrictions still apply. Cached copies stay in your browser.</p></div>
         </section>
       </div>
     </section>
@@ -152,21 +159,50 @@ async function requestBg(endpoint,params,timeout=25000){
   }catch(e){if(e.name==='AbortError')throw new Error('BGG request timed out. Try again later.');throw e}
   finally{clearTimeout(timer);}
 }
-async function requestWikiPage(id){
- const controller=new AbortController(),timer=setTimeout(()=>controller.abort(),20000);
- try{
-   const response=await fetch('/api/community-wiki?id='+encodeURIComponent(id),{
-     signal:controller.signal,headers:{Accept:'application/json'}
-   });
-   let data;
-   try{data=await response.json();}catch(_){throw new Error('The wiki reader did not return valid JSON.');}
-   if(!response.ok)throw new Error(data.message||data.error||'Wiki request returned HTTP '+response.status+'.');
-   if(typeof data.html!=='string'||!data.html.trim())throw new Error('BGG returned an empty wiki document.');
-   return data.html;
- }catch(e){
-   if(e.name==='AbortError')throw new Error('Wiki reader timed out.');
-   throw e;
- }finally{clearTimeout(timer);}
+const BRIDGE_CHANNEL='BGL_COMMUNITY_WIKI_BRIDGE_V1';
+const bridgePending=new Map();
+let extensionPresent=false,bridgeSeq=0;
+window.addEventListener('message',event=>{
+ if(event.source!==window||event.origin!==location.origin)return;
+ const d=event.data;
+ if(!d||d.channel!==BRIDGE_CHANNEL||d.direction!=='extension-to-page')return;
+ const item=bridgePending.get(String(d.requestId||''));if(!item)return;
+ if(item.type==='ping'&&d.type!=='PONG')return;
+ if(item.type==='wiki'&&d.type!=='WIKI_RESULT')return;
+ bridgePending.delete(d.requestId);clearTimeout(item.timer);
+ if(item.type==='ping'){extensionPresent=true;updateBridgeUI();item.resolve(true);return;}
+ const payload=d.payload||{};
+ if(payload.ok&&typeof payload.html==='string'&&payload.html.length>50)item.resolve(payload);
+ else item.reject(new Error(payload.error||'BGG did not return a readable Community Wiki article.'));
+});
+function updateBridgeUI(){
+ $('bridgeStatus').textContent=extensionPresent?
+  'Connected — uses your BGG browser session to display wiki content here.':
+  'Not connected — install the Chrome extension and refresh this app.';
+ $('bridgeGuide').hidden=extensionPresent;
+ $('extensionDownload').hidden=extensionPresent;
+}
+function pingExtension(){
+ if(extensionPresent)return Promise.resolve(true);
+ return new Promise(resolve=>{
+   const requestId='ping-'+Date.now()+'-'+(++bridgeSeq);
+   const timer=setTimeout(()=>{bridgePending.delete(requestId);extensionPresent=false;updateBridgeUI();resolve(false);},1800);
+   bridgePending.set(requestId,{type:'ping',resolve,timer});
+   window.postMessage({channel:BRIDGE_CHANNEL,direction:'page-to-extension',type:'PING',requestId},location.origin);
+ });
+}
+async function requestExtensionWiki(id){
+ if(!extensionPresent&&!await pingExtension())
+   throw new Error('Chrome Wiki Bridge is not installed or not connected. Download the extension ZIP above, install it, and refresh.');
+ return new Promise((resolve,reject)=>{
+   const requestId='wiki-'+Date.now()+'-'+(++bridgeSeq);
+   const timer=setTimeout(()=>{
+     bridgePending.delete(requestId);reject(new Error('The extension took too long to read BGG.'));
+   },50000);
+   bridgePending.set(requestId,{type:'wiki',resolve,reject,timer});
+   window.postMessage({channel:BRIDGE_CHANNEL,direction:'page-to-extension',type:'FETCH_WIKI',
+     gameId:String(id),requestId},location.origin);
+ });
 }
 function parseSearch(xml){
   return [...parseXml(xml).querySelectorAll('item')].filter(n=>['boardgame','boardgameexpansion'].includes(n.getAttribute('type')))
@@ -268,8 +304,8 @@ function setWiki(row){
  wiki=row;const has=!!row?.html;
  $('wikiContent').innerHTML=has?row.html:'';
  $('copyWiki').disabled=!has;
- $('wikiSource').textContent=has?(row.source==='import'?'User-imported local wiki':'BGG public page (experimental retrieval)')+' · '+new Date(row.savedAt).toLocaleString():'Community Wiki not imported';
- showNotice(has?'':'No Community Wiki article loaded. The app will try to load it inline. If BGG restricts access, use Import / manage to add content on this screen.');
+ $('wikiSource').textContent=has?(row.source==='import'?'User-imported local wiki':row.source==='extension'?'BGG Wiki via Chrome session':'Cached BGG wiki')+' · '+new Date(row.savedAt).toLocaleString():'Community Wiki not imported';
+ showNotice(has?'':'No Community Wiki article loaded. Connect the Chrome extension above to retrieve it directly inside this app.');
  updateComponents();
 }
 function updateComponents(){
@@ -336,22 +372,25 @@ async function chooseGame(id,name){
   status(savedWiki?'Loaded game metadata; showing your saved wiki.':'Loaded game metadata. Looking for Community Wiki content…','ok');
  }catch(e){if(seq!==requestSequence)return;status('Game details: '+e.message+'. You can still use BGG links or import a wiki.','error');}
  if(seq!==requestSequence)return;
- if(!savedWiki)await loadWiki(seq,false);
+ if(!savedWiki){if(extensionPresent)await loadWiki(seq,false);else status('Chrome bridge not detected. Install the extension above and refresh.','wait');}
 }
 async function loadWiki(seq,force){
  if(!selected||seq!==requestSequence)return;
  if(wiki&&!force){setWiki(wiki);return;}
- $('retryWiki').disabled=true;status('Trying to retrieve public Community Wiki page for #'+selected.id+'…','wait');
+ $('retryWiki').disabled=true;$('wikiLink').disabled=true;
+ status('Reading Community Wiki from your logged-in BGG browser session…','wait');
  try{
-  const raw=await requestWikiPage(selected.id);
-  if(seq!==requestSequence)return;
-  const html=extractWikiPage(raw);
-  if(!wikiText(html).trim())throw new Error('The returned wiki article is empty.');
-  const record={id:selected.id,name:selected.name,html,source:'bgg-page',savedAt:Date.now()};
-  await putSaved('wiki',record);if(seq!==requestSequence)return;
-  setWiki(record);await refreshSaved();status('Community Wiki loaded and saved locally.','ok');
- }catch(e){if(seq===requestSequence){status('Could not load wiki automatically: '+e.message,'error');showNotice('Live wiki content is unavailable through BGG for this game. You can import saved HTML or text without leaving this app.');}}
- finally{if(seq===requestSequence)$('retryWiki').disabled=false;}
+   const result=await requestExtensionWiki(selected.id);
+   if(seq!==requestSequence)return;
+   const html=scrubHtml(result.html);
+   if(wikiText(html).trim().length<40)throw new Error('The BGG article contained no readable content.');
+   const record={id:selected.id,name:selected.name,html,source:'extension',savedAt:Date.now()};
+   await putSaved('wiki',record);if(seq!==requestSequence)return;
+   setWiki(record);await refreshSaved();status('Community Wiki loaded from your browser session and saved locally.','ok');
+ }catch(e){if(seq===requestSequence){
+   status('Could not load Community Wiki: '+e.message,'error');
+   showNotice(e.message+'. Sign into BGG in the same browser profile, retry, or import an article here.');
+ }}finally{if(seq===requestSequence){$('retryWiki').disabled=false;$('wikiLink').disabled=false;}}
 }
 function fileDownload(filename,text,mime){const blob=new Blob([text],{type:mime}),url=URL.createObjectURL(blob),a=document.createElement('a');a.href=url;a.download=filename;document.body.append(a);a.click();a.remove();setTimeout(()=>URL.revokeObjectURL(url),600);}
 async function performSearch(){
@@ -370,6 +409,7 @@ $('searchForm').addEventListener('submit',e=>{e.preventDefault();performSearch()
 document.querySelectorAll('[data-pick]').forEach(b=>b.addEventListener('click',()=>{ $('gameSearch').value=b.dataset.name;chooseGame(b.dataset.pick,b.dataset.name);}));
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 $('retryWiki').addEventListener('click',()=>{if(selected)loadWiki(requestSequence,true);});
+$('checkExtension').addEventListener('click',async()=>{extensionPresent=false;const ready=await pingExtension();status(ready?'Chrome Wiki Bridge connected.':'Extension not detected. Install it and refresh this page.',ready?'ok':'wait');});
 $('wikiLink').addEventListener('click',()=>{if(selected){setTab('wiki');loadWiki(requestSequence,true);}});
 $('showImport').addEventListener('click',()=>{if(selected){setTab('import');$('importText').focus();}});
 $('copyShare').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(location.href);status('App link copied.','ok');}catch(_){status('Clipboard unavailable. Copy the browser URL instead.','error');}});
@@ -383,7 +423,7 @@ $('importFile').addEventListener('change',async e=>{const f=e.target.files?.[0];
 $('exportText').addEventListener('click',()=>{if(wiki)fileDownload('bgg-wiki-'+selected.id+'.txt',wikiText(wiki.html),'text/plain;charset=utf-8');else status('No wiki content to export.','error');});
 $('exportJson').addEventListener('click',()=>{if(wiki)fileDownload('bgg-wiki-'+selected.id+'.json',JSON.stringify({game:selected,wiki},null,2),'application/json;charset=utf-8');else status('No wiki content to export.','error');});
 $('deleteWiki').addEventListener('click',async()=>{if(!selected||!wiki)return;if(!confirm('Remove the locally saved Community Wiki for '+selected.name+'?'))return;await deleteSaved('wiki',selected.id);setWiki(null);await refreshSaved();status('Saved wiki removed from this browser.','ok');});
-(async()=>{db=await openDb();await refreshSaved();const qs=new URLSearchParams(location.search),id=qs.get('id');if(id&&/^\d{1,9}$/.test(id))chooseGame(id);})();
+(async()=>{db=await openDb();await refreshSaved();await pingExtension();const qs=new URLSearchParams(location.search),id=qs.get('id');if(id&&/^\d{1,9}$/.test(id))chooseGame(id);})();
 })();
 </script>
 </body>
