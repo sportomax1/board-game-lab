@@ -62,9 +62,9 @@ button:focus-visible,input:focus-visible,textarea:focus-visible,a:focus-visible{
     <section id="bridgeCard" class="panel" style="padding:12px 15px">
       <div style="display:flex;align-items:center;justify-content:space-between;gap:8px;flex-wrap:wrap">
         <div><strong style="font-size:13px">Chrome session bridge</strong><div id="bridgeStatus" class="small muted" role="status">Checking for extension…</div></div>
-        <div class="btn-row"><a class="btn primary" id="extensionDownload" href="./bgg-wiki-bridge.zip" download>Download extension ZIP</a><button class="btn" id="checkExtension" type="button">Check connection</button></div>
+        <div class="btn-row"><a class="btn primary" id="extensionDownload" href="./bgg-wiki-bridge.zip" download>Download / update extension v1.1</a><button class="btn" id="checkExtension" type="button">Check connection</button></div>
       </div>
-      <p class="hint" id="bridgeGuide">Setup: download ZIP → unzip → open chrome://extensions → Developer mode → Load unpacked → select extracted folder. Sign in to BGG using the same browser profile, then refresh this app.</p>
+      <p class="hint" id="bridgeGuide">Install: download ZIP → extract → open chrome://extensions → enable Developer mode → Load unpacked → select the folder containing manifest.json. Already installed? Replace those extracted files, then click Reload on the extension card and refresh this app. Sign in to BGG in the same Chrome profile.</p>
     </section>
     <section id="welcome" class="intro panel">
       <h2>Select a game to start</h2>
@@ -161,7 +161,9 @@ async function requestBg(endpoint,params,timeout=25000){
 }
 const BRIDGE_CHANNEL='BGL_COMMUNITY_WIKI_BRIDGE_V1';
 const bridgePending=new Map();
-let extensionPresent=false,bridgeSeq=0;
+let extensionPresent=false,bridgeSeq=0,extensionVersion='';
+const REQUIRED_EXTENSION_VERSION='1.1.0';
+function extensionIsCurrent(){const ver=extensionVersion.split('.').map(Number),min=REQUIRED_EXTENSION_VERSION.split('.').map(Number);for(let i=0;i<3;i++){if((ver[i]||0)>(min[i]||0))return true;if((ver[i]||0)<(min[i]||0))return false;}return true;}
 window.addEventListener('message',event=>{
  if(event.source!==window||event.origin!==location.origin)return;
  const d=event.data;
@@ -170,17 +172,19 @@ window.addEventListener('message',event=>{
  if(item.type==='ping'&&d.type!=='PONG')return;
  if(item.type==='wiki'&&d.type!=='WIKI_RESULT')return;
  bridgePending.delete(d.requestId);clearTimeout(item.timer);
- if(item.type==='ping'){extensionPresent=true;updateBridgeUI();item.resolve(true);return;}
+ if(item.type==='ping'){extensionPresent=true;extensionVersion=String(d.version||'unknown');updateBridgeUI();item.resolve(true);return;}
  const payload=d.payload||{};
  if(payload.ok&&typeof payload.html==='string'&&payload.html.length>50)item.resolve(payload);
- else item.reject(new Error(payload.error||'BGG did not return a readable Community Wiki article.'));
+ else {const error=new Error(payload.error||'BGG did not return a readable Community Wiki article.');error.code=String(payload.code||'EXTENSION_ERROR');item.reject(error);}
 });
 function updateBridgeUI(){
- $('bridgeStatus').textContent=extensionPresent?
-  'Connected — uses your BGG browser session to display wiki content here.':
-  'Not connected — install the Chrome extension and refresh this app.';
- $('bridgeGuide').hidden=extensionPresent;
- $('extensionDownload').hidden=extensionPresent;
+ const current=extensionPresent&&extensionIsCurrent();
+ $('bridgeStatus').textContent=!extensionPresent?
+   'Extension not detected. Install it in Chrome and refresh this page.':
+   current?'Connected (v'+extensionVersion+'). Your BGG browser session is available for wiki loading.':
+     'Outdated extension (v'+extensionVersion+'). Update to v'+REQUIRED_EXTENSION_VERSION+', reload the extension, then refresh this page.';
+ $('bridgeGuide').hidden=current;
+ $('extensionDownload').hidden=current;
 }
 function pingExtension(){
  if(extensionPresent)return Promise.resolve(true);
@@ -193,7 +197,8 @@ function pingExtension(){
 }
 async function requestExtensionWiki(id){
  if(!extensionPresent&&!await pingExtension())
-   throw new Error('Chrome Wiki Bridge is not installed or not connected. Download the extension ZIP above, install it, and refresh.');
+   throw new Error('Chrome Wiki Bridge is not installed or not connected. Download the ZIP, install it, then refresh this page.');
+ if(!extensionIsCurrent())throw new Error('Chrome Wiki Bridge v'+extensionVersion+' is outdated. Install v'+REQUIRED_EXTENSION_VERSION+' and reload the extension.');
  return new Promise((resolve,reject)=>{
    const requestId='wiki-'+Date.now()+'-'+(++bridgeSeq);
    const timer=setTimeout(()=>{
@@ -366,13 +371,15 @@ async function chooseGame(id,name){
  if(seq!==requestSequence)return;
  if(savedWiki)setWiki(savedWiki);
  if(savedGame?.data){detail=savedGame.data;selected.name=detail.name;renderHero();status(savedWiki?'Showing saved wiki and cached game details.':'Showing cached game details.','ok');}
+ const wikiTask=!savedWiki&&extensionPresent&&extensionIsCurrent()?loadWiki(seq,false):null;
  try{
   const xml=await requestBg('thing',{id:selected.id},30000);if(seq!==requestSequence)return;
   detail=parseDetail(xml);selected.name=detail.name;renderHero();await putSaved('games',{id:selected.id,data:detail,savedAt:Date.now()});
-  status(savedWiki?'Loaded game metadata; showing your saved wiki.':'Loaded game metadata. Looking for Community Wiki content…','ok');
- }catch(e){if(seq!==requestSequence)return;status('Game details: '+e.message+'. You can still use BGG links or import a wiki.','error');}
+  if(!wikiTask)status(savedWiki?'Loaded game metadata; showing your saved wiki.':'Game metadata loaded; connect the Chrome bridge to fetch its wiki.','ok');
+ }catch(e){if(seq!==requestSequence)return;if(!wikiTask)status('BGG metadata failed: '+e.message+'. You can still view or import the wiki.','error');}
  if(seq!==requestSequence)return;
- if(!savedWiki){if(extensionPresent)await loadWiki(seq,false);else status('Chrome bridge not detected. Install the extension above and refresh.','wait');}
+ if(wikiTask)await wikiTask;
+ else if(!savedWiki)status('Chrome bridge not detected or outdated. Install or update the extension above and refresh.','wait');
 }
 async function loadWiki(seq,force){
  if(!selected||seq!==requestSequence)return;
@@ -384,11 +391,11 @@ async function loadWiki(seq,force){
    if(seq!==requestSequence)return;
    const html=scrubHtml(result.html);
    if(wikiText(html).trim().length<40)throw new Error('The BGG article contained no readable content.');
-   const record={id:selected.id,name:selected.name,html,source:'extension',savedAt:Date.now()};
+   const record={id:selected.id,name:selected.name,html,source:'extension',extractor:result.extractor||'',savedAt:Date.now()};
    await putSaved('wiki',record);if(seq!==requestSequence)return;
-   setWiki(record);await refreshSaved();status('Community Wiki loaded from your browser session and saved locally.','ok');
+   setWiki(record);await refreshSaved();status('Community Wiki loaded from your browser session'+(result.extractor?' ('+result.extractor+')':'')+' and cached locally.','ok');
  }catch(e){if(seq===requestSequence){
-   status('Could not load Community Wiki: '+e.message,'error');
+   status('Wiki bridge '+(e.code||'error')+': '+e.message,'error');
    showNotice(e.message+'. Sign into BGG in the same browser profile, retry, or import an article here.');
  }}finally{if(seq===requestSequence){$('retryWiki').disabled=false;$('wikiLink').disabled=false;}}
 }
@@ -409,7 +416,7 @@ $('searchForm').addEventListener('submit',e=>{e.preventDefault();performSearch()
 document.querySelectorAll('[data-pick]').forEach(b=>b.addEventListener('click',()=>{ $('gameSearch').value=b.dataset.name;chooseGame(b.dataset.pick,b.dataset.name);}));
 document.querySelectorAll('[data-tab]').forEach(b=>b.addEventListener('click',()=>setTab(b.dataset.tab)));
 $('retryWiki').addEventListener('click',()=>{if(selected)loadWiki(requestSequence,true);});
-$('checkExtension').addEventListener('click',async()=>{extensionPresent=false;const ready=await pingExtension();status(ready?'Chrome Wiki Bridge connected.':'Extension not detected. Install it and refresh this page.',ready?'ok':'wait');});
+$('checkExtension').addEventListener('click',async()=>{extensionPresent=false;const ready=await pingExtension();status(ready?(extensionIsCurrent()?'Chrome Wiki Bridge v'+extensionVersion+' connected.':'Extension detected, but v'+extensionVersion+' needs updating.'):'Extension not detected. Install it and refresh this page.',ready&&extensionIsCurrent()?'ok':'wait');});
 $('wikiLink').addEventListener('click',()=>{if(selected){setTab('wiki');loadWiki(requestSequence,true);}});
 $('showImport').addEventListener('click',()=>{if(selected){setTab('import');$('importText').focus();}});
 $('copyShare').addEventListener('click',async()=>{try{await navigator.clipboard.writeText(location.href);status('App link copied.','ok');}catch(_){status('Clipboard unavailable. Copy the browser URL instead.','error');}});
