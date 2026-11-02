@@ -167,7 +167,7 @@
   <label><span>Front image</span><select id="fit"><option value="contain">Show entire thumbnail</option><option value="cover">Fill and crop</option></select></label>
   <label class="wide"><span>Spine width</span><div class="range"><input type="range" id="spine" min=".75" max="1.35" step=".001" value="1.063"><output id="spineValue">1.063 in</output></div></label>
   <div class="size-fact">Exact PDF reference: back 105 mm + spine 27 mm + front 105 mm. Finished height 156 mm (237 × 156 mm overall). Spine setting below allows an override for a different case.</div>
-  <label class="wide"><span>Spine color</span><div class="color-control-row"><select id="spineMode"><option value="auto">Auto from cover artwork</option><option value="manual">Manual color</option></select><input id="spineColor" type="color" value="#d43718" aria-label="Manual spine background color" title="Manual fallback / override"></div></label><div class="color-status" id="colorStatus">Select a game to analyze its cover color.</div>
+  <label class="wide"><span>Spine color</span><div class="color-control-row"><select id="spineMode"><option value="auto">Auto from cover artwork</option><option value="manual">Manual color</option></select><input id="spineColor" type="color" value="#d43718" aria-label="Manual spine background color" title="Manual fallback / override"></div></label><div class="color-status" id="colorStatus">Select a game to analyze its cover color.</div><button id="retrySpineColor" type="button" class="small" title="Retry sampling using the artwork proxy">Retry cover color</button>
   <label><span>Print faces</span><select id="sides"><option value="outside">Outside jacket only</option><option value="duplex">Duplex: inside then outside</option></select></label>
   <label class="wide"><span>Box edition for fit estimate</span><select id="edition"><option value="">Automatic / shelf-selected version</option></select></label>
   <div class="size-fact" id="editionInfo">Dimensions unavailable until BGG edition data is loaded.</div>
@@ -376,38 +376,112 @@ function dominantFromImage(img){
  const top=find(false)||find(true);if(!top)return null;
  return hexFromRgb([top.r,top.g,top.b].map(n=>n/top.n*.87))
 }
-function loadPaletteImage(url,timeout=5500){return new Promise((resolve,reject)=>{
- const image=new Image();image.crossOrigin='anonymous';let done=false;
- const t=setTimeout(()=>{if(done)return;done=true;image.onload=image.onerror=null;image.src='';reject(Error('Image timeout'))},timeout);
- image.onload=()=>{if(done)return;done=true;clearTimeout(t);resolve(image)};
- image.onerror=()=>{if(done)return;done=true;clearTimeout(t);reject(Error('Image CORS or network failure'))};image.src=url;
-})}
-function isBGGArt(url){try{const u=new URL(url);return u.protocol==='https:'&&/(^|\.)(geekdo-images\.com|geekdo\.com|boardgamegeek\.com)$/.test(u.hostname)}catch{return false}}
-async function sampleCoverPalette(url){
- const art=safeUrl(url);if(!art)return null;
- try{return dominantFromImage(await loadPaletteImage(art))}
- catch{if(!isBGGArt(art))return null;try{return dominantFromImage(await loadPaletteImage('/api/image-proxy?url='+encodeURIComponent(art),7500))}catch{return null}}
+
+function loadPaletteImage(url,timeout=6500){
+ return new Promise((resolve,reject)=>{
+  const img=new Image();img.crossOrigin='anonymous';let done=false;
+  const finish=(error)=>{if(done)return;done=true;clearTimeout(timer);img.onload=img.onerror=null;if(error)reject(error);else resolve(img)};
+  const timer=setTimeout(()=>finish(Error('Image request timed out')),timeout);
+  img.onload=()=>finish();
+  img.onerror=()=>finish(Error('Image unavailable or blocked by CORS'));
+  img.src=url;
+ });
 }
-function showColorStatus(g){const el=$('colorStatus');if(!g){el.textContent='Choose a game to analyze its cover.';return}
- if(state.settings.spineMode==='manual'){el.textContent='Manual spine color: '+spineColorsForGame(g).bg.toUpperCase();return}
- el.textContent=g.coverColor?'Auto from thumbnail: '+g.coverColor.toUpperCase()+' · cached in IndexedDB':g._colorChecked?'Artwork could not be sampled. Using fallback color.':'Analyzing thumbnail color…';
+function isBGGArt(url){
+ try{
+  const u=new URL(url);
+  return u.protocol==='https:'&&/(^|\.)(geekdo-images\.com|geekdo\.com|boardgamegeek\.com)$/.test(u.hostname);
+ }catch{return false}
 }
-async function ensureSpineColor(g){
- if(!g||state.settings.spineMode!=='auto'||g.coverColor||g._colorChecked)return;
+// Follow colors.html: image.weserv.nl provides the cross-origin-readable cover.
+// Fall back to the existing same-origin image proxy, then the original image.
+function colorImageSources(url){
+ const art=safeUrl(url);if(!art)return [];
+ const urls=[
+  {name:'cover image service',url:'https://images.weserv.nl/?url='+encodeURIComponent(art),timeout:9500},
+  ...(isBGGArt(art)?[{name:'local image proxy',url:'/api/image-proxy?url='+encodeURIComponent(art),timeout:8500}]:[]),
+  {name:'direct image',url:art,timeout:5000}
+ ];
+ return urls;
+}
+async function sampleCoverPalette(urls){
+ const images=[...new Set((Array.isArray(urls)?urls:[urls]).map(safeUrl).filter(Boolean))];
+ if(!images.length)return {hex:null,reason:'No BGG cover image is available.'};
+ let lastError='No eligible image pixels were found.';
+ for(const art of images){
+  for(const source of colorImageSources(art)){
+   try{
+    const img=await loadPaletteImage(source.url,source.timeout);
+    const color=dominantFromImage(img);
+    if(HEX_COLOR.test(color||''))return {hex:color,source:source.name,url:art};
+    lastError='No usable color pixels in '+source.name;
+   }catch(e){
+    lastError=source.name+': '+(e?.message||'unavailable');
+   }
+  }
+ }
+ return {hex:null,reason:lastError};
+}
+function showColorStatus(g){
+ const el=$('colorStatus'),btn=$('retrySpineColor');
+ if(!g){el.textContent='Choose a game to analyze its cover artwork.';btn.disabled=true;return}
+ btn.disabled=state.settings.spineMode!=='auto'||colorRequests.has(g.id);
+ if(state.settings.spineMode==='manual'){
+  el.textContent='Manual spine color: '+spineColorsForGame(g).bg.toUpperCase();return;
+ }
+ if(g.coverColor){
+  el.textContent='Cover color: '+g.coverColor.toUpperCase()+(g._colorSource?' · '+g._colorSource:' · saved for this game');return;
+ }
+ if(colorRequests.has(g.id)){
+  el.textContent='Analyzing cover art using the image service…';return;
+ }
+ if(g._colorChecked){
+  el.textContent=(g._colorError||'Cover color unavailable')+' · Select Retry cover color to try again.';return;
+ }
+ el.textContent='Analyzing game cover color…';
+}
+async function ensureSpineColor(g,{force=false}={}){
+ if(!g||state.settings.spineMode!=='auto')return;
  if(colorRequests.has(g.id))return colorRequests.get(g.id);
- const job=(async()=>{const art=g.thumb||g.image;if(!art){g._colorChecked=true;return}
-  const prior=await dbGet('covercolor:'+g.id);
-  if(prior?.url===art&&HEX_COLOR.test(prior.hex)&&Date.now()-prior.at<90*86400000)g.coverColor=prior.hex;
-  else{const color=await sampleCoverPalette(art);if(color&&HEX_COLOR.test(color)){g.coverColor=color;await dbPut('covercolor:'+g.id,{at:Date.now(),url:art,hex:color})}}
-  g._colorChecked=true;if(state.active===g.id){showColorStatus(g);drawPreview()}
- })().finally(()=>colorRequests.delete(g.id));colorRequests.set(g.id,job);return job
+ if(g.coverColor&&!force)return;
+ // Failures are not permanent: try again after a short cooldown or on user request.
+ if(!force&&g._colorChecked&&Date.now()-(g._colorCheckedAt||0)<45_000)return;
+ if(force){g.coverColor=null;g._colorChecked=false;g._colorError=''}
+ const job=(async()=>{
+  const images=[g.thumb,g.image].filter(Boolean),art=safeUrl(images[0]||'');
+  if(!images.length){g._colorError='BGG has no image for this game';g._colorChecked=true;g._colorCheckedAt=Date.now();return}
+  try{
+   if(!force){
+    const prior=await dbGet('covercolor:'+g.id);
+    if(prior&&prior.url===art&&HEX_COLOR.test(prior.hex)&&Date.now()-prior.at<90*86400000){
+     g.coverColor=prior.hex;g._colorSource='IndexedDB';g._colorError='';g._colorChecked=true;return;
+    }
+   }
+   const result=await sampleCoverPalette(images);
+   if(result.hex){
+    g.coverColor=result.hex;g._colorSource=result.source;g._colorError='';
+    await dbPut('covercolor:'+g.id,{at:Date.now(),url:art,hex:result.hex});
+   }else{g._colorError=result.reason||'Color image sources unavailable'}
+  }catch(error){
+   g._colorError='Color analysis error: '+(error?.message||'unknown error');
+   console.warn('Jacket color extraction failed for '+g.id,error);
+  }finally{
+   g._colorChecked=true;g._colorCheckedAt=Date.now();
+  }
+ })();
+ colorRequests.set(g.id,job);
+ if(state.active===g.id)showColorStatus(g);
+ try{await job}finally{
+  colorRequests.delete(g.id);
+  if(state.active===g.id){showColorStatus(g);drawPreview()}
+ }
 }
 async function prepareBatchSpineColors(games){
- if(state.settings.spineMode!=='auto')return;let next=0;
+ if(state.settings.spineMode!=='auto')return;
+ let next=0;
  async function worker(){while(next<games.length)await ensureSpineColor(games[next++])}
- await Promise.all(Array.from({length:Math.min(4,games.length)},worker))
+ await Promise.all(Array.from({length:Math.min(4,games.length)},worker));
 }
-
 function metadataHtml(g){
  const meta=g.metadata||{},rows=[];
  for(const [key,label,count] of METADATA_FIELDS){
@@ -468,6 +542,7 @@ $('load').onclick=()=>load(false);$('refresh').onclick=()=>load(true);$('usernam
 $('selectFiltered').onclick=()=>{filtered().forEach(g=>state.selected.add(g.id));persistSelected();draw()};
 $('clearSelected').onclick=()=>{state.selected.clear();persistSelected();draw()};
 $('note').addEventListener('input',commitNote);
+$('retrySpineColor').addEventListener('click',()=>{const g=activeGame();if(g)void ensureSpineColor(g,{force:true})});
 $('edition').addEventListener('change',()=>{const g=activeGame();if(!g)return;if($('edition').value)state.editionOverrides[g.id]=$('edition').value;else delete state.editionOverrides[g.id];const user=$('username').value.trim().toLowerCase();try{localStorage.setItem('bgl-jackets-editions:'+user,JSON.stringify(state.editionOverrides))}catch{};void dbPut('editions:'+user,{at:Date.now(),values:state.editionOverrides});renderEditionSelector(g);draw();reportSizes()});
 $('resetNote').onclick=()=>{const g=activeGame();if(!g)return;delete state.notes[g.id];storeNotes();$('note').value=defaultNote(g);drawPreview()};
 ['theme','fit','spine','spineColor','spineMode','sides','showCategories','titleOverlay'].forEach(id=>$(id).addEventListener(id==='spine'?'input':'change',()=>{state.settings[id]=$(id).type==='checkbox'?$(id).checked:$(id).value;if(id==='spine')$('spineValue').textContent=Number($(id).value).toFixed(3)+' in';storeSettings();const g=activeGame();if(g){showColorStatus(g);if(id==='spineMode'&&state.settings.spineMode==='auto')void ensureSpineColor(g)}rerender()}));
