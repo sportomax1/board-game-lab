@@ -200,6 +200,19 @@
 .back-option span{flex:none}
 #backPhotoGrid img{content-visibility:auto}
 #gallery .game{content-visibility:auto;contain-intrinsic-size:190px}
+</style>
+<style id="bgg-gallery-styles">
+#bggGalleryGrid{display:grid;grid-template-columns:repeat(auto-fill,minmax(125px,1fr));gap:8px;margin:10px 0;align-content:start}
+#bggGalleryGrid .back-option>button[data-bgg-pick]{display:flex;flex-direction:column;gap:3px;width:100%;height:175px;padding:4px;border-radius:8px;border:2px solid #435973;background:#24374b;color:#eef3f9;text-align:left}
+#bggGalleryGrid .back-option>button[data-bgg-pick][aria-pressed=true]{border-color:#edb87d}
+#bggGalleryGrid .back-option img{width:100%;height:122px;object-fit:contain;background:#152335;content-visibility:auto}
+#bggGalleryGrid .back-option span,#bggGalleryGrid .back-option small{width:100%;overflow:hidden;white-space:nowrap;text-overflow:ellipsis}
+#bggGalleryGrid .back-option span{font-size:11px}#bggGalleryGrid .back-option small{font-size:10px;color:#b5c7dc}
+.bgg-gallery-head{display:flex;align-items:center;justify-content:space-between;gap:10px;padding-top:14px;margin-top:18px;border-top:1px solid #52627a}
+.bgg-gallery-head strong{font-size:14px}.bgg-gallery-head span{color:#b5c7dc;font-size:11px}
+.bgg-gallery-controls{display:flex;gap:7px;margin:9px 0}.bgg-gallery-controls input{flex:1;min-width:120px}.bgg-gallery-controls button{white-space:nowrap}
+#moreBggGallery{width:100%;min-height:38px;background:#2a3b51;color:#e3ebf6;border:1px dashed #637995}
+#moreBggGallery[hidden]{display:none!important}#bggGalleryStatus{font-size:12px;color:#bfd0de}
 </style></head>
 <body>
 <header><div><h1>Board Game Lab / Jacket Designer</h1><p>4 × 6 in photo keeper jackets · Back / Spine / Front</p></div><a href="index.html">← App index</a></header>
@@ -244,10 +257,14 @@
 <dialog id="backPhotoDialog" aria-labelledby="backPhotoTitle">
  <div class="photo-head"><h2 id="backPhotoTitle">Choose back cover image</h2><button type="button" id="backPhotoClose">Close</button></div>
  <div class="photo-body">
- <p class="photo-desc">BGG edition cover artwork appears below automatically via the official Thing API. Choose any image for the back; the front remains unchanged. BGG user-uploaded box-back and component gallery photos are not part of the XML API, but you can add those using a direct image URL or upload.</p>
+ <p class="photo-desc">Choose back artwork from your saved images, edition covers, or BGG's community gallery. Gallery photos load inside the editor as you scroll. The front image stays unchanged.</p>
  <div class="photo-actions"><a id="backPhotoGalleryLink" target="_blank" rel="noopener noreferrer" href="https://boardgamegeek.com/images/boardgame/all">Browse game images on BGG</a><button type="button" id="backPhotoUpload">Upload photo</button><input id="backPhotoFile" type="file" accept="image/jpeg,image/png,image/webp" hidden></div>
  <div class="photo-link-input"><input type="url" id="backPhotoUrl" placeholder="Direct HTTPS image URL" aria-label="Direct back photo image URL"><button id="backPhotoAdd" type="button">Add image</button></div>
- <div class="photo-gallery-info" id="editionPhotoInfo">Loading BGG edition cover options…</div><div id="backPhotoGrid" role="group" aria-label="Back photo options including BGG edition covers"></div><div id="moreBackPhotos" class="photo-load-more" hidden>Scroll for more images…</div><p id="backPhotoStatus" aria-live="polite"></p>
+ <div class="photo-gallery-info" id="editionPhotoInfo">Loading BGG edition cover options…</div><div id="backPhotoGrid" role="group" aria-label="Back photo options including BGG edition covers"></div><div id="moreBackPhotos" class="photo-load-more" hidden>Scroll for more images…</div><div class="bgg-gallery-head"><strong>BGG community photos</strong><span id="bggGalleryCount">Not loaded</span></div>
+<div class="bgg-gallery-controls"><input id="bggGallerySearch" type="search" placeholder="Search loaded captions or users" aria-label="Search loaded BGG community gallery images"><button type="button" id="bggGalleryRefresh">Refresh</button></div>
+<div id="bggGalleryGrid" role="group" aria-label="Choose BGG community photos for the jacket back"></div>
+<button id="moreBggGallery" type="button" hidden>Load more BGG images</button>
+<p id="bggGalleryStatus" role="status" aria-live="polite"></p><p id="backPhotoStatus" aria-live="polite"></p>
  </div>
 </dialog>
 <script>
@@ -464,6 +481,80 @@ function fallbackJacketScroll(){
   galleryScrollBusy=true;requestAnimationFrame(()=>{state.shown+=80;draw();galleryScrollBusy=false})
  }
 }
+
+// Load the unofficial BGG game image gallery through our read-only server adapter.
+// The listing already includes photo URLs, so individual /api/image/{id} requests are unnecessary.
+const BGG_PHOTO_PAGE_SIZE=50,bggPhotoCache=new Map();
+let bggPhotoObserver=null;
+function bggPhotoEntry(g){
+ let e=bggPhotoCache.get(g.id);
+ if(!e){e={photos:[],seen:new Set(),page:1,more:true,loading:false,loaded:false,error:''};bggPhotoCache.set(g.id,e)}
+ return e;
+}
+function bggPhotoRecord(item){
+ const id=String(item?.imageid||''),url=safeUrl(item?.imageurl_lg||item?.imageurl||'');
+ if(!/^\d+$/.test(id)||!url)return null;
+ return {id,url,thumbnail:safeUrl(item?.imageurl||item?.imageurl_lg||'')||url,
+  caption:String(item.caption||'').trim().slice(0,300),user:String(item.user?.username||'').slice(0,80)};
+}
+function observeBggPhotos(g){
+ bggPhotoObserver?.disconnect();bggPhotoObserver=null;
+ const e=bggPhotoEntry(g),more=$('moreBggGallery'),dlg=$('backPhotoDialog');
+ if(!dlg.open||photoDialogID!==g.id||!e.more||e.loading||e.error||more.hidden)return;
+ if('IntersectionObserver' in window){
+  bggPhotoObserver=new IntersectionObserver(entries=>{
+   if(entries.some(x=>x.isIntersecting)&&photoDialogID===g.id)void loadBggPhotoPage(g);
+  },{root:dlg,rootMargin:'420px 0px',threshold:0.01});
+  bggPhotoObserver.observe(more);
+ }
+}
+function renderBggPhotos(g){
+ if(!g||photoDialogID!==g.id)return;
+ const e=bggPhotoEntry(g),filter=$('bggGallerySearch').value.trim().toLowerCase();
+ const chosen=backPhotoEntry(g),selected=chosen.items[chosen.choice]?.url||'';
+ const shown=filter?e.photos.filter(p=>(p.caption+' '+p.user+' '+p.id).toLowerCase().includes(filter)):e.photos;
+ $('bggGalleryGrid').innerHTML=shown.map(p=>
+  '<div class="back-option"><button type="button" data-bgg-pick="'+safe(p.id)+'" aria-pressed="'+(selected===p.url)+'" title="'+safe(p.caption||'BGG #'+p.id)+'">'+
+  '<img loading="lazy" decoding="async" src="'+safe(p.thumbnail)+'" alt="'+safe(p.caption||'BGG image #'+p.id)+'">'+
+  '<span>'+safe(p.caption||'BGG image #'+p.id)+'</span><small>'+safe(p.user||'BGG')+' · #'+safe(p.id)+'</small></button></div>'
+ ).join('')||(!e.loading&&e.loaded?'<div class="photo-gallery-info">No matching loaded photos.</div>':'');
+ $('bggGalleryCount').textContent=e.photos.length.toLocaleString()+' loaded'+(e.more?' · more available':'');
+ const more=$('moreBggGallery');more.hidden=!e.more;more.disabled=e.loading;
+ more.textContent=e.loading?'Loading BGG photos…':e.error?'Retry BGG photos':'Scroll or click to load more · page '+e.page;
+ $('bggGalleryStatus').textContent=e.error?e.error:e.loading?'Loading BGG community photos…':
+  !e.loaded?'Fetching community gallery…':filter?
+  shown.length+' matching photo(s) among '+e.photos.length+' loaded. More may be available.':
+  e.photos.length+' photo(s) loaded'+(e.more?'. Scroll for more.':'. End of gallery.');
+ observeBggPhotos(g);
+}
+async function loadBggPhotoPage(g){
+ if(!g)return;
+ const e=bggPhotoEntry(g);
+ if(e.loading||!e.more)return;
+ e.loading=true;e.error='';renderBggPhotos(g);
+ try{
+  const params=new URLSearchParams({gameId:String(g.id),page:String(e.page),count:String(BGG_PHOTO_PAGE_SIZE)});
+  const response=await fetch('/api/bgg-gallery?'+params,{headers:{Accept:'application/json'},signal:AbortSignal.timeout(22000)});
+  const data=await response.json().catch(()=>({}));
+  if(!response.ok||!Array.isArray(data.images))throw Error(data.error||'BGG gallery HTTP '+response.status);
+  let added=0;
+  for(const raw of data.images){
+   const photo=bggPhotoRecord(raw);
+   if(photo&&!e.seen.has(photo.id)){e.seen.add(photo.id);e.photos.push(photo);added++}
+  }
+  e.loaded=true;e.page++;
+  e.more=!!data.hasMore&&added>0&&e.page<=1000;
+ }catch(err){e.error='BGG gallery unavailable: '+String(err?.message||err)+' · Click Retry or browse BGG.'}
+ finally{e.loading=false;renderBggPhotos(g)}
+}
+function fallbackBggPhotos(){
+ if('IntersectionObserver' in window)return;
+ const dlg=$('backPhotoDialog'),g=state.games.find(x=>x.id===photoDialogID);
+ if(!dlg.open||!g)return;
+ const e=bggPhotoEntry(g);
+ if(e.more&&!e.loading&&!e.error&&dlg.scrollTop+dlg.clientHeight>=dlg.scrollHeight-420)void loadBggPhotoPage(g);
+}
+
 function renderBackPhotos(g){
  if(!g||photoDialogID!==g.id)return;
  $('backPhotoTitle').textContent='Back image · '+g.name;
@@ -494,8 +585,8 @@ function renderBackPhotos(g){
 }
 async function chooseBackPhoto(g,index){
  const e=backPhotoEntry(g);if(index!==-1&&!e.items[index])return;
- e.choice=index;state.backPhotos.set(g.id,e);await saveBackPhoto(g);updateBackName(g);drawPreview();renderBackPhotos(g);
- $('backPhotoStatus').textContent='Saved back image. Front cover is unchanged.'
+ e.choice=index;state.backPhotos.set(g.id,e);await saveBackPhoto(g);updateBackName(g);drawPreview();renderBackPhotos(g);renderBggPhotos(g);
+  $('backPhotoStatus').textContent='Saved back image. Front cover is unchanged.'
 }
 async function addBackPhoto(g,url,name){
  if(!photoAllowed(url))throw Error('Use a direct HTTPS image URL or upload JPG/PNG/WebP.');
@@ -503,8 +594,8 @@ async function addBackPhoto(g,url,name){
  if(index>=0)return chooseBackPhoto(g,index);
  if(e.items.length>=24)throw Error('Maximum 24 saved photos per game.');
  e.items.push({url,name:String(name).slice(0,80)});e.choice=e.items.length-1;
- state.backPhotos.set(g.id,e);await saveBackPhoto(g);updateBackName(g);drawPreview();renderBackPhotos(g);
- $('backPhotoStatus').textContent='Photo saved and selected.'
+ state.backPhotos.set(g.id,e);await saveBackPhoto(g);updateBackName(g);drawPreview();renderBackPhotos(g);renderBggPhotos(g);
+  $('backPhotoStatus').textContent='Photo saved and selected.'
 }
 async function photoFromFile(file){
  if(!file||!/^image\/(jpeg|png|webp)$/.test(file.type))throw Error('Use JPG, PNG or WebP.');
@@ -767,7 +858,7 @@ $('gallery').addEventListener('click',e=>{if(e.target.closest('.tilecheck'))retu
 $('gallery').addEventListener('keydown',e=>{if((e.key==='Enter'||e.key===' ')&&!e.target.closest('input')){const el=e.target.closest('.game');if(el){e.preventDefault();el.click()}}});
 $('more').onclick=()=>{state.shown+=80;draw()};
 startJacketInfiniteScroll();
-$('backPhotoDialog').addEventListener('scroll',advanceBackPhotosOnScroll,{passive:true});
+$('backPhotoDialog').addEventListener('scroll',()=>{advanceBackPhotosOnScroll();fallbackBggPhotos()},{passive:true});
 window.addEventListener('scroll',fallbackJacketScroll,{passive:true});
 $('scanSizes').onclick=()=>void scanAllSizes();
 $('cancelScan').onclick=()=>{scanSerial++;scanInProgress=false;$('scanSizes').disabled=false;$('cancelScan').hidden=true;reportSizes('scan stopped');draw()};
@@ -778,13 +869,14 @@ $('clearSelected').onclick=()=>{state.selected.clear();persistSelected();draw()}
 
 $('backPhotoOpen').onclick=async()=>{
  const g=activeGame();if(!g)return;photoDialogID=g.id;photoShown=PHOTO_CHUNK;$('backPhotoStatus').textContent='Loading BGG edition artwork…';$('backPhotoDialog').showModal();
+  renderBggPhotos(g);if(!bggPhotoEntry(g).loaded)void loadBggPhotoPage(g);
  await loadBackPhoto(g);if(photoDialogID!==g.id)return;renderBackPhotos(g);
  if(!g._richLoaded||!Array.isArray(g.editionPhotos))await ensureGameDetails([g]);
  if(photoDialogID!==g.id)return;renderBackPhotos(g);
- $('backPhotoStatus').textContent='Select an edition image above, upload a photo, or paste a direct BGG image link. Full BGG user photo gallery is not exposed by the XML API.'
+ $('backPhotoStatus').textContent='Select an edition image above, upload a photo, or paste a direct BGG image link. Community gallery photos are available below.'
 };
 $('backPhotoClose').onclick=()=>$('backPhotoDialog').close();
-$('backPhotoDialog').addEventListener('close',()=>{photoDialogID=null;photoScrollObserver?.disconnect();$('backPhotoUrl').value='';$('backPhotoFile').value=''});
+$('backPhotoDialog').addEventListener('close',()=>{photoDialogID=null;photoScrollObserver?.disconnect();bggPhotoObserver?.disconnect();$('backPhotoUrl').value='';$('backPhotoFile').value=''});
 $('backPhotoGrid').addEventListener('click',async ev=>{
  const g=state.games.find(x=>x.id===photoDialogID);if(!g)return;
  const del=ev.target.closest('[data-delete]');
@@ -792,6 +884,20 @@ $('backPhotoGrid').addEventListener('click',async ev=>{
  const edition=ev.target.closest('[data-edition-pick]');if(edition){const item=editionPhotoCatalog(g)[Number(edition.dataset.editionPick)];if(item)await addBackPhoto(g,item.image,'BGG: '+item.name);return}
  const b=ev.target.closest('[data-pick]');if(b)await chooseBackPhoto(g,Number(b.dataset.pick))
 });
+$('bggGalleryGrid').addEventListener('click',async ev=>{
+ const button=ev.target.closest('[data-bgg-pick]'),g=state.games.find(x=>x.id===photoDialogID);
+ if(!button||!g)return;
+ const photo=bggPhotoEntry(g).photos.find(p=>p.id===button.dataset.bggPick);
+ if(!photo)return;
+ try{await addBackPhoto(g,photo.url,'BGG #'+photo.id+': '+(photo.caption||'Community photo'));renderBggPhotos(g)}
+ catch(error){$('bggGalleryStatus').textContent=String(error?.message||error)}
+});
+$('bggGallerySearch').oninput=()=>{const g=state.games.find(x=>x.id===photoDialogID);if(g)renderBggPhotos(g)};
+$('bggGalleryRefresh').onclick=()=>{
+ const g=state.games.find(x=>x.id===photoDialogID);if(!g)return;
+ bggPhotoCache.delete(g.id);renderBggPhotos(g);void loadBggPhotoPage(g)
+};
+$('moreBggGallery').onclick=()=>{const g=state.games.find(x=>x.id===photoDialogID);if(g)void loadBggPhotoPage(g)};
 $('backPhotoAdd').onclick=async()=>{
  const g=state.games.find(x=>x.id===photoDialogID);if(!g)return;const url=safeUrl($('backPhotoUrl').value.trim());
  if(!url){$('backPhotoStatus').textContent='Paste a direct HTTPS image URL.';return}
