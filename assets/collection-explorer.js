@@ -102,7 +102,7 @@
     if (!on) $('progressWrap').hidden = true;
   }
   function setEnabled(enabled) {
-    ['search','statusScope','sort','exportBtn'].forEach(id => { $(id).disabled = !enabled; });
+    ['search','showExpansions','statusScope','sort','exportBtn'].forEach(id => { $(id).disabled = !enabled; });
     $('refreshBtn').disabled = !enabled || state.loading;
     $('refreshMetaBtn').disabled = !enabled || state.loading;
   }
@@ -408,6 +408,7 @@
   function filteredGames() {
     const words = normalize(state.query).split(/\s+/).filter(Boolean);
     return state.games.filter(game => {
+      if (!$('showExpansions').checked && game.subtype === 'boardgameexpansion') return false;
       if (!matchesCreditCountScopes(game)) return false;
       if ($('statusScope').value !== 'all' && !game.statuses[$('statusScope').value]) return false;
       if (words.some(word => !game._search.includes(word))) return false;
@@ -524,8 +525,23 @@
         ? 'Try a different search, remove a filter, or wait for additional Thing metadata.'
         : 'Load a username above. Your collection will appear here immediately, with additional details filling in as they are retrieved.';
     }
-    $('moreBtn').hidden = count <= state.visible;
-    $('moreBtn').textContent = 'Show more games (' + fmt(count - state.visible) + ' remaining)';
+    updateMoreButton();
+  }
+  // Render one additional page without re-creating existing cards.
+  function loadNextPage() {
+    const start = Math.min(state.visible, state.results.length);
+    if (!state.hasCollection || start >= state.results.length) return;
+    const end = Math.min(start + PAGE_SIZE, state.results.length);
+    const fragment = document.createDocumentFragment();
+    state.results.slice(start, end).forEach(game => fragment.append(makeCard(game)));
+    $('cards').append(fragment);
+    state.visible = end;
+    updateMoreButton();
+  }
+  function updateMoreButton() {
+    const remaining = Math.max(0, state.results.length - state.visible);
+    $('moreBtn').hidden = remaining === 0;
+    $('moreBtn').textContent = 'Show more games (' + fmt(remaining) + ' remaining)';
   }
   function scheduleRender() {
     if (renderTimer) clearTimeout(renderTimer);
@@ -909,6 +925,7 @@
       if (state.query) q.set('q',state.query);
       if ($('sort').value !== 'name') q.set('sort',$('sort').value);
       if ($('statusScope').value !== 'all') q.set('status',$('statusScope').value);
+      if (!$('showExpansions').checked) q.set('expansions','0');
       const url = location.pathname + (q.toString() ? '?' + q.toString() : '') + location.hash;
       history.replaceState(null,'',url);
     },250);
@@ -922,7 +939,7 @@
     $('closeDetail').addEventListener('click',()=>$('details').close());
     $('details').addEventListener('click',event=>{ if (event.target === $('details')) $('details').close(); });
     $('clearBtn').addEventListener('click',()=>{
-      state.chips=[]; state.query=''; $('search').value=''; $('statusScope').value='all';
+      state.chips=[]; state.query=''; $('search').value=''; $('statusScope').value='all'; $('showExpansions').checked=true;
       CREDIT_FIELDS.forEach(key => { state.creditScopes[key] = 'all'; });
       state.visible=PAGE_SIZE; rebuildFacets(); hideSuggestions(); render(); scheduleUrl();
     });
@@ -937,7 +954,18 @@
       });
     });
     $('exportBtn').addEventListener('click',exportCsv);
-    $('moreBtn').addEventListener('click',()=>{state.visible+=PAGE_SIZE;render();});
+    $('moreBtn').addEventListener('click',loadNextPage);
+    // Automatically append the next 60 cards when scrolling near the end.
+    // The button remains keyboard-accessible and works if this API is unsupported.
+    if ('IntersectionObserver' in window) {
+      const infiniteScroll = new IntersectionObserver(entries => {
+        if (entries.some(entry => entry.isIntersecting) && !$('moreBtn').hidden) loadNextPage();
+      }, {root:null, rootMargin:'600px 0px', threshold:0});
+      infiniteScroll.observe($('moreBtn'));
+    }
+    $('showExpansions').addEventListener('change',()=>{
+      state.visible=PAGE_SIZE; render(); scheduleUrl();
+    });
     ['sort','statusScope'].forEach(id=>$(id).addEventListener('change',()=>{state.visible=PAGE_SIZE;render();scheduleUrl();}));
     $('search').addEventListener('input',()=>{
       state.query=$('search').value; state.visible=PAGE_SIZE;
@@ -986,6 +1014,7 @@
     if (params.has('q')) { state.query=(params.get('q') || '').slice(0,250); $('search').value=state.query; }
     if (Array.from($('sort').options).some(x=>x.value===params.get('sort'))) $('sort').value=params.get('sort');
     if (Array.from($('statusScope').options).some(x=>x.value===params.get('status'))) $('statusScope').value=params.get('status');
+    $('showExpansions').checked = params.get('expansions') !== '0';
     renderChips();
     await initializeDb();
     if (initialUsername) await loadCollection(initialUsername);
