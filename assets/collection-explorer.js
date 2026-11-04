@@ -455,6 +455,26 @@
     img.onerror = () => { img.replaceWith(node('div', className + ' cover-placeholder','♟')); };
     return img;
   }
+  // Render the first BGG-listed credit, followed by the number of other credits.
+  // The BGG Thing API preserves the listed order in each credit array.
+  function makeCardCredit(game, field, label) {
+    const credits = (game[field] || []).filter(credit => credit && credit.name);
+    const row = node('div', 'game-credit');
+    row.append(node('span', 'game-credit-label', label));
+    const value = node('span', 'game-credit-name',
+      credits.length ? credits[0].name : game.fetchedAt ? '—' : 'Loading…');
+    row.append(value);
+    if (credits.length > 1) {
+      const remaining = credits.length - 1;
+      const count = node('span', 'game-credit-count', '+' + remaining);
+      count.title = remaining + (remaining === 1 ? ' additional credit' : ' additional credits');
+      row.append(count);
+    }
+    row.title = credits.length
+      ? label + ': ' + credits.map(credit => credit.name).join(', ')
+      : label + ': ' + (game.fetchedAt ? 'Not listed on BGG' : 'Metadata loading');
+    return row;
+  }
   function makeCard(game) {
     const card = node('button', 'game-card');
     card.type = 'button';
@@ -470,7 +490,11 @@
       meta.append(node('span','',game.minPlayers === game.maxPlayers ? game.minPlayers + ' players' : game.minPlayers + '–' + (game.maxPlayers || '?') + ' players'));
     }
     content.append(meta);
-    content.append(node('div','game-publisher',(game.publishers || []).map(x=>x.name).join(', ') || 'Publisher pending'));
+    const credits = node('div', 'game-credits');
+    credits.append(makeCardCredit(game, 'designers', 'Designer'));
+    credits.append(makeCardCredit(game, 'publishers', 'Publisher'));
+    credits.append(makeCardCredit(game, 'artists', 'Artist'));
+    content.append(credits);
     const foot = node('div','game-foot');
     if (game.average) foot.append(node('span','rating-pill','★ ' + game.average.toFixed(1)));
     if (game.weight) foot.append(node('span','weight-pill','◉ ' + game.weight.toFixed(1)));
