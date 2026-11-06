@@ -10,6 +10,9 @@ let snapshots = [];
 let selectedIndex = 0;
 let displayedRows = [];
 let exporterCode = "";
+let exporterPromise = null;
+let viewMode = "swimlanes";
+try { viewMode = localStorage.getItem("bga-manage-view") === "table" ? "table" : "swimlanes"; } catch {}
 
 function clean(value) { return String(value ?? "").replace(/\s+/g, " ").trim(); }
 function safeUrl(value, project = false) {
@@ -23,7 +26,7 @@ function safeUrl(value, project = false) {
 }
 function msg(value, type = "") {
   $("message").textContent = value;
-  $("message").className = "status " + type;
+  $("message").className = "message-inline " + type;
 }
 function column(row, names) {
   for (const n of names) {
@@ -189,6 +192,8 @@ async function importText(text) {
   selectedIndex = 0;
   await persist();
   $("pasteData").value = "";
+  $("pastePanel").hidden = true;
+  $("pasteToggle").setAttribute("aria-expanded", "false");
   render();
   msg("Imported " + parsed.projects.length + " projects. Snapshot saved in this browser.", "success");
 }
@@ -299,24 +304,125 @@ function filtered() {
   });
   return rows;
 }
-function renderTable() {
+const SWIMLANE_ORDER = [
+  ["not deployed", "Not deployed", "none"],
+  ["private alpha", "Private Alpha", "private"],
+  ["public alpha", "Public Alpha", "public"],
+  ["beta", "Beta", "beta"],
+  ["released", "Released", "released"],
+  ["other", "Other", ""]
+];
+function laneKey(status) {
+  const s = String(status || "").toLowerCase();
+  if (s.includes("not deployed")) return "not deployed";
+  if (s.includes("private alpha")) return "private alpha";
+  if (s.includes("public alpha")) return "public alpha";
+  if (s.includes("beta")) return "beta";
+  if (s.includes("released")) return "released";
+  return "other";
+}
+function makeSwimCard(p, changed) {
+  const article = node("article", "swim-card");
+  const top = node("div", "swim-top");
+  if (p.thumbnailUrl) {
+    const image = node("img", "thumb");
+    image.src = p.thumbnailUrl;
+    image.alt = "";
+    image.loading = "lazy";
+    image.onerror = () => image.remove();
+    top.appendChild(image);
+  }
+  const nameBox = node("div", "swim-name");
+  const nameLink = node("a", "", p.name);
+  nameLink.href = p.projectUrl;
+  nameLink.target = "_blank";
+  nameLink.rel = "noopener noreferrer";
+  nameBox.appendChild(nameLink);
+  nameBox.appendChild(node("div", "id", p.gameId));
+  top.appendChild(nameBox);
+  article.appendChild(top);
+
+  const flags = node("div", "swim-flags");
+  const checkText = p.projectCheck || "Check unavailable";
+  const checkLabel = p.checkResult === "warning" ? checkText :
+    p.checkResult === "passed" ? "✓ Check passed" : checkText;
+  flags.appendChild(node("span", "flag " +
+    (p.checkResult === "warning" ? "warn" :
+      p.checkResult === "passed" ? "passed" : "unknown"), checkLabel));
+  const visibilityText = p.visibility === "red" ? "Hidden" :
+    p.visibility === "orange" ? "Blocked" :
+    p.visibility === "green" ? "Playable" : "Visibility ?";
+  const vTag = node("span", "flag", visibilityText);
+  vTag.prepend(node("span", "dot " + (p.visibility === "unknown" ? "" : p.visibility)));
+  flags.appendChild(vTag);
+  article.appendChild(flags);
+
+  const meta = node("div", "swim-meta");
+  if (p.localVersion) meta.appendChild(node("span", "", "Local: " + p.localVersion));
+  if (p.publicVersion) meta.appendChild(node("span", "", "Public: " + p.publicVersion));
+  article.appendChild(meta);
+  if (changed?.length) {
+    article.appendChild(node("div", "swim-change", changed.join(" · ")));
+  }
+  return article;
+}
+function renderSwimlanes(rows, changeMarkers) {
+  const board = $("swimlanes");
+  const groups = new Map(SWIMLANE_ORDER.map(([k]) => [k, []]));
+  for (const p of rows) groups.get(laneKey(p.stage)).push(p);
+  const frag = document.createDocumentFragment();
+  for (const [key, title, css] of SWIMLANE_ORDER) {
+    const items = groups.get(key);
+    if (key === "other" && !items.length && !$("stage").value) continue;
+    const lane = node("section", "lane " + css);
+    lane.setAttribute("aria-label", title + " — " + items.length + " projects");
+    const head = node("div", "lane-head");
+    head.appendChild(node("strong", "", title));
+    head.appendChild(node("span", "lane-count", String(items.length)));
+    lane.appendChild(head);
+    const cards = node("div", "lane-cards");
+    if (!items.length) cards.appendChild(node("div", "lane-empty", "No projects"));
+    for (const p of items) cards.appendChild(makeSwimCard(p, changeMarkers.get(p.gameId)));
+    lane.appendChild(cards);
+    frag.appendChild(lane);
+  }
+  board.replaceChildren(frag);
+}
+function setView(mode) {
+  viewMode = mode === "table" ? "table" : "swimlanes";
+  try { localStorage.setItem("bga-manage-view", viewMode); } catch {}
+  const swim = viewMode === "swimlanes";
+  $("viewSwimlanes").classList.toggle("active", swim);
+  $("viewTable").classList.toggle("active", !swim);
+  $("viewSwimlanes").setAttribute("aria-pressed", String(swim));
+  $("viewTable").setAttribute("aria-pressed", String(!swim));
+  $("swimlanes").hidden = !swim;
+  $("tablePanel").hidden = swim;
+}
+function renderContent() {
   const snap = selected();
-  if (!snap) return;
+  if (!snap) { displayedRows = []; return; }
   const change = comparison();
   displayedRows = filtered();
-  const body = $("rows");
-  const frag = document.createDocumentFragment();
-  for (const p of displayedRows) frag.appendChild(drawRow(p, change.markers.get(p.gameId)));
-  body.replaceChildren(frag);
-  $("noMatches").hidden = displayedRows.length > 0;
   $("matchCount").textContent = displayedRows.length + " of " +
     snap.projects.length + " games";
+  $("noMatches").hidden = displayedRows.length > 0;
+  $("swimlanes").hidden = viewMode !== "swimlanes" || !displayedRows.length;
+  $("tablePanel").hidden = viewMode !== "table" || !displayedRows.length;
+  const frag = document.createDocumentFragment();
+  for (const p of displayedRows) frag.appendChild(drawRow(p, change.markers.get(p.gameId)));
+  $("rows").replaceChildren(frag);
+  renderSwimlanes(displayedRows, change.markers);
 }
 function render() {
   const snap = selected();
   $("dashboard").hidden = !snap;
   $("empty").hidden = !!snap;
+  $("copyCsv").disabled = !snap;
+  $("exportCsv").disabled = !snap;
+  setView(viewMode);
   if (!snap) return;
+  $("currentSnapshotLabel").textContent = (snap.exportedAt || snap.savedAt || "").replace("T"," ").slice(0,19);
   $("kTotal").textContent = snap.projects.length;
   $("kPublic").textContent = snap.projects.filter(p => p.stage.includes("public alpha")).length;
   $("kPrivate").textContent = snap.projects.filter(p => p.stage.includes("private alpha")).length;
@@ -356,14 +462,14 @@ function render() {
   }
   if (diffs.details.length > 15)
     changeList.appendChild(node("span", "diff", "+" + (diffs.details.length - 15) + " more"));
-  renderTable();
+  renderContent();
 }
 function csvCell(value) {
   let s = String(value ?? "");
   if (/^[=+\-@\t\r\n]/.test(s)) s = "'" + s;
   return '"' + s.replace(/"/g, '""') + '"';
 }
-function downloadCSV() {
+function filteredCSV() {
   const headers = ["Game ID", "Name", "Status", "Visibility Indicator",
     "Local Version Date", "Public Version", "Last Project Check",
     "Warning Count", "Check Result", "Thumbnail URL", "Studio Project URL", "Exported At"];
@@ -374,7 +480,11 @@ function downloadCSV() {
   for (const p of displayedRows) {
     data.push(keys.map(k => csvCell(k === "exportedAt" ? selected()?.exportedAt : p[k])).join(","));
   }
-  const blob = new Blob(["\uFEFF", data.join("\r\n")], { type: "text/csv;charset=utf-8" });
+  return data.join("\r\n");
+}
+function downloadCSV() {
+  if (!selected()) return;
+  const blob = new Blob(["\uFEFF", filteredCSV()], { type: "text/csv;charset=utf-8" });
   const href = URL.createObjectURL(blob);
   const a = node("a");
   a.href = href;
@@ -382,18 +492,72 @@ function downloadCSV() {
   document.body.appendChild(a);
   a.click(); a.remove();
   setTimeout(() => URL.revokeObjectURL(href), 60000);
+  msg("Downloaded " + displayedRows.length + " visible games.", "success");
 }
-async function showScript(shouldShow = true) {
-  if (!exporterCode) {
-    const res = await fetch("./tools/bga-studio-export-console.js", { cache: "no-store" });
-    if (!res.ok) throw Error("Could not load console script (HTTP " + res.status + ")");
-    exporterCode = await res.text();
+async function copyText(value) {
+  try {
+    if (navigator.clipboard?.writeText) {
+      await navigator.clipboard.writeText(value);
+      return true;
+    }
+  } catch {}
+  const area = document.createElement("textarea");
+  area.value = value;
+  area.setAttribute("readonly", "");
+  area.style.cssText = "position:fixed;left:-9999px;top:0";
+  document.body.appendChild(area);
+  area.focus();
+  area.select();
+  let copied = false;
+  try { copied = !!document.execCommand("copy"); } catch {}
+  area.remove();
+  return copied;
+}
+function exporterSource() {
+  if (exporterCode) return Promise.resolve(exporterCode);
+  if (!exporterPromise) {
+    exporterPromise = fetch("./tools/bga-studio-export-console.js", {cache:"no-store"})
+      .then(response => {
+        if (!response.ok) throw Error("Script unavailable (HTTP " + response.status + ")");
+        return response.text();
+      })
+      .then(value => { exporterCode = value; return value; })
+      .catch(error => { exporterPromise = null; throw error; });
   }
-  $("scriptText").value = exporterCode;
-  $("scriptPanel").hidden = !shouldShow;
-  $("showScript").setAttribute("aria-expanded", String(shouldShow));
-  $("showScript").textContent = shouldShow ? "Hide script" : "Show script";
-  return exporterCode;
+  return exporterPromise;
+}
+async function copyScript() {
+  try {
+    // This fetch is started proactively when the SPA loads, keeping the
+    // actual clipboard write inside the user's real click when cached.
+    const source = exporterCode || await exporterSource();
+    const copied = await copyText(source);
+    if (copied) {
+      $("scriptFallback").hidden = true;
+      msg("Scraper copied. Open BGA Studio, press F12 → Console, and paste it.", "success");
+    } else {
+      $("scriptText").value = source;
+      $("scriptFallback").hidden = false;
+      $("scriptText").focus();
+      $("scriptText").select();
+      msg("Clipboard blocked. Script selected below; press Ctrl+C.", "error");
+    }
+  } catch (error) { msg(error.message, "error"); }
+}
+async function copyCSV() {
+  if (!selected()) return;
+  const csv = filteredCSV();
+  const copied = await copyText(csv);
+  if (copied) {
+    msg("Copied " + displayedRows.length + " filtered games as CSV.", "success");
+  } else {
+    $("pastePanel").hidden = false;
+    $("pasteToggle").setAttribute("aria-expanded", "true");
+    $("pasteData").value = csv;
+    $("pasteData").focus();
+    $("pasteData").select();
+    msg("Clipboard blocked. CSV selected in the paste field; press Ctrl+C.", "error");
+  }
 }
 async function importFromFile() {
   const input = $("csvFile");
@@ -405,49 +569,37 @@ async function importFromFile() {
 }
 function wire() {
   $("csvFile").addEventListener("change", importFromFile);
+  $("pasteToggle").addEventListener("click", () => {
+    const show = $("pastePanel").hidden;
+    $("pastePanel").hidden = !show;
+    $("pasteToggle").setAttribute("aria-expanded", String(show));
+    if (show) $("pasteData").focus();
+  });
   $("importPaste").addEventListener("click", async () => {
     try { await importText($("pasteData").value); }
-    catch (e) { msg("Import failed: " + e.message, "error"); }
+    catch (error) { msg("Import failed: " + error.message, "error"); }
   });
   $("resetPaste").addEventListener("click", () => { $("pasteData").value = ""; });
-  $("copyScript").addEventListener("click", async () => {
-    try {
-      const source = await showScript(true);
-      let copied = false;
-      try {
-        if (navigator.clipboard?.writeText) {
-          await navigator.clipboard.writeText(source);
-          copied = true;
-        }
-      } catch {}
-      if (!copied) {
-        $("scriptText").focus();
-        $("scriptText").select();
-        try { copied = document.execCommand("copy"); } catch {}
-      }
-      msg(copied ? "Console script copied. Paste it on the BGA Manage Games page." :
-        "Script loaded below. Select all in the script box and copy it manually.",
-        copied ? "success" : "");
-    } catch (e) { msg(e.message, "error"); }
-  });
-  $("showScript").addEventListener("click", async () => {
-    const shouldShow = $("scriptPanel").hidden;
-    try { await showScript(shouldShow); }
-    catch (e) { msg(e.message, "error"); }
-  });
-  $("historySelect").addEventListener("change", e => {
-    selectedIndex = Number(e.target.value) || 0;
+  $("copyScript").addEventListener("click", copyScript);
+  $("copyCsv").addEventListener("click", copyCSV);
+  $("exportCsv").addEventListener("click", downloadCSV);
+  $("viewSwimlanes").addEventListener("click", () => { setView("swimlanes"); renderContent(); });
+  $("viewTable").addEventListener("click", () => { setView("table"); renderContent(); });
+  $("historySelect").addEventListener("change", event => {
+    selectedIndex = Number(event.target.value) || 0;
     render();
   });
-  $("exportCsv").addEventListener("click", downloadCSV);
   $("clearHistory").addEventListener("click", async () => {
     if (!confirm("Delete ALL saved BGA Manage Games snapshots from this browser?")) return;
     snapshots = []; selectedIndex = 0;
     try { await persist(); render(); msg("Local snapshots deleted.", "success"); }
-    catch (e) { msg("Could not clear local snapshots: " + e.message, "error"); }
+    catch (error) { msg("Could not clear snapshots: " + error.message, "error"); }
   });
   ["search", "stage", "check", "visibility", "sort"].forEach(id =>
-    $(id).addEventListener(id === "search" ? "input" : "change", renderTable));
+    $(id).addEventListener(id === "search" ? "input" : "change", renderContent));
+  // Proactive fetch avoids losing clipboard user-activation while waiting on
+  // a network request after clicking Copy scraper script.
+  exporterSource().catch(() => {});
 }
 async function init() {
   wire();
