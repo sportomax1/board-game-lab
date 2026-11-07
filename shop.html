@@ -71,7 +71,7 @@ const clean = x => String(x == null ? '' : x).trim();
 const money = n => Number.isFinite(n) ? '$'+n.toFixed(2) : '—';
 const safe = s => String(s == null ? '' : s).replace(/[&<>"']/g, c => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[c]));
 const norm = x => clean(x).normalize('NFKD').replace(/[\u0300-\u036f]/g,'').toLowerCase().replace(/&/g,' and ').replace(/\b(the board game|board game|card game)\s*$/,'').replace(/[^a-z0-9]+/g,' ').trim().replace(/^the /,'').replace(/\s+/g,' ');
-const num = v => { const n=Number(String(v==null?'':v).replace(/[$,%\s]/g,'').replace(/,/g,'')); return Number.isFinite(n)?n:null; };
+const num = v => { const raw=String(v==null?'':v).replace(/[$,%\s]/g,'').replace(/,/g,'').trim(); if(!raw)return null; const n=Number(raw); return Number.isFinite(n)?n:null; };
 function shopExtractor(){
   const seen=new Set(),rows=[];
   document.querySelectorAll('a[href*="/products/"][aria-label]').forEach(a=>{
@@ -120,7 +120,7 @@ function parseDelimited(input){
   const records=[],row=[];let value='',quoted=false;
   for(let i=0;i<text.length;i++){
     const c=text[i];
-    if(c==='"'){if(quoted&&text[i+1]==='"'){value+='"';i++;}else quoted=!quoted;}
+    if(c==='"'){if(quoted&&text[i+1]==='"'){value+='"';i++;}else if(quoted)quoted=false;else if(!value)quoted=true;else value+='"';}
     else if(c===delim&&!quoted){row.push(value);value='';}
     else if((c==='\n'||c==='\r')&&!quoted){if(c==='\r'&&text[i+1]==='\n')i++;row.push(value);value='';if(row.some(v=>clean(v)))records.push(row.splice(0));else row.length=0;}
     else value+=c;
@@ -222,14 +222,15 @@ function matchesControl(r){
   const results=(entry&&entry.candidates)||[];
   const options=results.map(c=>'<option value="'+safe(c.id)+'" '+(String(r.id)===String(c.id)?'selected':'')+'>'+safe(c.name+(c.year?' ('+c.year+')':'')+(c.score?' · '+Math.round(c.score*100)+'%':''))+'</option>').join('');
   const manual=state.overrides[key];
+  const edit='<button class="ghost" data-assign="'+safe(key)+'" title="Set or correct BGG ID manually">Set ID</button>';
   const all=[...results];
   if(r.id&&!all.some(x=>String(x.id)===String(r.id)))all.unshift({id:r.id,name:r.metadata?.name||r.cg?.name||r.game,year:null});
   if(results.length||manual||r.confidence==='Ambiguous collection title'){
     const local=collectionMap().byName.get(key)||[];
     for(const c of local)if(!all.some(x=>String(x.id)===String(c.id)))all.push({id:c.id,name:c.name});
-    return '<select class="matchSelect" data-match="'+safe(key)+'" aria-label="Select BGG match for '+safe(r.game)+'"><option value="">Choose BGG game</option>'+all.map(c=>'<option value="'+safe(c.id)+'" '+(String(r.id)===String(c.id)?'selected':'')+'>'+safe(c.name+(c.year?' ('+c.year+')':''))+'</option>').join('')+'<option value="none" '+(manual==='none'?'selected':'')+'>No match</option></select>';
+    return '<select class="matchSelect" data-match="'+safe(key)+'" aria-label="Select BGG match for '+safe(r.game)+'"><option value="">Choose BGG game</option>'+all.map(c=>'<option value="'+safe(c.id)+'" '+(String(r.id)===String(c.id)?'selected':'')+'>'+safe(c.name+(c.year?' ('+c.year+')':''))+'</option>').join('')+'<option value="none" '+(manual==='none'?'selected':'')+'>No match</option></select> '+edit;
   }
-  return '<button class="ghost" data-lookup="'+safe(key)+'" title="Search BGG for this game">Find BGG</button>';
+  return '<div class="row"><button class="ghost" data-lookup="'+safe(key)+'" title="Search BGG for this game">Find BGG</button>'+edit+'</div>';
 }
 function listingRow(r){return '<tr><td><div class="strong">'+productLink(r)+'</div><div class="small">'+safe(r.seller)+'</div></td><td>'+tagHtml(r)+'</td><td class="num">'+money(r.full)+'</td><td class="num strong">'+money(r.sale)+'</td><td class="num">'+(r.off?'<span class="tag deal">'+Math.round(r.off)+'% off</span>':'—')+'</td><td class="num">'+money(r.full-r.sale)+'</td><td class="num">'+ratingsHtml(r)+'</td><td class="num rank">'+bggLink(r)+'</td><td class="num">'+(r.userRating!=null?r.userRating.toFixed(1):'—')+'</td><td><div class="small">'+safe(r.confidence)+'</div>'+matchesControl(r)+'</td></tr>';}
 function tableHtml(rows){return '<div class="tablewrap"><table><thead><tr><th>Game / seller</th><th>BGG status</th><th class="num">Full</th><th class="num">Sale</th><th class="num">Off</th><th class="num">Save</th><th class="num">BGG rating</th><th class="num">BGG rank</th><th class="num">My rating</th><th>BGG match</th></tr></thead><tbody>'+rows.map(listingRow).join('')+'</tbody></table></div>';}
@@ -304,6 +305,7 @@ function detailEntries(doc){return [...doc.querySelectorAll('item[id]')].map(x=>
 }).filter(g=>g.id);}
 async function loadCollection(){
   if(state.busy)return;const user=clean($('username').value);if(!/^[\w-]{1,60}$/.test(user)){status('bggStatus','Enter a valid BGG username.',true);return;}
+  if(state.username.toLowerCase()!==user.toLowerCase()){state.collection=[];state.collectionLoaded=false;}
   state.busy=true;$('loadCollection').disabled=true;state.username=user;localStorage.setItem('shoplab-username',user);
   try{
     const cache=await dbRead('collection:'+user.toLowerCase());
@@ -425,6 +427,7 @@ async function init(){
   $('content').addEventListener('click',e=>{
     const store=e.target.closest('[data-store]');if(store){$('storeFilter').value=store.dataset.store;state.tab='listings';state.page=1;render();}
     const lookup=e.target.closest('[data-lookup]');if(lookup)searchMissing(lookup.dataset.lookup);
+    const assign=e.target.closest('[data-assign]');if(assign){const key=assign.dataset.assign;const row=state.listings.find(r=>norm(r.game)===key);const current=row?resolve(row,collectionMap()).id||'':'';const answer=prompt('Enter numeric BGG game ID, none to mark unresolved, or auto to remove a manual override:',current);if(answer!==null){const value=answer.trim().toLowerCase();if(value==='auto')selectMatch(key,'');else if(value==='none'||/^\d+$/.test(value))selectMatch(key,value);else alert('Enter a numeric BGG ID, none, or auto.');}}
   });
   $('content').addEventListener('change',e=>{const input=e.target.closest('[data-match]');if(input)selectMatch(input.dataset.match,input.value);});
   const saved=await dbRead('data').catch(()=>null);
