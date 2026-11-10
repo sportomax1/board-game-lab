@@ -527,7 +527,7 @@
     const CACHE_DB = 'boardGameLabPocketValue';
     const CACHE_STORE = 'collections';
     const CACHE_VERSION = 1;
-    const MEASUREMENT_POLICY = 2;
+    const MEASUREMENT_POLICY = 3;
     function openCache() {
         return new Promise((resolve, reject) => {
             if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable'));
@@ -559,7 +559,7 @@
                 const tx = db.transaction(CACHE_STORE, 'readwrite');
                 tx.objectStore(CACHE_STORE).put({
                     username: username.toLowerCase(), savedAt: Date.now(), measurementPolicy: MEASUREMENT_POLICY,
-                    games: games.map(({id,name,thumbnail,average,w,l,d,cubic,editionId,editionName}) => ({id,name,thumbnail,average,w,l,d,cubic,editionId,editionName}))
+                    games: games.map(({id,name,thumbnail,average,w,l,d,cubic,editionId,editionName,editionCount,matchingCount,selectionReason,versions}) => ({id,name,thumbnail,average,w,l,d,cubic,editionId,editionName,editionCount,matchingCount,selectionReason,versions}))
                 });
                 tx.oncomplete = () => resolve();
                 tx.onerror = () => reject(tx.error);
@@ -653,16 +653,20 @@
                 await sleep(150);
             }
 
-            // Match Kallax Optimizer's English-first, common-box-size selection.
+            // Choose the most frequent box size across all measured editions, regardless of language.
+            // English, then unspecified language, only break ties in measurement frequency.
             for (const [gameId, candidates] of editionCandidates) {
+                const signature = v => [v.w,v.l,v.d].slice().sort((a,b)=>a-b).map(n=>n.toFixed(1)).join('|');
                 const counts = new Map();
-                const key = v => [v.w,v.l,v.d].sort((a,b)=>a-b).map(n=>n.toFixed(1)).join('|');
-                candidates.forEach(v => counts.set(key(v), (counts.get(key(v)) || 0)+1));
-                candidates.sort((a,b) => {
-                    const en = v => v.languages.some(x=>/english/i.test(x)) ? 1 : 0;
-                    return en(b)-en(a) || counts.get(key(b))-counts.get(key(a)) || a.cubic-b.cubic || a.editionId.localeCompare(b.editionId);
-                });
-                measurementsMap[gameId] = candidates[0];
+                candidates.forEach(v => counts.set(signature(v), (counts.get(signature(v)) || 0)+1));
+                const languageRank = v => v.languages.some(x=>/^english$/i.test(x.trim())) ? 2 : v.languages.length===0 ? 1 : 0;
+                candidates.sort((a,b)=>counts.get(signature(b))-counts.get(signature(a)) || languageRank(b)-languageRank(a) || a.cubic-b.cubic || a.editionId.localeCompare(b.editionId));
+                const chosen = candidates[0];
+                measurementsMap[gameId] = {
+                    ...chosen, editionCount:candidates.length, matchingCount:counts.get(signature(chosen)),
+                    selectionReason:'Most frequent size; English or unspecified language used for ties',
+                    versions:candidates.map(v=>({...v,matchingCount:counts.get(signature(v))}))
+                };
             }
             const analyzed = games.filter(g => measurementsMap[g.id]).map(g => ({
                 ...g, ...measurementsMap[g.id], value: measurementsMap[g.id].cubic
@@ -809,6 +813,23 @@
         const volume = shortest * middle * longest;
         return 'Score = ' + fmt(g.average) + '^' + fmt(formulaSettings.ratingCoeff) + ' ÷ (' + fmt(shortest) + ' × ' + fmt(middle) + ' × ' + fmt(longest) + ')^' + fmt(formulaSettings.sizeCoeff) + ' = ' + formatScore(g.score) + ' (' + formulaSettings.unit + ')';
     }
+    function editionOptions(g) {
+        if (!Array.isArray(g.versions) || g.versions.length < 2) return '';
+        const options = g.versions.map(v=>{
+            const dimensions=[v.w,v.l,v.d].map(displayDimension).sort((a,b)=>b-a).map(n=>n.toFixed(1)).join(' × ');
+            const label=v.editionName+' · '+dimensions+' '+formulaSettings.unit+' · '+v.matchingCount+'/'+g.versions.length+' editions'+(v.languages.length?' · '+v.languages.join(', '):' · language unspecified');
+            return '<option value="'+escHtml(v.editionId)+'"'+(v.editionId===g.editionId?' selected':'')+'>'+escHtml(label)+'</option>';
+        }).join('');
+        return '<label class="block text-[9px] text-slate-400 mt-1">Edition / measurements</label><select class="field text-[10px] py-1 px-2 mt-1" aria-label="Select edition" onchange="chooseEdition('+JSON.stringify(g.id)+',this.value)">'+options+'</select>';
+    }
+    function chooseEdition(gameId, editionId) {
+        const game=(window.lastAnalyzedGames||[]).find(g=>g.id===gameId);
+        const edition=game?.versions?.find(v=>v.editionId===editionId);
+        if(!edition)return;
+        Object.assign(game,{w:edition.w,l:edition.l,d:edition.d,cubic:edition.cubic,editionId:edition.editionId,editionName:edition.editionName,matchingCount:edition.matchingCount,selectionReason:'Manually selected edition'});
+        calculateScores(window.lastAnalyzedGames);
+        render();
+    }
     function buildGridCard(g) {
         const tier = getTier(g.percentile);
         const img = thumbnailUrl(g.thumbnail) ? `<img src="${escHtml(thumbnailUrl(g.thumbnail))}" data-original="${escHtml(g.thumbnail)}" class="w-full h-full object-contain p-1 rounded-lg" loading="lazy" decoding="async" onerror="thumbnailFallback(this)">` : '';
@@ -847,6 +868,8 @@
                     <span class="text-[9px] font-semibold text-slate-300 font-mono">${sortedDimensions(g).map(n=>n.toFixed(2)).join(' × ')} ${formulaSettings.unit}</span>
                     <span class="text-[8px] font-bold text-slate-500">Long / Mid / Short</span>
                 </div>
+                <div class="text-[9px] text-slate-400 leading-tight" title="${escHtml(g.selectionReason||'')}">${escHtml(g.editionName||'')} · ${g.matchingCount||1}/${g.editionCount||1} editions match</div>
+                ${editionOptions(g)}
                 <details class="mt-1 mb-1 text-[10px] text-slate-300">
                     <summary class="cursor-pointer font-semibold text-sky-300">Formula proof</summary>
                     <div class="mt-1 rounded-lg bg-black/20 p-2 font-mono leading-relaxed break-words">${escHtml(scoreProof(g))}</div>
