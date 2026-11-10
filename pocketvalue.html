@@ -307,6 +307,21 @@
                 <svg class="w-3.5 h-3.5 absolute left-2.5 top-1/2 -translate-y-1/2 text-slate-500 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
             </div>
 
+            <!-- Edition confidence -->
+            <label class="flex items-center gap-1.5 text-[10px] text-slate-300">
+                <span>Min size agreement</span>
+                <select id="confidenceThreshold" class="field py-1 px-2 w-auto text-[11px]" onchange="setConfidenceThreshold(this.value)">
+                    <option value="0">Off</option>
+                    <option value="10">10%</option>
+                    <option value="25">25%</option>
+                    <option value="40">40%</option>
+                    <option value="50">50%</option>
+                </select>
+            </label>
+            <label class="flex items-center gap-1.5 text-[10px] text-slate-300 cursor-pointer">
+                <input id="showLowConfidence" type="checkbox" onchange="setShowLowConfidence(this.checked)">
+                Show excluded
+            </label>
             <!-- Sort -->
             <select id="sortBy" onchange="handleSortChange()" class="field text-[10px] py-1.5 flex-1 sm:flex-none sm:w-auto" style="min-width:0; border-radius:10px;">
                 <option value="percentile-desc">Best Value ↓</option>
@@ -489,6 +504,25 @@
         document.getElementById('algorithmDescription').textContent = info[1] + ' Units: ' + (formulaSettings.unit === 'in' ? 'inches' : 'centimeters') + '.';
         document.getElementById('faceEquation').classList.toggle('hidden', !face);
     }
+    const CONFIDENCE_MIN_EDITIONS = 5;
+    let confidenceThreshold = Math.max(0, Math.min(100, Number(localStorage.getItem('pocketValueConfidenceThreshold') ?? 25) || 0));
+    let showLowConfidence = false;
+    function editionConfidence(g) {
+        const total = Number(g.editionCount) || 1;
+        const matching = Number(g.matchingCount) || 1;
+        return {total, matching, percent:100*matching/total};
+    }
+    function isLowConfidence(g) {
+        const c=editionConfidence(g);
+        return confidenceThreshold>0 && c.total>=CONFIDENCE_MIN_EDITIONS &&
+            c.percent+1e-9<confidenceThreshold && g.selectionReason!=='Manually selected edition';
+    }
+    function setConfidenceThreshold(value) {
+        confidenceThreshold=Number(value)||0;
+        localStorage.setItem('pocketValueConfidenceThreshold',String(confidenceThreshold));
+        if(window.lastAnalyzedGames){calculateScores(window.lastAnalyzedGames);populateKPIs(window.lastAnalyzedGames);render();}
+    }
+    function setShowLowConfidence(value) {showLowConfidence=!!value;render();}
     function calculateScores(games) {
         const face = formulaSettings.preset === 'face';
         const r = formulaSettings.ratingCoeff;
@@ -501,8 +535,9 @@
                 ? (face ? (formulaSettings.faceMultiplier === 1 ? 1 : 1000) * g.average * longest / (shortest * middle) : Math.pow(g.average, r) / Math.pow(volume, v))
                 : null;
         });
-        const valid = games.filter(g => g.score !== null && Number.isFinite(g.score))
+        const valid = games.filter(g => !isLowConfidence(g) && g.score !== null && Number.isFinite(g.score))
             .sort((a,b) => b.score - a.score || a.name.localeCompare(b.name));
+        games.forEach(g=>{g.percentile=null;});
         valid.forEach((g,i) => g.percentile = valid.length === 1 ? 100 : Math.round(100 * (1-i/(valid.length-1))));
         games.filter(g => g.score === null || !Number.isFinite(g.score)).forEach(g => { g.percentile = null; g.score = null; });
     }
@@ -761,6 +796,7 @@
     function render() {
         if (!window.lastAnalyzedGames) return;
         let games = applySort(window.lastAnalyzedGames);
+        if (!showLowConfidence) games = games.filter(g=>!isLowConfidence(g));
         if (currentSearch) games = games.filter(g => g.name.toLowerCase().includes(currentSearch));
         if (activeTierFilter) games = games.filter(g => g.percentile !== null && getTier(g.percentile) === activeTierFilter);
 
@@ -868,7 +904,10 @@
                     <span class="text-[9px] font-semibold text-slate-300 font-mono">${sortedDimensions(g).map(n=>n.toFixed(2)).join(' × ')} ${formulaSettings.unit}</span>
                     <span class="text-[8px] font-bold text-slate-500">Long / Mid / Short</span>
                 </div>
-                <div class="text-[9px] text-slate-400 leading-tight" title="${escHtml(g.selectionReason||'')}">${escHtml(g.editionName||'')} · ${g.matchingCount||1}/${g.editionCount||1} editions match</div>
+                <div class="text-[9px] ${isLowConfidence(g)?'text-rose-300':'text-slate-400'} leading-tight" title="${escHtml(g.selectionReason||'')}">
+                    ${escHtml(g.editionName||'')} · ${editionConfidence(g).matching}/${editionConfidence(g).total} measured editions (${editionConfidence(g).percent.toFixed(1)}%)
+                    ${isLowConfidence(g)?' · Excluded from rankings':editionConfidence(g).total<CONFIDENCE_MIN_EDITIONS?' · Limited evidence':''}
+                </div>
                 ${editionOptions(g)}
                 <details class="mt-1 mb-1 text-[10px] text-slate-300">
                     <summary class="cursor-pointer font-semibold text-sky-300">Formula proof</summary>
@@ -914,6 +953,7 @@
     }
 
     // ── Init ──────────────────────────────────────────────────────────────────
+    document.getElementById('confidenceThreshold').value=String(confidenceThreshold);
     const saved = localStorage.getItem('pocketValueFormulaSettings');
     if (saved) {
         try {
