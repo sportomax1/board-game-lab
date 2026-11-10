@@ -196,7 +196,7 @@
                     <div class="col-span-full rounded-xl border border-white/10 bg-white/5 p-3 space-y-1" aria-live="polite">
                         <div id="algorithmFormula" class="text-[11px] font-bold text-white"></div>
                         <div id="algorithmDescription" class="text-[10px] text-slate-300 leading-relaxed"></div>
-                        <div class="text-[9px] text-slate-500">Higher score = better space efficiency. Volume uses cm³; all dimensions converted from BGG inches. Unrated games are excluded from scoring.</div>
+                        <div class="text-[9px] text-slate-500">Higher scores rank first. Volume formulas reward space efficiency; Face Value rewards thickness relative to face area. BGG inches are converted to cm. Measurements depend on the selected edition.</div>
                     </div>
                     <div class="flex items-center gap-2 col-span-full">
                         <button type="button" id="refreshBtn" onclick="fetchAndAnalyze(true)" class="field text-[11px] px-3 py-2" title="Fetch fresh BGG data and replace the local cache">Refresh BGG data</button>
@@ -437,6 +437,7 @@
     const CACHE_DB = 'boardGameLabPocketValue';
     const CACHE_STORE = 'collections';
     const CACHE_VERSION = 1;
+    const MEASUREMENT_POLICY = 2;
     function openCache() {
         return new Promise((resolve, reject) => {
             if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable'));
@@ -467,8 +468,8 @@
             await new Promise((resolve, reject) => {
                 const tx = db.transaction(CACHE_STORE, 'readwrite');
                 tx.objectStore(CACHE_STORE).put({
-                    username: username.toLowerCase(), savedAt: Date.now(),
-                    games: games.map(({id,name,thumbnail,average,w,l,d,cubic}) => ({id,name,thumbnail,average,w,l,d,cubic}))
+                    username: username.toLowerCase(), savedAt: Date.now(), measurementPolicy: MEASUREMENT_POLICY,
+                    games: games.map(({id,name,thumbnail,average,w,l,d,cubic,editionId,editionName}) => ({id,name,thumbnail,average,w,l,d,cubic,editionId,editionName}))
                 });
                 tx.oncomplete = () => resolve();
                 tx.onerror = () => reject(tx.error);
@@ -495,7 +496,7 @@
             if (!forceRefresh) {
                 try {
                     const cached = await cacheRead(user);
-                    if (cached && Array.isArray(cached.games) && cached.games.length) {
+                    if (cached && cached.measurementPolicy === MEASUREMENT_POLICY && Array.isArray(cached.games) && cached.games.length) {
                         const games = cached.games.map(g => ({...g, value:g.cubic}));
                         const when = new Date(cached.savedAt).toLocaleString();
                         showAnalyzed(games, `Loaded ${games.length} cached games — ${when}`);
@@ -523,6 +524,7 @@
             }));
 
             const measurementsMap = {};
+            const editionCandidates = new Map();
             const batchSize = 20;
             const batches = [];
             for (let i = 0; i < games.length; i += batchSize) batches.push(games.slice(i, i + batchSize));
@@ -536,15 +538,21 @@
                     try {
                         const thingXml = await fetchWithRetry(`/api/bgg-helper?endpoint=thing&id=${ids}&type=boardgame&versions=1`);
                         const tDoc = new DOMParser().parseFromString(thingXml, 'text/xml');
+                        const parentLinks = new Map();
+                        tDoc.querySelectorAll('item[type="boardgame"],item[type="boardgameexpansion"]').forEach(parent => {
+                            parent.querySelectorAll('link[type="boardgameversion"]').forEach(link => parentLinks.set(link.getAttribute('id'), parent.getAttribute('id')));
+                        });
                         tDoc.querySelectorAll('item[type="boardgameversion"]').forEach(v => {
-                            const gameId = v.querySelector('link[type="boardgameversion"][inbound="true"]')?.getAttribute('id');
+                            const gameId = v.querySelector('link[type="boardgameversion"][inbound="true"]')?.getAttribute('id') || parentLinks.get(v.getAttribute('id'));
                             const w = parseFloat(v.querySelector('width')?.getAttribute('value')  || '0');
                             const l = parseFloat(v.querySelector('length')?.getAttribute('value') || '0');
                             const d = parseFloat(v.querySelector('depth')?.getAttribute('value')  || '0');
-                            if (gameId && w > 0 && l > 0 && d > 0) {
-                                const cubic = w * l * d;
-                                if (!measurementsMap[gameId] || cubic < measurementsMap[gameId].cubic)
-                                    measurementsMap[gameId] = { w, l, d, cubic };
+                            if (gameId && [w,l,d].every(x => Number.isFinite(x) && x > 0 && x <= 100)) {
+                                const candidate = { w,l,d,cubic:w*l*d, editionId:v.getAttribute('id') || '',
+                                    editionName:v.querySelector('name[type="primary"]')?.getAttribute('value') || 'BGG edition',
+                                    languages:Array.from(v.querySelectorAll('link[type="language"]')).map(x=>x.getAttribute('value')||'') };
+                                if (!editionCandidates.has(gameId)) editionCandidates.set(gameId, []);
+                                editionCandidates.get(gameId).push(candidate);
                             }
                         });
                     } catch { /* skip */ }
@@ -555,13 +563,24 @@
                 await sleep(150);
             }
 
+            // Match Kallax Optimizer's English-first, common-box-size selection.
+            for (const [gameId, candidates] of editionCandidates) {
+                const counts = new Map();
+                const key = v => [v.w,v.l,v.d].sort((a,b)=>a-b).map(n=>n.toFixed(1)).join('|');
+                candidates.forEach(v => counts.set(key(v), (counts.get(key(v)) || 0)+1));
+                candidates.sort((a,b) => {
+                    const en = v => v.languages.some(x=>/english/i.test(x)) ? 1 : 0;
+                    return en(b)-en(a) || counts.get(key(b))-counts.get(key(a)) || a.cubic-b.cubic || a.editionId.localeCompare(b.editionId);
+                });
+                measurementsMap[gameId] = candidates[0];
+            }
             const analyzed = games.filter(g => measurementsMap[g.id]).map(g => ({
                 ...g, ...measurementsMap[g.id], value: measurementsMap[g.id].cubic
             }));
 
             if (!analyzed.length) throw new Error('No dimension data found for your games');
 
-            showAnalyzed(analyzed, `Done — ${analyzed.length} games measured`);
+            showAnalyzed(analyzed, `Done — ${analyzed.length} games measured; ${games.length-analyzed.length} missing dimensions`);
             try {
                 await cacheWrite(user, analyzed);
                 document.getElementById('cacheInfo').textContent = 'Saved to IndexedDB: ' + new Date().toLocaleString();
