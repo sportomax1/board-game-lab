@@ -282,6 +282,10 @@
             <div id="resultsGrid" class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-3 xl:grid-cols-4 gap-3 pb-6"></div>
             <div id="resultsList" class="hidden space-y-2 pb-6"></div>
             <div id="emptyState" class="hidden py-20 text-center text-slate-600 text-[11px] font-bold uppercase tracking-widest">No matches</div>
+            <div class="flex flex-wrap items-center justify-center gap-3 py-3">
+                <span id="resultsCount" class="text-[10px] text-slate-400"></span>
+                <button id="loadMoreBtn" class="hidden field px-4 py-2 text-[11px]" onclick="visibleLimit += PAGE_SIZE; render()">Load 100 more</button>
+            </div>
         </div>
     </div>
 
@@ -293,6 +297,8 @@
     let formulaSettings = { ratingCoeff:1.0, sizeCoeff:1.0, preset:'linear' };
     let currentView = 'grid';
     let currentSearch = '';
+    let visibleLimit = 100;
+    const PAGE_SIZE = 100;
 
     // ── Setup collapse ────────────────────────────────────────────────────────
     let setupOpen = true;
@@ -432,6 +438,7 @@
     function showAnalyzed(games, message) {
         calculateScores(games);
         window.lastAnalyzedGames = games;
+        visibleLimit = PAGE_SIZE;
         setStatus(message, 100);
         collapseSetup();
         populateKPIs(games);
@@ -480,7 +487,7 @@
             for (let i = 0; i < games.length; i += batchSize) batches.push(games.slice(i, i + batchSize));
 
             let done = 0;
-            const parallelLimit = 80;
+            const parallelLimit = 6; // Avoid overwhelming BGG proxy and browser memory
             for (let i = 0; i < batches.length; i += parallelLimit) {
                 const group = batches.slice(i, i + parallelLimit);
                 await Promise.all(group.map(async batch => {
@@ -559,12 +566,13 @@
     let activeTierFilter = null;
     function filterTier(tier) {
         activeTierFilter = tier;
+        visibleLimit = PAGE_SIZE;
         render();
     }
 
     // ── Sort & Search ─────────────────────────────────────────────────────────
-    function handleSortChange()  { if (window.lastAnalyzedGames) render(); }
-    function handleSearch()      { currentSearch = document.getElementById('searchInput').value.toLowerCase(); render(); }
+    function handleSortChange()  { visibleLimit = PAGE_SIZE; if (window.lastAnalyzedGames) render(); }
+    function handleSearch()      { currentSearch = document.getElementById('searchInput').value.toLowerCase(); visibleLimit = PAGE_SIZE; render(); }
 
     function applySort(arr) {
         const s = [...arr];
@@ -586,6 +594,7 @@
         document.getElementById('viewList').classList.toggle('active', v === 'list');
         document.getElementById('resultsGrid').classList.toggle('hidden', v !== 'grid');
         document.getElementById('resultsList').classList.toggle('hidden', v !== 'list');
+        render();
     }
 
     // ── Render ────────────────────────────────────────────────────────────────
@@ -599,8 +608,20 @@
 
         const empty = document.getElementById('emptyState');
         empty.classList.toggle('hidden', games.length > 0);
-        document.getElementById('resultsGrid').innerHTML = games.map(buildGridCard).join('');
-        document.getElementById('resultsList').innerHTML = games.map(buildListRow).join('');
+        const visible = games.slice(0, visibleLimit);
+        // Render only the active view. Thousands of cards/images in two views can crash mobile browsers.
+        const grid = document.getElementById('resultsGrid');
+        const list = document.getElementById('resultsList');
+        if (currentView === 'grid') {
+            grid.innerHTML = visible.map(buildGridCard).join('');
+            list.replaceChildren();
+        } else {
+            list.innerHTML = visible.map(buildListRow).join('');
+            grid.replaceChildren();
+        }
+        const more = document.getElementById('loadMoreBtn');
+        more.classList.toggle('hidden', games.length <= visible.length);
+        document.getElementById('resultsCount').textContent = `Showing ${visible.length.toLocaleString()} of ${games.length.toLocaleString()} games`;
     }
 
     function getTier(pct) {
