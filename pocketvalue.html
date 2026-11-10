@@ -197,7 +197,7 @@
                             <option value="linear">📊 Linear Balance</option>
                             <option value="sqrt">√ Efficiency Focus</option>
                             <option value="weighted">⭐ Quality Multiplier</option>
-                            <option value="face">📐 Face Value × 1,000</option>
+                            <option value="face">📐 Face Value</option>
                         </select>
                     </div>
                     <!-- Measurement units -->
@@ -206,6 +206,13 @@
                         <select id="measurementUnit" class="field" onchange="setMeasurementUnit(this.value)">
                             <option value="cm">Centimeters (cm)</option>
                             <option value="in">Inches (in)</option>
+                        </select>
+                    </div>
+                    <div id="faceMultiplierControl" class="hidden space-y-1.5">
+                        <label for="faceMultiplier" class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Face Value multiplier</label>
+                        <select id="faceMultiplier" class="field" onchange="setFaceMultiplier(this.value)">
+                            <option value="1">× 1 (raw)</option>
+                            <option value="1000">× 1,000 (scaled)</option>
                         </select>
                     </div>
                     <!-- Coefficients -->
@@ -228,7 +235,7 @@
                                     <span class="border-b border-slate-300 px-2 pb-1">BGG Rating × Longest</span>
                                     <span class="px-2 pt-1">Shortest × Middle</span>
                                 </span>
-                                <span>× 1,000 = Face Value</span>
+                                <span>× <span id="faceMultiplierLabel">1,000</span> = Face Value</span>
                             </div>
                             <div class="text-[10px] text-slate-400 mt-2">Face area = shortest × middle dimensions; depth = longest dimension. Both use the selected units. All three BGG measurements are sorted first.</div>
                         </div>
@@ -352,7 +359,7 @@
         }
     }
 
-    let formulaSettings = { ratingCoeff:1.0, sizeCoeff:1.0, preset:'linear', unit:'cm' };
+    let formulaSettings = { ratingCoeff:1.0, sizeCoeff:1.0, preset:'linear', unit:'cm', faceMultiplier:1000 };
     let currentView = 'grid';
     let currentSearch = '';
     let visibleLimit = 100;
@@ -427,6 +434,16 @@
             render();
         }
     }
+    function setFaceMultiplier(value) {
+        formulaSettings.faceMultiplier = Number(value) === 1 ? 1 : 1000;
+        localStorage.setItem('pocketValueFormulaSettings', JSON.stringify(formulaSettings));
+        syncFormulaControls();
+        if (window.lastAnalyzedGames) {
+            calculateScores(window.lastAnalyzedGames);
+            populateKPIs(window.lastAnalyzedGames);
+            render();
+        }
+    }
     function displayDimension(inches) {
         return inches * (formulaSettings.unit === 'in' ? 1 : 2.54);
     }
@@ -436,6 +453,10 @@
     function syncFormulaControls() {
         document.getElementById('measurementUnit').value = formulaSettings.unit === 'in' ? 'in' : 'cm';
         const face = formulaSettings.preset === 'face';
+        const multiplier = formulaSettings.faceMultiplier === 1 ? 1 : 1000;
+        document.getElementById('faceMultiplierControl').classList.toggle('hidden', !face);
+        document.getElementById('faceMultiplier').value = String(multiplier);
+        document.getElementById('faceMultiplierLabel').textContent = multiplier.toLocaleString('en-US');
         document.getElementById('ratingCoeff').disabled = face;
         document.getElementById('sizeCoeff').disabled = face;
         const r = formulaSettings.ratingCoeff;
@@ -447,7 +468,7 @@
                 'Gentler size penalty. At the default 0.5 volume exponent, doubling volume reduces the score by about 29%, not 50%. Larger games remain competitive.'],
             weighted: ['Rating^' + r + ' ÷ Volume^' + v,
                 'Emphasizes quality. At the default 1.5 rating exponent, a 20% higher rating yields about 31% more score at equal volume.'],
-            face: ['Face Value = (BGG Rating × Longest ÷ (Shortest × Middle)) × 1,000',
+            face: ['Face Value = (BGG Rating × Longest ÷ (Shortest × Middle)) × ' + multiplier.toLocaleString('en-US'),
                 'Uses the longest box measurement as depth and the shortest × middle measurements as face area, regardless of BGG dimension labels. This rewards long, narrow boxes rather than minimizing total volume.']
         };
         const info = formulas[formulaSettings.preset] || formulas.linear;
@@ -463,7 +484,7 @@
             const [shortest, middle, longest] = [g.w, g.l, g.d].map(displayDimension).sort((a,b) => a-b);
             const volume = shortest * middle * longest;
             g.score = g.average > 0 && volume > 0
-                ? (face ? 1000 * g.average * longest / (shortest * middle) : Math.pow(g.average, r) / Math.pow(volume, v))
+                ? (face ? (formulaSettings.faceMultiplier === 1 ? 1 : 1000) * g.average * longest / (shortest * middle) : Math.pow(g.average, r) / Math.pow(volume, v))
                 : null;
         });
         const valid = games.filter(g => g.score !== null && Number.isFinite(g.score))
@@ -842,6 +863,7 @@
     }
 
     formulaSettings.unit = formulaSettings.unit === 'in' ? 'in' : 'cm';
+    formulaSettings.faceMultiplier = formulaSettings.faceMultiplier === 1 ? 1 : 1000;
     syncFormulaControls();
     document.getElementById('username').addEventListener('keypress', e => { if (e.key === 'Enter') fetchAndAnalyze(); });
 </script>
