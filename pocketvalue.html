@@ -200,6 +200,14 @@
                             <option value="face">📐 Face Value × 1,000</option>
                         </select>
                     </div>
+                    <!-- Measurement units -->
+                    <div class="space-y-1.5">
+                        <label for="measurementUnit" class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Measurement units</label>
+                        <select id="measurementUnit" class="field" onchange="setMeasurementUnit(this.value)">
+                            <option value="cm">Centimeters (cm)</option>
+                            <option value="in">Inches (in)</option>
+                        </select>
+                    </div>
                     <!-- Coefficients -->
                     <div class="grid grid-cols-2 gap-2">
                         <div class="space-y-1.5">
@@ -222,10 +230,10 @@
                                 </span>
                                 <span>× 1,000 = Face Value</span>
                             </div>
-                            <div class="text-[10px] text-slate-400 mt-2">Face area = shortest × middle dimensions (cm²); depth = longest dimension (cm). All three BGG measurements are sorted first.</div>
+                            <div class="text-[10px] text-slate-400 mt-2">Face area = shortest × middle dimensions; depth = longest dimension. Both use the selected units. All three BGG measurements are sorted first.</div>
                         </div>
                         <div id="algorithmDescription" class="text-[10px] text-slate-300 leading-relaxed"></div>
-                        <div class="text-[9px] text-slate-500">Higher scores rank first. Volume formulas reward space efficiency; Face Value rewards thickness relative to face area. BGG inches are converted to cm. Measurements depend on the selected edition.</div>
+                        <div class="text-[9px] text-slate-500">Higher scores rank first. Volume formulas reward space efficiency; Face Value rewards thickness relative to face area. Choose centimeters or inches above; changing units rescales scores but does not change rankings. Measurements depend on the selected edition.</div>
                     </div>
                     <div class="flex items-center gap-2 col-span-full">
                         <button type="button" id="refreshBtn" onclick="fetchAndAnalyze(true)" class="field text-[11px] px-3 py-2" title="Fetch fresh BGG data and replace the local cache">Refresh BGG data</button>
@@ -266,7 +274,7 @@
                     <span id="kpiCount" class="text-sm font-black text-white">0</span>
                 </div>
                 <div class="glass2 rounded-xl px-3 py-1.5 flex items-center gap-2">
-                    <span class="text-[8px] font-bold text-slate-500 uppercase tracking-wider">Median in³</span>
+                    <span class="text-[8px] font-bold text-slate-500 uppercase tracking-wider">Median Volume</span>
                     <span id="kpiMedian" class="text-sm font-black text-emerald-400">—</span>
                 </div>
                 <div class="glass2 rounded-xl px-3 py-1.5 flex items-center gap-2">
@@ -344,7 +352,7 @@
         }
     }
 
-    let formulaSettings = { ratingCoeff:1.0, sizeCoeff:1.0, preset:'linear' };
+    let formulaSettings = { ratingCoeff:1.0, sizeCoeff:1.0, preset:'linear', unit:'cm' };
     let currentView = 'grid';
     let currentSearch = '';
     let visibleLimit = 100;
@@ -409,7 +417,24 @@
         if (window.lastAnalyzedGames) { calculateScores(window.lastAnalyzedGames); populateKPIs(window.lastAnalyzedGames); render(); }
     }
 
+    function setMeasurementUnit(unit) {
+        formulaSettings.unit = unit === 'in' ? 'in' : 'cm';
+        localStorage.setItem('pocketValueFormulaSettings', JSON.stringify(formulaSettings));
+        syncFormulaControls();
+        if (window.lastAnalyzedGames) {
+            calculateScores(window.lastAnalyzedGames);
+            populateKPIs(window.lastAnalyzedGames);
+            render();
+        }
+    }
+    function displayDimension(inches) {
+        return inches * (formulaSettings.unit === 'in' ? 1 : 2.54);
+    }
+    function displayVolume(cubicInches) {
+        return cubicInches * Math.pow(formulaSettings.unit === 'in' ? 1 : 2.54, 3);
+    }
     function syncFormulaControls() {
+        document.getElementById('measurementUnit').value = formulaSettings.unit === 'in' ? 'in' : 'cm';
         const face = formulaSettings.preset === 'face';
         document.getElementById('ratingCoeff').disabled = face;
         document.getElementById('sizeCoeff').disabled = face;
@@ -427,7 +452,7 @@
         };
         const info = formulas[formulaSettings.preset] || formulas.linear;
         document.getElementById('algorithmFormula').textContent = info[0];
-        document.getElementById('algorithmDescription').textContent = info[1];
+        document.getElementById('algorithmDescription').textContent = info[1] + ' Units: ' + (formulaSettings.unit === 'in' ? 'inches' : 'centimeters') + '.';
         document.getElementById('faceEquation').classList.toggle('hidden', !face);
     }
     function calculateScores(games) {
@@ -435,7 +460,7 @@
         const r = formulaSettings.ratingCoeff;
         const v = formulaSettings.sizeCoeff;
         games.forEach(g => {
-            const [shortest, middle, longest] = [g.w, g.l, g.d].map(n => n * 2.54).sort((a,b) => a-b);
+            const [shortest, middle, longest] = [g.w, g.l, g.d].map(displayDimension).sort((a,b) => a-b);
             const volume = shortest * middle * longest;
             g.score = g.average > 0 && volume > 0
                 ? (face ? 1000 * g.average * longest / (shortest * middle) : Math.pow(g.average, r) / Math.pow(volume, v))
@@ -631,7 +656,7 @@
         const mid = cubics[Math.floor(cubics.length / 2)];
         const best = [...games].filter(g => g.percentile !== null).sort((a,b) => b.percentile - a.percentile)[0];
         document.getElementById('kpiCount').textContent  = games.length;
-        document.getElementById('kpiMedian').textContent = mid ? mid.toFixed(0) + ' in³' : '—';
+        document.getElementById('kpiMedian').textContent = mid ? displayVolume(mid).toFixed(0) + (formulaSettings.unit === 'in' ? ' in³' : ' cm³') : '—';
         document.getElementById('kpiBest').textContent   = best ? best.name : '—';
     }
 
@@ -763,7 +788,7 @@
             <!-- Dimensions + bar -->
             <div class="px-3 pb-3 mt-auto">
                 <div class="flex justify-between items-center mb-1.5">
-                    <span class="text-[8px] font-semibold text-slate-600 font-mono">${g.d.toFixed(1)} × ${g.w.toFixed(1)} × ${g.l.toFixed(1)} in</span>
+                    <span class="text-[8px] font-semibold text-slate-600 font-mono">${displayDimension(g.d).toFixed(1)} × ${displayDimension(g.w).toFixed(1)} × ${displayDimension(g.l).toFixed(1)} ${formulaSettings.unit}</span>
                     <span class="text-[8px] font-bold text-slate-500">H×W×L</span>
                 </div>
                 <div class="pbar-track">
@@ -783,7 +808,7 @@
             </div>
             <div class="flex-1 min-w-0">
                 <div class="text-[12px] font-bold text-white truncate">${escHtml(g.name)}</div>
-                <div class="text-[9px] font-mono text-slate-500 mt-0.5">${g.d.toFixed(1)}×${g.w.toFixed(1)}×${g.l.toFixed(1)} in  ·  ${"Score: " + formatScore(g.score) + " · " + g.cubic.toFixed(0) + " in³"}</div>
+                <div class="text-[9px] font-mono text-slate-500 mt-0.5">${displayDimension(g.d).toFixed(1)}×${displayDimension(g.w).toFixed(1)}×${displayDimension(g.l).toFixed(1)} ${formulaSettings.unit}  ·  ${"Score: " + formatScore(g.score) + " · " + displayVolume(g.cubic).toFixed(0) + (formulaSettings.unit === "in" ? " in³" : " cm³")}</div>
             </div>
             <div class="hidden sm:flex items-center gap-2 shrink-0">
                 <div class="w-20 pbar-track">
@@ -816,6 +841,7 @@
         } catch {}
     }
 
+    formulaSettings.unit = formulaSettings.unit === 'in' ? 'in' : 'cm';
     syncFormulaControls();
     document.getElementById('username').addEventListener('keypress', e => { if (e.key === 'Enter') fetchAndAnalyze(); });
 </script>
