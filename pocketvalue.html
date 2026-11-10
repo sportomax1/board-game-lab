@@ -193,6 +193,10 @@
                         </div>
                     </div>
                     <p id="faceNote" class="hidden col-span-full text-[10px] text-slate-400">Face Value = rating × depth ÷ (width × length) × 1,000. Uses centimeters converted from BGG inches; unrated games show —.</p>
+                    <div class="flex items-center gap-2 col-span-full">
+                        <button type="button" id="refreshBtn" onclick="fetchAndAnalyze(true)" class="field text-[11px] px-3 py-2" title="Fetch fresh BGG data and replace the local cache">Refresh BGG data</button>
+                        <span id="cacheInfo" class="text-[10px] text-slate-500" role="status">IndexedDB cache enabled</span>
+                    </div>
                     <!-- CTA -->
                     <button onclick="fetchAndAnalyze()" id="fetchBtn" class="btn-go w-full flex items-center justify-center gap-2">
                         <svg id="analyzeIcon" class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/></svg>
@@ -325,6 +329,7 @@
 
     function setLoading(on) {
         document.getElementById('fetchBtn').disabled = on;
+        document.getElementById('refreshBtn').disabled = on;
         document.getElementById('analyzeIcon').classList.toggle('hidden', on);
         document.getElementById('analyzeSpinner').classList.toggle('hidden', !on);
     }
@@ -381,12 +386,78 @@
 
     function sleep(ms) { return new Promise(r => setTimeout(r, ms)); }
 
-    async function fetchAndAnalyze() {
+    // Browser-local persistent cache, separated by BGG username.
+    const CACHE_DB = 'boardGameLabPocketValue';
+    const CACHE_STORE = 'collections';
+    const CACHE_VERSION = 1;
+    function openCache() {
+        return new Promise((resolve, reject) => {
+            if (!('indexedDB' in window)) return reject(new Error('IndexedDB unavailable'));
+            const request = indexedDB.open(CACHE_DB, CACHE_VERSION);
+            request.onupgradeneeded = () => {
+                const db = request.result;
+                if (!db.objectStoreNames.contains(CACHE_STORE)) db.createObjectStore(CACHE_STORE, { keyPath: 'username' });
+            };
+            request.onsuccess = () => resolve(request.result);
+            request.onerror = () => reject(request.error);
+            request.onblocked = () => reject(new Error('IndexedDB upgrade blocked'));
+        });
+    }
+    async function cacheRead(username) {
+        const db = await openCache();
+        try {
+            return await new Promise((resolve, reject) => {
+                const tx = db.transaction(CACHE_STORE, 'readonly');
+                const req = tx.objectStore(CACHE_STORE).get(username.toLowerCase());
+                req.onsuccess = () => resolve(req.result || null);
+                req.onerror = () => reject(req.error);
+            });
+        } finally { db.close(); }
+    }
+    async function cacheWrite(username, games) {
+        const db = await openCache();
+        try {
+            await new Promise((resolve, reject) => {
+                const tx = db.transaction(CACHE_STORE, 'readwrite');
+                tx.objectStore(CACHE_STORE).put({
+                    username: username.toLowerCase(), savedAt: Date.now(),
+                    games: games.map(({id,name,thumbnail,average,w,l,d,cubic}) => ({id,name,thumbnail,average,w,l,d,cubic}))
+                });
+                tx.oncomplete = () => resolve();
+                tx.onerror = () => reject(tx.error);
+                tx.onabort = () => reject(tx.error);
+            });
+        } finally { db.close(); }
+    }
+    function showAnalyzed(games, message) {
+        calculateScores(games);
+        window.lastAnalyzedGames = games;
+        setStatus(message, 100);
+        collapseSetup();
+        populateKPIs(games);
+        render();
+        document.getElementById('resultsSection').classList.remove('hidden');
+    }
+    async function fetchAndAnalyze(forceRefresh = false) {
         const user = document.getElementById('username').value.trim() || 'sportomax';
         setLoading(true);
-        setStatus('Fetching collection…', 5);
+        setStatus(forceRefresh ? 'Refreshing BGG data…' : 'Checking local cache…', 5);
 
         try {
+            if (!forceRefresh) {
+                try {
+                    const cached = await cacheRead(user);
+                    if (cached && Array.isArray(cached.games) && cached.games.length) {
+                        const games = cached.games.map(g => ({...g, value:g.cubic}));
+                        const when = new Date(cached.savedAt).toLocaleString();
+                        showAnalyzed(games, `Loaded ${games.length} cached games — ${when}`);
+                        document.getElementById('cacheInfo').textContent = `Cached: ${when}`;
+                        return;
+                    }
+                } catch (e) {
+                    document.getElementById('cacheInfo').textContent = 'Cache unavailable; using BGG';
+                }
+            }
             const collXml = await fetchWithRetry(`/api/bgg-helper?endpoint=collection&username=${encodeURIComponent(user)}&own=1&stats=1`);
             const doc = new DOMParser().parseFromString(collXml, 'text/xml');
             if (doc.querySelector('error')) throw new Error('User not found or private collection');
@@ -442,14 +513,13 @@
 
             if (!analyzed.length) throw new Error('No dimension data found for your games');
 
-            calculateScores(analyzed);
-
-            window.lastAnalyzedGames = analyzed;
-            setStatus(`Done — ${analyzed.length} games measured`, 100);
-            collapseSetup();
-            populateKPIs(analyzed);
-            render();
-            document.getElementById('resultsSection').classList.remove('hidden');
+            showAnalyzed(analyzed, `Done — ${analyzed.length} games measured`);
+            try {
+                await cacheWrite(user, analyzed);
+                document.getElementById('cacheInfo').textContent = 'Saved to IndexedDB: ' + new Date().toLocaleString();
+            } catch (e) {
+                document.getElementById('cacheInfo').textContent = 'IndexedDB unavailable; results not cached';
+            }
 
         } catch (err) {
             setStatus(`Error: ${err.message}`, undefined, true);
