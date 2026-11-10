@@ -261,11 +261,7 @@
                     <div class="w-1.5 h-1.5 rounded-full bg-amber-300 shrink-0" id="statusDot"></div>
                     <span id="statusText" class="text-[10px] font-bold text-amber-300 uppercase tracking-widest"></span>
                     <div class="flex-1 ml-2">
-                        <details class="mt-1 mb-1 text-[10px] text-slate-400">
-                    <summary class="cursor-pointer select-none font-bold text-amber-300">Show calculation</summary>
-                    <div class="mt-1 rounded-lg bg-black/20 p-2 font-mono leading-relaxed break-words">${escHtml(scoreProof(g))}</div>
-                </details>
-                <div class="pbar-track">
+                        <div class="pbar-track">
                             <div id="progressBar" class="pbar-fill tier-bar-excellent" style="width:0%"></div>
                         </div>
                     </div>
@@ -310,6 +306,12 @@
             <select id="sortBy" onchange="handleSortChange()" class="field text-[10px] py-1.5 flex-1 sm:flex-none sm:w-auto" style="min-width:0; border-radius:10px;">
                 <option value="percentile-desc">Best Value ↓</option>
                 <option value="percentile-asc">Worst Value ↑</option>
+                <option value="long-desc">Longest Dimension ↓</option>
+                <option value="long-asc">Longest Dimension ↑</option>
+                <option value="middle-desc">Middle Dimension ↓</option>
+                <option value="middle-asc">Middle Dimension ↑</option>
+                <option value="short-desc">Shortest Dimension ↓</option>
+                <option value="short-asc">Shortest Dimension ↑</option>
                 <option value="cubic-asc">Smallest First</option>
                 <option value="cubic-desc">Largest First</option>
                 <option value="rating-desc">Rating High ↓</option>
@@ -487,7 +489,7 @@
         const r = formulaSettings.ratingCoeff;
         const v = formulaSettings.sizeCoeff;
         games.forEach(g => {
-            const [shortest, middle, longest] = [g.w, g.l, g.d].map(displayDimension).sort((a,b) => a-b);
+            const [longest, middle, shortest] = sortedDimensions(g);
             const volume = shortest * middle * longest;
             g.score = g.average > 0 && volume > 0
                 ? (face ? (formulaSettings.faceMultiplier === 1 ? 1 : 1000) * g.average * longest / (shortest * middle) : Math.pow(g.average, r) / Math.pow(volume, v))
@@ -719,10 +721,16 @@
     function applySort(arr) {
         const s = [...arr];
         switch (document.getElementById('sortBy').value) {
-            case 'percentile-desc': s.sort((a,b) => (b.percentile ?? -1) - (a.percentile ?? -1)); break;
-            case 'percentile-asc':  s.sort((a,b) => (a.percentile ?? 101) - (b.percentile ?? 101)); break;
-            case 'cubic-asc':       s.sort((a,b) => a.cubic - b.cubic); break;
-            case 'cubic-desc':      s.sort((a,b) => b.cubic - a.cubic); break;
+            case 'percentile-desc': s.sort((a,b) => (b.score ?? -Infinity) - (a.score ?? -Infinity) || a.name.localeCompare(b.name)); break;
+            case 'percentile-asc':  s.sort((a,b) => (a.score ?? Infinity) - (b.score ?? Infinity) || a.name.localeCompare(b.name)); break;
+            case 'long-desc': s.sort((a,b)=>sortedDimensions(b)[0]-sortedDimensions(a)[0] || a.name.localeCompare(b.name)); break;
+            case 'long-asc': s.sort((a,b)=>sortedDimensions(a)[0]-sortedDimensions(b)[0] || a.name.localeCompare(b.name)); break;
+            case 'middle-desc': s.sort((a,b)=>sortedDimensions(b)[1]-sortedDimensions(a)[1] || a.name.localeCompare(b.name)); break;
+            case 'middle-asc': s.sort((a,b)=>sortedDimensions(a)[1]-sortedDimensions(b)[1] || a.name.localeCompare(b.name)); break;
+            case 'short-desc': s.sort((a,b)=>sortedDimensions(b)[2]-sortedDimensions(a)[2] || a.name.localeCompare(b.name)); break;
+            case 'short-asc': s.sort((a,b)=>sortedDimensions(a)[2]-sortedDimensions(b)[2] || a.name.localeCompare(b.name)); break;
+            case 'cubic-asc':       s.sort((a,b) => (a.cubic || Infinity) - (b.cubic || Infinity) || a.name.localeCompare(b.name)); break;
+            case 'cubic-desc':      s.sort((a,b) => (b.cubic || -Infinity) - (a.cubic || -Infinity) || a.name.localeCompare(b.name)); break;
             case 'rating-desc':     s.sort((a,b) => b.average - a.average); break;
             case 'name-asc':        s.sort((a,b) => a.name.localeCompare(b.name)); break;
         }
@@ -780,9 +788,12 @@
         return pct === null ? 'Unrated' : map[getTier(pct)];
     }
 
+    function sortedDimensions(g) {
+        return [g.w, g.l, g.d].map(displayDimension).sort((a,b)=>b-a);
+    }
     function scoreProof(g) {
         if (g.score === null || !Number.isFinite(g.score)) return 'No valid score: missing rating or box measurements.';
-        const dims = [g.w, g.l, g.d].map(displayDimension).sort((a,b)=>a-b);
+        const dims = sortedDimensions(g).reverse();
         const [shortest, middle, longest] = dims;
         const fmt = n => Number(n).toLocaleString('en-US', {maximumFractionDigits:5});
         if (formulaSettings.preset === 'face') {
@@ -827,9 +838,13 @@
             <!-- Dimensions + bar -->
             <div class="px-3 pb-2 mt-auto">
                 <div class="flex justify-between items-center mb-1">
-                    <span class="text-[8px] font-semibold text-slate-600 font-mono">${displayDimension(g.d).toFixed(1)} × ${displayDimension(g.w).toFixed(1)} × ${displayDimension(g.l).toFixed(1)} ${formulaSettings.unit}</span>
-                    <span class="text-[8px] font-bold text-slate-500">H×W×L</span>
+                    <span class="text-[9px] font-semibold text-slate-300 font-mono">${sortedDimensions(g).map(n=>n.toFixed(2)).join(' × ')} ${formulaSettings.unit}</span>
+                    <span class="text-[8px] font-bold text-slate-500">Long / Mid / Short</span>
                 </div>
+                <details class="mt-1 mb-1 text-[10px] text-slate-300">
+                    <summary class="cursor-pointer font-semibold text-amber-300">Formula proof</summary>
+                    <div class="mt-1 rounded-lg bg-black/20 p-2 font-mono leading-relaxed break-words">${escHtml(scoreProof(g))}</div>
+                </details>
                 <div class="pbar-track">
                     <div class="pbar-fill tier-bar-${tier}" style="width:${g.percentile ?? 0}%; color:transparent;"></div>
                 </div>
@@ -847,7 +862,7 @@
             </div>
             <div class="flex-1 min-w-0">
                 <div class="text-[12px] font-bold text-white truncate">${escHtml(g.name)}</div>
-                <div class="text-[9px] font-mono text-slate-500 mt-0.5">${displayDimension(g.d).toFixed(1)}×${displayDimension(g.w).toFixed(1)}×${displayDimension(g.l).toFixed(1)} ${formulaSettings.unit}  ·  ${"Score: " + formatScore(g.score) + " · " + displayVolume(g.cubic).toFixed(0) + (formulaSettings.unit === "in" ? " in³" : " cm³")}</div>
+                <div class="text-[9px] font-mono text-slate-500 mt-0.5">${sortedDimensions(g).map(n=>n.toFixed(2)).join('×')} ${formulaSettings.unit}  ·  ${"Score: " + formatScore(g.score) + " · " + displayVolume(g.cubic).toFixed(0) + (formulaSettings.unit === "in" ? " in³" : " cm³")}</div>
             </div>
             <div class="hidden sm:flex items-center gap-2 shrink-0">
                 <div class="w-20 pbar-track">
