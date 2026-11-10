@@ -178,21 +178,26 @@
                         <select id="formulaPreset" onchange="selectPreset(this.value)" class="field">
                             <option value="linear">📊 Linear Balance</option>
                             <option value="sqrt">√ Efficiency Focus</option>
-                            <option value="weighted">⭐ Quality Multiplier</option><option value="face">📐 Face Value × 1,000</option>
+                            <option value="weighted">⭐ Quality Multiplier</option>
+                            <option value="face">📐 Face Value × 1,000</option>
                         </select>
                     </div>
                     <!-- Coefficients -->
                     <div class="grid grid-cols-2 gap-2">
                         <div class="space-y-1.5">
-                            <label class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Rating ×</label>
+                            <label class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Rating exponent</label>
                             <input type="number" id="ratingCoeff" value="1.0" min="0.1" step="0.1" class="field" onchange="applyFormula()">
                         </div>
                         <div class="space-y-1.5">
-                            <label class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Size ÷</label>
+                            <label class="text-[9px] font-bold text-slate-500 uppercase tracking-widest">Volume exponent</label>
                             <input type="number" id="sizeCoeff" value="1.0" min="0.1" step="0.1" class="field" onchange="applyFormula()">
                         </div>
                     </div>
-                    <p id="faceNote" class="hidden col-span-full text-[10px] text-slate-400">Face Value = rating × depth ÷ (width × length) × 1,000. Uses centimeters converted from BGG inches; unrated games show —.</p>
+                    <div class="col-span-full rounded-xl border border-white/10 bg-white/5 p-3 space-y-1" aria-live="polite">
+                        <div id="algorithmFormula" class="text-[11px] font-bold text-white"></div>
+                        <div id="algorithmDescription" class="text-[10px] text-slate-300 leading-relaxed"></div>
+                        <div class="text-[9px] text-slate-500">Higher score = better space efficiency. Volume uses cm³; all dimensions converted from BGG inches. Unrated games are excluded from scoring.</div>
+                    </div>
                     <div class="flex items-center gap-2 col-span-full">
                         <button type="button" id="refreshBtn" onclick="fetchAndAnalyze(true)" class="field text-[11px] px-3 py-2" title="Fetch fresh BGG data and replace the local cache">Refresh BGG data</button>
                         <span id="cacheInfo" class="text-[10px] text-slate-500" role="status">IndexedDB cache enabled</span>
@@ -362,7 +367,6 @@
         if (p === 'linear')   { formulaSettings.ratingCoeff = 1.0; formulaSettings.sizeCoeff = 1.0; }
         if (p === 'sqrt')     { formulaSettings.ratingCoeff = 1.0; formulaSettings.sizeCoeff = 0.5; }
         if (p === 'weighted') { formulaSettings.ratingCoeff = 1.5; formulaSettings.sizeCoeff = 1.0; }
-        syncFaceControls();
         document.getElementById('ratingCoeff').value = formulaSettings.ratingCoeff;
         document.getElementById('sizeCoeff').value   = formulaSettings.sizeCoeff;
         applyFormula();
@@ -371,25 +375,46 @@
     function applyFormula() {
         formulaSettings.ratingCoeff = parseFloat(document.getElementById('ratingCoeff').value) || 1.0;
         formulaSettings.sizeCoeff   = parseFloat(document.getElementById('sizeCoeff').value)   || 1.0;
+        syncFormulaControls();
         localStorage.setItem('pocketValueFormulaSettings', JSON.stringify(formulaSettings));
         if (window.lastAnalyzedGames) { calculateScores(window.lastAnalyzedGames); populateKPIs(window.lastAnalyzedGames); render(); }
     }
 
-    function syncFaceControls() {
+    function syncFormulaControls() {
         const face = formulaSettings.preset === 'face';
-        document.getElementById('faceNote').classList.toggle('hidden', !face);
         document.getElementById('ratingCoeff').disabled = face;
         document.getElementById('sizeCoeff').disabled = face;
+        const r = formulaSettings.ratingCoeff;
+        const v = formulaSettings.sizeCoeff;
+        const formulas = {
+            linear: ['Rating^' + r + ' ÷ Volume^' + v,
+                'Balanced rating per box volume. Higher-rated, smaller-box games score best. Doubling volume halves the score at default settings.'],
+            sqrt: ['Rating^' + r + ' ÷ Volume^' + v,
+                'Gentler size penalty. At the default 0.5 volume exponent, doubling volume reduces the score by about 29%, not 50%. Larger games remain competitive.'],
+            weighted: ['Rating^' + r + ' ÷ Volume^' + v,
+                'Emphasizes quality. At the default 1.5 rating exponent, a 20% higher rating yields about 31% more score at equal volume.'],
+            face: ['1,000 × Rating × Depth (cm) ÷ (Width (cm) × Length (cm))',
+                'Video-inspired Face Value: rewards high ratings and box thickness relative to the front face. Uses rectangular face area as the interpretation of Face²; a thicker box increases the score, unlike volume efficiency.']
+        };
+        const info = formulas[formulaSettings.preset] || formulas.linear;
+        document.getElementById('algorithmFormula').textContent = info[0];
+        document.getElementById('algorithmDescription').textContent = info[1];
     }
     function calculateScores(games) {
         const face = formulaSettings.preset === 'face';
+        const r = formulaSettings.ratingCoeff;
+        const v = formulaSettings.sizeCoeff;
         games.forEach(g => {
-            // BGG dimensions are in inches; use centimeters consistently.
-            g.score = face ? (g.average > 0 ? 1000 * g.average * (g.d * 2.54) / ((g.w * 2.54) * (g.l * 2.54)) : null) : g.cubic;
+            const width = g.w * 2.54, length = g.l * 2.54, depth = g.d * 2.54;
+            const volume = width * length * depth;
+            g.score = g.average > 0 && volume > 0
+                ? (face ? 1000 * g.average * depth / (width * length) : Math.pow(g.average, r) / Math.pow(volume, v))
+                : null;
         });
-        const valid = games.filter(g => g.score !== null).sort((a,b) => face ? b.score - a.score : a.score - b.score);
+        const valid = games.filter(g => g.score !== null && Number.isFinite(g.score))
+            .sort((a,b) => b.score - a.score || a.name.localeCompare(b.name));
         valid.forEach((g,i) => g.percentile = valid.length === 1 ? 100 : Math.round(100 * (1-i/(valid.length-1))));
-        games.filter(g => g.score === null).forEach(g => g.percentile = null);
+        games.filter(g => g.score === null || !Number.isFinite(g.score)).forEach(g => { g.percentile = null; g.score = null; });
     }
     // ── Fetch ─────────────────────────────────────────────────────────────────
     async function fetchWithRetry(url, maxRetries = 5) {
@@ -677,8 +702,8 @@
                     <div class="text-[11px] font-black text-white">${g.average > 0 ? g.average.toFixed(1) : '—'}</div>
                 </div>
                 <div class="glass2 rounded-xl py-2 px-1">
-                    <div class="text-[7px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">${formulaSettings.preset === "face" ? "Face Value" : "in³"}</div>
-                    <div class="text-[11px] font-black text-emerald-400">${formulaSettings.preset === "face" ? (g.score === null ? "—" : g.score.toFixed(2)) : g.cubic.toFixed(0)}</div>
+                    <div class="text-[7px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Score</div>
+                    <div class="text-[11px] font-black text-emerald-400">${formatScore(g.score)}</div>
                 </div>
                 <div class="glass2 rounded-xl py-2 px-1">
                     <div class="text-[7px] font-bold text-slate-500 uppercase tracking-wider mb-0.5">Rank</div>
@@ -709,7 +734,7 @@
             </div>
             <div class="flex-1 min-w-0">
                 <div class="text-[12px] font-bold text-white truncate">${escHtml(g.name)}</div>
-                <div class="text-[9px] font-mono text-slate-500 mt-0.5">${g.d.toFixed(1)}×${g.w.toFixed(1)}×${g.l.toFixed(1)} in  ·  ${formulaSettings.preset === "face" ? "Face Value: " + (g.score === null ? "—" : g.score.toFixed(2)) : g.cubic.toFixed(0) + " in³"}</div>
+                <div class="text-[9px] font-mono text-slate-500 mt-0.5">${g.d.toFixed(1)}×${g.w.toFixed(1)}×${g.l.toFixed(1)} in  ·  ${"Score: " + formatScore(g.score) + " · " + g.cubic.toFixed(0) + " in³"}</div>
             </div>
             <div class="hidden sm:flex items-center gap-2 shrink-0">
                 <div class="w-20 pbar-track">
@@ -723,6 +748,10 @@
         </div>`;
     }
 
+    function formatScore(score) {
+        if (score === null || !Number.isFinite(score)) return '—';
+        return score >= 1 ? score.toFixed(2) : score.toPrecision(4);
+    }
     function escHtml(s) {
         return String(s||'').replace(/[&<>"']/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'})[c]);
     }
@@ -738,7 +767,7 @@
         } catch {}
     }
 
-    syncFaceControls();
+    syncFormulaControls();
     document.getElementById('username').addEventListener('keypress', e => { if (e.key === 'Enter') fetchAndAnalyze(); });
 </script>
 <script type="module" src="analytics-init.js"></script>
