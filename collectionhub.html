@@ -1296,8 +1296,9 @@
     let videosFilterQuery = '';
     let forumsFilterQuery = '';
     const IDB_NAME = 'CollectionHubDB';
-    const IDB_VERSION = 1;
+    const IDB_VERSION = 2;
     const IDB_COLLECTION_STORE = 'collections';
+    const IDB_CSV_STORE = 'csv';
     let collectionHubDb = null;
     let cacheRefreshUsername = '';
 
@@ -1317,6 +1318,9 @@
           if (!upgradeDb.objectStoreNames.contains(IDB_COLLECTION_STORE)) {
             upgradeDb.createObjectStore(IDB_COLLECTION_STORE, { keyPath: 'username' });
           }
+          if (!upgradeDb.objectStoreNames.contains(IDB_CSV_STORE)) {
+            upgradeDb.createObjectStore(IDB_CSV_STORE, { keyPath: 'username' });
+          }
         };
         req.onsuccess = () => {
           collectionHubDb = req.result;
@@ -1324,6 +1328,7 @@
           resolve(collectionHubDb);
         };
         req.onerror = () => reject(req.error);
+        req.onblocked = () => reject(new Error('IndexedDB upgrade blocked by another open tab'));
       });
     }
 
@@ -1362,8 +1367,42 @@
       });
     }
 
+    async function getCachedCsv(username) {
+      const db = await openCollectionHubDB();
+      if (!db) return null;
+      return new Promise((resolve, reject) => {
+        const req = db.transaction(IDB_CSV_STORE, 'readonly').objectStore(IDB_CSV_STORE).get(username.toLowerCase());
+        req.onsuccess = () => resolve(req.result || null);
+        req.onerror = () => reject(req.error);
+      });
+    }
+
+    async function saveCachedCsv(username) {
+      const db = await openCollectionHubDB();
+      if (!db || !username) return;
+      return new Promise((resolve, reject) => {
+        const tx = db.transaction(IDB_CSV_STORE, 'readwrite');
+        tx.objectStore(IDB_CSV_STORE).put({
+          username: username.toLowerCase(), savedAt: new Date().toISOString(), csvById
+        });
+        tx.oncomplete = resolve;
+        tx.onerror = () => reject(tx.error);
+        tx.onabort = () => reject(tx.error);
+      });
+    }
+
+    function applyCsvToGames() {
+      for (const g of allGames) {
+        if (Object.prototype.hasOwnProperty.call(csvById, g.id)) g._csv = csvById[g.id];
+        else delete g._csv;
+      }
+      document.getElementById('csvStatus').textContent = Object.keys(csvById).length
+        ? `✓ ${Object.keys(csvById).length} CSV` : '';
+    }
+
     function restoreCachedCollection(cache) {
       allGames = Array.isArray(cache.allGames) ? cache.allGames : [];
+      applyCsvToGames();
       pollData = cache.pollData || {};
       thingDataLoaded = !!cache.thingDataLoaded;
       pollsLoaded = !!cache.pollsLoaded;
@@ -1403,12 +1442,10 @@
             const id = row.objectid;
             if (id) csvById[id] = row;
           }
-          // Merge into allGames
-          if (allGames.length) {
-            allGames.forEach(g => { if (csvById[g.id]) Object.assign(g, { _csv: csvById[g.id] }); });
-          }
-          const count = Object.keys(csvById).length;
-          document.getElementById('csvStatus').textContent = `✓ ${count}`;
+          // Keep CSV enrichment separate from API collection snapshots.
+          applyCsvToGames();
+          const username = document.getElementById('usernameInput').value.trim();
+          saveCachedCsv(username).catch(err => console.warn('[collectionhub:idb] CSV save failed', err));
           if (allGames.length) renderCurrentTab();
         } catch (err) {
           console.error('[csv]', err);
@@ -1416,6 +1453,7 @@
         }
       };
       reader.readAsText(file);
+      input.value = '';
     }
 
     function getViewGames() {
@@ -1635,9 +1673,17 @@
       btn.innerHTML = '<span class="spin">⏳</span> Loading';
       setStatus(forceRefresh ? 'Refreshing collection from API...' : 'Checking IndexedDB cache...');
       showSkeletons();
+      // Preserve the visible collection if an API refresh fails.
+      const previousGames = allGames;
       allGames = [];
 
       try {
+        const savedCsv = await getCachedCsv(username);
+        if (savedCsv?.csvById && typeof savedCsv.csvById === 'object') {
+          csvById = savedCsv.csvById;
+        } else if (Object.keys(csvById).length && cacheRefreshUsername !== username.toLowerCase()) {
+          csvById = {};
+        }
         if (!forceRefresh) {
           const cached = await getCachedCollection(username);
           if (cached && Array.isArray(cached.allGames) && cached.allGames.length) {
@@ -1714,6 +1760,7 @@
           return { id, name, thumb, yearPub, numplays, own, prevowned, wanttoplay, fortrade, want, wanttobuy, wishlist, preordered, userRating, bggAvg, bggRank, allRanks, bggBayes, subtype, minPlayers, maxPlayers, playingTime, avgWeight, numOwned };
         }).filter(g => g.name);
 
+        applyCsvToGames();
         console.log(`[collectionthumbs] ✓ ${allGames.length} games parsed`);
         setStatus(`${allGames.length} games loaded`);
         renderCurrentTab();
@@ -1721,6 +1768,14 @@
         loadThingData().then(() => saveCachedCollection(username)).catch(err => console.error('[collectionthumbs] thing data error', err));
 
       } catch (err) {
+        if (previousGames.length) {
+          allGames = previousGames;
+          applyCsvToGames();
+          renderCurrentTab();
+          setStatus(`Refresh failed: ${err.message}. Showing previously loaded data.`);
+          console.error('[collectionthumbs] ❌', err);
+          return;
+        }
         setStatus(`Error: ${err.message}`);
         console.error('[collectionthumbs] ❌', err);
         const fail = '<div class="col-empty">Failed to load — check console</div>';
